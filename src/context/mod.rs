@@ -2,6 +2,8 @@
 //! payload. Decoding, byte/depth limits and native adapter conformance live at
 //! the input boundary; serializing this entire envelope to a provider is invalid.
 
+#[cfg(unix)]
+pub mod cass;
 pub mod jsonl;
 pub mod signals;
 pub mod source;

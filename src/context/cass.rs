@@ -5,9 +5,11 @@
 //! envelope, not proof of skill loading, and never a provider-ready payload.
 
 use crate::adapter::{CassProducer, decode_json};
-use crate::context::PrivateText;
 use crate::context::source::SourcePolicy;
-use crate::identity::{AdapterVersion, ContentHash, SourceId, SourceProvenance};
+use crate::context::{EventKind, NormalizedEvent, PrivateText, Role, ToolEvent, ToolStatus};
+use crate::identity::{
+    AdapterVersion, ContentHash, EventId, SourceId, SourceProvenance, ToolCallId,
+};
 use crate::runtime::EntryClock;
 use crate::subprocess::{self, ChildRequest, SubprocessError, TrustedExecutable};
 use asupersync::Cx;
@@ -314,6 +316,16 @@ pub fn validate_capabilities(
     {
         return Err(CassError::UnsupportedProducer);
     }
+    let globals = value
+        .get("global_flags")
+        .and_then(Value::as_array)
+        .ok_or(CassError::UnsupportedProducer)?;
+    if !globals
+        .iter()
+        .any(|v| v.get("name").and_then(Value::as_str) == Some("db"))
+    {
+        return Err(CassError::UnsupportedProducer);
+    }
     let features = value
         .get("features")
         .and_then(Value::as_array)
@@ -347,6 +359,16 @@ pub fn validate_capabilities(
             .get("arguments")
             .and_then(Value::as_array)
             .ok_or(CassError::UnsupportedProducer)?;
+        if name == "export"
+            && !actual.iter().any(|v| {
+                v.get("name").and_then(Value::as_str) == Some("format")
+                    && v.get("enum_values")
+                        .and_then(Value::as_array)
+                        .is_some_and(|values| values.iter().any(|v| v.as_str() == Some("json")))
+            })
+        {
+            return Err(CassError::UnsupportedProducer);
+        }
         if !args.iter().all(|a| {
             actual
                 .iter()
@@ -356,7 +378,7 @@ pub fn validate_capabilities(
         }
     }
     let producer = CassProducer {
-        version: AdapterVersion::parse(QUALIFIED_VERSION)
+        version: AdapterVersion::new(QUALIFIED_VERSION)
             .map_err(|_| CassError::UnsupportedProducer)?,
         api_version: 1,
         contract_version: 1,
@@ -472,7 +494,10 @@ fn text_only(record: &Value) -> Result<Option<Value>, CassError> {
         "type",
     ] {
         if let Some(value) = record.get(key) {
-            if !value.is_string() && !value.is_null() {
+            if !value.is_string()
+                && !value.is_null()
+                && !(key == "timestamp" && value.as_i64().is_some())
+            {
                 return Err(CassError::InvalidResponse);
             }
             projected.insert(key.to_owned(), value.clone());
@@ -512,6 +537,7 @@ pub fn decode_listing(
     let mut sessions = Vec::new();
     let mut remote = 0;
     let mut other_workspace = 0;
+    let mut seen = std::collections::BTreeSet::new();
     for row in array {
         let source = row
             .get("source_id")
@@ -537,9 +563,12 @@ pub fn decode_listing(
             .get("agent")
             .and_then(Value::as_str)
             .ok_or(CassError::InvalidResponse)?;
+        if !seen.insert((source, path)) {
+            return Err(CassError::InvalidResponse);
+        }
         let selection = ArchiveSelection::local(
             PathBuf::from(path),
-            SourceId::parse(source).map_err(|_| CassError::InvalidResponse)?,
+            SourceId::new(source).map_err(|_| CassError::InvalidResponse)?,
         )?;
         sessions.push(ArchiveSession {
             selection,
@@ -559,4 +588,197 @@ fn bounded_json(bytes: &[u8], limit: usize) -> Result<Value, CassError> {
         return Err(CassError::LimitExceeded);
     }
     decode_json(bytes, limit).map_err(|_| CassError::InvalidResponse)
+}
+
+/// Explicit archive projection. Raw retained records remain available locally;
+/// projected events cannot establish an active native branch or loaded skills.
+#[derive(Debug)]
+pub struct NormalizedArchive {
+    pub events: Vec<NormalizedEvent>,
+    pub content_incomplete: bool,
+    pub active_branch_unverified: bool,
+}
+impl ArchiveExport {
+    pub fn normalized_events(&self) -> Result<NormalizedArchive, CassError> {
+        let mut events = Vec::new();
+        let mut incomplete = false;
+        let mut seen = std::collections::BTreeSet::new();
+        for record in &self.records {
+            let raw = record.native_value();
+            let msg = raw
+                .get("message")
+                .filter(|v| v.is_object())
+                .or_else(|| raw.get("payload").filter(|v| v.is_object()))
+                .unwrap_or(raw);
+            let role = match msg
+                .get("role")
+                .and_then(Value::as_str)
+                .or_else(|| raw.get("type").and_then(Value::as_str))
+            {
+                Some("user") => Role::User,
+                Some("assistant") => Role::Assistant,
+                Some("system" | "developer") => Role::System,
+                Some("tool" | "function") => Role::Tool,
+                _ => return Err(CassError::InvalidResponse),
+            };
+            let id = event_id(raw, "uuid", "event_id")?;
+            if let Some(id) = &id
+                && !seen.insert(id.clone())
+            {
+                return Err(CassError::InvalidResponse);
+            }
+            let parent = event_id(raw, "parentUuid", "parent_id")?;
+            let mut base = NormalizedEvent {
+                event_id: id,
+                parent_id: parent,
+                turn_id: None,
+                agent_id: None,
+                branch_id: None,
+                role,
+                kind: EventKind::Message,
+                timestamp_unix_ms: None,
+                text: PrivateText::default(),
+                tool: None,
+            };
+            let mut tools = Vec::new();
+            match msg.get("content") {
+                Some(Value::String(text)) => {
+                    base.text = PrivateText::new(text);
+                    if role == Role::Tool {
+                        base.kind = EventKind::ToolResult;
+                        base.tool = Some(ToolEvent {
+                            call_id: optional_tool_id(msg.get("tool_call_id"))?,
+                            name: PrivateText::default(),
+                            status: ToolStatus::Unknown,
+                            arguments: None,
+                            result: Some(PrivateText::new(text)),
+                        });
+                    }
+                }
+                Some(Value::Array(blocks)) => {
+                    let mut text = String::new();
+                    for block in blocks {
+                        match block.get("type").and_then(Value::as_str) {
+                            Some("text" | "input_text" | "output_text") => {
+                                let part = block
+                                    .get("text")
+                                    .and_then(Value::as_str)
+                                    .ok_or(CassError::InvalidResponse)?;
+                                if !text.is_empty() {
+                                    text.push('\n');
+                                }
+                                text.push_str(part);
+                            }
+                            Some("tool_use") => {
+                                let name = block
+                                    .get("name")
+                                    .and_then(Value::as_str)
+                                    .ok_or(CassError::InvalidResponse)?;
+                                let arguments = block
+                                    .get("input")
+                                    .map(serde_json::to_string)
+                                    .transpose()
+                                    .map_err(|_| CassError::InvalidResponse)?
+                                    .map(PrivateText::new);
+                                tools.push((
+                                    EventKind::ToolInvocation,
+                                    ToolEvent {
+                                        call_id: optional_tool_id(block.get("id"))?,
+                                        name: PrivateText::new(name),
+                                        status: ToolStatus::Attempted,
+                                        arguments,
+                                        result: None,
+                                    },
+                                ));
+                            }
+                            Some("tool_result") => {
+                                let result = block
+                                    .get("content")
+                                    .map(|v| match v {
+                                        Value::String(s) => Ok(s.clone()),
+                                        _ => serde_json::to_string(v),
+                                    })
+                                    .transpose()
+                                    .map_err(|_| CassError::InvalidResponse)?
+                                    .map(PrivateText::new);
+                                let status = match block.get("is_error").and_then(Value::as_bool) {
+                                    Some(true) => ToolStatus::Failed,
+                                    Some(false) => ToolStatus::Succeeded,
+                                    None => ToolStatus::Unknown,
+                                };
+                                tools.push((
+                                    EventKind::ToolResult,
+                                    ToolEvent {
+                                        call_id: optional_tool_id(block.get("tool_use_id"))?,
+                                        name: PrivateText::default(),
+                                        status,
+                                        arguments: None,
+                                        result,
+                                    },
+                                ));
+                            }
+                            _ => incomplete = true,
+                        }
+                        if tools.len() > MAX_MESSAGES {
+                            return Err(CassError::LimitExceeded);
+                        }
+                    }
+                    base.text = PrivateText::new(text);
+                }
+                _ => return Err(CassError::InvalidResponse),
+            }
+            if events.len().saturating_add(tools.len()).saturating_add(1) > MAX_MESSAGES {
+                return Err(CassError::LimitExceeded);
+            }
+            let container = base.event_id.clone();
+            events.push(base);
+            for (kind, tool) in tools {
+                // Native tool blocks do not necessarily have event IDs. Keep
+                // their actual call ID; do not manufacture a transcript event.
+                events.push(NormalizedEvent {
+                    event_id: None,
+                    parent_id: container.clone(),
+                    turn_id: None,
+                    agent_id: None,
+                    branch_id: None,
+                    role: if kind == EventKind::ToolResult {
+                        Role::Tool
+                    } else {
+                        role
+                    },
+                    kind,
+                    timestamp_unix_ms: None,
+                    text: PrivateText::default(),
+                    tool: Some(tool),
+                });
+            }
+        }
+        Ok(NormalizedArchive {
+            events,
+            content_incomplete: incomplete || !self.tool_content_included,
+            active_branch_unverified: true,
+        })
+    }
+}
+fn event_id(value: &Value, first: &str, second: &str) -> Result<Option<EventId>, CassError> {
+    let a = value.get(first).filter(|v| !v.is_null());
+    let b = value.get(second).filter(|v| !v.is_null());
+    if a.is_some() && b.is_some() && a != b {
+        return Err(CassError::InvalidResponse);
+    }
+    a.or(b)
+        .map(|v| {
+            EventId::new(v.as_str().ok_or(CassError::InvalidResponse)?)
+                .map_err(|_| CassError::InvalidResponse)
+        })
+        .transpose()
+}
+fn optional_tool_id(value: Option<&Value>) -> Result<Option<ToolCallId>, CassError> {
+    value
+        .filter(|v| !v.is_null())
+        .map(|v| {
+            ToolCallId::new(v.as_str().ok_or(CassError::InvalidResponse)?)
+                .map_err(|_| CassError::InvalidResponse)
+        })
+        .transpose()
 }
