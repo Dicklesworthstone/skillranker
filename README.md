@@ -653,10 +653,18 @@ strings, fragments, and non-root paths. Credentials, cache identity, and request
 allowance scope use the canonical origin. A development-only loopback HTTP
 exception cannot carry production credentials.
 
-`sr doctor --config` shows each non-secret effective value, its winning source,
-and blocked disallowed overrides. A policy fingerprint is available only for a
-valid configuration. It reports credential presence/source without exposing
-values or secret-bearing endpoint components.
+`sr doctor --config` shows non-secret effective values and their winning sources.
+Disallowed overrides are configuration errors; no valid policy or fingerprint is
+reported for them. Credential presence is reported without its value, and endpoint
+overrides expose only their presence. `--offline` and `--allow-network` are accepted
+here but conflict; this inspection command never sends a request.
+
+The library's `cli::ConfigFiles` shares bounded initial configuration reads with
+file refreshes. Refresh keeps the invocation's validated environment and CLI
+layers, returning the current configuration and a boundary-specific comparison
+against its typed policy receipt. Malformed, unreadable, or late reads fail rather
+than authorize output. Rank orchestration and its HTTP/publication call sites are
+not implemented yet; these library checks do not establish live ranking support.
 Shared request allowances and snoozes are explicit trusted-user controls. Project
 configuration cannot enable, raise, or disable the allowance.
 

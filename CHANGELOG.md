@@ -10,6 +10,10 @@
   declaration validation remains distinct from an execution receipt.
 
 ### Added
+- Shared bounded configuration loading and effective-policy file refresh through
+  `cli::ConfigFiles`, retaining invocation CLI/environment overrides and typed
+  receipt comparisons. CLI precedence and real-file refresh cases are exercised;
+  rank admission/publication integration remains pending.
 - Optional local `context::signals` collection: bounded allowlisted filenames
   and trusted executable presence, safe Git 2.36+ status with fsmonitor disabled,
   private relative paths, omission counts, and a 250 ms stage budget. No tool

@@ -1,5 +1,5 @@
 //! Real binary checks of local configuration trust and stream boundaries.
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::path::PathBuf;
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -193,4 +193,120 @@ fn offline_flags_are_recognized_and_mutually_exclusive() {
     assert_eq!(report["error"]["kind"], "invalid-usage");
     let alone = f.run(&["doctor", "--config", "--allow-network"], &[]);
     assert_eq!(alone.status.code(), Some(0));
+}
+
+/// Precedence and strict rejection through the installed command boundary.
+#[test]
+fn precedence_matrix_enforces_strict_rejection() {
+    let f = Fixture::new();
+    let layer = |user: &str, project: &str| {
+        std::fs::write(f.root.join("user/sr/config.toml"), user).unwrap();
+        f.project(project.as_bytes());
+    };
+    for (user, project, environment, flags, expected, source) in [
+        ("", "", vec![], vec![], 5, "built-in"),
+        ("[ranking]\ntop=2\n", "", vec![], vec![], 2, "trusted-user"),
+        (
+            "[ranking]\ntop=2\n",
+            "[ranking]\ntop=3\n",
+            vec![],
+            vec![],
+            3,
+            "project",
+        ),
+        (
+            "[ranking]\ntop=2\n",
+            "[ranking]\ntop=3\n",
+            vec![("SR_TOP", "5")],
+            vec![],
+            5,
+            "environment",
+        ),
+        (
+            "[ranking]\ntop=2\n",
+            "[ranking]\ntop=3\n",
+            vec![("SR_TOP", "5")],
+            vec!["--top", "4"],
+            4,
+            "cli",
+        ),
+    ] {
+        layer(user, project);
+        let mut args = vec!["doctor", "--config", "--json"];
+        args.extend(flags);
+        let output = f.run(&args, &environment);
+        assert_eq!(output.status.code(), Some(0));
+        let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(report["settings"]["ranking.top"]["value"], expected);
+        assert_eq!(
+            report["settings"]["ranking.top"]["sources"],
+            json!([source])
+        );
+    }
+    for (user, project) in [
+        ("", "[ranking]\ntop=2\ntop=3\n"),
+        ("", "[ranking]\ntop=3\n[ranking]\nfits=0.2\n"),
+        ("[ranking]\nunknownkey=1\n", ""),
+        ("", "[network]\nenabled=true\n"),
+        ("", "[ranking]\ngate=nan\n"),
+        ("", "[ranking]\ngate=inf\n"),
+        ("", "[ranking]\ntop=99\n"),
+    ] {
+        layer(user, project);
+        let output = f.run(&["doctor", "--config", "--json"], &[]);
+        assert_eq!(output.status.code(), Some(2), "{user:?}/{project:?}");
+        let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(report["error"]["kind"], "invalid-configuration");
+        assert!(!String::from_utf8_lossy(&output.stdout).contains("unknownkey"));
+    }
+}
+
+#[test]
+fn file_refresh_preserves_overrides_and_rejects_invalid_current_policy() {
+    use skillranker::cli::ConfigFiles;
+    use skillranker::config::{ConfigSources, PolicyBoundary, PolicyField, RawValue, Revalidation};
+    use skillranker::privacy::{EffectFlags, EffectPolicy};
+    use skillranker::runtime::EntryClock;
+
+    let f = Fixture::new();
+    let files = ConfigFiles::new(f.root.join("workspace"), Some(f.root.join("user")));
+    let user = f.root.join("user/sr/config.toml");
+    std::fs::write(&user, "[ranking]\ntop=2\n[network]\nenabled=true\n").unwrap();
+    let clock = EntryClock::capture().unwrap();
+    let initial = files
+        .load(
+            &clock,
+            ConfigSources {
+                cli: vec![("ranking.top".into(), RawValue::Integer(4))],
+                ..ConfigSources::default()
+            },
+        )
+        .unwrap();
+    let effects = EffectPolicy::from_flags(EffectFlags::default()).unwrap();
+    let receipt = initial.receipt(effects);
+    let admission = PolicyBoundary::ProviderAdmission;
+    let (_, unchanged) = files
+        .refresh(&clock, &initial, &receipt, admission)
+        .unwrap();
+    assert_eq!(unchanged, Revalidation::Unchanged);
+    std::fs::write(&user, "[ranking]\ntop=3\n[network]\nenabled=true\n").unwrap();
+    let (current, unchanged) = files
+        .refresh(&clock, &initial, &receipt, admission)
+        .unwrap();
+    assert_eq!(current.effective().top(), 4);
+    assert_eq!(unchanged, Revalidation::Unchanged);
+    std::fs::write(&user, "[ranking]\ntop=3\n[network]\nenabled=false\n").unwrap();
+    let (_, changed) = files
+        .refresh(&clock, &initial, &receipt, admission)
+        .unwrap();
+    assert_eq!(
+        changed,
+        Revalidation::Superseded(vec![PolicyField::NetworkConsent])
+    );
+    std::fs::write(&user, "[ranking]\ntop=\n").unwrap();
+    let error = files
+        .refresh(&clock, &initial, &receipt, admission)
+        .unwrap_err();
+    assert_eq!((error.0, error.1), (2, "invalid-configuration"));
+    assert!(!f.root.join("home").exists());
 }

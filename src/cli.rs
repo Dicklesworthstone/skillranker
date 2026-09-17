@@ -200,14 +200,8 @@ fn execute(clock: &EntryClock, args: Vec<OsString>) -> Result<String, Failure> {
     timely(clock)?;
     // The current directory is the exact workspace. Never run Git or search ancestors.
     let workspace = std::env::current_dir().map_err(|_| invalid("Workspace is unavailable"))?;
-    let user_root = user_config_root()?;
-    if let Some(root) = user_root {
-        sources.trusted_user =
-            read_config(clock, &root, Path::new("sr/config.toml"), "trusted-user")?;
-    }
-    sources.project = read_config(clock, &workspace, Path::new(".sr/config.toml"), "project")?;
-    let resolved =
-        ResolvedConfig::resolve(sources, 0).map_err(|error| invalid(error.to_string()))?;
+    let files = ConfigFiles::new(workspace, user_config_root()?);
+    let resolved = files.load(clock, sources)?;
     timely(clock)?;
     let report = config_report(&resolved);
     if doctor.get_flag("json") || (!doctor.get_flag("table") && !io::stdout().is_terminal()) {
@@ -248,6 +242,76 @@ fn user_config_root() -> Result<Option<PathBuf>, Failure> {
             Ok(Some(directory))
         }
         None => Ok(None),
+    }
+}
+
+/// Fixed invocation paths for bounded initial reads and consequential rereads.
+/// The caller supplies the independently selected workspace, never a path from
+/// normalized session input. This resolver performs no discovery or state writes.
+pub struct ConfigFiles {
+    workspace: PathBuf,
+    user_root: Option<PathBuf>,
+}
+
+impl ConfigFiles {
+    pub fn new(workspace: PathBuf, user_root: Option<PathBuf>) -> Self {
+        Self {
+            workspace,
+            user_root,
+        }
+    }
+
+    pub fn load(
+        &self,
+        clock: &EntryClock,
+        mut sources: ConfigSources,
+    ) -> Result<ResolvedConfig, Failure> {
+        sources.trusted_user = self.read_user(clock)?;
+        sources.project = read_config(
+            clock,
+            &self.workspace,
+            Path::new(".sr/config.toml"),
+            "project",
+        )?;
+        let resolved =
+            ResolvedConfig::resolve(sources, 0).map_err(|error| invalid(error.to_string()))?;
+        timely(clock)?;
+        Ok(resolved)
+    }
+
+    /// Refresh mutable file layers while retaining validated invocation CLI and
+    /// environment. Read/parse/deadline errors cannot yield an authorizing receipt.
+    pub fn refresh(
+        &self,
+        clock: &EntryClock,
+        previous: &ResolvedConfig,
+        receipt: &crate::config::PolicyReceipt,
+        boundary: crate::config::PolicyBoundary,
+    ) -> Result<(ResolvedConfig, crate::config::Revalidation), Failure> {
+        let user = self.read_user(clock)?;
+        let project = read_config(
+            clock,
+            &self.workspace,
+            Path::new(".sr/config.toml"),
+            "project",
+        )?;
+        let generation = receipt
+            .generation()
+            .checked_add(1)
+            .ok_or_else(|| invalid("Configuration generation exhausted"))?;
+        let current = previous
+            .reresolve_files(user, project, generation)
+            .map_err(|error| invalid(error.to_string()))?;
+        timely(clock)?;
+        let comparison = receipt.compare(&current.receipt(receipt.effects()), boundary);
+        Ok((current, comparison))
+    }
+
+    fn read_user(&self, clock: &EntryClock) -> Result<Vec<(String, RawValue)>, Failure> {
+        match &self.user_root {
+            Some(root) => read_config(clock, root, Path::new("sr/config.toml"), "trusted-user"),
+            None => Ok(Vec::new()),
+        }
     }
 }
 
