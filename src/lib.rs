@@ -5,6 +5,7 @@ pub mod adapter;
 pub mod config;
 pub mod context;
 pub mod identity;
+pub mod jev;
 pub mod limits;
 pub mod output;
 pub mod privacy;
