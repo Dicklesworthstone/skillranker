@@ -4,7 +4,7 @@
 //! Satisfies contract boundary `p1_canonical_origin` (sr-roadmap-l1i.2.4)
 //! mapped in `tests/contract_matrix.toml`.
 
-use skillranker::config::{ConfigSources, EndpointOverride, ResolvedConfig};
+use skillranker::config::{ConfigSources, ResolvedConfig};
 use skillranker::jev::{
     CanonicalOrigin, CredentialRoutingError, EndpointConfig, EndpointError,
     OriginScopedCredential, ProxyPolicy, RedirectError, RedirectPolicy, Scheme,
@@ -402,13 +402,16 @@ fn ambient_proxy_variables_detected_and_sanitized() {
 fn configuration_override_integration() {
     let sources = ConfigSources {
         environment: vec![(
-            OsString::from("SR_TYPESAFE_ENDPOINT"),
+            OsString::from("TYPESAFE_ENDPOINT"),
             OsString::from("https://staging.typesafe.ai:8443/"),
         )],
         ..Default::default()
     };
     let config = ResolvedConfig::resolve(sources, 1).expect("resolved config");
-    let ep_override = config.endpoint().expect("endpoint override present");
+    let ep_override = config
+        .effective()
+        .endpoint()
+        .expect("endpoint override present");
 
     let canonical = CanonicalOrigin::from_override(ep_override).expect("valid override");
     assert_eq!(canonical.as_str(), "https://staging.typesafe.ai:8443");

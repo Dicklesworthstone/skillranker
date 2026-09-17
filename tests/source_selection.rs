@@ -243,6 +243,11 @@ fn local_modes_refuse_cass_before_any_discovery_or_reader() {
             allow_network: true,
             ..Default::default()
         },
+        SourcePolicy {
+            local_only: true,
+            allow_network: true,
+            ..Default::default()
+        },
     ] {
         assert_eq!(
             options
@@ -380,6 +385,8 @@ fn incomplete_duplicate_remote_and_mismatched_inventories_fail_closed() {
     mismatched.target = SourceTarget::CassSession(path("a"));
     let mut missing_id = a.clone();
     missing_id.identity.session = None;
+    let mut unknown_workspace = a.clone();
+    unknown_workspace.identity.workspace = None;
     for (sessions, error) in [
         (
             SessionInventory {
@@ -395,6 +402,10 @@ fn incomplete_duplicate_remote_and_mismatched_inventories_fail_closed() {
         (inventory(vec![remote]), SourceError::RemoteSource),
         (inventory(vec![mismatched]), SourceError::InvalidInventory),
         (inventory(vec![missing_id]), SourceError::InvalidInventory),
+        (
+            inventory(vec![a.clone(), unknown_workspace]),
+            SourceError::IncompleteInventory,
+        ),
         (inventory(vec![]), SourceError::MissingSession),
         (
             inventory(vec![a.clone(); DISCOVERY_FILES.max() + 1]),
@@ -582,8 +593,12 @@ fn linked_worktrees_are_distinct_despite_a_shared_git_directory() {
     assert_ne!(main_id, linked_id);
     let mut a = candidate("main-session", 1);
     a.identity.workspace = Some(main_id.clone());
+    a.target = SourceTarget::ClaudeTranscript(path(main.join("session.jsonl")));
+    std::fs::write(main.join("session.jsonl"), b"main-session").unwrap();
     let mut b = candidate("linked-newer-session", 99);
     b.identity.workspace = Some(linked_id.clone());
+    b.target = SourceTarget::ClaudeTranscript(path(linked.join("session.jsonl")));
+    std::fs::write(linked.join("session.jsonl"), b"linked-newer-session").unwrap();
     let mut prefix = candidate("prefix-collision", 999);
     prefix.identity.workspace =
         Some(WorkspaceId::new(format!("{}-suffix", main_id.as_str())).unwrap());
@@ -599,6 +614,18 @@ fn linked_worktrees_are_distinct_despite_a_shared_git_directory() {
         assert_eq!(selection.expected_identity(), Some(&expected.identity));
         assert_eq!(selection.reason(), SelectionReason::UniqueInWorkspace);
         assert_eq!(selection.candidate_count(), 1);
+        let bytes = selection
+            .read(|binding| {
+                let SourceTarget::ClaudeTranscript(path) = binding.target() else {
+                    panic!("wrong source reader")
+                };
+                std::fs::read(path.as_path())
+            })
+            .unwrap();
+        assert_eq!(
+            bytes,
+            expected.identity.session.unwrap().as_str().as_bytes()
+        );
     }
 }
 
