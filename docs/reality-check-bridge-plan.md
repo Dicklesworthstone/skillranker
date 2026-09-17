@@ -63,6 +63,19 @@ a Beads comment timed out on the workspace write lock; the owner was notified of
 that tracking limitation in message 41619. No new feature is
 needed. Do not treat the closed runtime foundation as proof of bounded stdin.
 
+### Immediate source and publication blockers
+
+The frozen full-test run reproduced two query AST-validator failures in
+`src/roster/retrieval.rs`: honest Quill field expansion was rejected as changed
+meaning. Existing owner SilentFinch is repairing `.3.9`; its newer proof must
+finish before this result can be superseded. Compilation alone missed this bug.
+
+A peer also reported GitHub push protection rejecting ancestor `adf240a` because
+`tests/redaction_contract.rs:61` matched a Slack-token detector (message 41623).
+This report is a publication blocker, not evidence that a real credential was
+exposed. Resolve the fixture/history through an authorized path; do not bypass
+protection or rewrite shared history as part of this assessment.
+
 ### Bridge priority and coverage verdict
 
 The 17 workflow groups and 70 concrete obligations below still cover the vision.
@@ -114,7 +127,16 @@ peer work. Its 106-file SHA-256 manifest and command logs are retained under
   (job `j-30024414133223896`, exit 0, 605 seconds including transfer). RCH
   reported overlay fingerprint
   `b5b4be96023bcd52a37085cc51e6eaefe8396d1eddca6e0253817c9b65a0e9af`.
-- Full remote Rust tests are pending; an active job is not a pass.
+- Remote `cargo test --locked -j 2` compiled the test profile, then exited 101
+  on `vmi1264463` (job `j-30024414133223906`, 731 seconds). The library target
+  ran three tests: one passed and two failed. Both
+  `parser_recovery_and_truncation_are_failures_with_text_free_diagnostics` and
+  `syntactically_valid_but_changed_meaning_is_refused` expected `Ok(())` but
+  received `Err(MeaningChanged)`. Cargo stopped there; remaining test targets
+  were not executed by this run. This is a source failure, not an RCH failure.
+  The owner independently identified Quill's per-term content/title OR expansion
+  and reported a correction under fresh remote verification (message 41621).
+  That newer correction is outside this frozen snapshot and is not certified here.
 - No live Jev calls, private transcript reads, installed-hook mutations, quality
   experiments or releases were performed.
 
