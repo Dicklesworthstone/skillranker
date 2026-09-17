@@ -371,14 +371,19 @@ to 256 MiB and cache/coordinator state to 64 MiB, stopping optional recording at
   configuration keys, incompatible modes, and invalid bounds before I/O.
 - Stdout is data; stderr is diagnostics. Keep `capabilities --json` synchronized
   with schemas, adapters/events, compiled features, limits, examples, and exits.
-- Ordinary CLI exits: `0` success, `2` usage/config, `3` session, `4` network/provider,
-  `5` roster, `6` timeout, `7` input/adapter, `8` privacy, `9` required storage,
+  Distinguish planned commands from implemented capabilities and tested harness
+  versions from unverified ones. This repository currently contains design docs.
+- Ordinary CLI exits: `0` success, `2` usage/config, `3` session, `4` network/provider/budget,
+  `5` roster/retrieval, `6` timeout, `7` input/adapter, `8` privacy, `9` required storage,
   `10` provider contract, `11` offline/cache-only miss. JSON errors include schema version, unavailable decision,
   and `{code, kind, message, hint, retryable}` with stable kebab-case kinds.
 - `sr hook claude` accepts its verified `UserPromptSubmit` contract. Advisory output
   uses `hookSpecificOutput.additionalContext`, bounded to 1,024 characters and at
   most one suggested invocation name. Explicit multiple requests are separate.
 - Hooks default to shadow; trusted `hook.mode = "advisory"` enables injection.
+  Ordinary abstentions are silent; abstention messages require an explicit
+  experiment. Scoped snoozes are trusted user preferences, never negative labels,
+  and cannot veto explicit skill requirements.
   API/input/privacy/coverage/parser failures mean empty stdout, sanitized stderr,
   and exit zero. Never use blocking decision fields or exit 2 for recommendation
   failure. Classify the dedicated hook boundary before non-exiting argument parsing.
@@ -399,6 +404,36 @@ to 256 MiB and cache/coordinator state to 64 MiB, stopping optional recording at
   Restore terminal state and separate controlling-terminal rendering from piped
   output. Handle display-cell widths, resize, small terminals, and cancellation.
 - Honor `NO_COLOR`, `CI`, and `TERM=dumb` for human decoration.
+
+## Product Improvements And Evidence
+
+The plan's I01–I15 priorities refine P0–P9; they do not authorize extra routine
+inference calls or bypass existing quality gates. Keep the core CLI independent
+of P9 retrieval/excerpt/description experiments.
+
+- Stage explanations and `--why-not` expose observed exclusion reasons without
+  changing candidate admission, request bytes, or scores. Unevaluated is not zero.
+- Demo/replay use explicitly non-actionable envelopes. Replay reads bounded case
+  data without resolving embedded source paths, executing skills, calling Jev,
+  or updating native session state. Capture is a separate explicit privacy choice;
+  it cannot reconstruct missing bodies from metadata-only history.
+- Minimal context and disclosure receipts remain subject to essential-context
+  checks. Project settings cannot widen a trusted disclosure profile.
+- An optional enforced shared attempt allowance debits before send and survives
+  restart/pruning. Unavailable enforcement state withholds provider requests;
+  ordinary optional-ledger degradation remains separate. Budget limits intersect
+  invocation/batch caps and apply to retries/probes too. No background probes.
+- Read explicit snoozes as trusted configuration even when ledger or persistent
+  runtime state is disabled. Ranking does not clean up or mutate configuration.
+- Corrective feedback is partial and unblinded; an alternative missing from the
+  historical roster is prospective feedback, not an original ranking mistake.
+- Policy rollback restores only managed policy fields after conflict checks;
+  it never restores old credentials, network consent, or whole configuration files.
+- Preserve label coverage and unknown usage in value reports. No unlabeled
+  adoption metric becomes usefulness, financial savings, or task success.
+- Passage selection and multiple query views use Quill exclusively, shared
+  resource limits, and versioned request fingerprints. Promote only after
+  held-out equal-budget comparisons, keeping the original policy available.
 
 ## Verification And Performance
 
@@ -469,9 +504,9 @@ issue before claiming work; current task state outranks recovery notes.
 
 ```bash
 br ready --json
-br show <id>
-br update <id> --status in_progress
-br close <id> --reason "Implemented and verified with the named checks"
+br show ISSUE_ID
+br update ISSUE_ID --status in_progress
+br close ISSUE_ID --reason "Implemented and verified with the named checks"
 br dep cycles
 br sync --flush-only
 ```

@@ -35,6 +35,148 @@ Live multi-turn context, an eight-skill shortlist, new gate questions, personali
 7. No raw transcript or request body is persisted by default. Redaction covers all outgoing fields, including roster excerpts.
 8. No skill is executed, edited, installed, or created by ranking, diagnostics, or feedback.
 
+## Product improvements selected with idea-wizard
+
+The first correctness review established what a recommendation may safely claim. This pass asks what makes the product worth using every day: finding a useful procedure, understanding a miss, controlling interruptions and expense, and fixing the underlying library or policy. The following are design priorities, not implemented features or measured improvements.
+
+The idea-wizard pass considered 30 candidates against robustness, reliability, performance, intuitiveness, usability, ergonomics, usefulness, appeal, added value, and implementation practicality. Usefulness and practicality received the greatest weight. The top five improve the core experience without another inference provider or extra routine Jev calls. Ten supporting ideas extend existing boundaries; experiments remain gated and do not delay the core CLI.
+
+### The five highest-value improvements
+
+#### I01 — Explain where a candidate was lost and what the user can do
+
+**User value:** “Why didn't you suggest the skill I expected?” should have a precise, inexpensive answer. A ranking score alone cannot distinguish an invisible skill, a lexical miss, a low fit, a none-option loss, and a presentation limit. Making those differences visible improves trust and directs fixes to the right component.
+
+Extend the existing `--explain` result with a bounded stage trace: discovery → visibility/restrictions → local policy → Quill admission → wide shortlist → fit/none eligibility → final ordering → publication. `sr rank ... --why-not SKILL_ID --explain` reports the first decisive exclusion and any later stages actually evaluated. It never inserts that skill into a candidate set or causes an additional provider request. A candidate not evaluated at a stage has `not-evaluated`, not zero fit or a fabricated reason. An unknown ID is `not-in-snapshot`; the explanation must not broaden discovery roots.
+
+Include exact threshold operands, tie handling, content/policy versions, and a small allowlisted recovery hint, such as inspecting roster precedence or repairing missing context. Hints never automatically enable networking, lift exclusions, lower quality gates, or execute a command. Return structured action identifiers/arguments rather than shell strings assembled from untrusted text. Normal output remains short; traces use the existing size and pagination limits.
+
+**Delivery and proof:** P2 supplies reason codes; P4 renders them. Table-driven fixtures cover every exclusion with an honest success counterpart, an omitted target, and identical final decisions with different causes. Changing `--explain`/`--why-not` must not change the ranked result, provider request bytes, or request count. This is high-confidence value because the pipeline already computes most of the required evidence.
+
+#### I02 — Turn a surprising result into an offline replay and policy comparison
+
+**User value:** a bad suggestion should become a reproducible example, not a request to rerun a private conversation or spend more on inference. This also shortens the feedback loop for thresholds, caching bugs, and scoring regressions.
+
+Add an explicit CLI-only `--save-case FILE` capture option and `sr replay FILE [--policy FILE] [--compare-policy FILE]`. A case contains a versioned manifest, the bounded redacted request inputs actually used, exact option maps/content digests, validated recorded responses, local policy/eligibility evidence, and model/adapter provenance. Label synthetic fixtures and recorded provider answers distinctly. Capture is opt-in because redacted prose can remain confidential; hooks never capture case bodies by default. Do not reconstruct an absent context from ordinary metadata-only ledger rows.
+
+Replay performs no network access, transcript discovery, skill execution, or writes. Embedded paths are inert data; no case can authorize a live load or mutate a native session. Its envelope is `kind: replay` with `actionable: false`, containing the historical/recomputed decision separately. Comparing local thresholds/weights uses compatible complete responses. A changed prompt, model, retrieval strategy, excerpt, or shortlist needs new consented evaluation; a missing stage reports `not-replayable`, not an invented response. Explain which eligibility/score/output changed without presenting the comparison as causal task improvement.
+
+Initial capture/import cap: 16 MiB, JSON nesting ≤64, with per-field limits still enforced. Larger cases fail explicitly rather than silently dropping replay-critical data. Redact all retained prose and exclude credentials, hash keys, secret-bearing configuration, and response error bodies. Files are owner-only, created exclusively without overwriting existing targets, and published only after a complete bounded write; capture consumes the invocation deadline. A requested capture that cannot be written is a storage/timeout failure, not an unnoticed success. Reject `--save-case` with `--dry-run`, `--no-persist`, or hook mode. Digests detect internal inconsistency, not trusted authorship; imported labels/responses remain untrusted evaluation data.
+
+**Delivery and proof:** P4 defines a pure replay contract; P5 adds capture/import and comparison. Round-trip fixtures must reproduce decisions exactly, reject tampered option maps and incompatible policies, and prove zero sockets, child processes, source-path reads, and native-state changes during replay. Missing responses, excessive sizes, private text, and partial output writes get explicit cases. This reuses the planned evaluator instead of creating a second ranking implementation.
+
+#### I03 — Bound repeated expense and recover calmly from provider outages
+
+**User value:** four attempts per invocation is not a useful spending bound when many sessions or hooks run at once. Repeated outages should produce quick quiet fallback rather than repeated long waits and retry storms.
+
+Extend the existing coordinator with a trusted, optional shared HTTP-attempt allowance over an explicitly named time window, plus a provider circuit breaker. The allowance applies across local `sr` processes in the configured user/endpoint scope, includes retries and live evaluation, and intersects each invocation/batch cap. It is a request allowance, not a hard monetary or cross-machine billing cap. Preflight the maximum attempts and disclose unknown usage; prices remain separately versioned estimates. No allowance is enabled silently with an arbitrary promise about monthly cost.
+
+`sr budget` displays the local allowance and accounting health without network access. `sr budget --max-attempts N --window 1h` previews setup/change, and `--apply` writes trusted configuration and initializes compatible accounting. Initially accept `1 <= N <= 10,000` and one-hour fixed UTC windows only. The preview names the user/endpoint scope, exact boundaries, current charged attempts, and remaining allowance: this is not a rolling-hour cap, and adjacent windows can each consume their allowance near a boundary. Policy edits cannot erase still-applicable charges. Initialization, configuration publication, and recovery must be crash-safe; a partially completed setup admits no provider calls until reconciled. Project configuration cannot enable, raise, or disable this trusted guard. Accounting shares the bounded 64 MiB cache/coordinator allocation, but its unexpired charges are protected from eviction; exhausted storage withholds new requests.
+
+Reserve/debit each attempt atomically **before** sending and never refund a possibly sent request after timeout or crash. Finish reservations without holding a database transaction across HTTP. This accounting is enforcement state: ordinary cache eviction, history pruning, and process restart cannot reset it. Initialize a new allowance explicitly; missing/corrupt/busy state for an enabled allowance withholds new requests, while local explicit resolution and valid cache hits still work. Clock anomalies retain charges conservatively and require reconciliation instead of granting a fresh allowance. With `--no-persist`, an enabled cross-process allowance cannot be enforced, so no provider attempt is admitted; local explicit resolution remains usable. Ordinary ranking without this optional enforcement retains its existing storage-degradation behavior. Budget refusals use `unavailable / request-budget`, breaker refusals `unavailable / provider-cooldown`, and unusable enforcement state `unavailable / budget-state`, all mapped to CLI exit 4 and quiet hook fallback.
+
+Use a bounded closed/open/half-open breaker for classified endpoint failures, with one fenced probe owner; successful valid responses restore service. Start evaluation with three consecutive transient failures opening a 30-second cooldown and failed half-open probes doubling it to a five-minute cap. Honor a valid longer provider `Retry-After` by refusing early attempts, not by blocking a hook until it expires. Reset the local failure streak after a valid response. Authentication/configuration failures require an explicit retry or relevant configuration change, not blind retries. Gate abstention, lexical misses, user exclusions, and unavailable input are not provider failures. Circuit state is best-effort when persistence is unavailable; report process-local protection rather than a global guarantee. A half-open probe is the next permitted real request, not an additional health call; it requires the same network authorization, deadlines, and attempt debit. Never create a background probe, substitute an old recommendation, or switch engines.
+
+**Delivery and proof:** P4 owns the per-attempt admission seam; P6 enables the shared guard only after proving concurrent-process admission, cancellation before/after send, restart, quota exhaustion, clock changes, and single half-open probing. Report budget/circuit refusals separately from provider outages and relevance abstentions. This adds durable accounting only when a user requests the stronger guard.
+
+#### I04 — Make silence useful and let users say “not now”
+
+**User value:** a selector earns its place by adding useful advice, not by commenting on every turn. Users also need a temporary way to quiet an otherwise valid suggestion without teaching the system that the skill is bad.
+
+Default advisory hooks emit nothing for ordinary abstentions. Keep the existing optional abstention-message experiment explicitly opt-in and evaluated separately. Add `sr snooze EVENT --skill ID --for 30m` and `sr snooze EVENT --all --for 30m`, with preview followed by `--apply`, plus `sr snooze EVENT --clear --apply` to clear that scope's snoozes. Resolve the event's verified workspace/session/agent-branch identity; unknown or missing attribution cannot create a broadly scoped mute. Snoozes are bounded trusted-user configuration entries, not usefulness judgments, and apply only to advisory selection. Explicit skill requirements still resolve normally. The preview states scope, expiry, and the effect on advisory requests.
+
+Store at most 128 entries with durations from one minute to 24 hours, use the configuration backup/conflict rules, and show active entries in doctor. Reading these explicit controls is ordinary configuration access even with `--no-ledger` or `--no-persist`; ranking never writes expiry cleanup. Apply them before retrieval and include the effective controls in decision provenance. A snoozed skill is not eligible advice, but remains visible in explanations. If all advisory candidates are snoozed, skip Jev. Do not infer a snooze from ignored suggestions or change a usefulness prior. Expiry/clock anomalies are visible; uncertain expiry remains muted until resolved or explicitly cleared.
+
+Repeated-advice suppression across distinct user turns is a later opt-in experiment, not a heuristic default. It requires unchanged task/evidence, skill version, and policy, a bounded interval, and proof that renewed instructions or relevant tool changes restore advice. Publication suppression is recorded separately from ranking and exposure. Missing publication history cannot establish that an earlier suggestion was delivered.
+
+**Delivery and proof:** P6 tests empty abstention output, precise snooze scope, expiry, explicit-request precedence, no-ledger/no-persist behavior, and zero provider calls when all candidates are muted. P7 compares useful suggestions and interruption frequency; reduced output is not automatically improved task success.
+
+#### I05 — Provide a useful first result before connecting a private session
+
+**User value:** installation, credentials, permissions, rosters, and session adapters are several independent failure points. A newcomer needs to understand the product and locate the first missing prerequisite without exporting a real conversation just to see what it does.
+
+Add `sr demo --case useful|none|explicit|unavailable`, using bundled synthetic contexts/rosters and clearly labeled synthetic or recorded response fixtures. It exercises normalization, validation, decisions, and rendering offline without touching user configuration/state. It does not simulate a live provider call or prove that today's Jev would return the fixture. Fresh ranking remains powered by Jev and requires the user's own authorized key. Demo output is non-actionable, like replay.
+
+Extend doctor into a bounded readiness report with separate states for local input/roster readiness, credential presence, network authorization, transport untested/previously verified, ledger readiness, and hook shadow/advisory mode. A previous live check carries its time, scope, and runtime/endpoint/configuration identity; incompatible changes invalidate it, and no stored result establishes current provider availability. Presence of a key is never reported as authenticated service health. Each failed check names one concrete next step and which useful local commands remain available. Doctor remains local by default and never installs, migrates, changes configuration, or sends a test request implicitly.
+
+The onboarding path is demo → doctor/roster → exact session selection → redacted dry-run → explicitly authorized rank → shadow hook → evaluated advisory opt-in. A missing optional ledger must not prevent the first rank. Preserve a separately authorized/budgeted live contract check for actual transport readiness.
+
+**Delivery and proof:** P4 ships the fixture demonstration and readiness schema; P6 checks the full setup flow in an isolated home directory with missing key, denied network, empty roster, and absent ledger. Count successful completion and actionable failure diagnoses in usability trials; do not declare a time-to-value improvement without observations.
+
+### The next ten, in priority order
+
+#### I06 — Show a disclosure receipt and offer a minimal context profile
+
+Extend dry-run/explain with an allowlisted field receipt: source category, included/omitted counts, truncation, and redaction counts, never matched secret fragments. Add `--context-profile standard|minimal`; standard preserves the current design. Minimal sends the current request, indispensable bounded task anchor, explicit constraints, and candidate material required by each ranking stage, omitting tool bodies, dirty paths, and optional history. If an omitted attachment/tool result is essential, return unavailable rather than pretending the smaller payload is adequate. Local load observations remain separate. Profiles are chosen by trusted user configuration/CLI; a project cannot widen a trusted minimal profile, and `--no-tools` further restricts either profile. The profile and receipt schema enter request provenance; an online evaluation compares disclosure volume and positive-case coverage before advertising a quality-equivalent smaller profile. P3/P4 tests inspect actual serialized fields and secret-boundary cases.
+
+#### I07 — Find relevant skill passages instead of always using the opening excerpt
+
+P9 may compare the fixed lead excerpt against bounded Quill retrieval over heading-delimited passages **within each already selected skill**. Build a small local passage index from already authorized, bounded file bytes, preserve heading/position/version, and include a short purpose/restriction prefix plus selected passages within the existing 700-character body budget. No referenced files, scripts, dynamic substitutions, or new candidates are loaded. Scan full bounded fields for secrets before excerpting. A successful query with no passage match uses the declared lead excerpt; index/fuel/parser errors follow typed Quill failure rules, not a hidden alternate engine. Deterministic passage order and strategy version enter the request fingerprint. Promote only if held-out relevance improves without breaching the same request, disclosure, and latency budgets; misleading headings and injection passages are required tests.
+
+#### I08 — Test multiple Quill query views for overflow recall
+
+P9 may compare the current combined query with up to three Quill views: current request, active task anchor, and recent error. Keep eligibility and the ≤254 full-roster path unchanged. Each view returns at most 254 matches; merge/deduplicate locally and retain at most 254 using a pinned reciprocal-rank rule, for example `sum_v 1/(60 + rank_v)` with ranks starting at one, absent hits contributing zero, equal view weights, and stable skill-ID ties. Fusion ranks are retrieval heuristics, not Jev probabilities. Deduplicate identical normalized views so repetition cannot create extra votes. All views share the current aggregate query-term/character, fuel, memory, and deadline budgets; omit only views declared empty before search. An attempted view failure invalidates the experiment's result. Zero union matches remain `retrieval-empty`; no fabricated padding or non-Quill fallback. Promote on held-out overflow coverage and equal-budget comparisons, including terse continuation, multilingual, and adversarial error text.
+
+#### I09 — Make skill-library drift visible
+
+Extend `sr roster` with `--snapshot FILE` export and `--diff FILE`: stable additions/removals, content/restriction changes, shadowing changes, and invocation-name changes. A saved manifest is evidence, not permission to read its embedded paths or restore a removed skill. Compare against fresh authorized discovery in the same workspace/adapter/source namespace, identify incompatible manifests and unknown source coverage, and never call an incomplete scan a confirmed deletion. Snapshot files obey the 32 MiB/10,000-record roster bounds, are owner-only, opt-in, never implicitly overwrite a file, and may contain private names. Changes invalidate the relevant cache/evaluation identities as already required. P2/P5 fixtures cover renames, same-name replacements, permission changes, and interrupted discovery. This gives maintainers a concrete explanation when a previously useful library behaves differently.
+
+#### I10 — Evaluate description changes against examples before editing skills
+
+Extend the existing P9 description doctor with user-supplied positive and near-miss examples plus a **local evaluation-only description overlay** keyed to a source content digest. Compare the original and proposed description against the same consented cases, using compatible recorded responses or separately budgeted live evaluation. Modified descriptions require new request fingerprints and responses. Report coverage/false suggestions, excerpt truncation, unknown cases, and attempts; an improved textual rubric score alone is insufficient. Keep untouched families for final validation and do not tune against them. Export a reviewable suggestion; never rewrite a skill, change live loadability, or make the overlay available to hooks. A stale source digest or ambiguous identity rejects the overlay.
+
+#### I11 — Explain effective configuration and make policy rollback explicit
+
+Add `sr doctor --config` with each non-secret effective value, winning source, ignored disallowed overrides, and a policy fingerprint. Credential values and secret-bearing endpoint components are never printed; presence/source is enough. Extend calibration's existing preview/apply/backup flow with `sr calibrate --rollback REVISION`, preview by default, then explicit `--apply`. Rollback restores only managed ranking-policy fields after digest/conflict checks, not networking authorization, credentials, hook installation, feedback, or an entire old config file. Refuse an incompatible policy/schema revision and preserve unrelated current settings. P4/P8 tests cover competing precedence layers, invalid project overrides, rollback conflicts, and changed schemas. This makes customization understandable without weakening the trust boundary.
+
+#### I12 — Test susceptibility to names, ordering, decoys, and hostile descriptions
+
+Extend P5 evaluation with prespecified perturbations: option-order permutations, opaque option-ID renaming, equivalent whitespace, duplicate-looking descriptions, irrelevant added candidates, long distracting text, and adversarial ranking instructions. Pure local parsing/scoring must satisfy exact invariants where semantics are unchanged. Jev behavior is stochastic and candidate-set dependent: report decision/coverage changes with independent-family grouping, not an invalid demand for identical probabilities. New provider inputs need new responses and count against the live budget. Keep tested variants within their original family/split; never enlarge the independent denominator. This turns robustness claims into measured failure modes without confusing lexical or model sensitivity with a serialization bug.
+
+#### I13 — Make adapter support an executable compatibility contract
+
+Package P3/P6 adapter fixtures as a versioned conformance suite covering prompt timing, branch identity, visibility, restrictions, compaction, load evidence, and hook output. `capabilities --json` distinguishes implemented adapters, tested harness versions/features, and unverified versions; a fixture digest alone is not proof that a user's installed version works. Reuse synthetic fixtures and actual sanitized protocol samples plus real supported-harness smoke tests. Unknown optional fields may be tolerated under a declared schema rule; incompatible identity or visibility semantics disable advice rather than guessing. This extends the already required adapter gates and creates no new native adapter promise.
+
+#### I14 — Report usefulness, interruption, and cost together
+
+Extend `sr stats` with a compact value report: evaluated turns, emitted suggestions, valid abstentions, muted/suppressed output, operational failures, observed loads, independently judged useful suggestions, latency, attempts, known tokens, and unknown usage. Preserve distinct denominators and label coverage. Cost per judged-useful suggestion applies only to the disclosed judged cohort and its matched attempts, not to unlabeled traffic; zero useful labels makes that ratio not estimable. Unknown usage or absent/inapplicable pricing also prevents an exact monetary ratio; show the known attempt/token counts instead. Never translate saved tokens into saved labor or treat adoption as task success. Reports are local, contain no raw examples by default, and do not enable adaptation or advisory mode. P5/P7 tests use mixed labeled/unlabeled/cached/shadow cohorts to catch misleading aggregation. Users should be able to decide whether the tool earns its overhead.
+
+#### I15 — Accept a better alternative without manufacturing a complete label
+
+Extend explicit feedback with `--instead SKILL_ID` and an optional bounded reason code. Resolve both the original candidate and proposed alternative against the recorded event/roster version; never silently substitute today's bytes for history. An alternative absent from that historical roster is prospective library feedback, not proof that the original selector should have returned it. A valid correction records that the original was judged unsuitable and the alternative useful, with assessor/provenance and revision handling. It is **partial, unblinded feedback**: other skills remain unjudged, the full acceptable set is unknown, and the event cannot become an independent blinded holdout case. “Not now” routes to snooze, not a negative usefulness label. P5 tests cover revision conflicts, absent alternatives, multiple acceptable alternatives, and label leakage. This captures useful user knowledge in one action while preserving the existing separation of adoption and correctness.
+
+### Full candidate disposition and overlap check
+
+The first fifteen rows above are ranked I01–I15; the remaining candidates were considered and deliberately not added as new delivery requirements:
+
+| Candidate | Disposition and reason |
+| --- | --- |
+| I16 Persistent background roster/connection service | Defer until cold-start and rehash measurements justify lifecycle, invalidation, and security costs |
+| I17 General chunked tournament retrieval | Already specified as the P9 chunk experiment; preserve its existing gates rather than duplicate it |
+| I18 MCP ranking server | Defer another long-lived protocol boundary until the normalized-input/CLI contract has users and measured demand |
+| I19 Browser dashboard | Defer; JSON/table and the planned TUI cover inspection without a local web service |
+| I20 Team policy sharing and central registry | Defer consent, authority, versioning, and multi-user storage work; local export/review is sufficient initially |
+| I21 Multi-skill plans and automatic chaining | Defer until single-step advice demonstrates benefit; combinations need separate compatibility and harm evaluation |
+| I22 Additional semantic embedding retrieval | Exclude from this design's dependency/latency scope; improve and measure Quill first |
+| I23 A third model call for prose explanations | Cut: adds disclosure, cost, and unsupported reasoning when observable stage traces answer the practical question |
+| I24 Learn ranking directly from suggestion adoption | Cut: exposure creates its own labels; preserve independently judged usefulness and controlled evaluation |
+| I25 Automatically submit description edits upstream | Defer source-owner/review workflows; the description experiment exports a local proposed change |
+| I26 Generate new skills from gap clusters | Defer; a gap can be a retrieval/context failure, and generating procedures is a separate product |
+| I27 Per-skill/per-project learned policies immediately | Already an evidence-gated P8 possibility; sparse data does not justify a new default |
+| I28 An alternative offline inference engine | Outside the product contract: Jev remains the ranking engine; offline demo/replay are explicitly historical/synthetic |
+| I29 Cross-session response deduplication | Cut: violates the established namespace/privacy contract and can import unrelated session evidence |
+| I30 Native integrations for every harness in v1 | Defer to individual verified adapter contracts; normalized input already supplies the general integration boundary |
+
+The overlap review used the current comprehensive plan and README. There is no project-local Beads tracker. Read-only `br list` commands resolved to `/data/projects/.beads` and failed with schema 13 versus required 19; the available parent JSONL export contained no SkillRanker matches. That export is not a verified live backlog. Do not migrate a shared parent tracker as part of this plan revision. The phase assignments and acceptance cases here are the implementation handoff until a project tracker is explicitly initialized.
+
+### Delivery discipline for these additions
+
+I01/I05/I06/I11 build on P2–P4; I02/I09/I12/I14/I15 complete through P5; I03/I04/I13 reach hook acceptance in P6; I14 is evaluated during P7; I11's learned-policy rollback completes in P8. I07/I08/I10 remain P9 experiments. This mapping refines the existing P0–P9 dependencies rather than creating fifteen independent feature silos.
+
+Each delivered improvement includes focused unit/property fixtures and a real CLI integration path with bounded, sanitized structured logs containing case ID, stage, policy/source versions, timings, counts, outcome, and failure kind. Never log secret matches, raw private case bodies, or credentials. Test both a successful user journey and its most consequential failure; do not settle for a help-text snapshot. Live Jev checks and real-harness checks remain distinct from offline fixture proof.
+
+This revision was checked in five passes: overlap/user value; authority/privacy; identity/concurrency/failure; budget/statistical validity; and dependency/test completeness. The resulting corrections distinguish protected allowance state from disposable cache, trusted snoozes from learned feedback, historical alternatives from prospective library changes, and fixture results from live advice. Retain the existing core contracts and acceptance gates. A feature that increases requests, disclosure, or latency needs an explicit measured benefit at the declared budget before it can replace a default.
+
 ## Architecture and latency
 
 ```mermaid
@@ -42,16 +184,23 @@ flowchart TD
     A[Select exact session and trusted configuration] --> B[Capture context and discover visible roster]
     B --> C[Normalize and resolve local directives before redaction and budgeting]
     C -->|explicit request| X[Locally resolved explicit result]
-    C -->|advisory ranking| D[Read matching cache and optional priors]
+    C -->|local policy excludes all| N[Abstention]
+    C -->|advisory candidates| Q{More than 254 eligible skills?}
+    Q -->|no| D[Read matching cache and optional priors]
+    Q -->|yes| QR[Bounded Quill retrieval: up to 254 matches]
+    QR -->|matches| D
+    QR -->|empty or failed| U[Unavailable or quiet hook fallback]
     D -->|exact hit| H[Reapply current eligibility and output policy]
-    D -->|miss| E[Wide Choice with none option and gate questions]
-    E -->|low gate| N[Abstention]
+    D -->|miss| BUD[Check authorized network, deadline, attempts, and provider cooldown]
+    BUD -->|admitted| E[Wide Choice with none option and gate questions]
+    BUD -->|refused| U
+    E -->|low gate| N
     E -->|continue| F[Rerank shortlist with none option and fit questions]
     F --> H
     H --> I[Emit result and record bounded metadata]
     X --> I
     N --> I
-    E -->|operational failure| U[Unavailable or quiet hook fallback]
+    E -->|operational failure| U
     F -->|operational failure| U
     U --> I
 ```
@@ -411,7 +560,7 @@ Use two distinct notions:
 - **Request fingerprint:** a keyed BLAKE3 hash of canonical serialized redacted state, ordered candidate IDs/content hashes/excerpts, questions, endpoint identity, requested model, prompt version, adapter version, and privacy policy version.
 - **Decision fingerprint:** request fingerprint plus workspace/session/agent branch, current loaded/exclusion state, ranking policy/configuration, prior snapshot, and output-relevant visibility metadata.
 
-Both fingerprints live inside a workspace/session/agent-branch **cache namespace**, not a global response table. Include context epoch, selected adapter/schema, harness visibility policy, and key-generation identity. Re-enumerate/retrieve from the current full roster before lookup; a new prefilter winner must change the actual request. Different sessions must not share a response solely because their redacted text happens to match.
+Both fingerprints live inside a workspace/session/agent-branch **cache namespace**, not a global response table. Include context epoch, selected adapter/schema, harness visibility policy, and key-generation identity. Context profile, excerpt/query strategy, and effective snoozes enter the appropriate request/decision fingerprints. Re-enumerate/retrieve from the current full roster before lookup; a new prefilter winner must change the actual request. Different sessions must not share a response solely because their redacted text happens to match.
 
 A local random key makes stored context hashes less useful for guessing low-entropy prompts. Hashes remain linkable local metadata and receive the same access protections as the ledger.
 
@@ -537,11 +686,11 @@ Minimum logical tables:
 
 Use short transactions, foreign keys, WAL, a bounded busy timeout (initially ≤25 ms and remaining deadline), and uniqueness constraints for idempotency. Cache state is disposable and separate from the ledger. Derived priors can be recomputed.
 
-Only a verified delivery identity gets a uniqueness constraint for deduplication. Best-effort prompt/cursor fingerprints cannot collapse distinct turns: retain separate invocation UUIDs with ambiguous attribution. Persist cursor and observation changes atomically as specified above. Rate-limit/lease state is a separate disposable coordinator store, not an implicit ledger read when `--no-ledger` is set.
+Only a verified delivery identity gets a uniqueness constraint for deduplication. Best-effort prompt/cursor fingerprints cannot collapse distinct turns: retain separate invocation UUIDs with ambiguous attribution. Persist cursor and observation changes atomically as specified above. Best-effort cooldown/lease state is separate from the ledger. I03's optional enforced attempt allowance uses protected accounting state, not disposable cache rows; preserve charges through cache eviction and ledger pruning. Neither store is an implicit ledger read when `--no-ledger` is set.
 
 Never claim runtime “reserve/write/commit” automatically makes database and stdout effects atomic. SQLite transactions protect database rows; cancellation and process death are separate test cases. Disk-full/locked/corrupt storage disables learning for that invocation and reports a warning without destroying the database.
 
-An unsupported newer schema is opened read-only where safe; no automatic downgrade or destructive repair. Hooks do not initialize or migrate the ledger. `sr ledger init` creates an empty current schema; `sr ledger migrate` previews required changes and `--apply` performs supported upgrades with a recoverable SQLite-aware backup. Copying only a live main database file while WAL holds transactions is not a valid backup. The installer reports missing initialization, and ranking without an initialized ledger remains usable with `persistence: unavailable`.
+An unsupported newer schema is opened read-only where safe; no automatic downgrade or destructive repair. Hooks do not initialize or migrate the ledger or enabled budget accounting. `sr ledger init` creates an empty current schema; `sr ledger migrate` previews required changes and `--apply` performs supported upgrades with a recoverable SQLite-aware backup. Copying only a live main database file while WAL holds transactions is not a valid backup. The installer reports missing initialization, and ranking without an initialized ledger remains usable with `persistence: unavailable`. An explicitly enabled shared request allowance is a separate admission constraint: unavailable enforcement state prevents provider calls, not local resolution or valid cache use.
 
 Default logical retention is 30 days of event metadata and 10 minutes of response-cache validity. Expired rows are excluded from ordinary statistics and priors; use a versioned `as_of` snapshot for an evaluation. Labels cannot dangle after their parent evidence is removed: prune related derived records together, or retain an explicitly exported evaluation bundle outside routine history with its own retention choice. Removing/revising labels invalidates derived priors and dependent decisions.
 
@@ -587,7 +736,7 @@ Remove the proposed transparent `ureq` fallback from the first release. It would
 
 Retry only explicitly classified transient failures (including documented 429/529 responses and selected transport/5xx failures). Honor `Retry-After` when valid and within the remaining deadline; add bounded jitter. Do not retry authentication, request-validation, or malformed-answer errors by default.
 
-Initial budget: two logical requests, at most four HTTP attempts total, with no retry that cannot fit the remaining budget. A timeout after sending the request can still incur provider cost. Record known usage and an unknown-usage marker for attempts without a response; never count unknown cost as zero.
+Initial budget: two logical requests, at most four HTTP attempts total, with no retry that cannot fit the remaining budget. I03's optional shared allowance can further restrict these caps; every attempt, including half-open probes and evaluation, is charged before send. Budget/circuit refusals remain operational statuses, not relevance abstentions. A timeout after sending the request can still incur provider cost. Record known usage and an unknown-usage marker for attempts without a response; never count unknown cost as zero.
 
 Maintain one invocation-wide attempt counter, including retries hidden inside the chosen HTTP client; disable such retries or route them through this accounting. Track requested/returned model identity per stage. Different immutable returned revisions invalidate the pair; two returns of an unversioned alias provide no proof of an atomic model snapshot, so preserve their times and that limitation.
 
@@ -715,7 +864,7 @@ Use bounded typed quality metadata alongside the summary `context_quality`: `pro
 
 Bound warnings by kind/count (initially 32 details plus omitted count), rather than echoing every malformed record. CLI rank output is capped at 2 MiB. `sr roster --json` and full-wide explanations paginate using a roster/snapshot-bound cursor; changed snapshots require restarting pagination. This output cursor is unrelated to transcript ingestion cursors.
 
-Raw distributions and discarded candidates are available with `--explain`, with the relevant candidate-set IDs, formula contributions, truncation, and policy versions. `--explain` describes observable computations, not invented model reasoning.
+Raw distributions and discarded candidates are available with `--explain`, with the relevant candidate-set IDs, formula contributions, truncation, and policy versions. I01 adds stage traces and `--why-not ID`; I06 adds the disclosure receipt. `--explain` describes observable computations, not invented model reasoning. Demo/replay wrap historical or synthetic decisions in a separately versioned, explicitly non-actionable envelope; they never reuse the live hook output channel.
 
 ### Claude hook behavior
 
@@ -738,7 +887,7 @@ Normal hook output suggests at most one skill. Multiple explicitly requested ski
 
 The explicit list still has to fit the hook message cap. If it cannot be rendered completely, emit no truncated list: return quiet fallback with an output-limit diagnostic, preserving the user's original request. Manual-only references are never rendered as instructions for autonomous invocation.
 
-For a valid, sufficiently complete abstention, the hook may say “No additional skill is suggested for this step; follow explicit skill requests and applicable instructions.” This wording is an experimental policy, not a universal no-skill claim. In shadow mode, abstentions and suggestions both stay out of agent context.
+Ordinary abstentions produce empty hook stdout by default. An explicitly enabled abstention-message experiment may say “No additional skill is suggested for this step; follow explicit skill requests and applicable instructions” only for a valid, sufficiently complete result. It remains a scoped experiment, not a universal no-skill claim. I04's temporary advisory snoozes apply before retrieval and never veto explicit user requests. In shadow mode, abstentions and suggestions both stay out of agent context.
 
 On API failure, ambiguity, privacy denial, malformed input, deadline exhaustion, or incomplete coverage that prevents a sound recommendation: stdout is empty, a sanitized diagnostic goes to stderr, and the hook returns 0. It must never use Claude's blocking decision fields or exit 2 for recommendation failures. CLI mode preserves meaningful nonzero errors. Use non-exiting argument parsing and classify the dedicated hook entry before dispatch so parser failures also pass through this mapping. Test malformed flags and unsupported events through the installed command.
 
@@ -777,20 +926,30 @@ The inspected FrankenTUI asupersync executor is feature-gated and runs blocking 
 | `sr` / `sr rank` | Rank from explicit context/transcript or selected session | Core |
 | `sr hook claude` | Harness protocol wrapper; bounded stdin and advisory output | Core |
 | `sr roster --json` | Inspect visibility, precedence, records, and exclusions | Core |
+| `sr roster --snapshot FILE` / `sr roster --diff FILE` | Explicit bounded manifest export or local drift comparison | Core/Evaluation |
 | `sr doctor --json` | Local configuration/adapter/transport readiness checks | Core |
+| `sr doctor --config` | Explain effective non-secret values and their trusted sources | Core |
+| `sr demo --case NAME` | Offline, non-actionable synthetic/recorded fixture demonstration | Core |
 | `sr capabilities --json` | Schema versions, compiled features, supported adapters/events, limits, exit codes | Core |
 | `sr install-hook claude` / `sr uninstall-hook claude` | Preview settings change; `--apply` writes | Core |
 | `sr stats --since 7d --by-skill` | Observation and operational metrics | Ledger |
 | `sr observe --session PATH` | Reconcile supported structured load events | Ledger |
 | `sr feedback EVENT --skill ID --verdict VERDICT` | Store explicit usefulness judgment | Ledger |
+| `sr feedback EVENT --skill ID --instead ID` | Record a partial explicit correction without labeling all other skills | Ledger |
+| `sr snooze EVENT --skill ID --for DURATION` | Preview temporary scoped advisory control; `--apply` writes | Hook rollout |
+| `sr budget` | Inspect local request allowance; bounded setup/change preview and `--apply` | Hook rollout |
+| `sr replay FILE` | Offline non-actionable replay; optional compatible local policy comparison | Evaluation |
 | `sr eval --dataset FILE` | Offline replay by default; live runs require `--online`, authorization, and a request cap | Evaluation |
 | `sr calibrate --evaluation FILE` | Report proposed thresholds; `--apply` installs scoped config | Evaluation |
+| `sr calibrate --rollback REVISION` | Preview restoring only managed policy fields; `--apply` writes | Learning |
 | `sr ledger init` / `sr ledger migrate` | Explicit initialization; migration preview and `--apply` | Ledger |
 | `sr ledger prune` / `sr ledger clear` | Preview retention operation; `--apply` mutates | Ledger |
 | `sr tui` | Inline viewer and watch mode | Later |
 | `sr doctor --descriptions` / `sr gaps` | Description/coverage diagnostics | Later |
 
 Shared ranking controls: `--messages 12`, `--budget-chars 12000`, `--top 5`, `--shortlist 8`, `--gate 0.30`, `--fits 0.30`, `--timeout-ms 3000`, `--roster FILE`, repeatable `--require-skill ID`, `--no-tools`, `--no-cache`, `--no-ledger`, `--no-persist`, `--offline`, `--allow-network`, and `--explain`. Mode-specific flags reject incompatible combinations.
+
+I01/I02/I06 add `--why-not ID` (with `--explain`), CLI-only `--save-case FILE`, and `--context-profile standard|minimal`. Replay's `--policy`/`--compare-policy` accept only the supported local policy schema, never executable code or credential/routing settings. Feedback verdict and replacement modes are mutually exclusive. Snooze requires exactly one skill/all/clear mode with a verified event scope; duration is required for skill/all and forbidden for clear. Capabilities advertise each interface only when its implementation and relevant phase gate exist.
 
 `sr rank --dry-run` builds the wide payload without calling the API. When explicit resolution or local eligibility ends the pipeline before inference, report that decision and that no provider request would be made. To preview stage 2, require `--shortlist-ids ...` or an explicit validated recorded wide response; a network-free command cannot know an unevaluated model's top eight. It performs no observation reconciliation or persistent writes.
 
@@ -807,7 +966,7 @@ Use platform configuration directories; Linux fallback `~/.config/sr/config.toml
 | 0 | success | Ranked, explicit, valid abstention, or a successful read-only command |
 | 2 | usage/config | Invalid flags, config, or conflicting modes |
 | 3 | session | Missing or ambiguous session |
-| 4 | provider/network | Transport/authentication/provider failure |
+| 4 | provider/network/budget | Transport/authentication/provider failure or request-admission refusal |
 | 5 | roster/retrieval | Empty/unusable roster, unresolved explicit request, or Quill retrieval failure |
 | 6 | timeout | Overall deadline exhausted |
 | 7 | input/adapter | Malformed, oversized, or unsupported input |
@@ -923,6 +1082,10 @@ There is no implementation yet in this workspace. This plan defines work and rel
 | Hook | Every failure code maps to quiet non-blocking behavior; no block fields; unrelated settings preserved; install/uninstall idempotent |
 | Injection | Skill body or transcript requests secret disclosure, shell execution, endpoint replacement, or preferred ranking; no authority transfer |
 | Local-only behavior | Configured Git fsmonitor command, child credential inheritance, offline cass, no-persist and dry-run filesystem observations; no hidden execution/network/state creation |
+| Explain/demo/replay | Same live decision with explanations on/off; non-actionable fixture results; captured replay parity, incompatible/missing stages, tampered maps, inert paths, zero network/native-state writes |
+| Shared admission | Concurrent debits, crash after reserve, policy edit without charge reset, fixed-window boundary, clock anomaly, full/corrupt accounting, fenced half-open owner; no uncharged attempt |
+| User controls | Snooze expiry and session/agent scope, explicit-request precedence, trusted minimal profile, configuration provenance and partial rollback; no training label or widened disclosure |
+| Library improvement | Partial roster versus deletion, stale description overlays, passage/query budgets, query-view deduplication, hostile text; no changed defaults without measured held-out benefit |
 | Evaluation | Multiple acceptable skills, explicit-only cases, gate-skipped stages, future-label leakage, zero-harm samples, unjudged/failed runs; correct denominators and conservative uncertainty |
 | Sampling/monitoring | Unequal strata, nonresponse, missing inclusion probabilities, outcome-selected cases, repeated looks/restarts, delayed labels; bounded estimates and no false certificates |
 | TUI later | Resize, Unicode, non-TTY, stale task completion, exit during fetch; clean terminal and stream separation |
@@ -1076,18 +1239,20 @@ Freeze these thresholds, the split, and the primary metrics before tuning. Chang
 
 | ID | Deliverable | Depends on | Exit evidence |
 | --- | --- | --- | --- |
-| P0 | Align companion design documentation; freeze schemas, trust policy, resource limits, adapter/source revision manifest, and initial evaluation cases | None | README/AGENTS design contracts reconciled; examples validate; critical unknowns named; reusable source slices and notices identified |
+| P0 | Align companion design documentation; freeze core schemas, trust policy, resource limits, adapter/source revision manifest, initial evaluation cases, and core improvement boundaries | None | README/AGENTS design contracts reconciled; examples validate; critical unknowns named; reusable source slices and notices identified |
 | P1 | Transport/runtime spike and typed response validator | P0 | Exact feature build, local TLS/timeout/cancellation proof, live bounded contract check |
-| P2 | Standalone roster, metadata parsing, redaction, identities, Quill retrieval | P0 | Visibility/collision/bounds and Quill adapter fixtures; no `ms` dependency or active Tantivy feature/dependency |
-| P3 | Claude/normalized context adapters, incremental readers, optional cass bridge | P0 | Exact-session/prompt-timing/privacy tests; cass version differences explicit |
-| P4 | Pure pipeline, sentinel/gates/rerank, cache, JSON/table, dry-run | P1, P2, P3 | Correct finite outputs, exact invalidation, API failure distinct from abstention |
-| P5 | Minimal local event/observation ledger and explicit evaluation runner with sampling manifests | P4 | Idempotent observations, unknown-state handling, validated sampling/denominators, labeled benchmark report |
-| P6 | Claude shadow wrapper, installer/rollback, operational deadline tests | P4, P5 | Actual supported harness behavior; no blocking failures; measured cold/warm timings |
-| P7 | Advisory rollout and manual feedback/statistics | P6 | Predeclared quality and latency gates, local rollback switch |
-| P8 | Calibration, optional priors, and budgeted sequential monitoring | P5, P7 | Independent labels, held-out improvement, valid evidence/alpha accounting, reversible config |
-| P9 | Description/gap analysis, TUI, further adapters, experimental chunking | P7; relevant P8 outputs only if used | Separate feature-specific gates |
+| P2 | Standalone roster, metadata parsing, redaction, identities, Quill retrieval, reason codes, roster snapshots | P0 | Visibility/collision/bounds, snapshot/diff, and Quill fixtures; no `ms` dependency or active Tantivy feature/dependency |
+| P3 | Claude/normalized context adapters, incremental readers, optional cass bridge, context profiles/receipts, conformance fixtures | P0 | Exact-session/prompt-timing/privacy tests; profile disclosure verified; cass/version coverage explicit |
+| P4 | Pure pipeline, sentinel/gates/rerank, cache, JSON/table, dry-run, stage explanations, offline demo, configuration provenance | P1, P2, P3 | Correct finite outputs, exact invalidation, outcome-preserving explanations, useful no-key demo; API failure distinct from abstention |
+| P5 | Minimal ledger, case capture/replay/comparison, corrective feedback, value reports, evaluation with sampling and perturbation suites | P4 | Idempotent observations, faithful non-actionable replay, partial-label handling, validated denominators, labeled benchmark report |
+| P6 | Claude shadow wrapper, installer/rollback, request allowance/circuit breaker, scoped snoozes, operational deadline tests | P4, P5 | Real supported harness and concurrent-process admission; quiet abstentions/failures; measured timings and setup flow |
+| P7 | Advisory rollout and manual feedback/statistics | P6 | Predeclared quality and latency gates; usefulness/interruption/usage report; local rollback switch |
+| P8 | Calibration and explicit policy rollback, optional priors, budgeted sequential monitoring | P5, P7 | Independent labels, held-out improvement, valid evidence/alpha accounting, conflict-safe reversible policy |
+| P9 | Description/gap analysis and overlays, Quill passage/query-view experiments, TUI, further adapters, experimental chunking | P7; relevant P8 outputs only if used | Separate feature-specific gates and equal-budget comparisons; no unmeasured change to defaults |
 
 P1–P3 are independent implementation tracks; the table describes dependencies, not permission to bypass validation. Core CLI work is useful at P4. Hook rollout waits for minimal observability and tests; adaptive learning stays later.
+
+P0 need not finalize P9 experimental interfaces. Budget guards and snoozes first ship through P6, replay through P5, and learned-policy rollback through P8; a core-only build reports those later capabilities as unavailable rather than exposing unfinished command paths.
 
 Do not hold the usable CLI hostage to TUI, corpus mining, a second database engine, or generalized harness support. Conversely, privacy, bounded execution, abstention, and session identity are core behavior, not post-launch hardening.
 
