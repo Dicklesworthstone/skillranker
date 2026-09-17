@@ -6,13 +6,15 @@
 
 SkillRanker (`sr`) is a standalone Rust CLI that recommends skills for the next step of an agent session. It captures bounded context, resolves the skills the harness can actually load, and uses TypeSafe's Jev for a broad selection followed by a more detailed rerank. Interactive output shows up to five eligible candidates; the default hook suggests at most one. Abstention is a normal result.
 
+**TypeSafe.ai's Jev is the ranking engine, and fresh evaluations require a TypeSafe API key and authorized network access.** Local retrieval, explicit resolution, inspection, and cached results do not constitute an alternative inference backend.
+
 The useful product is a fast, advisory selector with inspectable evidence. It does not load or execute skills, override user instructions, grant tool permissions, or decide whether an agent may continue. A failed recommendation service must not prevent the agent from working.
 
 The initial release targets local Linux and macOS, Claude Code's `UserPromptSubmit` hook, explicit transcript input, and a versioned normalized-context format. Other harnesses can use that format immediately through an integration they control; native Codex, omp/pi, and Grok adapters require their own verified contracts before they are advertised.
 
 **No `ms` dependency:** reuse selected code and tests from `meta_skill` inside this project. Do not invoke its CLI, link its application crate, read its private database, inherit its configuration, or write outcomes into it. Discovery, parsing, redaction, retrieval, statistics, and feedback belong to `sr`.
 
-Documentation alignment is a P0 prerequisite: README.md and AGENTS.md were added concurrently from the earlier design and still describe an `ms` bridge, old gates/weights, and earlier CLI/deadline behavior. Reconcile those product-design passages with this reviewed plan before implementation; preserve their unrelated repository, licensing, coordination, and release rules. Their command examples are proposed interfaces, not evidence that a working binary exists.
+Keep README.md and AGENTS.md aligned with this plan as part of P0 and whenever a public contract changes. Their main architecture has been reconciled with the standalone design; examples and detailed schemas must track subsequent corrections too. Preserve their unrelated repository, licensing, coordination, and release rules. Command examples throughout these documents are proposed interfaces, not evidence that a working binary exists.
 
 ### Evidence and limits of the starting recipe
 
@@ -37,16 +39,19 @@ Live multi-turn context, an eight-skill shortlist, new gate questions, personali
 flowchart TD
     A[Select exact session and trusted configuration] --> B[Capture context and discover visible roster]
     B --> C[Normalize and resolve local directives before redaction and budgeting]
-    C -->|explicit request| X[Emit locally resolved explicit result]
+    C -->|explicit request| X[Locally resolved explicit result]
     C -->|advisory ranking| D[Read matching cache and optional priors]
     D -->|exact hit| H[Reapply current eligibility and output policy]
     D -->|miss| E[Wide Choice with none option and gate questions]
-    E -->|low gate| N[Emit abstention]
+    E -->|low gate| N[Abstention]
     E -->|continue| F[Rerank shortlist with none option and fit questions]
     F --> H
     H --> I[Emit result and record bounded metadata]
-    E -->|operational failure| U[Emit unavailable or quiet hook fallback]
+    X --> I
+    N --> I
+    E -->|operational failure| U[Unavailable or quiet hook fallback]
     F -->|operational failure| U
+    U --> I
 ```
 
 Capture and discovery may overlap after the workspace/session identity is established. Wide and rerank calls are dependent. Optional ledger reads do not authorize using another session's state. Persistence never holds a transaction across a network call.
@@ -61,6 +66,8 @@ Design targets, to be measured on named hardware, roster size, network region, a
 | Cold CLI/cass | Same configurable deadline; report stage timings | Never silently extend the timeout because discovery was slow |
 
 The installer sets the harness timeout above `sr`'s deadline (initially 4 seconds for a 3-second run). Scheduler pauses and uninterruptible OS I/O prevent a mathematical wall-clock guarantee; slow-path tests must demonstrate bounded behavior under the supported operating conditions. If cancellation cannot bound a leaf operation, redesign that leaf before enabling it in hooks.
+
+This deadline applies to a one-shot rank/hook invocation. A TUI/watch process has a user-controlled lifetime and starts a new bounded evaluation for each accepted refresh; it does not expire three seconds after opening. Batch evaluation has a separate overall deadline/request budget plus the per-case ranking deadline. Local maintenance commands use their own bounded batch/transaction policies, not the inference timeout.
 
 A process launched per prompt does not inherit an earlier process's connection pool, DNS cache, or in-memory roster. Measure cold TLS and process startup separately. A persistent service is deferred until measurements justify its lifecycle and security costs.
 
@@ -103,6 +110,8 @@ The first prompt can be ranked with the hook prompt and an empty transcript when
 `--context` accepts a versioned **local envelope** containing `schema_version`, `harness`, `workspace_root`, `session_id`, `agent_id`, `branch_id`, `context_epoch`, `current_request`, and `events`. `current_request` contains an event ID when available, its text, and any attachment/omission indicators. Missing agent/branch IDs use explicit nulls with unknown attribution, not a shared empty-string identity. A standalone input without durable session identity gets an invocation-local namespace and cannot update persistent session observations.
 
 The envelope may carry source provenance and explicit skill references, but cannot grant networking, filesystem roots, credentials, tool permissions, or successful delivery. Caller-supplied loaded-state claims are labeled `supplied`, not independently observed. Validate the envelope before converting it into the separate allowlisted provider schema below; never serialize it wholesale to Jev.
+
+Local session identity includes the source adapter and producer provenance. A normalized import cannot update a native hook session's cursor or loaded-state record merely by repeating its session ID. Unknown attribution disables durable session updates, not just a confidence badge.
 
 Resolve explicit requests and exclusions from the full bounded local user input **before** redaction, windowing, or prompt truncation. Keep their local IDs outside model interpretation. If a request is too large to inspect safely, report unavailable rather than resolving only its prefix. Resolve contradictory positive/negative references as `conflicting-directives`; do not guess which directive overrides the other.
 
@@ -234,7 +243,7 @@ Generic parsing must not silently change the harness's interpretation. Pin front
 
 Initial per-file limit: 256 KiB; frontmatter: 16 KiB; discovery: 10,000 files and 32 MiB total parsed bytes. The full description field is the parsed value; request excerpts have their own limits (wide description 160 characters, rerank description up to 1,000 plus body excerpt 700). Mark every truncation. These are budgets to evaluate, not claims that the opening 700 characters encode the complete skill.
 
-Follow skill symlinks only to explicitly allowed roots, detect cycles, and reject special files. Validate the object actually opened using descriptor-based traversal/identity checks; `canonicalize` followed by an unprotected open is vulnerable to replacement. Read at most the byte cap plus one, and derive hashes/excerpts from the same bytes. Preserve native path bytes locally. Before emission, revalidate every emitted candidate's identity/content and effective invocation restrictions. If any shortlisted candidate changed, withhold this result as `unavailable / roster-changed`; do not promote a runner-up from a decision conditioned on stale alternatives. The harness remains responsible for checking its actual later load; `sr` cannot freeze a file after exit.
+Follow skill symlinks only to explicitly allowed roots, detect cycles, and reject special files. Validate the object actually opened using descriptor-based traversal/identity checks; `canonicalize` followed by an unprotected open is vulnerable to replacement. Read at most the byte cap plus one, and derive hashes/excerpts from the same bytes. Preserve native path bytes locally. Before emission, revalidate identity/content and effective invocation restrictions for the entire shortlist, including candidates removed by scoring, or every locally resolved explicit target. If any shortlisted candidate changed, withhold this result as `unavailable / roster-changed`; do not promote a runner-up from a decision conditioned on stale alternatives. The harness remains responsible for checking its actual later load; `sr` cannot freeze a file after exit.
 
 Use content hashes for cache validity. Metadata can accelerate discovery, but size/mtime alone are insufficient. Do not promise full-roster rehashing meets the latency goal until it is benchmarked.
 
@@ -350,7 +359,7 @@ First decide whether any advisory output is eligible:
 4. Remove **each** surviving candidate whose raw rerank probability is less than or equal to `p(__none__)`. If none remain, emit `abstain / no-shortlist-match`. Ties favor abstention; priors, phase, or fit blending cannot re-admit a removed candidate.
 5. Otherwise rank eligible candidates and return up to `K`; the hook takes the first one.
 
-Apply known local exclusions before the wide call as well. If a valid roster has no candidates left because all are loaded/excluded, return the corresponding abstention without a provider request. An initially empty or unreadable roster is an operational roster failure.
+Apply known local exclusions before the wide call as well. If a valid roster has no candidates left because all are proven available reusable references or explicitly excluded, return the corresponding abstention without a provider request. An initially empty or unreadable roster is an operational roster failure.
 
 For example, rerank probabilities A=0.70, B=0.10, none=0.20 with fits A=0.10 and B=0.80 must abstain: removing A leaves none ahead of B. Checking the sentinel only before fit filtering would incorrectly suggest B.
 
@@ -425,6 +434,8 @@ Persistence controls have explicit independent effects:
 
 Flags combine by taking the more restrictive behavior. Offline mode controls network access independently; it does not imply no persistence. Missing persistence removes historical evidence rather than fabricating empty negative observations. A stateless preview is the exact payload for the corresponding `rank --no-persist` invocation; print that effective mode so it is not mistaken for a preview of hidden learned/session state.
 
+“No disk reads/writes” in this table concerns `sr`'s persistent state stores; configured inputs and ordinary configuration files still have to be read. `--no-persist` cannot provide cross-process leases or cooldowns, and must not claim that it does.
+
 ## Local ledger and feedback
 
 ### What is observable
@@ -433,11 +444,15 @@ On each ranking attempt, record bounded metadata: session/agent/event identity, 
 
 Observe subsequent loads through structured tool events with successful results and a resolved target/content version. Tool invocation without success is a load attempt. A skill name appearing in prose, an opaque shell command, or a read of an arbitrary file is not proof of loading a skill.
 
+For known-version attribution, the event must identify the bytes/rendered content actually consumed. A successful read with only a path can establish a load with `version: unknown`, but cannot authorize version-specific suppression or feedback. Keep source-skill identity, rendered invocation, and current file version distinct. A skill invoked in a fork belongs to the receiving agent's context, not automatically to its parent.
+
 Keep states such as `attempted`, `observed_loaded`, `not_observed`, `unobservable`, and `censored`. Do not turn the latter three into negative correctness labels. Local file reads can be evidence only when the adapter reliably associates a successful read with a known skill.
 
 Default attribution window: after emission through the next submitted user prompt, explicit task boundary, session end, or 30-minute cap, whichever comes first. Missing tail events yield censored observations. Post-tool/session-end integration or explicit `sr observe` can finalize the last turn; waiting for a nonexistent next turn cannot.
 
-One observed load is attributed to the latest preceding emitted recommendation in the same agent/turn. Earlier overlapping suggestions are superseded/censored rather than all credited. Multiple loads are retained as a set and an ordered first-load event. Idempotent event IDs prevent double counting across repeated hook deliveries.
+One observed load is attributed to the latest preceding emitted recommendation in the same agent/turn whose boundary is known. Earlier overlapping suggestions are superseded/censored rather than all credited. Use transcript event order and the recorded emission boundary, not timestamps alone. If a concurrent load straddles an unprovable emission boundary, leave attribution unknown. Multiple loads are retained as a set and an ordered first-load event. Idempotent event IDs prevent double counting across repeated hook deliveries.
+
+Commit observations, reconstructed loaded-state evidence, and their cursor advance in the same transaction, using the expected cursor generation as a compare-and-swap condition. A crash or competing observer must cause replay/deduplication, not a skipped event or duplicated reward. Ranking-window cursors are not substitutes for the observation watermark.
 
 ### Exposure, delivery, and crash ambiguity
 
@@ -446,6 +461,8 @@ Distinguish generated ranking, hook emission attempt, successful stdout write, a
 Before output, best-effort commit a short `prepared` event; after a successful write, append `emitted`. There is no atomic transaction spanning SQLite and stdout. A crash between these effects leaves delivery unknown; do not manufacture exactly-once exposure or reward. Ranking still works when the ledger is busy, full, or disabled, with degraded observability.
 
 A cached ranking may generate a new exposure for a new turn. A duplicate delivery of the same event must not generate another training example. Interactive display and TUI selection are not equivalent to injection into an agent.
+
+Record `mode` and `channel` explicitly (`shadow`, `advisory-hook`, `cli`, or `tui`). Shadow evaluations are predictions without exposure: never set `emitted` merely because the wrapper successfully wrote zero bytes. Advice-relative adoption denominators use actual advisory emissions and report unacknowledged delivery separately. CLI/TUI results and shadow matches have their own observational denominators.
 
 ### Separate adoption from correctness
 
@@ -465,9 +482,13 @@ Claims that suggestions “fixed” or “broke” agent behavior require contro
 
 Split by session/task family (and project where feasible), with a held-out temporal slice, to avoid near-duplicate leakage. Fix the loss and tolerances before sweeping. Include costs for wrong suggestions, needless suggestions on no-match tasks, **and missed useful suggestions**; a loss containing only wrong/needless loads is minimized by always staying silent.
 
+The initial per-case tuning loss is 0 for a correct recommendation or correct no-match abstention, 1 for abstaining on a positive case, and 2 for an incorrect recommendation (including no-match cases). These classes are mutually exclusive. Operational failures are reported separately and cannot be relabeled as tunable abstentions. Changing costs is an explicit versioned policy choice.
+
+Use separate training, validation, and final-test partitions: fit priors on training only, choose thresholds on validation, then evaluate the frozen policy once on the final holdout. A prior snapshot must predate each scored case; future feedback and final-test labels cannot leak into it. Repeatedly selecting a policy against the same “held-out” set turns that set into validation data.
+
 Require a configurable minimum judged sample size and representation of positive, no-match, and near-miss cases; “200 turns” is not sufficient by itself. Report uncertainty and subgroup counts. Do not fit per-project or per-skill thresholds from sparse cells.
 
-Production logs that skipped stage 2 lack the fit values needed to evaluate lower gate thresholds. Re-evaluate a fixed consented benchmark or use explicitly budgeted shadow runs; do not fill in missing scores as zeros or pretend they were observed.
+Production logs that skipped stage 2 lack the fit values needed to evaluate lower gate thresholds. Create complete stage responses on a fixed consented benchmark, running its rerank independently of the production gate, or use explicitly budgeted shadow runs. Mark unevaluated policies as not estimable; do not fill in missing scores as zeros or pretend they were observed. Changing retrieval, M, prompt content, or model requires new compatible stage responses, not just reweighting old numbers.
 
 ### Optional empirical priors
 
@@ -498,8 +519,8 @@ Minimum logical tables:
 | Table | Main key/contents |
 | --- | --- |
 | `schema_migrations` | Monotonic schema version and migration checksum |
-| `session_cursors` | Workspace/session/agent key, transcript generation, last complete event |
-| `ranking_events` | Event UUID, unique delivery key, versions, decision, exposure state, timings, usage |
+| `session_cursors` | Workspace/session/agent/cursor-kind key, transcript generation, last complete event; distinct ranking and observation watermarks |
+| `ranking_events` | Invocation UUID, nullable verified delivery key, mode/channel, versions, decision, exposure state, timings, usage |
 | `ranking_candidates` | Event/stage/skill-version key, distributions, fits, exclusions, ranks |
 | `observations` | Unique source event key, attempted/loaded/censored evidence, attribution |
 | `judgments` | Versioned explicit labels with provenance; no implicit correctness labels |
@@ -507,11 +528,15 @@ Minimum logical tables:
 
 Use short transactions, foreign keys, WAL, a bounded busy timeout (initially ≤25 ms and remaining deadline), and uniqueness constraints for idempotency. Cache state is disposable and separate from the ledger. Derived priors can be recomputed.
 
+Only a verified delivery identity gets a uniqueness constraint for deduplication. Best-effort prompt/cursor fingerprints cannot collapse distinct turns: retain separate invocation UUIDs with ambiguous attribution. Persist cursor and observation changes atomically as specified above. Rate-limit/lease state is a separate disposable coordinator store, not an implicit ledger read when `--no-ledger` is set.
+
 Never claim runtime “reserve/write/commit” automatically makes database and stdout effects atomic. SQLite transactions protect database rows; cancellation and process death are separate test cases. Disk-full/locked/corrupt storage disables learning for that invocation and reports a warning without destroying the database.
 
-An unsupported newer schema is opened read-only where safe; no automatic downgrade or destructive repair. Hooks do not perform potentially expensive migrations. Explicit initialization/upgrades run migrations transactionally and retain a recoverable backup.
+An unsupported newer schema is opened read-only where safe; no automatic downgrade or destructive repair. Hooks do not initialize or migrate the ledger. `sr ledger init` creates an empty current schema; `sr ledger migrate` previews required changes and `--apply` performs supported upgrades with a recoverable SQLite-aware backup. Copying only a live main database file while WAL holds transactions is not a valid backup. The installer reports missing initialization, and ranking without an initialized ledger remains usable with `persistence: unavailable`.
 
-Default retention: 30 days of event metadata and 10 minutes of response cache; aggregate statistics are recomputable over retained data. Raw contexts and skill bodies are not stored by default. `sr ledger prune --before ... --apply` and `sr ledger clear --apply` expose explicit local deletion; checkpoint/VACUUM work runs outside the hook. If the configured storage quota is reached, stop recording rather than growing without bound.
+Default logical retention is 30 days of event metadata and 10 minutes of response-cache validity. Expired rows are excluded from ordinary statistics and priors; use a versioned `as_of` snapshot for an evaluation. Labels cannot dangle after their parent evidence is removed: prune related derived records together, or retain an explicitly exported evaluation bundle outside routine history with its own retention choice. Removing/revising labels invalidates derived priors and dependent decisions.
+
+Expiry does not physically erase database pages or backups. `sr ledger prune --before ... --apply` and `sr ledger clear --apply` perform explicit local removal; checkpoint/VACUUM and backup cleanup run outside hooks. Doctor reports cleanup debt. Raw contexts and skill bodies are not stored by default. Initial caps are 256 MiB for ledger plus sidecars/backups and 64 MiB for cache/coordinator data. Stop optional recording/caching at quota and report degradation; bound temporary files as well. Never advertise secure erasure or automatic physical deletion after 30 days.
 
 ## Description diagnostics and coverage analysis
 
@@ -543,6 +568,7 @@ A blocking closure does not become cancellable because it runs in a task or unde
 - Propagate remaining time into subprocesses, HTTP, retry delays, locks, and persistence.
 - Stop starting new work when the output/cleanup reserve would be consumed.
 - Subprocesses use argv arrays, trusted resolved executables, bounded stdin/stdout/stderr, and explicit environments. Never interpolate transcript text into a shell command.
+- Child environments omit the TypeSafe credential and unrelated provider tokens. Read-only/offline behavior is capability-tested per child version; a subprocess boundary is not a privacy boundary by itself.
 - Drain pipes without deadlock; on timeout terminate and reap the owned process tree under a platform-specific tested policy.
 - Handle SIGINT/SIGTERM, broken pipes, and early consumer exit without detached workers or repeated writes.
 
@@ -553,6 +579,10 @@ Remove the proposed transparent `ureq` fallback from the first release. It would
 Retry only explicitly classified transient failures (including documented 429/529 responses and selected transport/5xx failures). Honor `Retry-After` when valid and within the remaining deadline; add bounded jitter. Do not retry authentication, request-validation, or malformed-answer errors by default.
 
 Initial budget: two logical requests, at most four HTTP attempts total, with no retry that cannot fit the remaining budget. A timeout after sending the request can still incur provider cost. Record known usage and an unknown-usage marker for attempts without a response; never count unknown cost as zero.
+
+Maintain one invocation-wide attempt counter, including retries hidden inside the chosen HTTP client; disable such retries or route them through this accounting. Track requested/returned model identity per stage. Different immutable returned revisions invalidate the pair; two returns of an unversioned alias provide no proof of an atomic model snapshot, so preserve their times and that limitation.
+
+`sr eval` defaults to replay with zero network access. Live evaluation requires `--online`, trusted network authorization, and an explicit `--max-requests N` cap that counts HTTP attempts across the entire batch. It also has `--max-runtime-ms` (initial default 600000) and the per-case deadline. Preflight estimated bytes/tokens and consented input scope, stop scheduling when any cap is reached, and report all unfinished cases. Neither a dataset file nor retries can silently expand the authorized batch budget.
 
 An optional chunk experiment declares a larger explicit request/token budget before starting. Concurrency caps are independent of the number of chunks. Rate-limit failures trigger a bounded per-endpoint cooldown across local invocations where persistence is enabled; `--no-persist` uses process-local backoff and reports that limit.
 
@@ -568,11 +598,13 @@ Project files may tune ranking weights and exclusions within schema bounds. They
 
 Remote transmission is disabled by default and is an explicit setup choice (`network.enabled` in trusted user config or `--allow-network`). Hook installation shows that context and skill excerpts will be sent to TypeSafe and checks this setting; hooks never prompt interactively. An API key's mere presence is not a project's authorization to export content. `--offline` guarantees zero network calls and can use valid local cache/explicit resolution only.
 
+For v1, offline mode uses direct local/normalized inputs and the verified safe Git signal path; it does not invoke cass. Local-only inspection and dry-run also avoid unverified child commands. An explicitly selected cass source in these modes returns `unavailable / unsupported-source-mode` (exit 7), with a hint to supply a direct transcript or normalized input; never silently switch sources. `--offline` and `--allow-network` conflict and are rejected. A missing complete offline cache result is `unavailable / cache-miss` (exit 11), not an authentication failure or a no-skill determination.
+
 Endpoint overrides must be explicitly trusted, HTTPS, and credential-scoped by origin. Loopback HTTP is permitted only in the test/development mode, without production credentials. Public proxy settings are explicit and documented; do not inherit unexpected proxy routing invisibly.
 
 Treat workspace files, transcripts, skill frontmatter/body, and API responses as untrusted data. Sanitize control characters and terminal escape sequences in names and diagnostics; escape JSON/markup when rendering. Provider text can never become a command, path, or environment setting.
 
-`--dry-run` prints the exact **redacted** request payload locally and makes no network or persistence changes. It can still contain private prose; do not upload it automatically. No cross-user telemetry, remote feedback sink, or automatic description repair is part of this design.
+`--dry-run` prints the exact **redacted** request payload for its declared stateless input, makes no network or application-state writes, and does not create keys, databases, locks, logs, or migrations. It can still contain private prose; do not upload it automatically. A persistent run may have additional historical evidence and must not be represented as identical to this stateless preview. No cross-user telemetry, remote feedback sink, or automatic description repair is part of this design.
 
 ## Outputs and hook integration
 
@@ -629,8 +661,14 @@ The example below illustrates a two-candidate eligible set. Values are illustrat
     }
   ],
   "omitted_rank_mass": 0.0,
-  "cache": {"hit": false, "age_ms": null, "stale": false},
-  "model": {"requested": "jev-latest", "returned": "jev-latest"},
+  "cache": {
+    "hit": false, "wide_hit": false, "rerank_hit": false,
+    "age_ms": null, "stale": false
+  },
+  "model": {
+    "requested": "jev-latest", "wide_returned": "jev-latest",
+    "rerank_returned": "jev-latest", "immutable_revision": null
+  },
   "usage": {
     "requests": 2,
     "http_attempts": 2,
@@ -650,10 +688,23 @@ Specify all decision variants:
 | --- | --- | --- |
 | `ranked` | Up to K eligible suggestions | Provider evaluation succeeded under the stated scope |
 | `explicit` | Locally resolved user-requested skills | Probability/confidence fields are null; no model certainty is invented |
-| `abstain` | Empty | Valid evaluation produced low need, no shortlist match, low fit, or all candidates already loaded |
+| `abstain` | Empty | Valid evaluation produced low need, no shortlist match, or low fit; local policy may also exclude all candidates or prove all are available reusable references |
 | `unavailable` | Empty | Operational/input/privacy/coverage failure; no relevance claim |
 
 Fields unavailable because stage 2 was skipped are `null`, not fabricated zeros. Empty discovery and partial coverage have explicit reasons. Return requested-but-unresolved skill references separately with resolution errors; never replace them with a vaguely similar skill.
+
+Use bounded typed quality metadata alongside the summary `context_quality`: `prompt_complete`, `task_anchor_known`, `history_windowed`, `attachments_omitted`, and `source_gaps`. `complete` refers to the admitted ranking input, not the entire lifetime transcript. The following publication rules remove ambiguity:
+
+| Input condition | Ranking behavior | Hook behavior |
+| --- | --- | --- |
+| Complete new prompt, no prior transcript yet | Evaluate as `prompt_only` | Advisory result allowed after normal checks |
+| Deliberately bounded history with complete current request/task anchor | Evaluate; report `history_windowed` | Advisory result allowed |
+| Essential prompt, directive, antecedent, or attachment missing | `unavailable / insufficient-context` | Quiet |
+| Partial roster, but proposed target and its precedence/restrictions verified | May return scoped positive results with a warning | Positive advice allowed; negative/no-match results stay quiet |
+| Partial roster with unresolved target precedence/restrictions | `unavailable / incomplete-roster` | Quiet |
+| Shortlist/context changes while a request is in flight | `unavailable / superseded` or `roster-changed` | Quiet; do not present the old answer as current |
+
+Bound warnings by kind/count (initially 32 details plus omitted count), rather than echoing every malformed record. CLI rank output is capped at 2 MiB. `sr roster --json` and full-wide explanations paginate using a roster/snapshot-bound cursor; changed snapshots require restarting pagination. This output cursor is unrelated to transcript ingestion cursors.
 
 Raw distributions and discarded candidates are available with `--explain`, with the relevant candidate-set IDs, formula contributions, truncation, and policy versions. `--explain` describes observable computations, not invented model reasoning.
 
@@ -676,6 +727,8 @@ Render the validated invocation name, with source disambiguation where the harne
 
 Normal hook output suggests at most one skill. Multiple explicitly requested skills are presented as user requests, not as an adaptive top-three recommendation. Adaptive hook top-N remains an evaluation experiment.
 
+The explicit list still has to fit the hook message cap. If it cannot be rendered completely, emit no truncated list: return quiet fallback with an output-limit diagnostic, preserving the user's original request. Manual-only references are never rendered as instructions for autonomous invocation.
+
 For a valid, sufficiently complete abstention, the hook may say “No additional skill is suggested for this step; follow explicit skill requests and applicable instructions.” This wording is an experimental policy, not a universal no-skill claim. In shadow mode, abstentions and suggestions both stay out of agent context.
 
 On API failure, ambiguity, privacy denial, malformed input, deadline exhaustion, or incomplete coverage that prevents a sound recommendation: stdout is empty, a sanitized diagnostic goes to stderr, and the hook returns 0. It must never use Claude's blocking decision fields or exit 2 for recommendation failures. CLI mode preserves meaningful nonzero errors. Use non-exiting argument parsing and classify the dedicated hook entry before dispatch so parser failures also pass through this mapping. Test malformed flags and unsupported events through the installed command.
@@ -684,9 +737,13 @@ Do not infer delivered exposure from seeing the advisory text in a transcript. K
 
 ### Hook installation and rollback
 
-`sr install-hook claude` produces a concrete settings diff by default. `--apply` merges only the managed entry, preserves unrelated hooks and settings, creates a backup, and writes atomically after checking the file has not changed since it was read. Refuse malformed settings without overwriting them.
+`sr install-hook claude` produces a concrete settings diff by default. `--apply` merges only the managed entry and publishes via an atomic rename after checking the base digest. The preview shows the managed change without printing unrelated secret-bearing settings. Keep owner-only backups in the private state directory, not as newly trackable project files. Refuse malformed settings without overwriting them.
+
+An atomic rename is not a compare-and-swap against unrelated writers. Serialize cooperating installers with a per-target lock and abort on detected external changes; applying while another program edits the same settings file is unsupported. Document this limitation instead of claiming the check-then-rename sequence guarantees no lost updates. Preserve file permissions and write the backup before publication.
 
 The entry uses a trusted absolute executable path, correctly escaped arguments, `UserPromptSubmit`, and an explicit timeout. Installation is idempotent. `sr uninstall-hook claude --apply` removes only the exact managed entry; modified entries require a displayed conflict rather than broad removal. Managed/enterprise restrictions are reported, not bypassed.
+
+Derive the installed harness timeout from the effective internal deadline, and persist that limit in the managed command/configuration. Later settings cannot extend the internal hook deadline beyond the installed outer budget without reinstalling; clamp with a diagnostic or reject the mismatch. Uninstall preview and apply follow the same backup/concurrency rules.
 
 Hook mode defaults to `shadow`; `sr hook claude --shadow` can force it for a trial. Trusted user configuration `hook.mode = "advisory"` enables injection after validation. The installer reports the effective mode and preserves existing explicit choices; it does not silently alter the user's skill inventory or harness system prompt.
 
@@ -717,15 +774,16 @@ The inspected FrankenTUI asupersync executor is feature-gated and runs blocking 
 | `sr stats --since 7d --by-skill` | Observation and operational metrics | Ledger |
 | `sr observe --session PATH` | Reconcile supported structured load events | Ledger |
 | `sr feedback EVENT --skill ID --verdict VERDICT` | Store explicit usefulness judgment | Ledger |
-| `sr eval --dataset FILE` | Reproducible labeled evaluation; online runs require network authorization | Evaluation |
+| `sr eval --dataset FILE` | Offline replay by default; live runs require `--online`, authorization, and a request cap | Evaluation |
 | `sr calibrate --evaluation FILE` | Report proposed thresholds; `--apply` installs scoped config | Evaluation |
+| `sr ledger init` / `sr ledger migrate` | Explicit initialization; migration preview and `--apply` | Ledger |
 | `sr ledger prune` / `sr ledger clear` | Preview retention operation; `--apply` mutates | Ledger |
 | `sr tui` | Inline viewer and watch mode | Later |
 | `sr doctor --descriptions` / `sr gaps` | Description/coverage diagnostics | Later |
 
 Shared ranking controls: `--messages 12`, `--budget-chars 12000`, `--top 5`, `--shortlist 8`, `--gate 0.30`, `--fits 0.30`, `--timeout-ms 3000`, `--roster FILE`, repeatable `--require-skill ID`, `--no-tools`, `--no-cache`, `--no-ledger`, `--no-persist`, `--offline`, `--allow-network`, and `--explain`. Mode-specific flags reject incompatible combinations.
 
-`sr rank --dry-run` builds the wide payload without calling the API. To preview stage 2, require `--shortlist-ids ...` or an explicit validated recorded wide response; a network-free command cannot know an unevaluated model's top eight. It performs no observation reconciliation or persistent writes.
+`sr rank --dry-run` builds the wide payload without calling the API. When explicit resolution or local eligibility ends the pipeline before inference, report that decision and that no provider request would be made. To preview stage 2, require `--shortlist-ids ...` or an explicit validated recorded wide response; a network-free command cannot know an unevaluated model's top eight. It performs no observation reconciliation or persistent writes.
 
 Use strict clap parsing with documented aliases only. Do not silently normalize arbitrary misspellings, case, or single-dash flags: errors in hooks and privacy flags must be detectable.
 
@@ -747,8 +805,9 @@ Use platform configuration directories; Linux fallback `~/.config/sr/config.toml
 | 8 | privacy | Requested network operation disallowed |
 | 9 | storage | Required ledger/admin mutation failed |
 | 10 | provider-contract | Invalid structured response |
+| 11 | cache-miss | No complete valid result is available under offline/cache-only constraints |
 
-JSON failures use `schema_version`, `decision: unavailable`, and `error: {code, kind, message, hint, retryable}`; kinds are stable kebab-case identifiers. Ranking can succeed with a storage warning; explicit feedback/admin commands cannot claim success if their required write failed.
+JSON failures use `schema_version`, `decision: unavailable`, and `error: {code, kind, message, hint, retryable}`; kinds are stable kebab-case identifiers. Incomplete context and unrenderable output limits map to code 7; roster/explicit-resolution failures to 5; superseded input to 3. Define `retryable` as whether a fresh invocation with the same intended inputs may succeed, not permission to ignore network/deadline policy. Ranking can succeed with a storage warning; explicit feedback/admin commands cannot claim success if their required write failed.
 
 `sr hook` translates these failures into its non-blocking protocol. Broken pipe and process signals follow normal platform conventions and are not counted as valid emissions.
 
@@ -792,6 +851,8 @@ skillranker/
       feedback.rs            explicit judged labels
       priors.rs              optional centered/shrunk statistics
       calibrate.rs           held-out evaluation and candidate policy
+      sampling.rs            frozen evaluation frames and inclusion probabilities
+      monitor.rs             optional P8 sequential evidence and alpha accounting
     output/
       json.rs
       table.rs
@@ -811,6 +872,24 @@ Core dependencies include asupersync (with verified TLS roots/runtime features),
 
 A line-count estimate such as “the client is 200 lines” or “BM25 is 80 lines” is not an implementation contract. Transport validation, privacy, Unicode, cancellation, and tests determine the necessary code.
 
+### Evaluation numerics and data preparation
+
+The user's `franken_numpy`, `frankenscipy`, and `frankenpandas` repositories provide concrete reuse candidates for the evaluation work. Keep them behind evaluation/tooling boundaries with pinned revisions; they do not replace Jev or become prerequisites for ordinary hook ranking. Prefer narrow Rust crates and audited adapters over importing complete workspaces. Local source inspection establishes the following APIs, not a compiled SkillRanker integration:
+
+| Project / inspected source | Useful surface | Required adaptation or check |
+| --- | --- | --- |
+| `frankenscipy`, `crates/fsci-stats/src/lib.rs` | `wilson_ci`, `clopper_pearson_ci`, `BetaDist`, `Binomial`, `logsumexp` | Explicit interval sidedness, domain checks, endpoint fixtures, and stable tail arithmetic |
+| `franken_numpy`, `crates/fnp-random/src/lib.rs` | `Generator::from_pcg64_dxsm`, `choice_indices(pop_size, size, false)`, `shuffle_slice` | Seed/algorithm/version provenance, bounded counts, unbiased bounded draws, and no-replacement fixtures |
+| `frankenpandas`, `crates/fp-join/src/lib.rs` and `crates/fp-frame/src/lib.rs` | `merge_dataframes_on_with_options`, `MergeValidateMode::OneToOne`, `ManyToOne`, grouping, duplicate detection | Assert case-key cardinality and null handling before aggregating; never multiply observations through an accidental many-to-many join |
+
+For the initial confidence intervals, `fsci_stats::wilson_ci(k, n, 0.95)` matches the ordinary two-sided report. Its Clopper–Pearson helper also returns a **two-sided** interval: the one-sided 95% upper endpoint is the upper endpoint of `clopper_pearson_ci(k, n, 0.90)`, or `Beta(k+1, n-k).ppf(0.95)` when `k < n`. Handle `k=n` as upper bound 1 and `n=0` as not estimable. Validate `0 <= k <= n` and finite `0 < confidence < 1` before calling helpers. For zero events, cross-check against the stable closed form `-expm1(log(0.05)/n)`. Do not silently substitute a two-sided 95% endpoint or a degenerate bootstrap interval.
+
+The inspected `fsci_stats::permutation_indices` helper reduces raw generator output with `% (i+1)`. That is not a basis for claiming exactly uniform bounded draws. Use the inspected FrankenNumPy generator's rejection-based shuffle/selection path, then verify membership, uniqueness, deterministic seeded replay, and small-population inclusion frequencies. `fnp-random` offers `default-features = false` to omit its optional ndarray, OS-entropy, and Rayon dependencies for seeded consumers; verify that feature combination at the pinned revision. PRNG replay is not itself proof of independence or a substitute for a prespecified sampling design.
+
+For evaluation tables, identify a case by frame/family/case/replicate/policy, resolve label revisions before joining, and use the expected one-to-one or many-to-one cardinality check. Assert pre/post join counts and retain unmatched or null labels as unknown. Grouping that silently drops null keys or a many-to-many join that duplicates successful cases can otherwise fabricate better precision and larger sample sizes. Add adversarial fixtures for both.
+
+FrankenSciPy's inspected stats crate has several numerical transitive dependencies, so measure build/dependency cost before making it a default evaluation dependency; a narrow `fsci-special` inverse-beta adapter may suffice. FrankenPandas can stay in offline report preparation if its full frame engine is unnecessary in `sr`. Rust APIs are the source of record here: the local Python modules were not installed during this review, and a compatibility wrapper that falls back to upstream NumPy is not independent evidence that FrankenNumPy executed. Record the actual backend and source revision in numerical reports. Preserve applicable licenses/notices for either dependencies or copied code.
+
 ## Verification and acceptance
 
 There is no implementation yet in this workspace. This plan defines work and release evidence; it does not claim tests, benchmarks, live TypeSafe calls, or harness integrations have passed.
@@ -821,18 +900,21 @@ There is no implementation yet in this workspace. This plan defines work and rel
 | --- | --- |
 | Context identity | Two sessions in one workspace, parent/subagent, repeated identical prompts, linked worktrees; no cross-attribution |
 | Prompt timing | Hook prompt missing from transcript, already present, empty first transcript; newest request included exactly once |
-| Transcript mutation | Partial final record, malformed completed record, replacement/truncation, compaction, branch/resume; no cursor corruption |
+| Transcript mutation | Partial final record, malformed completed record, replacement/truncation, compaction, sibling branches, delta larger than tail cap; no cursor skips or cross-branch merge |
 | Privacy/bounds | Unicode boundaries, long prompt, secret split near excerpt boundary, secrets in skill descriptions/tool args; all outgoing paths redacted |
-| Roster | Missing roots, plugin sources, shadows, equal names, symlink cycles/escape, malformed YAML, change during API request; only eligible local targets emitted |
+| Roster | Missing roots, plugin sources, shadows, name/display mismatch, manual-only skills, supplied manifests, symlink replacement, malformed YAML, change during API request; only eligible local targets emitted |
 | Selection sizes | 0, 1, 5, 8, 254, 255, and >1,000 skills; sentinel counted in every Choice, deterministic shortlist |
-| Ranking | Zero/one probabilities, NaN, missing IDs, duplicate keys, wrong sums, sentinel ties, high Choice/low fit, all loaded; no accidental recommendation |
+| Ranking | Zero/one probabilities, NaN, missing IDs, duplicate keys, wrong sums, per-candidate sentinel tests before blending, reference versus workflow reuse, singleton default K/M; no accidental recommendation |
 | Priority rules | Explicit skill request with low gate; exclusion; unavailable exact name; compaction invalidation; no probabilistic override |
-| Cache | Tool result, content, config, endpoint, model, privacy, roster, loaded state, and branch changes; exact invalidation and no stale hook fallback |
-| Observation | Failed load, unobservable load, delayed load, multiple loads, duplicate delivery, last turn, overlap; no fabricated labels or double reward |
-| Storage | Busy database, disk full, corrupt/newer schema, interrupted transaction and migration; ranking degrades, required writes fail honestly |
+| Cache | Tool result, content, config, endpoint, model, privacy, roster, loaded state, branch, partial stage hits, TTL clock rollback, expired lease owner; exact invalidation and no stale hook fallback |
+| Observation | Failed/unknown-version load, shadow evaluation, unacknowledged delivery, delayed load, cursor CAS conflict, duplicate/ambiguous delivery, last turn, overlap; no fabricated labels or double reward |
+| Storage | Uninitialized/busy database, disk/quota full, corrupt/newer schema, WAL-aware backup, expiry and label revision, interrupted transaction/migration; ranking degrades, required writes fail honestly |
 | Runtime | Slow stdin, stalled DNS/TLS, slow child, pipe saturation, 429/529, Retry-After, cancellation, signals; owned tasks/children terminate |
 | Hook | Every failure code maps to quiet non-blocking behavior; no block fields; unrelated settings preserved; install/uninstall idempotent |
 | Injection | Skill body or transcript requests secret disclosure, shell execution, endpoint replacement, or preferred ranking; no authority transfer |
+| Local-only behavior | Configured Git fsmonitor command, child credential inheritance, offline cass, no-persist and dry-run filesystem observations; no hidden execution/network/state creation |
+| Evaluation | Multiple acceptable skills, explicit-only cases, gate-skipped stages, future-label leakage, zero-harm samples, unjudged/failed runs; correct denominators and conservative uncertainty |
+| Sampling/monitoring | Unequal strata, nonresponse, missing inclusion probabilities, outcome-selected cases, repeated looks/restarts, delayed labels; bounded estimates and no false certificates |
 | TUI later | Resize, Unicode, non-TTY, stale task completion, exit during fetch; clean terminal and stream separation |
 
 Use property tests for finite scoring, deterministic ordering, exact candidate membership, budget enforcement, and round-trip stable identities. Preserve an honest success counterpart for negative tests so an implementation that always abstains cannot pass.
@@ -845,9 +927,26 @@ Build a versioned dataset spanning positive tasks, no-skill tasks, near-miss ski
 
 Have an adjudicator identify acceptable skills from the full visible roster independently of the model shortlist. Separate retrieval recall from rerank precision and abstention quality. Include a simple lexical baseline, the cookbook-style selection baseline, Choice-only, fit-only, and the proposed blend. Compare context-rich input against latest-request-only input before assuming more history helps.
 
+For each case, let Y be the independently judged set of acceptable **additional invocations under the current user constraints and harness permissions**. An already-available reference may make Y empty, while a repeatable workflow may remain in Y. Separate explicit-resolution tests from advisory metrics so easy exact-name requests cannot inflate model quality. Exclude unjudged cases from relevance denominators with counts; report operational failures over the full attempted cohort.
+
+Define the metrics before collecting results:
+
+| Metric | Exact denominator and success condition |
+| --- | --- |
+| Candidate coverage at L | Positive advisory cases (`Y` nonempty); success if retrieved set intersects Y |
+| End-to-end top-one precision | Advisory cases that emit a suggestion; success if the first suggestion belongs to Y |
+| Positive-case suggestion rate | All judged positive advisory cases; success if an emitted top-one suggestion belongs to Y; abstention/unavailable are misses |
+| Needless-suggestion rate | All judged no-match advisory cases (`Y` empty); success event being counted is any emitted suggestion |
+| False abstention | Judged positive advisory cases; count valid relevance abstentions, with operational failures reported separately |
+| Set recall (optional) | Per-positive-case fraction of Y retrieved, macro-averaged; do not confuse this with finding at least one acceptable skill |
+
+Promotion uses candidate **coverage**, not recovery of every relevant skill: M=8 cannot recover 95% of a case with twenty equally acceptable skills. Report intrinsic retrieval/shortlist coverage by running the benchmark stages irrespective of the gate, then report the actual gated end-to-end decision. Never silently condition all metrics on cases the production gate chose to evaluate.
+
+Fit Brier/calibration reports identify their sampling frame (for example, all judged shortlist pairs). They do not establish calibration over the full roster. If measuring broader fit calibration, collect a predefined stratified candidate sample independently of the selector and retain sampling weights.
+
 Publish denominators and uncertainty for:
 
-- Retrieval recall at 254 and shortlist recall at M on judged positive cases.
+- Candidate coverage at 254 and at M on judged positive advisory cases, with optional set recall separately named.
 - Precision of emitted top-one suggestions and relevant top-K coverage.
 - Needless-suggestion rate on judged no-match cases.
 - False abstention on judged positive cases.
@@ -856,6 +955,81 @@ Publish denominators and uncertainty for:
 - p50/p95/p99 latency, fallback frequency, process memory, cold/warm distinction, token usage, unknown usage, and projected cost under a named workload.
 
 Sessions and near-duplicate task families stay in one split. Freeze dataset, candidate visibility/content, prompts, policy, runtime version, and returned provider model/time range in the report. An unversioned remote model alias limits reproducibility and must be disclosed.
+
+Controlled agent comparisons start from equivalent isolated task snapshots with identical permissions, fixtures, budgets, and model settings; randomize arm order and adjudicate outcomes without exposing the assignment. Never replay side-effecting production actions against real accounts. Group repeated runs and related tasks into independent task-family units for uncertainty estimates, and predeclare the harm rubric (including incorrect actions and task regressions), endpoint, sample size, and stopping rule.
+
+### Sampling under a labeling and inference budget
+
+Objective: find consequential selector errors and estimate declared benchmark risks with bounded labels/API attempts, while preserving session privacy, independent holdouts, and deterministic advisory behavior. Wrong recommendations cost more than abstentions under the loss above. Available observables are candidate sets, gates, fit/Choice disagreement, input quality, and independently collected labels; none is a substitute for an unobserved outcome. Sampling runs entirely in evaluation, adding no inference or latency to the hook.
+
+The current design has no measured sampling-efficiency baseline. Compare the following methods against uniform family sampling at the same label, token, and HTTP-attempt budget before claiming improvement. These are subjective design priorities, not performance measurements; scores use impact × confidence / effort on a 1–5 scale.
+
+| Method | Failure addressed | Priority / relevance | Concrete artifact and stage |
+| --- | --- | --- | --- |
+| Stratified probability sampling with known inclusion probabilities | Convenience labels omit abstentions, failures, and rare cases; oversampling distorts aggregate rates | 4×4/2 = 8; relevance 5/5 | Frozen sampling manifest and weighted report in P5 |
+| Anytime-valid evidence for repeated risk monitoring | Repeatedly inspecting fixed-sample intervals inflates false alarms | 3×4/2 = 6; relevance 4/5 | Optional three-component evidence monitor and restart budget in P8 |
+
+For a versioned, consented evaluation frame containing N task-family representatives:
+
+1. Deduplicate and assign train/validation/test families before sampling. Select one representative per family by a recorded rule independent of evaluated outcomes. Declare whether the estimand is family-weighted or traffic-weighted; v1 uses family-weighted units.
+2. Freeze a small set of observable strata, such as normal/overflow retrieval and complete/degraded inputs. Gate-abstained and operationally failed cases remain in the frame. Unknown metadata gets an explicit stratum rather than being discarded. Labels or newly observed losses cannot define strata retrospectively.
+3. Fix stratum sizes `N_h` and allocations `n_h` before reading their outcome labels; select uniformly without replacement within each stratum. Every represented stratum has `n_h > 0`, and each selected unit records its inclusion probability `pi_i = n_h / N_h`. If the budget cannot cover the strata, merge them by a predeclared rule or narrow the reported population explicitly.
+4. Record frame/split digests, stratum definitions, RNG algorithm/version and seed, selected IDs, `N_h`, `n_h`, inclusion probabilities, policy/model versions, and label/request budgets. A seed supports replay; choosing a seed after seeing outcomes is prohibited. A changed frame requires a new manifest.
+5. `sr eval --dataset FILE --sample-size COUNT --seed S` freezes the manifest before executing selected cases and includes it in the evaluation artifact. Omit sampling flags to evaluate the full supplied frame. `--online`, trusted authorization, and `--max-requests` remain separate requirements; sampling grants neither network access nor extra retries. Validate requested sample sizes against the frame and stratum floors.
+
+For a fully observed bounded loss `y_i` in `[0,1]`, report the design-weighted mean:
+
+```text
+W_h = N_h / N
+mean_h = sum_{i in sampled stratum h} y_i / n_h
+R_hat = sum_h W_h * mean_h = (1 / N) * sum_{sampled i} y_i / pi_i
+```
+
+This is the Horvitz–Thompson mean for the declared frame, not a claim about unconsented sessions or unseen projects. Small inclusion probabilities inflate variance; report them and do not silently clip weights while retaining an unbiasedness claim. A ratio such as estimated correct emissions divided by estimated emissions is a ratio estimator, not itself an unbiased mean; ordinary Wilson intervals do not apply to its weighted pseudo-counts. [Sampling estimator and its limitations](https://www150.statcan.gc.ca/n1/pub/12-001-x/2019001/article/00007/02-eng.htm)
+
+For example, a frame with 900 routine cases and 100 overflow cases, sampled 50 from each, has weights 0.9 and 0.1. Observed error rates 2% and 20% yield `0.9×0.02 + 0.1×0.20 = 3.8%`, whereas the unweighted sample reports 11%. Oversampling makes overflow defects easier to inspect without pretending they constitute half the frame.
+
+Use a conservative fixed-sample bound for bounded loss instead of treating weighted rows as independent Bernoulli trials. For H strata and a prespecified report error budget alpha, define `U_h = min(1, mean_h + sqrt(log(H/alpha)/(2*n_h)))`, and `U = sum_h W_h*U_h`; a fully enumerated stratum uses its exact mean. Hoeffding's without-replacement bound plus a union bound gives `P(frame mean <= U) >= 1-alpha` under the frozen uniform-within-stratum design. Allocate alpha across multiple claimed endpoints. This can be loose, especially for rare harms; it supplements the report and does not replace the separately designed promotion cohort. [Bounded sampling inequalities, Proposition 1.2](https://arxiv.org/abs/1309.4029)
+
+Selected cases with missing labels are not silently removed. Report their count and bound their loss by both 0 and 1; use the upper assignment for a conservative upper risk bound. Unknown inclusion probability, changed sampling frame, or outcome-dependent nonresponse prevents the advertised point-estimate guarantee. Never infer an API response or a usefulness label from the inclusion probability.
+
+Keep a separate diagnostic queue for near-threshold gates/fits, wide/rerank disagreement, overflow omissions, and sparse skill/task categories. It may prioritize investigation in training/validation, but is not a representative holdout and cannot silently enter the weighted risk denominator. Selection is for **which examples to judge**, not which skill to make a live agent execute. Thompson sampling or bandit rewards from observed adoption are not introduced into the default ranking policy.
+
+If labeling cost later becomes the measured bottleneck, test pilot-based cost-optimal allocation `n_h proportional to N_h*sigma_h/sqrt(c_h)`, where `sigma_h` is loss standard deviation and `c_h` is per-case cost estimated from a separate training pilot. Equal costs reduce to Neyman allocation. Apply minimum sampling floors, integer/budget constraints, and finite-population caps before freezing the main sample. A zero-event pilot cannot set a stratum's allocation to zero. Until this shows better uncertainty per unit cost than proportional allocation, retain the simpler fixed allocation. [Stratified allocation and cost models](https://www150.statcan.gc.ca/n1/pub/12-001-x/2020002/article/00001/04-eng.htm)
+
+### Repeated monitoring without repeated-testing errors
+
+Keep the fixed-sample promotion gates below as the initial policy. Optional P8 monitoring detects evidence against a declared conditional risk ceiling; **failure to alarm is not evidence that the ceiling has been met**. It does not replace a harm experiment, infer harm from adoption, or turn an e-value into a posterior probability or false-discovery rate.
+
+For binary new-harm outcomes `X_t` from the separately controlled, prospectively ordered task-family pairs, an initial monitor tests `P(X_t=1 | all preceding information) <= tau`, with `tau=0.02`. Its three fixed alternatives are `q in {0.05, 0.10, 0.20}`:
+
+```text
+E_0(q) = 1
+E_t(q) = E_{t-1}(q) * (q/tau)^X_t * ((1-q)/(1-tau))^(1-X_t)
+E_t = (E_t(0.05) + E_t(0.10) + E_t(0.20)) / 3
+alarm when E_t >= 1 / alpha_monitor
+```
+
+For each `q > tau`, the conditional expected multiplier is at most one under the stated null. The fixed mixture is therefore a nonnegative supermartingale starting at one, so Ville's inequality bounds the probability of **ever** crossing by `alpha_monitor`. This derivation is specific to the conditional null; a marginal average-risk bound alone is insufficient. A curriculum that deliberately concentrates difficult tasks can violate this stronger null even without production drift; report that distinction when interpreting an alarm. [Time-uniform supermartingale bounds](https://arxiv.org/abs/1808.03204), [Betting with bounded observations](https://arxiv.org/abs/2010.09686)
+
+Use log updates and log-sum-exp, with O(3) work and O(3) evidence state per finalized unit. The controlled sampling schedule must be chosen before seeing the current outcome. Consume each unit once in its prespecified order, not whichever arm finishes first. Hold pending labels until the predeclared adjudication deadline; missing/unjudgeable outcomes then count as new harm, consistent with the harm gate. Revisions invalidate/recompute the affected trace; they never become additional observations. An arbitrary finite batch sampled without replacement has a changing remaining-population mean, so this conditional-risk monitor must not be applied to that batch merely because the fixed-sample estimator above is valid.
+
+Bind monitor state to endpoint, unit/rubric, baseline, policy/model cohort, order, and an allocated alpha budget. Allocate a total false-alarm budget across monitors and restarts in advance (`sum alpha_monitor <= alpha_total`); resetting after a quiet or adverse period does not restore spent budget. Missing/corrupt state reports `unmonitored`, not a fresh clean history. Cohort or model changes require a declared restart and new allocation. An alarm blocks further policy promotion and recommends return to the frozen baseline/shadow configuration; changing trusted configuration still uses the existing explicit apply path. No automatic production experiment or new network request is implied.
+
+For a single monitor allocated alpha=0.05, the threshold is 20. Each new harm multiplies the q=0.10 component by 5, while each non-harm multiplies it by `0.90/0.98`. Show the mixture value and budget actually used; neither this threshold nor a large e-value establishes “95% probability the system is harmful.” Evaluate detection delay on declared shift scenarios and false crossings under the null before enabling the monitor. [Time-uniform inference](https://arxiv.org/abs/1810.08240)
+
+### Sampling artifacts, proof obligations, and explanations
+
+| Artifact | Required verification | Failure behavior |
+| --- | --- | --- |
+| Frozen sample manifest | Deterministic replay; no duplicate families; all represented inclusion probabilities positive; selected counts and HTTP caps honored | Reject invalid plan; preserve original dataset and budgets |
+| Weighted estimate and bound | Enumerate every sample of tiny populations to verify the mean identity and coverage; unequal strata, census, zero events, missing labels, and extreme weights | Mark unsupported estimates; keep unweighted diagnostic counts separately |
+| Evidence trace and alpha accounting | Exhaustive short Bernoulli paths verify null crossing bounds; compare log/ordinary arithmetic; duplicate, delayed, revised, restarted, and shifted streams | Suspend monitor/promotion on invalid state; no fabricated certificate |
+| Baseline comparison report | Compare equal-cost uniform, stratified, and optional pilot allocations; report uncertainty width, discovered defects, labels, attempts, and runtime | Retain simpler fixed sampling if gains are unmeasured or absent |
+
+Expose optional mathematical explanation cards in `sr eval --explain` and recorded reports, not in hook advice. Each card contains the equation, substituted values, plain-language interpretation, validity assumptions, and what new evidence would change the decision. The weighting example explains why 11% becomes 3.8%; the harm interval explains why zero of 100 remains insufficient; the monitor card shows its actual crossing threshold and remaining error budget. A renderer must recompute displayed numbers rather than copy illustrative constants.
+
+These methods change evidence collection and interpretation, not skill eligibility, score ordering/ties, the Jev contract, or hook permissions. Their numerical implementation is limited to bounded sums, logarithms, and audited random sampling. Keep a versioned manifest/report so an experimental allocation or monitor can be disabled without changing the base selector. No efficiency, risk-control implementation, or deployment benefit is claimed until the corresponding fixtures and equal-budget comparisons have run.
 
 ### Promotion gates
 
@@ -870,15 +1044,21 @@ Initial **engineering acceptance targets**, not claims about achieved performanc
 
 | Held-out metric | Initial promotion requirement |
 | --- | --- |
-| Dataset coverage | At least 300 adjudicated tasks, including ≥150 positive and ≥100 no-match cases; ≥50 deliberately chosen near-miss cases across those groups |
-| Overflow retrieval | Recall at 254 ≥98% on the positive overflow subset; at least 50 such cases before advertising overflow quality |
-| Shortlist | Recall at M ≥95% on positive cases |
+| Dataset coverage | At least 300 adjudicated primary cases from independent task families, including ≥150 positive and ≥100 no-match cases; ≥50 deliberately chosen near-miss cases across those groups |
+| Overflow retrieval | Candidate coverage at 254 ≥98% on the positive overflow subset; at least 50 such cases before advertising overflow quality |
+| Shortlist | Candidate coverage at M ≥95% on positive advisory cases |
 | Actionable output | Top-one relevance precision ≥90%, with a 95% lower confidence bound ≥80% |
 | Positive-case behavior | Correct suggestion on ≥80% of positive cases; abstention counts as a miss |
 | No-match behavior | Needless suggestions ≤5%, with a 95% upper confidence bound ≤10% |
-| Agent harm versus baseline | Upper 95% bound on the increase in independently judged harmful-turn rate ≤2 percentage points in controlled runs |
+| Agent harm versus baseline | One-sided 95% upper bound on new-harm task-family risk ≤2% in controlled paired runs; also report observed net harm difference |
 
-Use Wilson intervals for independent binomial tasks and session/task-family cluster bootstrap intervals for correlated or paired results. Insufficient samples, zero emitted suggestions, or missing subgroup coverage mean “not established,” never a pass. The controlled agent sample may need to be larger than 300 to resolve the harm margin.
+Preselect one primary relevance case per independent task family before running the selector. Use two-sided 95% Wilson intervals for these primary binomial rates; the stated lower/upper precision and no-match targets use the corresponding endpoints. Report additional related variants separately with family-aware uncertainty, never by treating them as independent observations that enlarge the primary denominator. These intervals describe the declared benchmark sampling frame; deliberately oversampled categories do not establish prevalence-weighted production precision. [Binomial proportion intervals](https://www.itl.nist.gov/div898/handbook/prc/section2/prc241.htm)
+
+A plain bootstrap over zero observed harm events produces a degenerate zero interval, so it is not acceptable evidence for the harm gate.
+
+For the harm gate, the independent unit is a prespecified task-family pair (including its planned replicates). Mark a unit as new harm if any paired run is harmful with advice and non-harmful without it; treat missing or unjudgeable outcomes as new harm for this conservative gate. Use a one-sided 95% Clopper–Pearson upper bound on that unit probability. Improvements elsewhere do not cancel these events. With zero events in n independent units, the bound is `1 - 0.05^(1/n)`: about 2.95% for n=100 and 1.98% for n=150. Replicating one task 150 times does not create 150 independent units. [Exact binomial intervals](https://itl.nist.gov/div898/software/dataplot/refman2/auxillar/exacbino.htm)
+
+This gate is a conservative new-harm risk limit, not a confidence interval for net causal improvement or proof of safety on unseen task populations. Report the paired net difference separately with an appropriate nondegenerate interval and its assumptions. Insufficient independent units, zero emitted suggestions, or missing subgroup coverage mean “not established,” never a pass. The controlled agent cohort is separate from the 300-case relevance holdout.
 
 Freeze these thresholds, the split, and the primary metrics before tuning. Changes require a new versioned evaluation policy and a new untouched holdout. Latency targets are the end-to-end values above, measured across all invocations as well as cache/network strata. Require ≤5% operational fallback over at least 500 representative hook invocations, counting and categorizing provider outages. Record fallback frequency alongside successful-request latency so timing out frequently cannot manufacture a fast result. A one-week trial without denominators or controls is not a gate.
 
@@ -891,10 +1071,10 @@ Freeze these thresholds, the split, and the primary metrics before tuning. Chang
 | P2 | Standalone roster, metadata parsing, redaction, identities, BM25 | P0 | Visibility/collision/bounds fixtures; no `ms` runtime or data dependency |
 | P3 | Claude/normalized context adapters, incremental readers, optional cass bridge | P0 | Exact-session/prompt-timing/privacy tests; cass version differences explicit |
 | P4 | Pure pipeline, sentinel/gates/rerank, cache, JSON/table, dry-run | P1, P2, P3 | Correct finite outputs, exact invalidation, API failure distinct from abstention |
-| P5 | Minimal local event/observation ledger and explicit evaluation runner | P4 | Idempotent observations, unknown-state handling, labeled benchmark report |
+| P5 | Minimal local event/observation ledger and explicit evaluation runner with sampling manifests | P4 | Idempotent observations, unknown-state handling, validated sampling/denominators, labeled benchmark report |
 | P6 | Claude shadow wrapper, installer/rollback, operational deadline tests | P4, P5 | Actual supported harness behavior; no blocking failures; measured cold/warm timings |
 | P7 | Advisory rollout and manual feedback/statistics | P6 | Predeclared quality and latency gates, local rollback switch |
-| P8 | Calibration and optional priors | P5, P7 | Independent labels, held-out improvement, reversible config |
+| P8 | Calibration, optional priors, and budgeted sequential monitoring | P5, P7 | Independent labels, held-out improvement, valid evidence/alpha accounting, reversible config |
 | P9 | Description/gap analysis, TUI, further adapters, experimental chunking | P7; relevant P8 outputs only if used | Separate feature-specific gates |
 
 P1–P3 are independent implementation tracks; the table describes dependencies, not permission to bypass validation. Core CLI work is useful at P4. Hook rollout waits for minimal observability and tests; adaptive learning stays later.
@@ -923,9 +1103,18 @@ The following were inspected for this revision on 2026-09-17. Local HEAD values 
 
 - [TypeSafe API](https://docs.typesafe.ai/api), [Choice](https://docs.typesafe.ai/primitives/choice), [confidence](https://docs.typesafe.ai/confidence), and [skill-suggestion cookbook](https://docs.typesafe.ai/cookbooks/skill_suggestion). The cookbook was retrieved directly as Markdown when the browser retrieval failed.
 - [Claude Code hooks](https://code.claude.com/docs/en/hooks): current-prompt input, event-dependent context output, timeout behavior, and the distinction between emission and transcript visibility.
+- [Claude Code skills](https://code.claude.com/docs/en/skills): effective invocation restrictions, display/callable names, and content-versus-invocation lifecycle. Adapter behavior must follow its tested harness version.
+- [Git status](https://git-scm.com/docs/git-status) and [configuration](https://git-scm.com/docs/git-config): optional index locks and filesystem-monitor execution. [NIST exact binomial intervals](https://itl.nist.gov/div898/software/dataplot/refman2/auxillar/exacbino.htm): conservative uncertainty at zero observed events.
 - Local `cass 0.8.0` help and `coding_agent_session_search` HEAD `4ad1a18547231fcf6d6b96e8cbe9e06466b65db0`, especially `src/lib.rs::run_export`: optional source-bound exports and retained native message shapes.
 - Local `meta_skill` HEAD `c9a616bcb29c89e640a95f2bca344c3053fdf7d0`: the reuse candidates above, not a runtime integration.
 - Local `asupersync` HEAD `6060c0a0d83a0692c15c95012bd814ab8ef4c529`: `src/http/h1/http_client.rs`, `src/cx/scope.rs`, runtime macros, and `tests/http_client_https_e2e.rs`. Existing loopback TLS test source does not prove public-root TypeSafe interoperability.
 - Local `frankentui` HEAD `e3d5c7a6fc96e01e8dd82e256a34a5cfee425272`: inline screen mode and the feature-gated task executor contract.
+- Local `frankenscipy` HEAD `4f687085db83492704017b1d5ed7e26f646e9c41`: stats interval helpers, their endpoint tests, inverse-beta source, and stats dependency surface; inspected files were clean. These were source checks, not executed library tests.
+- Local `franken_numpy` HEAD `7db69a9a764a38e4e050c46c2607a3be3ceea849`: seeded generator, no-replacement selection, rejection-based shuffle, and optional random-crate features; inspected files were clean.
+- Local `frankenpandas` HEAD `7ca8c602ecc4de7bd6f8d95828e52b383d95d7cd`: join-cardinality options, grouping, duplicate handling, and Python-binding packaging; inspected files were clean.
 
 The main corrections from the earlier plan are: standalone reuse instead of an `ms` bridge; explicit session/visibility authority; a real none option and mathematically defined scores; observation separated from correctness and counterfactual claims; exact cache keys; bounded whole-invocation work; privacy across every payload field; and dependency-bound release evidence.
+
+The second review additionally corrected per-candidate sentinel eligibility after blending, reusable-reference versus repeatable-workflow handling, normalized-input trust, observation watermark atomicity, shadow exposure, partial cache/model provenance, disabled persistence modes, installer concurrency claims, and multi-answer/zero-event evaluation errors. These are specification corrections; none is represented as an executed production implementation.
+
+The sampling extension applies the requested alien-artifact-coding guidance on experimental design and sequential validity: explicit sampling probabilities, bounded-loss estimates, optional cost-aware allocation, and a budgeted evidence monitor. The primary mathematical sources are linked at the respective contracts. These are planned evaluation artifacts, with formulas and assumptions that can be checked independently of the future Rust implementation.
