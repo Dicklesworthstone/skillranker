@@ -69,6 +69,10 @@ whether each one fits. Both comparisons include a
 real “none of these” option. The result is advisory: the agent follows the user's
 instructions and decides what to consult.
 
+For libraries with more than 254 eligible skills, **Quill from FrankenSearch**
+narrows the candidates locally before Jev evaluates them. Smaller rosters reach
+Jev in full. Explicit skill requests resolve locally before either stage.
+
 SkillRanker does not include a local model or a substitute inference provider.
 The ranking workflow requires your own TypeSafe account and API key. Local
 retrieval prepares the candidates; **Jev supplies the evaluations that make the
@@ -613,21 +617,43 @@ resolution records and no advisory API call. Successful explicit lists are not
 truncated to top-K; the input limit is 32 explicit references.
 
 For advisory ranking, **[Quill](https://github.com/Dicklesworthstone/frankensearch/tree/main/crates/frankensearch-quill)**,
-the native lexical engine in FrankenSearch, narrows larger rosters to **at most
-254 real skills** using BM25. One additional Choice entry is `__none__`. Rosters
-of 254 or fewer eligible skills go directly to Jev. Retrieval uses the latest
+the native lexical engine in FrankenSearch, supplies BM25 retrieval when the
+eligible roster exceeds **254 real skills**. Every Choice also
+includes `__none__`, for at most 255 total options. Retrieval uses the latest
 request plus bounded task and error context; a terse “continue” retains useful
 prior evidence.
 
+| Eligible roster | Quill matches | Real skills admitted to Jev |
+|---|---|---|
+| 1–254 skills | Prefilter skipped | The full eligible roster |
+| More than 254 skills | At least 254 | The first 254 matches under the deterministic ordering |
+| More than 254 skills | 1–253 | Only those matches; the set is not padded with nonmatching skills |
+| More than 254 skills | None | No provider call; `unavailable / retrieval-empty`, exit `5` |
+
+Configured sizes first satisfy `1 ≤ K ≤ M ≤ 32`. The effective rerank size is
+`min(M, admitted_wide_count)`, and the output cap is `min(K, effective_M)`.
+For example, three Quill matches produce a wide Choice with three skills plus
+none, a rerank of at most three skills, and at most three returned suggestions.
+A single match is valid and still competes against none. An initially empty
+roster is a roster failure; a valid roster reduced to zero by explicit exclusions
+or proven available references yields a local abstention.
+
 SkillRanker embeds Quill's in-memory index through `frankensearch-quill`, with
-default features disabled, bounded indexing/query work, and the caller's
-Asupersync context. Names and aliases are searchable titles; descriptions and tags
-are searchable content. Stable skill-ID ingestion and cutoff tie rules make
-selection deterministic. Query text is constructed and escaped as data. Fewer
-lexical matches reduce the effective shortlist and top-K sizes. Zero matches
-produce `unavailable / retrieval-empty` (exit `5`); they do not establish that no
-skill fits. Fuel exhaustion, cancellation, and index failures also withhold hook
-advice, with no silent fallback to a different engine.
+default features disabled, the required `frankensearch-core` document types,
+bounded indexing/query work, and the caller's Asupersync context. Names and aliases
+are searchable titles; descriptions and tags are searchable content, rather than
+stored-only metadata. Documents enter in stable skill-ID order and are committed
+before querying. Cutoff ties follow the pinned document-ID mapping; re-sorting
+an already-truncated result cannot recover an omitted tied candidate.
+
+Queries contain at most 128 distinct terms and 4,096 Unicode scalar values.
+Conversation text is analyzed and escaped as literal terms, so Boolean operators,
+wildcards, ranges, and field syntax cannot change the intended query. Parser
+diagnostics and truncation are reported. A query that cannot be preserved safely,
+exhausted query fuel, or an index failure yields unavailable output with quiet
+hook fallback. Retrieval failures use exit `5`; exhaustion of the overall
+invocation deadline uses `6`. Partial work never becomes a complete candidate set,
+and there is no silent fallback to another engine.
 
 Overflow results identify `retrieval: "quill-bm25"`, the admitted count, and
 engine/schema provenance. Building, committing, and querying the index consume
@@ -636,8 +662,11 @@ refreshes; a new hook process cannot assume an earlier process's index survives.
 
 **Quill is the only lexical search engine used by this project. Tantivy is not
 used for runtime search, fallbacks, tests, benchmarks, or reference code.**
-Quill's optional upstream oracle features stay disabled. SkillRanker does not
-need the `fsfs` command, an embedding model, or a search service.
+The hybrid search facade, legacy lexical engine, Quill gauntlet, and optional
+oracle/compatibility features are excluded. Dependency checks cover normal,
+build, and development feature graphs. Quill verification uses native tests and
+independent expected-result fixtures. SkillRanker does not need the `fsfs`
+command, an embedding model, a search service, or an imported foreign index.
 
 The wide pass combines a Choice, phase distribution, and three oriented gates:
 
@@ -654,9 +683,11 @@ abstains without a rerank. The wording includes planning, analysis, writing, and
 explanation skills; acting on files is not a prerequisite for needing a method.
 
 When the gate passes, up to eight real candidates proceed to a detailed Choice
-with another none option and one fit Noul per candidate. The client uses the
-[TypeSafe HTTP API](https://docs.typesafe.ai/api), preserving typed answers and
-validating every requested option before scoring.
+with another none option and one fit Noul per candidate. If none wins the wide
+comparison, the detailed comparison still runs when the need gate passes:
+richer skill excerpts can resolve ambiguity left by short descriptions. The client
+uses the [TypeSafe HTTP API](https://docs.typesafe.ai/api), preserving typed answers
+and validating every requested option before scoring.
 
 ### 4. Apply eligibility and rank survivors
 
@@ -1006,14 +1037,19 @@ flowchart TD
     A[Exact session and trusted configuration] --> B[Capture context and visible roster]
     B --> C[Normalize and resolve directives before redaction and budgeting]
     C -->|explicit request| X[Locally resolved explicit result]
-    C -->|advisory| K{Exact valid cache?}
+    C -->|local policy excludes all| N[Abstain]
+    C -->|advisory candidates| Q{More than 254 eligible skills?}
+    Q -->|no| K{Exact valid cache?}
+    Q -->|yes| QR[Quill BM25: up to 254 actual matches]
+    QR -->|matches| K
+    QR -->|empty or failed| U[Unavailable or quiet hook fallback]
     K -->|hit| P[Apply current eligibility and policy]
-    K -->|miss| W[Wide Choice with none and gates]
-    W -->|low need| N[Abstain]
-    W -->|continue| R[Detailed rerank with none and fits]
+    K -->|miss| W[TypeSafe Jev: wide Choice with none and gates]
+    W -->|low need| N
+    W -->|continue| R[TypeSafe Jev: detailed rerank with none and fits]
     R --> P
     P --> O[JSON, table, hook, or TUI]
-    W -->|failure| U[Unavailable or quiet hook fallback]
+    W -->|failure| U
     R -->|failure| U
     X --> O
     N --> O
@@ -1141,6 +1177,9 @@ transactions rather than the inference timeout.
 
 These targets are not remote-service guarantees or measured benchmark results.
 Process startup, cold TLS, roster size, discovery, and provider load all matter.
+Quill index construction and search are timed separately, including on exact
+cache hits that must re-establish the current candidate set. Logical index
+allocation budgets do not replace measurements of actual process memory.
 
 Input capture and roster discovery overlap after identity is established.
 The two inference stages remain sequential. Low-need decisions skip the rerank.
