@@ -1,7 +1,14 @@
 //! Local roster identity and visibility contracts. Discovery and validation of
 //! actual files/invocation rules belong to the selected harness adapter.
 
+pub mod frontmatter;
 pub mod retrieval;
+
+pub use frontmatter::{
+    BODY_EXCERPT_MAX_SCALARS, FrontmatterError, MAX_FRONTMATTER_BYTES, MAX_SKILL_FILE_BYTES,
+    ParsedSkillMetadata, RERANK_DESCRIPTION_MAX_SCALARS, WIDE_DESCRIPTION_MAX_SCALARS,
+    parse_skill_metadata,
+};
 
 use crate::context::PrivateText;
 use crate::identity::{ContentHash, IdentityError, OpaqueLoadTarget, SkillId, SourceId};
