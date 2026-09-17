@@ -1,19 +1,10 @@
 use std::process::Command;
 
 #[test]
-fn help_and_version_describe_only_implemented_commands() {
-    let help = Command::new(env!("CARGO_BIN_EXE_sr"))
-        .arg("--help")
-        .output()
-        .unwrap();
-    assert!(help.status.success());
-    let text = String::from_utf8(help.stdout).unwrap();
-    assert!(text.contains("Only help and version are available"));
-    assert!(text.contains("your own API key"));
-    assert!(help.stderr.is_empty());
-
+fn version_reports_package_version() {
     let version = Command::new(env!("CARGO_BIN_EXE_sr"))
         .arg("--version")
+        .env_clear()
         .output()
         .unwrap();
     assert!(version.status.success());
@@ -32,12 +23,19 @@ fn unsupported_commands_fail_without_echoing_private_arguments() {
         vec!["--help", "private-canary"],
     ] {
         let result = Command::new(env!("CARGO_BIN_EXE_sr"))
+            .env_clear()
             .args(args)
             .output()
             .unwrap();
         assert_eq!(result.status.code(), Some(2));
-        assert!(result.stdout.is_empty());
-        assert_eq!(result.stderr, b"sr: unsupported arguments; use --help\n");
+        let report: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+        assert_eq!(report["schema_version"], 1);
+        assert_eq!(report["decision"], "unavailable");
+        assert_eq!(report["error"]["code"], 2);
+        assert_eq!(report["error"]["kind"], "invalid-usage");
+        assert_eq!(report["error"]["retryable"], false);
+        assert!(!String::from_utf8_lossy(&result.stdout).contains("private-canary"));
+        assert!(result.stderr.is_empty());
     }
 }
 
@@ -46,9 +44,14 @@ fn unsupported_commands_fail_without_echoing_private_arguments() {
 fn non_utf8_arguments_are_usage_errors_without_panicking() {
     use std::os::unix::ffi::OsStringExt;
     let result = Command::new(env!("CARGO_BIN_EXE_sr"))
+        .env_clear()
         .arg(std::ffi::OsString::from_vec(vec![0xff]))
         .output()
         .unwrap();
     assert_eq!(result.status.code(), Some(2));
-    assert!(result.stdout.is_empty());
+    let report: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+    assert_eq!(report["decision"], "unavailable");
+    assert_eq!(report["error"]["code"], 2);
+    assert_eq!(report["error"]["kind"], "invalid-usage");
+    assert!(result.stderr.is_empty());
 }

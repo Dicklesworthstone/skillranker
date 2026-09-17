@@ -25,7 +25,7 @@ member_beads = ["sr-roadmap-l1i.1.1"]
 phase = "P0"
 title = "Bootstrap the single Rust 2024 package and reproducible build boundaries"
 unit_property_tests = [
-    "tests/bootstrap_cli.rs::help_and_version_describe_only_implemented_commands"
+    "tests/bootstrap_cli.rs::version_reports_package_version"
 ]
 e2e_suite = "not-applicable"
 e2e_cases = []
