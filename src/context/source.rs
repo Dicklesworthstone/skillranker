@@ -1,13 +1,13 @@
 //! Source selection before readers perform effects. A selection never falls back
 //! to another conversation. Paths and identities here are local, not provider data.
 //!
-//! Discovery adapters supply a bounded, complete inventory for a independently
+//! Discovery adapters supply a bounded, complete inventory for an independently
 //! resolved workspace. They remain responsible for filesystem authorization,
 //! native parsing and cass capability checks; selection grants none of those.
 
 use crate::adapter::{SelectedSource, SourceRequest, select_source};
 use crate::identity::{HarnessId, SessionIdentity, SourceProvenance, WorkspaceId};
-use crate::limits::DISCOVERY_FILES;
+use crate::limits::{DISCOVERY_FILES, DISCOVERY_PARSED_BYTES};
 use crate::output::ErrorKind;
 use crate::privacy::MAX_ROOT_BYTES;
 use crate::roster::LocalPath;
@@ -264,7 +264,7 @@ impl SourceOptions {
         .map_err(|_| SourceError::ConflictingFlags)?;
         if (self.latest && mode != SelectedSource::Discovery)
             || (self.harness.is_some() && self.transcript.is_none())
-            || (policy.allow_network && (policy.offline || policy.dry_run))
+            || (policy.allow_network && (policy.offline || policy.dry_run || policy.local_only))
         {
             return Err(SourceError::ConflictingFlags);
         }
@@ -346,7 +346,24 @@ fn select_inventory(
     }
     let mut identities = BTreeSet::new();
     let mut candidates = Vec::new();
+    let mut path_bytes = 0usize;
     for candidate in &inventory.candidates {
+        // Count before copying or filtering: unrelated entries cannot evade the
+        // inventory bound. Adapters separately bound parsing before allocation.
+        let path = match &candidate.target {
+            SourceTarget::ClaudeTranscript(path) | SourceTarget::CassSession(path) => path,
+            _ => return Err(SourceError::InvalidInventory),
+        };
+        validate_path(path).map_err(|_| SourceError::InvalidInventory)?;
+        path_bytes = path_bytes
+            .checked_add(path.as_path().as_os_str().as_encoded_bytes().len())
+            .ok_or(SourceError::InventoryLimit)?;
+        if path_bytes > DISCOVERY_PARSED_BYTES.max() {
+            return Err(SourceError::InventoryLimit);
+        }
+        if candidate.identity.workspace.is_none() {
+            return Err(SourceError::IncompleteInventory);
+        }
         // Exact independently resolved workspace, never prefix or shared Git root.
         if candidate.identity.workspace.as_ref() != Some(&workspace) {
             continue;
