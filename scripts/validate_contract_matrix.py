@@ -10,6 +10,8 @@ Verifies:
 """
 
 from pathlib import Path
+import ast
+import re
 import json
 import sys
 import tomllib
@@ -38,6 +40,110 @@ def load_known_bead_ids():
             if "id" in data:
                 ids.add(data["id"])
     return ids
+
+
+def reference_exists(reference):
+    """Resolve source declarations only; this is not an execution receipt."""
+    if not isinstance(reference, str):
+        return False
+    parts = reference.split("::")
+    if len(parts) not in (2, 3) or any(not re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]*", name) for name in parts[1:]):
+        return False
+    relative = Path(parts[0])
+    if (relative.is_absolute() or ".." in relative.parts
+            or len(relative.parts) < 2 or relative.as_posix() != parts[0]
+            or "\\" in parts[0]):
+        return False
+    try:
+        path = (ROOT / relative).resolve(strict=True)
+        path.relative_to(ROOT.resolve())
+        path.relative_to((ROOT / relative.parts[0]).absolute())
+        if not path.is_file() or path.stat().st_size > 1024 * 1024:
+            return False
+        source = path.read_text(encoding="utf-8")
+        if relative.parts[0] == "scripts" and path.suffix == ".py":
+            nodes = ast.parse(source).body
+            matches = [node for node in nodes
+                       if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+                       and node.name == parts[1]]
+            if len(matches) != 1:
+                return False
+            node = matches[0]
+            if isinstance(node, ast.ClassDef):
+                methods = [child.name for child in node.body
+                           if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))
+                           and child.name.startswith("test_")]
+                return bool(methods) if len(parts) == 2 else methods.count(parts[2]) == 1
+            return len(parts) == 2
+        if relative.parts[0] != "tests" or path.suffix != ".rs" or len(parts) != 2:
+            return False
+        # Conservative source-only Rust subset: top-level #[test] functions.
+        # Strip literals and comments before matching; never execute source.
+        tokens = []
+        offset = 0
+        while offset < len(source):
+            if source.startswith("/*", offset):
+                depth = 1
+                offset += 2
+                while depth and offset < len(source):
+                    if source.startswith("/*", offset):
+                        depth += 1
+                        offset += 2
+                    elif source.startswith("*/", offset):
+                        depth -= 1
+                        offset += 2
+                    else:
+                        offset += 1
+                if depth:
+                    return False
+                continue
+            if source.startswith("//", offset):
+                end = source.find("\n", offset)
+                offset = len(source) if end < 0 else end + 1
+                continue
+            raw = re.match(r'(?:br|cr|r)(\#*)"', source[offset:])
+            if raw:
+                end = source.find('"' + raw[1], offset + raw.end())
+                if end < 0:
+                    return False
+                offset = end + 1 + len(raw[1])
+                tokens.append("literal")
+                continue
+            literal = re.match(r'''(?:b?"(?:\\.|[^"\\])*"|b?'(?:\\.|[^'\\])')''', source[offset:], re.S)
+            if literal:
+                offset += literal.end()
+                tokens.append("literal")
+                continue
+            if source[offset] == '"':
+                return False
+            token = re.match(r"[A-Za-z_][A-Za-z_0-9]*|\S", source[offset:])
+            if token:
+                tokens.append(token[0])
+                offset += token.end()
+            else:
+                offset += 1
+        stack = []
+        found = False
+        for index, token in enumerate(tokens):
+            if not stack and tokens[index:index + 4] == ["#", "[", "test", "]"]:
+                start = index + 4
+                if tokens[start:start + 1] == ["pub"]:
+                    start += 1
+                if tokens[start:start + 1] == ["async"]:
+                    start += 1
+                # Deliberately only literal, zero-argument unit-returning tests.
+                # Modules, other attributes, macro expansion and richer signatures
+                # need a real Rust parser; do not guess from partial declarations.
+                if tokens[start:start + 5] == ["fn", parts[1], "(", ")", "{"]:
+                    found = True
+            if token in ("(", "[", "{"):
+                stack.append(token)
+            elif token in (")", "]", "}"):
+                if not stack or stack.pop() != {")": "(", "]": "[", "}": "{"}[token]:
+                    return False
+        return found and not stack
+    except (OSError, ValueError, SyntaxError, UnicodeError, RuntimeError):
+        return False
 
 
 def validate():
@@ -103,6 +209,12 @@ def validate():
         if phase != "P0" and status not in ("planned",):
             print(f"Error: future boundary '{bid}' (phase {phase}) cannot be marked '{status}' at P0", file=sys.stderr)
             return 1
+
+        if status != "planned":
+            for reference in b["unit_property_tests"]:
+                if not reference_exists(reference):
+                    print(f"Error: boundary '{bid}' has an unresolved executed test reference", file=sys.stderr)
+                    return 1
 
     print(f"validated contract matrix: {len(boundaries)} boundaries across {len(VALID_PHASES)} phases")
     print("all boundary IDs unique, owner beads verified against roadmap, future phases planned")

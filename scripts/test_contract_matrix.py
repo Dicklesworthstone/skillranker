@@ -2,15 +2,19 @@
 """Contract and adversarial regression tests for tests/contract_matrix.toml.
 
 Verifies:
-- Production matrix is fully valid against roadmap boundaries and P0 rules.
+- Source-backed executed references resolve; prospective planned references remain allowed.
 - Corrupted matrices (duplicate IDs, invalid phases, future passed claims,
   missing fields, bad types) are rejected with clear errors.
 """
 
 from pathlib import Path
+import contextlib
+import io
+import json
 import tempfile
 import tomllib
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parent.parent
 import sys
@@ -19,10 +23,94 @@ import validate_contract_matrix as vcm
 
 
 class ContractMatrixTests(unittest.TestCase):
-    def test_production_matrix_valid(self):
-        """The checked-in contract matrix must pass all schema and consistency rules."""
-        ret = vcm.validate()
-        self.assertEqual(ret, 0, "production contract matrix must pass validation")
+    def validate_fixture(self, reference, status="executed", files=None, escape=False):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "repo"
+            root.mkdir()
+            for name, source in (files or {}).items():
+                path = root / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(source, encoding="utf-8")
+            if escape:
+                outside = Path(temporary) / "outside.py"
+                outside.write_text("def test_real(): pass\n", encoding="utf-8")
+                (root / "scripts").mkdir(exist_ok=True)
+                (root / "scripts/escape.py").symlink_to(outside)
+            issues = root / "issues.jsonl"
+            issues.write_text('{"id": "fixture-owner"}\n', encoding="utf-8")
+            matrix = root / "matrix.toml"
+            matrix.write_text(f'''schema_version = 1
+created_for_phase = "P0"
+[[boundaries]]
+id = "fixture"
+owner_bead = "fixture-owner"
+phase = "P0"
+platforms = []
+features = []
+unit_property_tests = [{json.dumps(reference)}]
+e2e_cases = []
+assertion_ids = []
+status = "{status}"
+''', encoding="utf-8")
+            with patch.multiple(vcm, ROOT=root, MATRIX_FILE=matrix, ISSUES_FILE=issues):
+                with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                    return vcm.validate()
+
+    def test_real_source_declarations_accepted(self):
+        sources = {
+            "scripts/check.py": '''raise RuntimeError("must never import this module")
+def check_contract(): pass
+class Contract:
+    def test_behavior(self): pass
+''',
+            "tests/contract.rs": "#[test]\nfn real_contract() {}\n",
+        }
+        for reference in ("scripts/check.py::check_contract", "scripts/check.py::Contract",
+                          "scripts/check.py::Contract::test_behavior", "tests/contract.rs::real_contract"):
+            with self.subTest(reference=reference):
+                self.assertEqual(self.validate_fixture(reference, files=sources), 0)
+
+    def test_missing_executed_references_rejected(self):
+        sources = {"scripts/check.py": "def real(): pass\n", "tests/contract.rs": "#[test]\nfn real() {}\n"}
+        for reference in ("scripts/missing.py::real", "scripts/check.py::missing",
+                          "tests/missing.rs::real", "tests/contract.rs::missing"):
+            for status in ("executed", "passed", "failed"):
+                with self.subTest(reference=reference, status=status):
+                    self.assertEqual(self.validate_fixture(reference, status, sources), 1)
+
+    def test_non_declarations_cannot_establish_source_evidence(self):
+        cases = [
+            ("scripts/check.py::fake", "# def fake(): pass\n"),
+            ("scripts/check.py::fake", 'text = "def fake(): pass"\n'),
+            ("scripts/check.py::Empty", "class Empty: pass\n"),
+            ("scripts/check.py::Contract::missing", "class Contract:\n    def test_real(self): pass\n"),
+            ("scripts/check.py::nested", "def outer():\n    def nested(): pass\n"),
+            ("tests/check.rs::fake", "// #[test]\n// fn fake() {}\n"),
+            ("tests/check.rs::fake", "/* nested /* comment */ #[test] fn fake() {} */"),
+            ("tests/check.rs::fake", 'const TEXT: &str = "#[test] fn fake() {}";'),
+            ("tests/check.rs::fake", 'const TEXT: &str = r##"#[test] fn fake() {}"##;'),
+            ("tests/check.rs::fake", "fn fake() {}"),
+            ("tests/check.rs::fake", "#[test] fn fake();"),
+            ("tests/check.rs::fake", "tokens!(#[test] fn fake() {});"),
+            ("tests/check.rs::fake", "#[other(#[test] fn fake() {})] fn actual() {}"),
+        ]
+        for reference, source in cases:
+            with self.subTest(reference=reference, source=source):
+                self.assertEqual(self.validate_fixture(reference, files={reference.split("::")[0]: source}), 1)
+
+    def test_malformed_and_escaping_references_rejected(self):
+        for reference in (7, "", "scripts/check.py", "scripts/check.py::", "scripts/check.py::real()",
+                          "tests/check.rs::module::real", "scripts/../outside.py::real",
+                          "/scripts/check.py::real", "other/check.py::real", "scripts/check.txt::real"):
+            with self.subTest(reference=reference):
+                self.assertEqual(self.validate_fixture(reference), 1)
+        self.assertEqual(self.validate_fixture("scripts/escape.py::test_real", escape=True), 1)
+        self.assertEqual(self.validate_fixture("scripts/directory.py::real", files={"scripts/directory.py/child": ""}), 1)
+
+    def test_planned_future_references_need_not_exist(self):
+        for reference in ("scripts/future.py::FutureContract::test_future", "tests/future.rs::future"):
+            with self.subTest(reference=reference):
+                self.assertEqual(self.validate_fixture(reference, status="planned"), 0)
 
     def test_all_p0_boundaries_covered(self):
         """Matrix must include all foundational P0 boundaries."""

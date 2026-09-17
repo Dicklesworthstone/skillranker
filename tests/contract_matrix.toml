@@ -21,7 +21,7 @@ owner_bead = "sr-roadmap-l1i.1.1"
 phase = "P0"
 title = "Bootstrap single Rust 2024 package and reproducible build boundaries"
 unit_property_tests = [
-    "tests/bootstrap_cli.rs::foundation_compiles_and_exports_expected_crate_contract"
+    "tests/bootstrap_cli.rs::help_and_version_describe_only_implemented_commands"
 ]
 e2e_suite = "runner-smoke"
 e2e_cases = ["success"]
@@ -36,7 +36,7 @@ owner_bead = "sr-roadmap-l1i.1.2"
 phase = "P0"
 title = "Identity, provenance, visibility and normalized event types"
 unit_property_tests = [
-    "tests/identity_contract.rs::identity_contract_invariants"
+    "tests/identity_contract.rs::documented_incomplete_context_round_trips_without_durable_authority"
 ]
 e2e_suite = "runner-smoke"
 e2e_cases = ["isolation"]
@@ -51,7 +51,7 @@ owner_bead = "sr-roadmap-l1i.1.3"
 phase = "P0"
 title = "Decision, error, quality, trace and report schemas"
 unit_property_tests = [
-    "tests/output_contract.rs::output_contract_invariants"
+    "tests/output_contract.rs::documented_rank_examples_are_valid_contracts"
 ]
 e2e_suite = "runner-smoke"
 e2e_cases = ["expected-refusal"]
@@ -66,7 +66,7 @@ owner_bead = "sr-roadmap-l1i.1.4"
 phase = "P0"
 title = "Validated resource budgets and clock types"
 unit_property_tests = [
-    "tests/limits_contract.rs::limits_contract_invariants"
+    "tests/limits_contract.rs::default_limits_are_positive_and_cap_plus_one_checked"
 ]
 e2e_suite = "runner-smoke"
 e2e_cases = ["isolation"]
@@ -81,7 +81,7 @@ owner_bead = "sr-roadmap-l1i.1.5"
 phase = "P0"
 title = "Trusted configuration layers and authority policy schema"
 unit_property_tests = [
-    "tests/config_contract.rs::config_contract_invariants"
+    "tests/config_contract.rs::registry_is_complete_ordered_and_internally_consistent"
 ]
 e2e_suite = "runner-smoke"
 e2e_cases = ["isolation"]
@@ -96,7 +96,7 @@ owner_bead = "sr-roadmap-l1i.1.6"
 phase = "P0"
 title = "Versioned adapter and capability contracts"
 unit_property_tests = [
-    "tests/adapter_contract.rs::adapter_contract_invariants"
+    "tests/adapter_contract.rs::foundation_capabilities_match_the_checked_in_fixture_and_do_not_advertise_commands"
 ]
 e2e_suite = "runner-smoke"
 e2e_cases = ["expected-refusal"]
@@ -111,7 +111,7 @@ owner_bead = "sr-roadmap-l1i.1.7"
 phase = "P0"
 title = "Pinned dependency source slices and license obligations"
 unit_property_tests = [
-    "scripts/check_dependency_graph.py::check_pinned_dependencies"
+    "scripts/check_dependency_graph.py::main"
 ]
 e2e_suite = "runner-smoke"
 e2e_cases = ["success"]
@@ -141,7 +141,7 @@ owner_bead = "sr-roadmap-l1i.1.14"
 phase = "P0"
 title = "Bounded process and evidence engine for P0 test runner"
 unit_property_tests = [
-    "scripts/e2e/test_runner.py::RunnerMechanicsContract"
+    "scripts/e2e/test_runner.py::RunnerTests"
 ]
 e2e_suite = "runner-smoke"
 e2e_cases = ["success", "expected-refusal", "isolation"]
@@ -156,7 +156,7 @@ owner_bead = "sr-roadmap-l1i.1.9"
 phase = "P0"
 title = "Sanitized test and evidence scaffolding entrypoint"
 unit_property_tests = [
-    "tests/contract_matrix_contract.rs::contract_matrix_validates"
+    "scripts/test_contract_matrix.py::ContractMatrixTests"
 ]
 e2e_suite = "runner-smoke"
 e2e_cases = ["success", "expected-refusal", "isolation"]
