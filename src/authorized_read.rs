@@ -94,6 +94,12 @@ impl FileIdentity {
         }
     }
 
+    /// Build an identity from a caller's own stat of the same object, so
+    /// enumeration and reads can be compared without a second open.
+    pub const fn new(device: u64, inode: u64) -> Self {
+        Self { device, inode }
+    }
+
     pub const fn device(self) -> u64 {
         self.device
     }

@@ -1,0 +1,623 @@
+//! Bounded enumeration of the roots a selected harness can load from.
+//!
+//! Discovery answers "which skill files could this harness load right now",
+//! not "which skill files exist on this machine". Only roots the caller's
+//! adapter declares are visited, each through its own authorized directory
+//! descriptor, so one harness's roots are never unioned with another's.
+//!
+//! A missing optional root is normal. An unreadable root, an unsupported
+//! source, a skipped entry or an exhausted bound makes the result partial, and
+//! a partial result can never support a claim that no skill exists. Parsing
+//! (`sr-roadmap-l1i.3.3`), identity and collisions (`.3.5`) and revalidation
+//! (`.3.11`) are separate boundaries.
+
+use crate::authorized_read::{AuthorizedRoot, FileIdentity, ReadError};
+use crate::identity::{HarnessId, IdentityError, SourceId};
+use crate::limits::{DISCOVERY_FILES, DISCOVERY_PARSED_BYTES, ResourceLimit};
+use crate::roster::{LocalPath, Visibility};
+use nix::dir::{Dir, Type};
+use nix::errno::Errno;
+use nix::fcntl::{AtFlags, OFlag, openat};
+use nix::sys::stat::{Mode, SFlag, fstatat};
+use std::collections::VecDeque;
+use std::ffi::{OsStr, OsString};
+use std::fmt;
+use std::os::fd::{AsFd, OwnedFd};
+use std::os::unix::ffi::OsStrExt;
+use std::path::{Path, PathBuf};
+
+/// Directory levels visited below a root before descent stops.
+pub const MAX_ROOT_DEPTH: usize = 8;
+/// The documented Claude Code skill file name.
+pub const CLAUDE_SKILL_FILE: &str = "SKILL.md";
+/// Documented Claude Code roots, in precedence order.
+pub const CLAUDE_PROJECT_SOURCE: &str = "claude_code.project";
+pub const CLAUDE_USER_SOURCE: &str = "claude_code.user";
+/// Claude sources this build does not enumerate; declaring them keeps the
+/// roster honestly partial instead of implying a complete inventory.
+pub const CLAUDE_UNENUMERATED_SOURCES: &[&str] = &["claude_code.plugin", "claude_code.managed"];
+
+const CLAUDE_PROJECT_PRIORITY: i32 = 100;
+const CLAUDE_USER_PRIORITY: i32 = 50;
+const MAX_FILE_NAME_BYTES: usize = 255;
+
+/// Which documented source a root represents.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub enum SourceKind {
+    Project,
+    User,
+    Plugin,
+    Managed,
+    /// Explicitly configured root with no harness load contract.
+    Generic,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DiscoveryError {
+    InvalidSkillFileName,
+    InvalidRootPath,
+    Identity(IdentityError),
+}
+
+impl fmt::Display for DiscoveryError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidSkillFileName => f.write_str("skill file name is not a single component"),
+            Self::InvalidRootPath => f.write_str("root path is not usable"),
+            Self::Identity(error) => write!(f, "invalid identity: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for DiscoveryError {}
+
+/// A root the selected adapter declares, before it is opened.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RootSpec {
+    source: SourceId,
+    kind: SourceKind,
+    priority: i32,
+    visibility: Visibility,
+    skill_file: OsString,
+}
+
+impl RootSpec {
+    pub fn new(
+        source: SourceId,
+        kind: SourceKind,
+        priority: i32,
+        visibility: Visibility,
+        skill_file: &str,
+    ) -> Result<Self, DiscoveryError> {
+        let invalid = skill_file.is_empty()
+            || skill_file.len() > MAX_FILE_NAME_BYTES
+            || skill_file.contains('/')
+            || skill_file.contains('\0')
+            || skill_file == "."
+            || skill_file == "..";
+        if invalid {
+            return Err(DiscoveryError::InvalidSkillFileName);
+        }
+        Ok(Self {
+            source,
+            kind,
+            priority,
+            visibility,
+            skill_file: OsString::from(skill_file),
+        })
+    }
+
+    pub fn source(&self) -> &SourceId {
+        &self.source
+    }
+    pub const fn kind(&self) -> SourceKind {
+        self.kind
+    }
+    pub const fn priority(&self) -> i32 {
+        self.priority
+    }
+    pub fn visibility(&self) -> &Visibility {
+        &self.visibility
+    }
+    pub fn skill_file(&self) -> &OsStr {
+        &self.skill_file
+    }
+}
+
+/// An opened root: the descriptor, not the path, anchors enumeration.
+#[derive(Debug)]
+pub struct PlannedRoot {
+    spec: RootSpec,
+    /// `None` when a configured root exists but could not be opened; the pass
+    /// reports it and stays partial rather than silently skipping it.
+    root: Option<AuthorizedRoot>,
+    declared: PathBuf,
+}
+
+impl PlannedRoot {
+    /// `Ok(None)` means the optional root is absent, which is normal.
+    pub fn open(spec: RootSpec, path: &Path) -> Result<Option<Self>, DiscoveryError> {
+        let declared = path.to_path_buf();
+        match AuthorizedRoot::open_absolute(path) {
+            Ok(root) => Ok(Some(Self {
+                spec,
+                root: Some(root),
+                declared,
+            })),
+            Err(ReadError::NotFound) => Ok(None),
+            Err(ReadError::InvalidRelativePath) => Err(DiscoveryError::InvalidRootPath),
+            Err(_) => Ok(Some(Self {
+                spec,
+                root: None,
+                declared,
+            })),
+        }
+    }
+
+    pub const fn spec(&self) -> &RootSpec {
+        &self.spec
+    }
+
+    pub const fn root(&self) -> Option<&AuthorizedRoot> {
+        self.root.as_ref()
+    }
+
+    /// The configured path, kept local for the caller's own diagnostics.
+    pub fn declared_path(&self) -> &Path {
+        &self.declared
+    }
+}
+
+/// The declared plan for one harness. Building a plan for one harness never
+/// adds another harness's roots.
+#[derive(Debug)]
+pub struct DiscoveryPlan {
+    harness: HarnessId,
+    roots: Vec<PlannedRoot>,
+    missing: Vec<SourceId>,
+    unenumerated: Vec<SourceId>,
+}
+
+impl DiscoveryPlan {
+    pub fn new(harness: HarnessId) -> Self {
+        Self {
+            harness,
+            roots: Vec::new(),
+            missing: Vec::new(),
+            unenumerated: Vec::new(),
+        }
+    }
+
+    pub fn push_root(&mut self, root: PlannedRoot) {
+        self.roots.push(root);
+    }
+
+    /// An optional root that does not exist. Normal, and not partial.
+    pub fn note_missing(&mut self, source: SourceId) {
+        self.missing.push(source);
+    }
+
+    /// A documented source this build does not enumerate. Always partial.
+    pub fn note_unenumerated(&mut self, source: SourceId) {
+        self.unenumerated.push(source);
+    }
+
+    pub const fn harness(&self) -> &HarnessId {
+        &self.harness
+    }
+    pub fn roots(&self) -> &[PlannedRoot] {
+        &self.roots
+    }
+    pub fn missing(&self) -> &[SourceId] {
+        &self.missing
+    }
+    pub fn unenumerated(&self) -> &[SourceId] {
+        &self.unenumerated
+    }
+
+    pub fn discover(&self) -> Discovery {
+        self.discover_with(DiscoveryLimits::defaults())
+    }
+
+    pub fn discover_with(&self, limits: DiscoveryLimits) -> Discovery {
+        let mut discovery = Discovery::default();
+        for source in &self.missing {
+            discovery
+                .diagnostics
+                .push(Diagnostic::RootMissing(source.clone()));
+        }
+        for source in &self.unenumerated {
+            discovery
+                .diagnostics
+                .push(Diagnostic::SourceNotEnumerated(source.clone()));
+            discovery.partial = true;
+        }
+        for planned in &self.roots {
+            discovery.walk_root(planned, limits);
+        }
+        discovery.candidates.sort_by(|left, right| {
+            right
+                .priority
+                .cmp(&left.priority)
+                .then_with(|| left.source.as_str().cmp(right.source.as_str()))
+                .then_with(|| left.relative.cmp(&right.relative))
+        });
+        discovery
+    }
+}
+
+/// Ceilings applied to one discovery pass.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DiscoveryLimits {
+    entries: ResourceLimit,
+    bytes: ResourceLimit,
+    depth: usize,
+}
+
+impl DiscoveryLimits {
+    pub const fn defaults() -> Self {
+        Self {
+            entries: DISCOVERY_FILES,
+            bytes: DISCOVERY_PARSED_BYTES,
+            depth: MAX_ROOT_DEPTH,
+        }
+    }
+
+    pub const fn new(entries: ResourceLimit, bytes: ResourceLimit, depth: usize) -> Self {
+        Self {
+            entries,
+            bytes,
+            depth,
+        }
+    }
+
+    pub const fn entries(self) -> ResourceLimit {
+        self.entries
+    }
+    pub const fn bytes(self) -> ResourceLimit {
+        self.bytes
+    }
+    pub const fn depth(self) -> usize {
+        self.depth
+    }
+}
+
+/// One skill file the harness could load, before parsing or identity work.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Candidate {
+    source: SourceId,
+    kind: SourceKind,
+    priority: i32,
+    visibility: Visibility,
+    relative: PathBuf,
+    path: LocalPath,
+    identity: FileIdentity,
+    size: u64,
+    via_symlink: bool,
+}
+
+impl Candidate {
+    pub fn source(&self) -> &SourceId {
+        &self.source
+    }
+    pub const fn kind(&self) -> SourceKind {
+        self.kind
+    }
+    pub const fn priority(&self) -> i32 {
+        self.priority
+    }
+    pub fn visibility(&self) -> &Visibility {
+        &self.visibility
+    }
+    /// Path below its root, for the authorized read that follows.
+    pub fn relative(&self) -> &Path {
+        &self.relative
+    }
+    pub fn path(&self) -> &LocalPath {
+        &self.path
+    }
+    pub const fn identity(&self) -> FileIdentity {
+        self.identity
+    }
+    pub const fn size(&self) -> u64 {
+        self.size
+    }
+    /// The entry was a symbolic link; the authorized read still decides
+    /// whether its target is inside an authorized root.
+    pub const fn via_symlink(&self) -> bool {
+        self.via_symlink
+    }
+}
+
+/// Diagnostics name the source, never a path, entry name or content.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Diagnostic {
+    RootMissing(SourceId),
+    RootUnreadable(SourceId),
+    SourceNotEnumerated(SourceId),
+    DirectoryUnreadable(SourceId),
+    SymlinkedDirectorySkipped(SourceId),
+    DepthLimitReached(SourceId),
+    EntryUnreadable(SourceId),
+    EntryLimitReached,
+    ByteLimitReached,
+}
+
+impl fmt::Display for Diagnostic {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::RootMissing(source) => write!(f, "optional root absent for {}", source.as_str()),
+            Self::RootUnreadable(source) => {
+                write!(f, "configured root unreadable for {}", source.as_str())
+            }
+            Self::SourceNotEnumerated(source) => {
+                write!(
+                    f,
+                    "source not enumerated by this build: {}",
+                    source.as_str()
+                )
+            }
+            Self::DirectoryUnreadable(source) => {
+                write!(f, "directory unreadable under {}", source.as_str())
+            }
+            Self::SymlinkedDirectorySkipped(source) => {
+                write!(
+                    f,
+                    "symbolic-link directory skipped under {}",
+                    source.as_str()
+                )
+            }
+            Self::DepthLimitReached(source) => {
+                write!(f, "depth bound reached under {}", source.as_str())
+            }
+            Self::EntryUnreadable(source) => {
+                write!(f, "entry unreadable under {}", source.as_str())
+            }
+            Self::EntryLimitReached => f.write_str("entry bound reached; enumeration stopped"),
+            Self::ByteLimitReached => f.write_str("byte bound reached; enumeration stopped"),
+        }
+    }
+}
+
+/// The result of one bounded pass.
+#[derive(Debug, Default)]
+pub struct Discovery {
+    candidates: Vec<Candidate>,
+    diagnostics: Vec<Diagnostic>,
+    entries_examined: usize,
+    bytes_examined: u64,
+    partial: bool,
+}
+
+impl Discovery {
+    pub fn candidates(&self) -> &[Candidate] {
+        &self.candidates
+    }
+    pub fn diagnostics(&self) -> &[Diagnostic] {
+        &self.diagnostics
+    }
+    pub const fn entries_examined(&self) -> usize {
+        self.entries_examined
+    }
+    pub const fn bytes_examined(&self) -> u64 {
+        self.bytes_examined
+    }
+    /// True when any source was skipped, truncated or unreadable. A partial
+    /// result cannot support a global "no skill exists" claim.
+    pub const fn is_partial(&self) -> bool {
+        self.partial
+    }
+
+    fn note(&mut self, diagnostic: Diagnostic) {
+        self.partial = true;
+        self.diagnostics.push(diagnostic);
+    }
+
+    fn walk_root(&mut self, planned: &PlannedRoot, limits: DiscoveryLimits) {
+        let Some(root) = planned.root.as_ref() else {
+            self.note(Diagnostic::RootUnreadable(planned.spec.source.clone()));
+            return;
+        };
+        let Ok(base) = root.as_fd().try_clone_to_owned() else {
+            self.note(Diagnostic::RootUnreadable(planned.spec.source.clone()));
+            return;
+        };
+        let mut queue: VecDeque<(OwnedFd, PathBuf, usize)> =
+            VecDeque::from([(base, PathBuf::new(), 0usize)]);
+        while let Some((directory, relative, depth)) = queue.pop_front() {
+            // Dir owns the descriptor it lists, so hand it a duplicate and
+            // keep ours for opening children.
+            let listing = directory
+                .as_fd()
+                .try_clone_to_owned()
+                .ok()
+                .and_then(|fd| Dir::from_fd(fd).ok());
+            let Some(mut listing) = listing else {
+                self.note(Diagnostic::DirectoryUnreadable(planned.spec.source.clone()));
+                continue;
+            };
+            for entry in listing.iter() {
+                let Ok(entry) = entry else {
+                    self.note(Diagnostic::EntryUnreadable(planned.spec.source.clone()));
+                    continue;
+                };
+                let name = OsStr::from_bytes(entry.file_name().to_bytes());
+                if name == OsStr::new(".") || name == OsStr::new("..") {
+                    continue;
+                }
+                self.entries_examined += 1;
+                if limits.entries.check(self.entries_examined).is_err() {
+                    self.note(Diagnostic::EntryLimitReached);
+                    return;
+                }
+                let kind = match entry.file_type() {
+                    Some(kind) => kind,
+                    // Some filesystems omit d_type; ask the filesystem instead.
+                    None => match fstatat(&directory, name, AtFlags::AT_SYMLINK_NOFOLLOW) {
+                        Ok(stat) => sflag_to_type(stat.st_mode),
+                        Err(_) => {
+                            self.note(Diagnostic::EntryUnreadable(planned.spec.source.clone()));
+                            continue;
+                        }
+                    },
+                };
+                match kind {
+                    Type::Directory => {
+                        if depth + 1 > limits.depth {
+                            self.note(Diagnostic::DepthLimitReached(planned.spec.source.clone()));
+                            continue;
+                        }
+                        let flags = OFlag::O_RDONLY
+                            | OFlag::O_DIRECTORY
+                            | OFlag::O_NOFOLLOW
+                            | OFlag::O_CLOEXEC;
+                        match openat(&directory, name, flags, Mode::empty()) {
+                            Ok(child) => queue.push_back((child, relative.join(name), depth + 1)),
+                            Err(Errno::ELOOP | Errno::ENOTDIR) => self.note(
+                                Diagnostic::SymlinkedDirectorySkipped(planned.spec.source.clone()),
+                            ),
+                            Err(_) => self
+                                .note(Diagnostic::DirectoryUnreadable(planned.spec.source.clone())),
+                        }
+                    }
+                    Type::Symlink => {
+                        // A link may name a directory or a skill file; only the
+                        // file case is a candidate, and the authorized read
+                        // still decides whether its target is in a root.
+                        if name == planned.spec.skill_file {
+                            self.push_candidate(planned, &relative, name, true, limits);
+                        } else {
+                            self.note(Diagnostic::SymlinkedDirectorySkipped(
+                                planned.spec.source.clone(),
+                            ));
+                        }
+                    }
+                    Type::File if name == planned.spec.skill_file => {
+                        self.push_candidate(planned, &relative, name, false, limits);
+                    }
+                    _ => {}
+                }
+                if self.partial
+                    && matches!(
+                        self.diagnostics.last(),
+                        Some(Diagnostic::EntryLimitReached | Diagnostic::ByteLimitReached)
+                    )
+                {
+                    return;
+                }
+            }
+        }
+    }
+
+    // `dev_t`/`ino_t` widths differ by platform: the casts below are identity
+    // on Linux and widening on macOS.
+    #[allow(clippy::unnecessary_cast)]
+    fn push_candidate(
+        &mut self,
+        planned: &PlannedRoot,
+        relative: &Path,
+        name: &OsStr,
+        via_symlink: bool,
+        limits: DiscoveryLimits,
+    ) {
+        let Some(root) = planned.root.as_ref() else {
+            return;
+        };
+        // Follow a symlinked candidate only far enough to learn size and
+        // identity; the authorized read repeats every containment check.
+        let flags = if via_symlink {
+            AtFlags::empty()
+        } else {
+            AtFlags::AT_SYMLINK_NOFOLLOW
+        };
+        let full = relative.join(name);
+        let Ok(stat) = fstatat(root.as_fd(), full.as_os_str(), flags) else {
+            self.note(Diagnostic::EntryUnreadable(planned.spec.source.clone()));
+            return;
+        };
+        if sflag_to_type(stat.st_mode) != Type::File {
+            return;
+        }
+        let size = stat.st_size.max(0) as u64;
+        let next = self.bytes_examined.saturating_add(size);
+        if usize::try_from(next).map_or(true, |total| limits.bytes.check(total).is_err()) {
+            self.note(Diagnostic::ByteLimitReached);
+            return;
+        }
+        self.bytes_examined = next;
+        self.candidates.push(Candidate {
+            source: planned.spec.source.clone(),
+            kind: planned.spec.kind,
+            priority: planned.spec.priority,
+            visibility: planned.spec.visibility.clone(),
+            path: LocalPath::new(root.absolute_path().join(&full)),
+            relative: full,
+            identity: FileIdentity::new(stat.st_dev as u64, stat.st_ino as u64),
+            size,
+            via_symlink,
+        });
+    }
+}
+
+fn sflag_to_type(mode: nix::sys::stat::mode_t) -> Type {
+    let bits = SFlag::from_bits_truncate(mode) & SFlag::S_IFMT;
+    match bits {
+        SFlag::S_IFDIR => Type::Directory,
+        SFlag::S_IFLNK => Type::Symlink,
+        SFlag::S_IFIFO => Type::Fifo,
+        SFlag::S_IFSOCK => Type::Socket,
+        SFlag::S_IFCHR => Type::CharacterDevice,
+        SFlag::S_IFBLK => Type::BlockDevice,
+        _ => Type::File,
+    }
+}
+
+/// Build the documented Claude Code plan: the project and user skill roots and
+/// nothing else. Plugin and managed sources are declared unenumerated, so the
+/// result stays partial rather than implying a complete inventory. Ancestor
+/// directories are never walked, and no other harness's roots are added.
+pub fn claude_code_plan(
+    workspace: &Path,
+    user_home: Option<&Path>,
+    visibility: Visibility,
+) -> Result<DiscoveryPlan, DiscoveryError> {
+    let harness =
+        HarnessId::new(crate::adapter::CLAUDE_CODE_ID).map_err(DiscoveryError::Identity)?;
+    let mut plan = DiscoveryPlan::new(harness);
+    let declared = [
+        (
+            CLAUDE_PROJECT_SOURCE,
+            SourceKind::Project,
+            CLAUDE_PROJECT_PRIORITY,
+            Some(workspace.join(".claude").join("skills")),
+        ),
+        (
+            CLAUDE_USER_SOURCE,
+            SourceKind::User,
+            CLAUDE_USER_PRIORITY,
+            user_home.map(|home| home.join(".claude").join("skills")),
+        ),
+    ];
+    for (id, kind, priority, path) in declared {
+        let source = SourceId::new(id).map_err(DiscoveryError::Identity)?;
+        let Some(path) = path else {
+            plan.note_missing(source);
+            continue;
+        };
+        let spec = RootSpec::new(
+            source.clone(),
+            kind,
+            priority,
+            visibility.clone(),
+            CLAUDE_SKILL_FILE,
+        )?;
+        match PlannedRoot::open(spec, &path)? {
+            Some(root) => plan.push_root(root),
+            None => plan.note_missing(source),
+        }
+    }
+    for id in CLAUDE_UNENUMERATED_SOURCES {
+        plan.note_unenumerated(SourceId::new(*id).map_err(DiscoveryError::Identity)?);
+    }
+    Ok(plan)
+}

@@ -1,6 +1,7 @@
 //! Local roster identity and visibility contracts. Discovery and validation of
 //! actual files/invocation rules belong to the selected harness adapter.
 
+pub mod discovery;
 pub mod frontmatter;
 pub mod retrieval;
 
