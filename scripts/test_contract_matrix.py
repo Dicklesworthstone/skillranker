@@ -286,6 +286,20 @@ class Contract:
         self.assertEqual(missing.returncode, 1)
         self.assertIn("missing-suite-receipt", missing.stderr)
 
+    def test_cli_usage_errors_do_not_echo_private_arguments(self):
+        command = [sys.executable, "-I", "-B", str(ROOT / "scripts/validate_contract_matrix.py")]
+        canary = "SYNTHETIC_PRIVATE_MATRIX_ARGUMENT"
+        for arguments in (["--unknown", canary], [canary], ["--smoke-receipt"]):
+            result = subprocess.run(command + arguments, capture_output=True, text=True,
+                                    timeout=20, check=False)
+            self.assertEqual(result.returncode, 2)
+            self.assertEqual(result.stdout, "")
+            self.assertEqual(result.stderr, "invalid contract matrix: arguments; use --help\n")
+        help_result = subprocess.run(command + ["--help"], capture_output=True, text=True,
+                                     timeout=20, check=False)
+        self.assertEqual(help_result.returncode, 0)
+        self.assertIn("--require-mechanics", help_result.stdout)
+
     def test_receipt_gate_requires_real_matching_complete_reports(self):
         # Retain all real runs and mutations; run this in a frozen checkout.
         # A complete accepted twin prevents an always-reject validator passing.

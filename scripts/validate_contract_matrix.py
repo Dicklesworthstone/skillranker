@@ -311,8 +311,13 @@ def validate(*, receipts=None):
     return 0
 
 
+class QuietParser(argparse.ArgumentParser):
+    def error(self, message):
+        self.exit(2, "invalid contract matrix: arguments; use --help\n")
+
+
 def main():
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = QuietParser(description=__doc__)
     parser.add_argument("--require-mechanics", action="store_true")
     parser.add_argument("--smoke-receipt", type=Path)
     parser.add_argument("--certificate-receipt", type=Path)
