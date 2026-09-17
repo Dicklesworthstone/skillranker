@@ -216,9 +216,7 @@ description: Missing ending delimiter
 #[test]
 fn utf8_bom_and_crlf_handling() {
     // Document with UTF-8 BOM and CRLF newlines
-    let bom_crlf = format!(
-        "\u{feff}---\r\nname: bom-skill\r\ndescription: UTF-8 BOM and CRLF support\r\n---\r\n\r\n# BOM Skill\r\n\r\nBody text.\r\n"
-    );
+    let bom_crlf = "\u{feff}---\r\nname: bom-skill\r\ndescription: UTF-8 BOM and CRLF support\r\n---\r\n\r\n# BOM Skill\r\n\r\nBody text.\r\n";
 
     let parsed = parse_skill_metadata(bom_crlf.as_bytes()).expect("parsed bom crlf");
     assert_eq!(parsed.name.as_deref(), Some("bom-skill"));

@@ -389,7 +389,7 @@ fn unknown_usage_preserved_across_errors() {
     assert!(receipt.has_unknown_usage);
 
     // Unknown provider cost is NEVER counted as zero
-    let receipt_json = serde_json::to_value(&receipt).unwrap();
+    let receipt_json = serde_json::to_value(receipt).unwrap();
     assert_eq!(receipt_json["unknown_usage_attempts"], 1);
     assert_eq!(receipt_json["has_unknown_usage"], true);
     assert_eq!(receipt_json["known_usage"]["input_tokens"], 150);
