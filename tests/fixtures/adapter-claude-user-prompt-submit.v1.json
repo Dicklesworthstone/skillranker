@@ -1,0 +1,9 @@
+{
+  "hook_event_name": "UserPromptSubmit",
+  "session_id": "session-example",
+  "transcript_path": "/synthetic/transcript.jsonl",
+  "cwd": "/synthetic/workspace",
+  "prompt": "Continue investigating the failing Rust test.",
+  "prompt_id": "prompt-2",
+  "permission_mode": "default"
+}

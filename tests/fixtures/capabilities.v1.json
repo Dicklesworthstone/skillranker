@@ -1,0 +1,85 @@
+{
+  "schema_version": 1,
+  "adapter_contract_version": 1,
+  "implemented_cli": ["help", "version"],
+  "planned_cli": [
+    { "name": "rank", "earliest_phase": "p4" },
+    { "name": "hook", "earliest_phase": "p6" },
+    { "name": "roster", "earliest_phase": "p2" },
+    { "name": "doctor", "earliest_phase": "p4" },
+    { "name": "capabilities", "earliest_phase": "p4" },
+    { "name": "demo", "earliest_phase": "p4" },
+    { "name": "observe", "earliest_phase": "p5" },
+    { "name": "eval", "earliest_phase": "p5" },
+    { "name": "calibrate", "earliest_phase": "p8" },
+    { "name": "tui", "earliest_phase": "p9" }
+  ],
+  "adapters": [
+    {
+      "adapter_id": "normalized",
+      "kind": "normalized_context",
+      "support": "implemented",
+      "contract_version": 1,
+      "on_default_hook_path": false,
+      "identity_semantics": "compatible",
+      "visibility_semantics": "compatible",
+      "tested_versions": [],
+      "unverified_versions": [],
+      "conformance": {
+        "prompt_timing": { "status": "not_evaluated", "evidence": [] },
+        "branch_identity": { "status": "not_evaluated", "evidence": [] },
+        "visibility": { "status": "not_evaluated", "evidence": [] },
+        "restrictions": { "status": "not_evaluated", "evidence": [] },
+        "compaction": { "status": "not_evaluated", "evidence": [] },
+        "load_evidence": { "status": "not_evaluated", "evidence": [] },
+        "hook_output": { "status": "not_evaluated", "evidence": [] },
+        "deadline": { "status": "not_evaluated", "evidence": [] },
+        "delivery": { "status": "not_evaluated", "evidence": [] }
+      }
+    },
+    {
+      "adapter_id": "claude_code",
+      "kind": "claude_hook",
+      "support": "unverified",
+      "contract_version": 1,
+      "on_default_hook_path": true,
+      "identity_semantics": "unverified",
+      "visibility_semantics": "unverified",
+      "tested_versions": [],
+      "unverified_versions": [],
+      "conformance": {
+        "prompt_timing": { "status": "not_evaluated", "evidence": [] },
+        "branch_identity": { "status": "not_evaluated", "evidence": [] },
+        "visibility": { "status": "not_evaluated", "evidence": [] },
+        "restrictions": { "status": "not_evaluated", "evidence": [] },
+        "compaction": { "status": "not_evaluated", "evidence": [] },
+        "load_evidence": { "status": "not_evaluated", "evidence": [] },
+        "hook_output": { "status": "not_evaluated", "evidence": [] },
+        "deadline": { "status": "not_evaluated", "evidence": [] },
+        "delivery": { "status": "not_evaluated", "evidence": [] }
+      }
+    },
+    {
+      "adapter_id": "cass",
+      "kind": "cass_session",
+      "support": "unverified",
+      "contract_version": 1,
+      "on_default_hook_path": false,
+      "identity_semantics": "unverified",
+      "visibility_semantics": "unverified",
+      "tested_versions": [],
+      "unverified_versions": [],
+      "conformance": {
+        "prompt_timing": { "status": "not_evaluated", "evidence": [] },
+        "branch_identity": { "status": "not_evaluated", "evidence": [] },
+        "visibility": { "status": "not_evaluated", "evidence": [] },
+        "restrictions": { "status": "not_evaluated", "evidence": [] },
+        "compaction": { "status": "not_evaluated", "evidence": [] },
+        "load_evidence": { "status": "not_evaluated", "evidence": [] },
+        "hook_output": { "status": "not_evaluated", "evidence": [] },
+        "deadline": { "status": "not_evaluated", "evidence": [] },
+        "delivery": { "status": "not_evaluated", "evidence": [] }
+      }
+    }
+  ]
+}

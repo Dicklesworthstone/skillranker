@@ -1,0 +1,9 @@
+{
+  "version": "0.8.0",
+  "api_version": 1,
+  "contract_version": 1,
+  "source_id": "archive-local",
+  "remote_source": false,
+  "export_omits_skills_by_default": true,
+  "export_retains_native_shapes": true
+}
