@@ -1,0 +1,16 @@
+# Consistent text checkout on all development platforms.
+* text=auto eol=lf
+
+# Binary fixtures and documentation assets must retain their exact bytes.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.zip binary
+*.gz binary
+*.db binary
+*.sqlite binary
+*.sqlite3 binary

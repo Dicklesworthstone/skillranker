@@ -1,0 +1,92 @@
+# Rust build and profiling output. Cargo.lock is intentionally tracked.
+target/
+/target-*/
+/target_*/
+**/*.rs.bk
+*.profraw
+*.profdata
+/coverage/
+/lcov.info
+/perf.data
+/perf.data.old
+rustc-ice-*.txt
+
+# Credentials and local environment. Sanitized examples remain trackable.
+.env
+.env.*
+!.env.example
+/.secrets/
+*.key
+*.pem
+credentials.json
+
+# SkillRanker private state. Keep .sr/config.toml trackable.
+/.sr/cache/
+/.sr/transcripts/
+/.sr/exports/
+/.sr/logs/
+/.sr/*.db
+/.sr/*.db-*
+/.sr/*.db-fsqlite-*
+/.sr/*.sqlite
+/.sr/*.sqlite-*
+/.sr/*.sqlite3
+/.sr/*.sqlite3-*
+/.sr/config.local.toml
+/ledger.db
+/ledger.db-*
+
+# Raw sessions and generated diagnostic/request dumps belong in these dirs.
+# Do not blanket-ignore JSON/JSONL: sanitized fixtures and schemas are source.
+/scratch/
+/tmp/
+/transcripts/
+/local-data/
+/tests/artifacts/
+*.log
+*.tmp
+*.tmp.*
+*.actual
+*.snap.new
+
+# Beads: track issue exports and project config, not machine-local state.
+/.beads/*.db
+/.beads/*.db-*
+/.beads/*.db-fsqlite-*
+/.beads/.br_history/
+/.beads/*.lock
+/.beads/*.lock.*
+/.beads/.write.lock*
+/.beads/last-touched
+/.beads/recovery*/
+/.bv/
+
+# Agent runtime state. Project skills and shared hook settings stay trackable.
+/.agent-mail-project-id
+/.agent-mail.yaml
+/.claude/settings.local.json
+/.claude/worktrees/
+/.codex/sessions/
+/.codex/history.jsonl
+/.codex/auth.json
+/.ee/
+/.ntm/
+/.skill-loop-progress*.md
+/.repo_janitor_workspace/
+
+# Editor and operating-system noise.
+.DS_Store
+._*
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Release staging and fuzz run products; keep fuzz seeds and fixtures.
+/dist/
+/.dsr/cache/
+/.dsr/logs/
+/fuzz/artifacts/
+/fuzz/coverage/
