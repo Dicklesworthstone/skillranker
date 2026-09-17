@@ -174,14 +174,15 @@ fn read_snapshot(
         {
             (cursor.byte_offset, false, false)
         }
-        Some(_) => {
-            let start = snapshot_len.saturating_sub(snapshot_len.min(cap));
-            (start, true, start > 0)
-        }
-        None if kind == CursorKind::Observation => (0, false, false),
-        None => {
-            let start = snapshot_len.saturating_sub(snapshot_len.min(cap));
-            (start, false, start > 0)
+        previous => {
+            let rebuilt = previous.is_some();
+            match kind {
+                CursorKind::Ranking => {
+                    let start = snapshot_len.saturating_sub(snapshot_len.min(cap));
+                    (start, rebuilt, start > 0)
+                }
+                CursorKind::Observation => (0, rebuilt, false),
+            }
         }
     };
 
@@ -198,20 +199,20 @@ fn read_snapshot(
     parse_window(
         &buf,
         start,
-        identity,
-        kind,
-        generation_after(previous, rebuilt),
-        previous.and_then(|c| {
-            if rebuilt {
+        align_to_record,
+        WindowContext {
+            identity,
+            kind,
+            generation: generation_after(previous, rebuilt),
+            last_event_id: if rebuilt {
                 None
             } else {
-                c.last_event_id.clone()
-            }
-        }),
-        align_to_record,
-        start > 0,
-        unread_backlog,
-        rebuilt && previous.is_some(),
+                previous.and_then(|c| c.last_event_id.clone())
+            },
+            truncated_history: start > 0,
+            unread_backlog,
+            rebuilt: rebuilt && previous.is_some(),
+        },
     )
 }
 
@@ -223,18 +224,31 @@ fn generation_after(previous: Option<&JsonlCursor>, rebuilt: bool) -> u64 {
     }
 }
 
-fn parse_window(
-    buf: &[u8],
-    start: u64,
+struct WindowContext {
     identity: FileIdentity,
     kind: CursorKind,
     generation: u64,
-    mut last_event_id: Option<EventId>,
-    align_to_record: bool,
+    last_event_id: Option<EventId>,
     truncated_history: bool,
     unread_backlog: bool,
     rebuilt: bool,
+}
+
+fn parse_window(
+    buf: &[u8],
+    start: u64,
+    align_to_record: bool,
+    context: WindowContext,
 ) -> Result<JsonlSnapshot, JsonlError> {
+    let WindowContext {
+        identity,
+        kind,
+        generation,
+        mut last_event_id,
+        truncated_history,
+        unread_backlog,
+        rebuilt,
+    } = context;
     let record_cap = kind.record_cap();
     let mut offset = 0usize;
     if align_to_record {
@@ -284,15 +298,15 @@ fn parse_window(
         }
         match parse_line(line) {
             Ok(event) => {
-                if let Some(tool) = event.tool.as_ref() {
-                    if let Some(id) = tool.call_id.as_ref() {
-                        match event.kind {
-                            EventKind::ToolInvocation => {
-                                invocations.insert(id.as_str().to_owned());
-                            }
-                            EventKind::ToolResult => results.push(id.as_str().to_owned()),
-                            _ => {}
+                if let Some(tool) = event.tool.as_ref()
+                    && let Some(id) = tool.call_id.as_ref()
+                {
+                    match event.kind {
+                        EventKind::ToolInvocation => {
+                            invocations.insert(id.as_str().to_owned());
                         }
+                        EventKind::ToolResult => results.push(id.as_str().to_owned()),
+                        _ => {}
                     }
                 }
                 if let Some(id) = event.event_id.clone() {
