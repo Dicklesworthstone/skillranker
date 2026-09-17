@@ -58,7 +58,7 @@ fn secret_families_remove_complete_values_preserving_neighbors() {
             format!("postgres://{REDACTION_MARKER}@localhost/db"),
         ),
         (
-            "xoxb-0123456789-0123456789abcdef".into(),
+            format!("xoxb-{}-{}abcdef", "0123456789", "0123456789"),
             REDACTION_MARKER.into(),
         ),
         (
@@ -134,7 +134,8 @@ fn entropy_overlap_extends_beyond_known_token() {
 
 #[test]
 fn redaction_before_truncation() {
-    let input = format!("é{}界", format!("ghp_{}", "q".repeat(36)));
+    let token = format!("ghp_{}", "q".repeat(36));
+    let input = format!("é{token}界");
     let scanner = Redactor::default();
     for budget in 0..=13 {
         let result = scanner.redact_field_excerpt(&input, budget).unwrap();
