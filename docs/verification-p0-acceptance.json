@@ -1,0 +1,463 @@
+{
+  "schema_version": "skillranker.p0_acceptance.v1",
+  "status": "pending_reference_and_evidence_role_repairs",
+  "scope": "P0 foundation contract acceptance only; P1/P2/P3 implementation may begin",
+  "date": "2026-09-17",
+  "source_commit": "3391b6b27ff956cc508f5862c15d9962003f5c6a",
+  "frozen_checkout": "/data/projects/skillranker-p0-proof-d372lxco",
+  "frozen_base_commit": "82a508236b51441bb5ddd13ee83821b017a918b0",
+  "source_inputs_sha256": {
+    "Cargo.lock": "6e563c4d037a81e85324dcba2243ae809e66954128282c3d54d9d3d700ce3f81",
+    "Cargo.toml": "e2787e42dc7bcd45363dc0a2716681e96853add4191d4f04c6c605ef1a2a0bc1",
+    "rust-toolchain.toml": "5a13f4f286294e6f7b4dcc76ebca9ddebc0cfcbe53e37f9123bdd17f21096985",
+    "scripts/check_dependency_graph.py": "e0a1d1362662b7561f1dbe4277afcf30e951ca4e31f45a7e154dce391edb9d90",
+    "scripts/e2e/evidence.py": "4b57eb89559adae4a5efc5ac08dd0b38e110234df375bc78ddce9806aea53452",
+    "scripts/e2e/fixtures/contract_child.py": "7ef2d9bf0db9b940f2c74788c961bd76849efeb36567d2d86a3bf6674619e054",
+    "scripts/e2e/fixtures/runner_child.py": "5e0551772f0d75fcc40908aaed50b815bdb55ce0697831daf140f7173d2cf707",
+    "scripts/e2e/run.sh": "0bad3197ec97fc1655201162964d0c887b43131a9bbe7e43363783c644ec0e67",
+    "scripts/e2e/runner.py": "c0c37dfbb20c4f04cf7fcb6f7e6f93faec1b677927059a87b96d085e70b8931e",
+    "scripts/e2e/runner_contract.py": "35c30d9e14895a3beadd30cc077737bfe50c575bd01d561b7a97fe2ea58c8ef8",
+    "scripts/e2e/suites/runner-contract.json": "4a1d5159dc255a9859a41bf0197b962c9a5d5fe471bfe209690158d9c2c1364e",
+    "scripts/e2e/suites/runner-smoke.json": "d4ff77af5251cb28456aad8bdd5dda1d7a31449e25655aae6bf3e18be2d0d15a",
+    "scripts/e2e/test_runner.py": "a7e9613f23f2854a120a93970e7f12cd653104129a4c86b186b09da0b36a9a23",
+    "scripts/e2e/test_runner_cleanup.py": "6113b15c331a5c9057039e3cc8a01c3959343b5ccaf832a0dbd8e736f9491fd7",
+    "scripts/e2e/test_runner_contract.py": "35a6a641a650501db6de2e48cece258fc74766f4fe3278c015163f90f4f4fb29",
+    "scripts/test_contract_matrix.py": "1a36488f699bfd34df65efde48a7aa2520f4bbfddc956578b5df8b194ccd667d",
+    "scripts/test_eval_policy.py": "afd71de4b7bbfb3a9b15658a95bf9146ac1b221a472c1b72ca4af6fb4c399ef2",
+    "scripts/validate_contract_matrix.py": "db1a099d4efcaa452e45e3e98838c975df2a8362c5b59d9228d01fb27e0762b0",
+    "scripts/validate_eval_policy.py": "bea574beb8f51081b64f69b6a11c02d4a3070763f7cbcfedec4a4947d3f2114e",
+    "scripts/validate_public_contracts.py": "2561d4703b9aabf6beaeda6d037529a1dedc6164149a003865e33ae3ca884801",
+    "src/adapter.rs": "b9ebb96a9d4689179e3e90b29231f386e5f8a1bc0bffcf5a480fbb79dbd2067d",
+    "src/config.rs": "37e44034751e65204d1efb5eebc75e9db89ceb44fd7004e5ad517c5e845b17a0",
+    "src/context/mod.rs": "bea16c86b8364d1c38c2121b353f318475453a24254accf6ba29c9e2db32d462",
+    "src/identity.rs": "33a01c23a604646c673e5881511b5c6d15dd0cf4208b8b101c44361214569e84",
+    "src/lib.rs": "6bf07d2f99e5b7ef92ec01df35e235d89e7d87c51d05bb5196705293ac05ab15",
+    "src/limits.rs": "1a988c44c00531cf2ee5d84a9204af4cdfe8e77658531f9f4dfc2b5a739d0c29",
+    "src/main.rs": "7a4a7076084abe59f93ee9bcdb40828e84231ec2217f0e2e69dc24905efbf701",
+    "src/output/mod.rs": "489c4a74a0e899737e775aba6359d5c439f41851e4c63051693913240b438816",
+    "src/privacy/mod.rs": "fa3641fc0e3d2fb318c9e9929406221aa1b6af5367110115deebeb29ff818e1c",
+    "src/roster/mod.rs": "d72df001efeda6791f4ff1e1590fd23c62f7d5000e52c7dc1f7d52fb8fb51fbf",
+    "tests/adapter_contract.rs": "f598386e6c40941137fa1b2e6f8314eb1c79032a326e858a470a872250a2a601",
+    "tests/bootstrap_cli.rs": "c2505e7c666db2d7e9835ac21094487c17ca5d6fc175ed9682c10c5c773d235b",
+    "tests/config_contract.rs": "84ba53e35fd84cd3ffa93e15085e6184d0fca6b5cca6559ccae7989d6dd08a44",
+    "tests/contract_authority.toml": "e1b42690ad491e73e95f1c17c1878eab56e50d780c2fd6a53f388c5f687c9d5e",
+    "tests/contract_matrix.toml": "f2f7adf24e2db99bf0651fa74dd65f3724235f9c846d40ca423d73227eeb1ebf",
+    "tests/eval/README.md": "0236775fe98ad10395956e06d6effa4cbb7e189ed3385ed804fc11cc467d6e65",
+    "tests/eval/evaluation_policy.v1.json": "b0f35abdc436c6cd91358d290850d22cd2572979067821e06e3b30cf6ffed5da",
+    "tests/eval/expected_values.v1.json": "a05aa971a0c99f1587c5ffcefcbc3842f0055fdbfb817b7fd694150a3ea5dda6",
+    "tests/eval/synthetic_cases.v1.jsonl": "50ffd624fb6d065f8a79e672daf8d5bd305c47d8f40358ba9d7543c149085f98",
+    "tests/evidence/README.md": "a06fd96c30e7ecfbd80ea8179eaaccae2b66ad9348e4bd1428b21e3a946657ee",
+    "tests/fixtures/adapter-cass-producer.v1.json": "a57e290b379bbc29678008bc49ae04ece1484a4564e9bbf0b97b8d94dc9a5d7a",
+    "tests/fixtures/adapter-claude-user-prompt-submit.v1.json": "58e189f39692e32dc9eb7172ca072d785f8efeaee71f436d2ae60d97d69374af",
+    "tests/fixtures/capabilities.v1.json": "953a04cfb3708e9082740ec5ab382bcf6d7ccff4729d5132b24ffaa8caa63c24",
+    "tests/fixtures/normalized-context.v1.json": "7a809b03731546429c673c17a7e521d87bf9484b4587e8c64199da9ad0c46592",
+    "tests/fixtures/output-abstain.v1.json": "7f6737083777e5e122c53e0982c06e2d06221736aef14c0451657353eaffb64f",
+    "tests/fixtures/output-demo.v1.json": "3e5028367ee3bebf039d61203a11ecf09eb1b9468f8160ec805a31565521a1a6",
+    "tests/fixtures/output-explicit.v1.json": "ff2ff0d3f5fa489670b863c5db51731cb7d05513eb501098536d62f2eed65f96",
+    "tests/fixtures/output-ranked.v1.json": "bd7863ea60710489fd733693f4803267f0421577d867265f06c3fb1a2d6b6b47",
+    "tests/fixtures/output-replay.v1.json": "eebbb2ec8183e59154d21d31792e520584686f945ecbadf2bcd76e6e88f6368e",
+    "tests/fixtures/output-report.v1.json": "8f92c4d4f784e5cd5c18342c33afe2227db451cab2d6974513716235e07e36e8",
+    "tests/fixtures/output-unavailable.v1.json": "4747a4d3195ddb319a511c706445db72a1e24af1967cf7cf87954db71b5e31e1",
+    "tests/identity_contract.rs": "831f213a4ae01d55a8aeaf3c5e057146c051c8f1360f8d2fbc5f3354c6233ae0",
+    "tests/limits_contract.rs": "8bf799044a9d8389e3d615e9fcfa6e1a0b834e02ac6af86efd2af7f72cb8581e",
+    "tests/output_contract.rs": "0b19d81cc35585b4c9e8c7ac96cf1a1900d0e451b701e4f8beca8d260d26eebf"
+  },
+  "platform": "linux",
+  "architecture": "x86_64",
+  "rust_tests": 88,
+  "python_tests": 102,
+  "remote_checks": [
+    {
+      "command": "cargo test --locked -j 4",
+      "required_remote": true,
+      "status": "passed",
+      "exit_code": 0,
+      "features": [],
+      "worker": "ovh-a",
+      "build_id": "30024414133223691",
+      "receipt_root": "20e48bcececb9a54aec66853a930e2f82f8c3d29067d7e8ccdfb294e0e44ae64",
+      "command_sha256": "75d20e122f32aacfed9cff50bfb0b203cdc9e91c2fefa88eda112ee8aad1932f",
+      "log_sha256": "b053f0275beb84482ebc187a5208334616c2f8ddea8bee2543dde5174a7289a2",
+      "log": "/data/tmp/skillranker-p0-logs-e8b8jrja/cargo-test.log",
+      "all_54_source_inputs_match": true,
+      "source_snapshot": "remote_source_inputs_sha256",
+      "rust_build_and_embedded_fixture_inputs_match_final": true
+    },
+    {
+      "command": "cargo check --locked --all-targets -j 4",
+      "required_remote": true,
+      "status": "passed",
+      "exit_code": 0,
+      "features": [],
+      "worker": "hz4",
+      "build_id": "30024414133223694",
+      "receipt_root": "5c651925e25c532d2f1e25ff04745d672d6a72cd4aedd6bba70cf3a6207a7ad7",
+      "command_sha256": "f5b34b3ec490a13318eb8f03549e2ba61c1b94b1a2a29ed49e91c279ceb5f13d",
+      "log_sha256": "ed6fd2d29d6b669b78840af668c5d3d7d26a4cedbce6419c7d240babe564385c",
+      "log": "/data/tmp/skillranker-p0-logs-e8b8jrja/cargo-check-retry.log",
+      "all_54_source_inputs_match": true,
+      "source_snapshot": "remote_source_inputs_sha256",
+      "rust_build_and_embedded_fixture_inputs_match_final": true
+    },
+    {
+      "command": "cargo clippy --locked --all-targets -j 4 -- -D warnings",
+      "required_remote": true,
+      "status": "passed",
+      "exit_code": 0,
+      "features": [],
+      "worker": "ovh-a",
+      "build_id": "30024414133223697",
+      "receipt_root": "be1739cc8931e61867a77c5fecbe3d2354274929790fb4ae62994b1874c7995e",
+      "command_sha256": "3b27ffd470fb5f184428eb7c7b3e9c25d104b7be24f3ee4082a518a9413c7898",
+      "log_sha256": "1e9923510a567b0e8f4bc9ccd84ad82526abaa71273c9d91c945ab5042d4ea50",
+      "log": "/data/tmp/skillranker-p0-logs-e8b8jrja/cargo-clippy-default.log",
+      "all_54_source_inputs_match": true,
+      "source_snapshot": "remote_source_inputs_sha256",
+      "rust_build_and_embedded_fixture_inputs_match_final": true
+    },
+    {
+      "command": "cargo clippy --locked --all-targets --all-features -j 4 -- -D warnings",
+      "required_remote": true,
+      "status": "passed",
+      "exit_code": 0,
+      "features": [
+        "tui"
+      ],
+      "worker": "ovh-b",
+      "build_id": "30024414133223693",
+      "receipt_root": "8d12ebb68807d0d00ecafa11d646206e42998266ed3a4f514eae5b9076e0ddd3",
+      "command_sha256": "cdee3301eb4f7765ef780101709b446215fc92b774371ed6e375ec3a506c2101",
+      "log_sha256": "bdd05212407559ce0c9579da2e484f14b35095fdc9f03f07992dbfce975344fa",
+      "log": "/data/tmp/skillranker-p0-logs-e8b8jrja/cargo-clippy.log",
+      "all_54_source_inputs_match": true,
+      "source_snapshot": "remote_source_inputs_sha256",
+      "rust_build_and_embedded_fixture_inputs_match_final": true
+    }
+  ],
+  "python_checks": [
+    {
+      "command": "python3 -I -B scripts/test_contract_matrix.py",
+      "status": "passed",
+      "exit_code": 0,
+      "count": 17,
+      "log": "/data/tmp/skillranker-p0-final-w7lv4c11/matrix-tests.log",
+      "log_sha256": "4d7c9132d13e0085dca555791a667d5b27305f631a8b3ada1c9e8743815cde9b"
+    },
+    {
+      "command": "python3 -I -B scripts/e2e/test_runner.py",
+      "status": "passed",
+      "exit_code": 0,
+      "count": 25,
+      "log": "/data/tmp/skillranker-p0-final-w7lv4c11/runner-tests.log",
+      "log_sha256": "3022f56037092811b771a7bba93acf2d0dd9dcf2b4ae38f085d48807bdba8c78"
+    },
+    {
+      "command": "python3 -I -B scripts/e2e/test_runner_cleanup.py",
+      "status": "passed",
+      "exit_code": 0,
+      "count": 2,
+      "log": "/data/tmp/skillranker-p0-final-w7lv4c11/cleanup-tests.log",
+      "log_sha256": "bc6920887ce678cec4504e7e541a618edc4e201cd54746992dde63bec2327584"
+    },
+    {
+      "command": "python3 -I -B scripts/e2e/test_runner_contract.py",
+      "status": "passed",
+      "exit_code": 0,
+      "count": 15,
+      "log": "/data/tmp/skillranker-p0-final-w7lv4c11/certificate-tests.log",
+      "log_sha256": "7a0fc53418dcbad613f4bbe92a40fda4ba5f561aad43be73ee7051b41b53d9a4"
+    },
+    {
+      "command": "PYTHONNOUSERSITE=1 PYTHONPATH='' python3 -B scripts/test_eval_policy.py",
+      "status": "passed",
+      "exit_code": 0,
+      "count": 43,
+      "log": "/data/tmp/skillranker-p0-final-w7lv4c11/eval-tests.log",
+      "log_sha256": "fe9b4f42c63073df1fe03b880c2de9ecd4f4c7d7441fb7606ef138a05632bcb9"
+    }
+  ],
+  "mechanics": [
+    {
+      "directory": "/data/tmp/sr-matrix-receipts-uco6t7pl/sr-e2e-can2vf0_",
+      "identity": {
+        "architecture": "x86_64",
+        "binary_role": "fixture-interpreter",
+        "binary_sha256": "52e0a13e60a981d8c4b6478be2ba5176f69da07948a056bf49cf6f077e30cb41",
+        "features": [],
+        "fixture_sha256": "5e0551772f0d75fcc40908aaed50b815bdb55ce0697831daf140f7173d2cf707",
+        "git_commit": "3391b6b27ff956cc508f5862c15d9962003f5c6a",
+        "lock_sha256": "6e563c4d037a81e85324dcba2243ae809e66954128282c3d54d9d3d700ce3f81",
+        "platform": "linux",
+        "python": "3.14.4",
+        "runner_sha256": "d54cecb2f548aa69885dd36313b34fc5c2aecfaf4c2700b7f7aa245b6387a5e5",
+        "source_sha256": "56da4f701efa995c569700f8228bbe0ad124efd3adfdaf1c92c01023ee7e56fc",
+        "toolchain_sha256": "5a13f4f286294e6f7b4dcc76ebca9ddebc0cfcbe53e37f9123bdd17f21096985"
+      },
+      "summary": {
+        "counts": {
+          "blocked": 0,
+          "failed": 0,
+          "incomplete": 0,
+          "passed": 3,
+          "planned": 3,
+          "selected": 3,
+          "skipped": 0,
+          "started": 3
+        },
+        "events_sha256": "5a2899c7a6b26db43e3732964264bfd6f8efb25fc58f57f9b0684abbc627f1e7",
+        "identity_stable": true,
+        "product_gate": "not-applicable",
+        "run_id": "run-cc61e70f0b5347e780144634366c461e",
+        "runner_status": "passed",
+        "schema_version": 2,
+        "suite": "runner-smoke"
+      },
+      "summary_sha256": "355c4320d73227d7743d093e2aef5326805e51568752e2c1914f3432c3d2539a"
+    },
+    {
+      "directory": "/data/tmp/sr-matrix-receipts-uco6t7pl/sr-contract-8j1u14pz",
+      "identity": {
+        "architecture": "x86_64",
+        "binary_role": "fixture-interpreter",
+        "binary_sha256": "52e0a13e60a981d8c4b6478be2ba5176f69da07948a056bf49cf6f077e30cb41",
+        "features": [],
+        "fixture_sha256": "7ef2d9bf0db9b940f2c74788c961bd76849efeb36567d2d86a3bf6674619e054",
+        "git_commit": "3391b6b27ff956cc508f5862c15d9962003f5c6a",
+        "lock_sha256": "6e563c4d037a81e85324dcba2243ae809e66954128282c3d54d9d3d700ce3f81",
+        "platform": "linux",
+        "python": "3.14.4",
+        "runner_sha256": "d54cecb2f548aa69885dd36313b34fc5c2aecfaf4c2700b7f7aa245b6387a5e5",
+        "source_sha256": "56da4f701efa995c569700f8228bbe0ad124efd3adfdaf1c92c01023ee7e56fc",
+        "toolchain_sha256": "5a13f4f286294e6f7b4dcc76ebca9ddebc0cfcbe53e37f9123bdd17f21096985"
+      },
+      "summary": {
+        "counts": {
+          "blocked": 0,
+          "failed": 0,
+          "passed": 54,
+          "planned": 54
+        },
+        "events_sha256": "5bf63257a19a89f76b8816595ee2ca2f23466d7991587f62b620a7bd803d87f7",
+        "identity_stable": true,
+        "product_gate": "not-applicable",
+        "run_id": "contract-dbe198378b08482991c77515d6c9c0a4",
+        "runner_status": "passed",
+        "schema_version": 1,
+        "suite": "runner-contract"
+      },
+      "summary_sha256": "55b0cf727e8c8e398e4bc3d8d9031c3cc20e3c3d54215ba5b8f00ea6a35f5a1e"
+    }
+  ],
+  "rust_artifacts": [
+    {
+      "artifact": "sr",
+      "sha256": "52cfb7dee5ad96390b6f0f0db34afa30feaef236eb68c33ab083d46d3e724a67",
+      "bytes": 4670872
+    },
+    {
+      "artifact": "build/skillranker/6e05fe0e73b39231/out/adapter_contract-6e05fe0e73b39231",
+      "sha256": "0ab5bf9abd243e5b322e15a6d96d5808fa3746feee056104dac4d1322c437045",
+      "bytes": 19849672
+    },
+    {
+      "artifact": "build/skillranker/6a703536bac43939/out/bootstrap_cli-6a703536bac43939",
+      "sha256": "5ce4f7a9ffe8b35120836478d4c974450f23501fe38ff729b57c236f6d1d25c2",
+      "bytes": 7742624
+    },
+    {
+      "artifact": "build/skillranker/5f67bbfde32ab7bd/out/config_contract-5f67bbfde32ab7bd",
+      "sha256": "028329b59c988fecb8296f04ac1a4f63ac2a87461d5899c5f34a5d3acd5e719b",
+      "bytes": 22033456
+    },
+    {
+      "artifact": "build/skillranker/c6e319723ff0d506/out/identity_contract-c6e319723ff0d506",
+      "sha256": "0594c1e61e7a04d111a727c2fbbc8b972dbe458b11369d3883b43809600b11fc",
+      "bytes": 21918392
+    },
+    {
+      "artifact": "build/skillranker/f3d0911fd8346781/out/limits_contract-f3d0911fd8346781",
+      "sha256": "33f155401f62f64684117dc1e96a8d06527090230ddd4536a0ca64a44e7da3dd",
+      "bytes": 17596016
+    },
+    {
+      "artifact": "build/skillranker/74f164c1a83d3d58/out/output_contract-74f164c1a83d3d58",
+      "sha256": "ddd45adec5574aa8e2da2a3f26b7445c62f3b2cd8a4f257cb2368ecaa406b42a",
+      "bytes": 19642104
+    }
+  ],
+  "public_contracts": {
+    "checks": {
+      "capability_phases": 19,
+      "compared_examples": 2,
+      "json_examples": 5,
+      "local_links": 43,
+      "shell_examples": 20,
+      "toml_examples": 1
+    },
+    "examples_executed": false,
+    "network_used": false,
+    "schema_version": 1,
+    "scope": "documentation_consistency_only",
+    "sha256": {
+      "AGENTS.md": "01241779c9ca75a4549d76acce511076466718e6c67021ba870fbafd93882514",
+      "COMPREHENSIVE_PLAN_TO_DESIGN_SKILLRANKER.md": "d9ce129a5892a615f3072e404a8e5bbf55c968c43299bbd7af2420fbfe8e86ca",
+      "LICENSE": "32a82e0a5754e72e51fae44b65a936c831c07376f21c90f5fb9e76897fcc3509",
+      "README.md": "899a912d986cbbbf8dcf9fab4c9b6217446e7906f869180e40df4ad0504eeb63",
+      "scripts/validate_public_contracts.py": "2561d4703b9aabf6beaeda6d037529a1dedc6164149a003865e33ae3ca884801",
+      "tests/fixtures/capabilities.v1.json": "953a04cfb3708e9082740ec5ab382bcf6d7ccff4729d5132b24ffaa8caa63c24"
+    },
+    "status": "passed"
+  },
+  "artifact_directory": "/data/tmp/skillranker-p0-logs-e8b8jrja",
+  "retained_nonpassing_attempts": [
+    {
+      "log": "/data/tmp/skillranker-p0-logs-e8b8jrja/cargo-check.log",
+      "exit_code": 103,
+      "classification": "SSH dependency preflight failed; no local fallback"
+    },
+    {
+      "log": "/data/tmp/skillranker-p0-logs-e8b8jrja/eval-tests.log",
+      "exit_code": 1,
+      "classification": "isolated Python invocation prevented sibling import"
+    }
+  ],
+  "remote_source_inputs_sha256": {
+    "Cargo.lock": "6e563c4d037a81e85324dcba2243ae809e66954128282c3d54d9d3d700ce3f81",
+    "Cargo.toml": "e2787e42dc7bcd45363dc0a2716681e96853add4191d4f04c6c605ef1a2a0bc1",
+    "rust-toolchain.toml": "5a13f4f286294e6f7b4dcc76ebca9ddebc0cfcbe53e37f9123bdd17f21096985",
+    "scripts/check_dependency_graph.py": "e0a1d1362662b7561f1dbe4277afcf30e951ca4e31f45a7e154dce391edb9d90",
+    "scripts/e2e/evidence.py": "4b57eb89559adae4a5efc5ac08dd0b38e110234df375bc78ddce9806aea53452",
+    "scripts/e2e/fixtures/contract_child.py": "7ef2d9bf0db9b940f2c74788c961bd76849efeb36567d2d86a3bf6674619e054",
+    "scripts/e2e/fixtures/runner_child.py": "5e0551772f0d75fcc40908aaed50b815bdb55ce0697831daf140f7173d2cf707",
+    "scripts/e2e/run.sh": "0bad3197ec97fc1655201162964d0c887b43131a9bbe7e43363783c644ec0e67",
+    "scripts/e2e/runner.py": "c0c37dfbb20c4f04cf7fcb6f7e6f93faec1b677927059a87b96d085e70b8931e",
+    "scripts/e2e/runner_contract.py": "35c30d9e14895a3beadd30cc077737bfe50c575bd01d561b7a97fe2ea58c8ef8",
+    "scripts/e2e/suites/runner-contract.json": "4a1d5159dc255a9859a41bf0197b962c9a5d5fe471bfe209690158d9c2c1364e",
+    "scripts/e2e/suites/runner-smoke.json": "d4ff77af5251cb28456aad8bdd5dda1d7a31449e25655aae6bf3e18be2d0d15a",
+    "scripts/e2e/test_runner.py": "a7e9613f23f2854a120a93970e7f12cd653104129a4c86b186b09da0b36a9a23",
+    "scripts/e2e/test_runner_cleanup.py": "6113b15c331a5c9057039e3cc8a01c3959343b5ccaf832a0dbd8e736f9491fd7",
+    "scripts/e2e/test_runner_contract.py": "35a6a641a650501db6de2e48cece258fc74766f4fe3278c015163f90f4f4fb29",
+    "scripts/test_contract_matrix.py": "ce216efd18ebc966d08c10f4c0e2111b60fa7ed56a4a9b9f539a44d56f3c4af4",
+    "scripts/test_eval_policy.py": "de700bd0e7bb0b96b4c0f7018e2a5d4e65115d48133290e857e249c289e782d6",
+    "scripts/validate_contract_matrix.py": "6656693bc8d400cc7dd68b884d0754f8ce64559266b89bbd4131abef538b16f3",
+    "scripts/validate_eval_policy.py": "f10fd75ca48887b8db443748ec4109cc42548a729595a69fc1c694fd89609451",
+    "scripts/validate_public_contracts.py": "2561d4703b9aabf6beaeda6d037529a1dedc6164149a003865e33ae3ca884801",
+    "src/adapter.rs": "b9ebb96a9d4689179e3e90b29231f386e5f8a1bc0bffcf5a480fbb79dbd2067d",
+    "src/config.rs": "37e44034751e65204d1efb5eebc75e9db89ceb44fd7004e5ad517c5e845b17a0",
+    "src/context/mod.rs": "bea16c86b8364d1c38c2121b353f318475453a24254accf6ba29c9e2db32d462",
+    "src/identity.rs": "33a01c23a604646c673e5881511b5c6d15dd0cf4208b8b101c44361214569e84",
+    "src/lib.rs": "6bf07d2f99e5b7ef92ec01df35e235d89e7d87c51d05bb5196705293ac05ab15",
+    "src/limits.rs": "1a988c44c00531cf2ee5d84a9204af4cdfe8e77658531f9f4dfc2b5a739d0c29",
+    "src/main.rs": "7a4a7076084abe59f93ee9bcdb40828e84231ec2217f0e2e69dc24905efbf701",
+    "src/output/mod.rs": "489c4a74a0e899737e775aba6359d5c439f41851e4c63051693913240b438816",
+    "src/privacy/mod.rs": "fa3641fc0e3d2fb318c9e9929406221aa1b6af5367110115deebeb29ff818e1c",
+    "src/roster/mod.rs": "d72df001efeda6791f4ff1e1590fd23c62f7d5000e52c7dc1f7d52fb8fb51fbf",
+    "tests/adapter_contract.rs": "f598386e6c40941137fa1b2e6f8314eb1c79032a326e858a470a872250a2a601",
+    "tests/bootstrap_cli.rs": "c2505e7c666db2d7e9835ac21094487c17ca5d6fc175ed9682c10c5c773d235b",
+    "tests/config_contract.rs": "84ba53e35fd84cd3ffa93e15085e6184d0fca6b5cca6559ccae7989d6dd08a44",
+    "tests/contract_authority.toml": "e1b42690ad491e73e95f1c17c1878eab56e50d780c2fd6a53f388c5f687c9d5e",
+    "tests/contract_matrix.toml": "f2f7adf24e2db99bf0651fa74dd65f3724235f9c846d40ca423d73227eeb1ebf",
+    "tests/eval/README.md": "0236775fe98ad10395956e06d6effa4cbb7e189ed3385ed804fc11cc467d6e65",
+    "tests/eval/evaluation_policy.v1.json": "b0f35abdc436c6cd91358d290850d22cd2572979067821e06e3b30cf6ffed5da",
+    "tests/eval/expected_values.v1.json": "a05aa971a0c99f1587c5ffcefcbc3842f0055fdbfb817b7fd694150a3ea5dda6",
+    "tests/eval/synthetic_cases.v1.jsonl": "50ffd624fb6d065f8a79e672daf8d5bd305c47d8f40358ba9d7543c149085f98",
+    "tests/evidence/README.md": "a06fd96c30e7ecfbd80ea8179eaaccae2b66ad9348e4bd1428b21e3a946657ee",
+    "tests/fixtures/adapter-cass-producer.v1.json": "a57e290b379bbc29678008bc49ae04ece1484a4564e9bbf0b97b8d94dc9a5d7a",
+    "tests/fixtures/adapter-claude-user-prompt-submit.v1.json": "58e189f39692e32dc9eb7172ca072d785f8efeaee71f436d2ae60d97d69374af",
+    "tests/fixtures/capabilities.v1.json": "953a04cfb3708e9082740ec5ab382bcf6d7ccff4729d5132b24ffaa8caa63c24",
+    "tests/fixtures/normalized-context.v1.json": "7a809b03731546429c673c17a7e521d87bf9484b4587e8c64199da9ad0c46592",
+    "tests/fixtures/output-abstain.v1.json": "7f6737083777e5e122c53e0982c06e2d06221736aef14c0451657353eaffb64f",
+    "tests/fixtures/output-demo.v1.json": "3e5028367ee3bebf039d61203a11ecf09eb1b9468f8160ec805a31565521a1a6",
+    "tests/fixtures/output-explicit.v1.json": "ff2ff0d3f5fa489670b863c5db51731cb7d05513eb501098536d62f2eed65f96",
+    "tests/fixtures/output-ranked.v1.json": "bd7863ea60710489fd733693f4803267f0421577d867265f06c3fb1a2d6b6b47",
+    "tests/fixtures/output-replay.v1.json": "eebbb2ec8183e59154d21d31792e520584686f945ecbadf2bcd76e6e88f6368e",
+    "tests/fixtures/output-report.v1.json": "8f92c4d4f784e5cd5c18342c33afe2227db451cab2d6974513716235e07e36e8",
+    "tests/fixtures/output-unavailable.v1.json": "4747a4d3195ddb319a511c706445db72a1e24af1967cf7cf87954db71b5e31e1",
+    "tests/identity_contract.rs": "831f213a4ae01d55a8aeaf3c5e057146c051c8f1360f8d2fbc5f3354c6233ae0",
+    "tests/limits_contract.rs": "8bf799044a9d8389e3d615e9fcfa6e1a0b834e02ac6af86efd2af7f72cb8581e",
+    "tests/output_contract.rs": "0b19d81cc35585b4c9e8c7ac96cf1a1900d0e451b701e4f8beca8d260d26eebf"
+  },
+  "final_frozen_checkout": "/data/projects/skillranker-p0-final-rrg_f1ya",
+  "final_artifact_directory": "/data/tmp/skillranker-p0-final-w7lv4c11",
+  "rust_proof_composition": {
+    "receipt_file_count": 75,
+    "differences": [
+      "scripts/test_contract_matrix.py",
+      "scripts/test_eval_policy.py",
+      "scripts/validate_contract_matrix.py",
+      "scripts/validate_eval_policy.py"
+    ],
+    "unchanged_rust_inputs": true,
+    "include_str_review": [
+      "README.md",
+      "COMPREHENSIVE_PLAN_TO_DESIGN_SKILLRANKER.md",
+      "tests/fixtures/*.json"
+    ],
+    "no_rust_or_build_code_invokes_changed_python": true
+  },
+  "rust_worker_platform": "Linux x86_64",
+  "matrix_receipt_validation": {
+    "command": "python3 -I -B scripts/validate_contract_matrix.py --require-mechanics --smoke-receipt /data/tmp/sr-matrix-receipts-uco6t7pl/sr-e2e-can2vf0_ --certificate-receipt /data/tmp/sr-matrix-receipts-uco6t7pl/sr-contract-8j1u14pz",
+    "status": "passed",
+    "log": "/data/tmp/skillranker-p0-final-w7lv4c11/matrix-mechanics.log",
+    "log_sha256": "454cfe99463eaedd2d5ede83b39d69f9bc5e10b812bafc489d02b68f43080705",
+    "coverage_boundaries": 77,
+    "roadmap_members": 179,
+    "product_gate": "not-applicable"
+  },
+  "other_checks": [
+    {
+      "name": "eval-validation.log",
+      "status": "passed",
+      "log": "/data/tmp/skillranker-p0-final-w7lv4c11/eval-validation.log",
+      "sha256": "3bebe521e739ebc5b77ec04194acb736361b455365486c802f3255ecd3b6c5e8"
+    },
+    {
+      "name": "dependency-graph.log",
+      "status": "passed",
+      "log": "/data/tmp/skillranker-p0-final-w7lv4c11/dependency-graph.log",
+      "sha256": "9ad624074cef84bb2012932c387d8db83d701b8a5cc9c0d741a5caf060830735"
+    },
+    {
+      "name": "format.log",
+      "status": "passed",
+      "log": "/data/tmp/skillranker-p0-final-w7lv4c11/format.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "static_analysis": {
+    "matrix_ubs": {
+      "exit_code": 0,
+      "critical": 0,
+      "warnings": 31,
+      "log": "/data/tmp/skillranker-p0-logs-e8b8jrja/ubs-matrix-cli.log",
+      "review": "Strict types reject bool-as-int; fdopen owns descriptor; caller handles JSON errors."
+    },
+    "evaluation_ubs": {
+      "exit_code": 1,
+      "critical": 0,
+      "warnings": 19,
+      "evidence": "/data/tmp/skillranker-eval-review-7xxzj52x/verification.json",
+      "review": "Existing strict scalar typing and descriptor ownership warnings; not a clean scanner claim."
+    },
+    "ruff": "E4,E7,E9,F,B passed for four changed Python files"
+  },
+  "additional_repaired_blocker": {
+    "bead": "sr-eval-audit-dwew",
+    "source_commit": "3391b6b27ff956cc508f5862c15d9962003f5c6a",
+    "before_failures": 29,
+    "after_tests": 43
+  },
+  "not_claimed": [
+    "P1 live Jev or HTTPS readiness",
+    "P2 roster runtime",
+    "P3 native context adapters",
+    "P4 ranking and cache",
+    "P5 durable storage or evaluator",
+    "P6 installed hook",
+    "P7 quality promotion or releases",
+    "P8 learned policy",
+    "P9 native harnesses or TUI",
+    "non-Linux targets"
+  ]
+}
