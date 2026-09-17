@@ -2,9 +2,125 @@
 
 Date: 2026-09-17. Status: source/document findings and executed checks are recorded below; the resumed per-record acceptance review (195 records) completed the same day and is integrated in the final section. Inventory and ownership statements describe their stated snapshots, not current tracker state or a frozen release.
 
-## Bottom line
+## Current follow-up assessment (2026-09-17)
 
-The checkout does not yet deliver a session-specific skill recommendation. `src/main.rs:13-31` accepts only help/version, rejects all other inputs with exit 2, and calls no library pipeline. This is an honest bootstrap, not a fake ranking implementation. README.md:22-27 discloses foundation status, although the extensive subsequent command reference describes intended behavior.
+This follow-up reread all 671 lines of AGENTS.md and all 1,954 lines of README.md,
+the comprehensive plan and engineering contracts, then checked live source,
+tracker coverage, dependency graphs and executable verification. The historical
+sections below retain their original evidence scope; their old task counts and
+status observations are not the current inventory.
+
+**This machine is equipped to develop and verify SkillRanker. The product still
+cannot rank a session.** `src/main.rs` captures an entry clock and accepts only
+help/version. Bare invocation, rank, demo, doctor, capabilities, hook and TUI
+have no implemented dispatch. In particular, the bootstrap's exit 2 for hook
+arguments must not be installed as the promised quiet hook.
+
+The inspected host is Linux x86-64 `threadripperje`, with 128 logical CPUs,
+approximately 420 GiB available memory and 3.31 TiB free on the project filesystem.
+The pinned `nightly-2026-08-31` toolchain, Cargo, rustfmt, Clippy, GCC and linker
+are installed. RCH is available; its fleet has usable capacity despite several
+pressure-blocked workers. Repository policy requires remote compilation here.
+Local toolchain availability is not a claim that this follow-up compiled locally.
+The ignored maintainer `.env` exists with mode 0600; its contents were not read,
+and credential presence does not establish authentication or network consent.
+
+### Source reality and remaining delivery
+
+| Boundary | Current implementation | Missing product behavior / existing owners |
+|---|---|---|
+| Public binary | Real help/version process and argument rejection | Shared command shell `.3.18`, strict CLI `.5.1`, pipeline `.5.11`, executable proof `.5.19`, core acceptance `.5.21` |
+| Identity/configuration/output | Real typed identities, trust precedence, resource checks, adapter gates and bounded JSON validation | Actual configuration reads, filesystem authority, command wiring and publication |
+| Session capture | Exact source-selection library with tests | Normalized reader `.4.2`, native snapshots/branches/prompt overlay `.4.3`–`.4.5`, cass `.4.6`, rendering/profiles/conformance `.4.7`–`.4.14` |
+| Roster and privacy | Skill record types, bounded redactor, shipping Quill API fixtures and in-progress literal-query compiler | Authorized reads, metadata/discovery/precedence, explicit resolution, actual snapshot retrieval and revalidation `.3.1`, `.3.3`–`.3.7`, `.3.10`–`.3.17` |
+| Jev | Origin/credential rules, typed wire codecs and invocation attempt receipts | Actual HTTP client/DNS/TLS `.2.7`, retry loop `.2.9`, consented live interoperability `.2.10`, transport acceptance `.2.11`–`.2.12` |
+| Ranking | Output schema can validate supplied ranked documents | Wide/rerank question builders, eligibility and scoring `.5.2`–`.5.5`; no connected two-pass selector |
+| Runtime | Entry clock, Asupersync ownership and in-progress blocking/subprocess helpers | Actual stalled-read/signal/cleanup proof; see the concrete stdin defect below |
+| Cache and persistence | Contracts and limits | No cache or ledger implementation, no rusqlite dependency; `.5.6`–`.5.10`, `.5.20`, P5 |
+| Hooks/user controls | Input/advice contracts only | Dedicated quiet hook, installer, durable allowance, breaker and snoozes: P6 |
+| Evaluation/learning | Synthetic policy fixtures and real validator/runner tests | Product evaluator, independent cohorts, measured relevance/harm/latency, calibration and monitoring: P5/P7/P8 |
+| TUI/distribution | Empty reserved `tui` feature; no GitHub Releases returned | Actual TUI `.10.7`/`.10.24`, independently verified Linux/macOS DSR artifacts `.8.7` |
+
+`src/transport.rs` is a tracked, unexported alternate origin implementation.
+Neither crate root includes it. Its presence is not HTTP transport or compiled
+test evidence; the active origin implementation is `src/jev/endpoint.rs`.
+The transport owner should reconcile this unused duplicate before wiring the
+HTTP boundary rather than accidentally adopting its older contract.
+
+### Concrete runtime finding
+
+At the frozen snapshot, `read_stdin_before_cleanup` calls generic synchronous
+`Read::read` after a deadline check. That call itself can stall past the deadline;
+`Ok(0)` also returns success without checking its completion time. The existing
+"slow stdin" test sleeps before entering the helper and then uses an immediate
+Cursor, so it does not establish cancellation of an actual stalled read.
+The helper also rejects a document exactly equal to `max_bytes` before checking
+whether the next read would be EOF. This is a source-established defect, not a
+claim that a reproducer or fix has passed. It was sent to runtime owner SilentIvy
+in Agent Mail message 41615. Existing `.2.1`/`.2.2` and integration `.2.11` own
+the required correction and real pipe/deadline/signal tests. Two attempts to add
+a Beads comment timed out on the workspace write lock; the owner was notified of
+that tracking limitation in message 41619. No new feature is
+needed. Do not treat the closed runtime foundation as proof of bounded stdin.
+
+### Bridge priority and coverage verdict
+
+The 17 workflow groups and 70 concrete obligations below still cover the vision.
+The observed inventory has 195 records: 26 closed, 8 in progress, 155 open and
+6 deferred. These are tracker counts, not a product-completion percentage.
+All I01–I15 improvements retain existing implementation and verification owners.
+The current review found no additional missing product owner; it found unfinished
+integration and a defect inside an already-owned runtime boundary.
+
+The next useful milestone is the existing P4 core acceptance, not more planning:
+finish safe input/roster and transport prerequisites; connect one normalized-input
+journey through redaction, explicit resolution or Jev, eligibility and output;
+prove ranked, explicit, abstain and unavailable via the actual executable;
+then add the already specified cache, diagnostics and complete core gate.
+Keep optional ledger history out of the first stateless recommendation, while
+preserving cache and the other P4 acceptance obligations. Proceed to real shadow
+hooks only after their own deadline, failure, visibility and installation tests.
+
+Three improvement passes sharpened that sequence: prioritize a complete user
+journey, require real effect-boundary tests instead of type/fixture substitution,
+and keep empirical quality separate from software completion. Five refinement
+passes checked vision coverage, prerequisite ordering, adversarial/success proof,
+onboarding and documentation authority, then residual ownership. They retained
+the existing roadmap; the new stdin finding goes to its existing owner. No task
+was duplicated or closed merely because its supporting types or tests exist.
+
+Completing every existing task **to its actual acceptance criteria** would cover
+the scoped vision. Merely writing the code or marking tasks closed would not:
+live Jev compatibility, real supported-harness behavior, independent judgments,
+controlled harm outcomes, operational measurements and target-specific release
+proof must actually be obtained. The current synthetic corpus supplies none of
+those empirical results. BV triage identifies core acceptance `.5.21` as a central
+bottleneck, but it is blocked by its six named prerequisites; both BV insights and
+`br dep cycles` reported no active cycles.
+
+### Verification in this follow-up
+
+The frozen build snapshot is based on `adf240a79ed461a0f5376c68c2ba2b974e833c25`
+plus explicitly captured current source/test/manifest overlays, including active
+peer work. Its 106-file SHA-256 manifest and command logs are retained under
+`/data/tmp/skillranker-reality-b2aqhma_`. It is not a clean release revision.
+
+- Local Python tests: 72 checker tests and 42 process/evidence-runner tests passed.
+- Public documentation consistency and 77 matrix declarations passed. Neither
+  validator executes the README's commands or establishes product acceptance.
+- Frozen formatting and all four declared dependency feature graphs passed;
+  no prohibited engine/runtime was found. An empty TUI feature is still empty.
+- Remote `cargo check --locked --all-targets -j 2` passed on `vmi1264463`
+  (job `j-30024414133223896`, exit 0, 605 seconds including transfer). RCH
+  reported overlay fingerprint
+  `b5b4be96023bcd52a37085cc51e6eaefe8396d1eddca6e0253817c9b65a0e9af`.
+- Full remote Rust tests are pending; an active job is not a pass.
+- No live Jev calls, private transcript reads, installed-hook mutations, quality
+  experiments or releases were performed.
+
+## Earlier assessment
+
+The checkout did not deliver a session-specific skill recommendation. The inspected `src/main.rs` accepted only help/version, rejected all other inputs with exit 2, and called no library pipeline. README now intentionally uses the user's requested finished-product voice; current availability belongs in source, capabilities, engineering evidence and Beads.
 
 The project has real foundation code and tests, an extensive design, and a local task tracker. None of these establishes end-to-end ranking, live Jev transport, hook safety, measured usefulness, or release readiness. The working tree contains concurrent uncommitted additions; findings describe a moving checkout, not a release revision.
 The initial audit over-attributed the contract-matrix repairs to peers: the repaired rows are the original author's own corrections committed in `f13fbc2`; the reference validator patch and regression suite were this audit's fixes, reviewed and executed here.
@@ -129,11 +245,11 @@ Statuses below apply to usable product workflows. Partial library implementation
 
 ### G8: Honest documentation and distribution
 
-**Current:** README foundation warning is accurate; comprehensive plan has stale tracker prose. GitHub release listing returned none. Current edits are not a source-bound published release.
+**Current:** README intentionally describes the finished product; the comprehensive plan retains stale tracker prose. GitHub release listing returned none. Current edits are not a source-bound published release.
 
 **Target:** users can distinguish implemented, tested, experimental and planned behavior and install a verified artifact.
 
-**Changes:** update stale progress statements; distinguish bootstrap command examples from future quick start; maintain capabilities/schema/exit parity; use DSR only; bind artifact hashes and test receipts to exact source revision; preserve license rider and contribution policy.
+**Changes:** update stale progress statements in engineering status and Beads while preserving the requested README voice; maintain capabilities/schema/exit parity; use DSR only; bind artifact hashes and test receipts to exact source revision; preserve license rider and contribution policy.
 
 **Success criteria:** clean isolated install on every claimed target; documented commands work for their stated release stage; checksum verification; DSR provenance; no release claim from a host-only build; no GitHub Actions fallback.
 
@@ -410,6 +526,6 @@ Five refinement rounds were executed as a plan-space loop, each applying real ch
 - A new `.1.15` (in_progress, SilentFinch) owns the schema-independent adversarial runner-certification slice; it explicitly excludes matrix ownership and preserves `.1.12`'s remaining requirements. Do not duplicate it or convert it into whole-matrix proof.
 - Initial disposition (historical): no missing roadmap bead was established, but exhaustive review was then incomplete. The nonexistent-reference validator defect was repaired and verified, not all evidence-integrity gaps. An isolated archive of commit `02c08a32301591a98988f27d66da2e0bd2d518da` passed `python3 -I -B scripts/test_contract_matrix.py` (10 tests) and `python3 -I -B scripts/validate_contract_matrix.py` (69 boundaries, exit 0). These checks establish source-reference validation, not execution of every referenced test or product acceptance. At that snapshot, `.1.9`'s closure remained disputed and `.1.12`, `.1.10`, and `.1.11` remained open; later snapshot verdicts below supersede those status observations. Completing work with genuinely satisfied external evidence—not exit zero, synthetic arithmetic, or elapsed trial time—is what closes the scoped vision.
 - Resumed full acceptance review (2026-09-17, snapshot sha256 `e3b81e5f…` of the git-tracked `.beads/issues.jsonl` export; 195 rows: 189 roadmap records + root epic + `sr-eval-audit-dwew` + 4 peer repair records): **every record individually reviewed** against README/AGENTS/plan requirements via elision-proof per-record Markdown renders (renderer fidelity verified: zero content failures across all 195 rows under whitespace-stripped comparison). Verdicts: 20 OK, 4 CONTRADICTION, 4 STALE, 1 GAP, 166 NEEDS-PROOF. NEEDS-PROOF dominates open product beads with unchecked acceptance criteria — that is the expected disposition of unaccepted obligations, not a defect.
-- Snapshot findings: **CONTRADICTION** `.1.5` (effective-policy receipt acceptance versus narrower P0 closure evidence), `.1.9` (comment-73 closure dispute lacks explicit reconciliation), and `.5.16`/`.5.17` (inherited documentation-only wording conflicts with the reviewers' then-current finished-product instructions). **STALE**: root epic's present-tense unstarted-work claim, plus documentation-only wording in `.7`, `.7.9`, and `.8.5` (not `.7.13`). Current repository instructions require truthful implementation status; the review does not establish a permanent prohibition on README status notices. **GAP**: the P2 handoff omits existing child `.3.18`, consumed by `.3.13`; this is a handoff omission, not a missing implementation owner. `.2.4` additionally needs revision-bound provenance for its recorded 8/8 endpoint tests.
+- Snapshot findings: **CONTRADICTION** `.1.5` (effective-policy receipt acceptance versus narrower P0 closure evidence), `.1.9` (comment-73 closure dispute lacks explicit reconciliation), and `.5.16`/`.5.17` (inherited documentation-only wording conflicts with the reviewers' then-current finished-product instructions). **STALE**: root epic's present-tense unstarted-work claim, plus documentation-only wording in `.7`, `.7.9`, and `.8.5` (not `.7.13`). The current user instructions retain finished-product README voice; this engineering assessment records actual implementation status separately. **GAP**: the P2 handoff omits existing child `.3.18`, consumed by `.3.13`; this is a handoff omission, not a missing implementation owner. `.2.4` additionally needs revision-bound provenance for its recorded 8/8 endpoint tests.
 - Durable evidence: [complete acceptance-review payloads](reality-check-acceptance-review.json) preserve all five reports, per-record evidence, snapshot render hashes, totals, and integration corrections. All 195 snapshot IDs occur in the reports; all six P9 deferrals have qualification owners. Review findings identify no missing roadmap implementation owner. This is complete snapshot review, not fresh runtime verification or certification of subsequent tracker changes.
-- Tracker delivery: `br` acknowledged comments on `.1.9`, `.5.16`, and `.2.4`, but the surrounding commands timed out. `.1.5` encountered the workspace write-lock timeout. Remaining dispositions are preserved here rather than claimed delivered: P0/P4 receipt responsibility on `.1.5`; I05 wording on `.5.17`, `.7`, `.7.9`, `.8.5`; `.3.18` in the P2 handoff; and historical dating of the root epic's unstarted-work claim. No lock was removed, acceptance criterion waived, or issue closed by this review.
+- Tracker delivery follow-up: all seven formerly undelivered dispositions are now verified through `br comments list --json`: `.1.5` comment 120, `.5.17` 121, P2 parent `.3` 122, root epic 123, hook parent `.7` 124, onboarding `.7.9` 125, and value report `.8.5` 126. Each expected comment matched exactly once. `br sync --flush-only` reported no dirty issues. These are scope/wording/handoff dispositions, not acceptance or closure of product work. The I05 comments reflect the instructions available to this review; any later direct README-voice instruction takes precedence without turning this audit into runtime proof. No direct database writes, lock removal, or acceptance-criterion changes were used.
