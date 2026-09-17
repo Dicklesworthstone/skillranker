@@ -146,6 +146,43 @@ fn documented_contract() {}
             with self.subTest(reference=reference, source=source):
                 self.assertEqual(self.validate_fixture(reference, files={reference.split("::")[0]: source}), 1)
 
+    def test_skipped_or_filtered_unittest_evidence_rejected(self):
+        header = "import unittest\n"
+        body = "    def test_behavior(self): pass\n"
+        cases = [
+            ("scripts/check.py::Contract", header + "@unittest.skip('no')\nclass Contract(unittest.TestCase):\n" + body),
+            ("scripts/check.py::Contract::test_behavior",
+             header + "class Contract(unittest.TestCase):\n    @unittest.skip('no')\n" + body),
+            ("scripts/check.py::Contract",
+             header + "class Contract(unittest.TestCase):\n    @unittest.skipIf(True, 'no')\n" + body),
+            ("scripts/check.py::Contract::test_behavior",
+             header + "class Contract(unittest.TestCase):\n    @unittest.expectedFailure\n" + body),
+            ("scripts/check.py::Contract",
+             header + "class Contract(unittest.TestCase):\n    __unittest_skip__ = True\n" + body),
+            ("scripts/check.py::Contract",
+             header + "class Contract(unittest.TestCase):\n" + body + "Contract = unittest.skip('no')(Contract)\n"),
+            ("scripts/check.py::Contract", header + "class Contract(unittest.TestCase):\n" + body + "del Contract\n"),
+            ("scripts/check.py::Contract",
+             header + "class Contract(unittest.TestCase):\n" + body + "def load_tests(loader, tests, pattern):\n"
+             "    return unittest.TestSuite()\n"),
+            ("scripts/check_dependency_graph.py::main", "def main(): pass\nmain = None\n"),
+            ("scripts/check_dependency_graph.py::main", "import functools\n@functools.cache\ndef main(): pass\n"),
+        ]
+        for reference, source in cases:
+            with self.subTest(reference=reference, source=source):
+                self.assertEqual(self.validate_fixture(reference, files={reference.split("::")[0]: source}), 1)
+        # Honest twins: one surviving undecorated test keeps the class eligible,
+        # and undecorated references in the same module shapes are accepted.
+        mixed = header + "class Contract(unittest.TestCase):\n    @unittest.skip('no')\n" + body + \
+            "    def test_runs(self): pass\n"
+        for reference, source in (("scripts/check.py::Contract", mixed),
+                                  ("scripts/check.py::Contract::test_runs", mixed),
+                                  ("scripts/check.py::Contract",
+                                   header + "class Contract(unittest.TestCase):\n" + body + "other = 1\n"),
+                                  ("scripts/check_dependency_graph.py::main", "def main(): pass\nresult = None\n")):
+            with self.subTest(twin=reference, source=source):
+                self.assertEqual(self.validate_fixture(reference, files={reference.split("::")[0]: source}), 0)
+
     def test_shadowed_unittest_methods_do_not_establish_evidence(self):
         source = ("import unittest\nclass Contract(unittest.TestCase):\n"
                   "    def test_behavior(self): pass\n"

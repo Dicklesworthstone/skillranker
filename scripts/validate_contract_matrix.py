@@ -169,6 +169,23 @@ def is_unittest_case(node, module_nodes):
     return False
 
 
+def module_rebinds(module_nodes, node):
+    """True when any other top-level statement binds or deletes node's name."""
+    for statement in module_nodes:
+        if statement is node:
+            continue
+        if isinstance(statement, (ast.Assign, ast.AnnAssign, ast.AugAssign, ast.Delete)):
+            targets = (statement.targets if isinstance(statement, (ast.Assign, ast.Delete))
+                       else [statement.target])
+            if any(isinstance(name, ast.Name) and name.id == node.name
+                   for target in targets for name in ast.walk(target)):
+                return True
+        elif isinstance(statement, (ast.Import, ast.ImportFrom)):
+            if any((alias.asname or alias.name.split(".")[0]) == node.name for alias in statement.names):
+                return True
+    return False
+
+
 def reference_exists(reference):
     """Resolve source declarations only; this is not an execution receipt."""
     if not isinstance(reference, str):
@@ -196,13 +213,23 @@ def reference_exists(reference):
             if len(matches) != 1:
                 return False
             node = matches[0]
+            if module_rebinds(nodes, node):
+                return False
             if isinstance(node, ast.ClassDef):
-                if not is_unittest_case(node, nodes):
+                # Decorators, skip markers and a load_tests hook can all keep
+                # declared tests from running; reject rather than interpret them.
+                if (not is_unittest_case(node, nodes) or node.decorator_list
+                        or any(isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
+                               and statement.name == "load_tests" for statement in nodes)
+                        or any(isinstance(name, ast.Name) and name.id == "__unittest_skip__"
+                               for child in node.body
+                               if isinstance(child, (ast.Assign, ast.AnnAssign, ast.AugAssign))
+                               for name in ast.walk(child))):
                     return False
                 methods = {}
                 for child in node.body:
                     if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                        methods[child.name] = child.name.startswith("test_")
+                        methods[child.name] = child.name.startswith("test_") and not child.decorator_list
                     elif isinstance(child, (ast.Assign, ast.AnnAssign, ast.AugAssign, ast.Delete)):
                         if isinstance(child, ast.AnnAssign) and child.value is None:
                             continue
@@ -214,7 +241,7 @@ def reference_exists(reference):
                     elif isinstance(child, ast.ClassDef):
                         methods[child.name] = False
                 return any(methods.values()) if len(parts) == 2 else methods.get(parts[2], False)
-            return (len(parts) == 2 and isinstance(node, ast.FunctionDef)
+            return (len(parts) == 2 and isinstance(node, ast.FunctionDef) and not node.decorator_list
                     and reference in TRUSTED_CHECK_ENTRYPOINTS)
         # Cargo discovers integration tests only as direct children of tests/.
         if (relative.parts[0] != "tests" or len(relative.parts) != 2
