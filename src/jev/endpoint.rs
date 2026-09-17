@@ -117,13 +117,16 @@ impl CanonicalOrigin {
         }
 
         // Scheme extraction
-        let (scheme, rest) = if let Some(stripped) = input.strip_prefix("https://") {
-            (Scheme::Https, stripped)
-        } else if let Some(stripped) = input.strip_prefix("http://") {
-            (Scheme::Http, stripped)
-        } else if let Some(colon_slash) = input.find("://") {
-            let scheme_name = &input[..colon_slash];
-            return Err(EndpointError::UnsupportedScheme(scheme_name.to_lowercase()));
+        let (scheme, rest) = if let Some(colon_slash) = input.find("://") {
+            let scheme_raw = &input[..colon_slash];
+            let after_scheme = &input[colon_slash + 3..];
+            if scheme_raw.eq_ignore_ascii_case("https") {
+                (Scheme::Https, after_scheme)
+            } else if scheme_raw.eq_ignore_ascii_case("http") {
+                (Scheme::Http, after_scheme)
+            } else {
+                return Err(EndpointError::UnsupportedScheme(scheme_raw.to_ascii_lowercase()));
+            }
         } else {
             return Err(EndpointError::MissingScheme);
         };
