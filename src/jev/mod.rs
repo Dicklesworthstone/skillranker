@@ -6,7 +6,6 @@
 //! routing, redirect prohibition, and request/response validation.
 
 pub mod admission;
-pub mod client;
 pub mod codec;
 pub mod endpoint;
 
