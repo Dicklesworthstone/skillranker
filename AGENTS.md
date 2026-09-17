@@ -30,7 +30,7 @@ for the **next step of a specific live agent session**:
 
 **TypeSafe.ai's Jev is the system's essential ranking engine. A TypeSafe API key
 is required for the product's ranking workflow.** Keep this dependency prominent
-in product descriptions, installation, and onboarding. Context capture, BM25,
+in product descriptions, installation, and onboarding. Context capture, Quill retrieval,
 caching, local scoring, and feedback support Jev; they are not a replacement
 inference system. Do not imply that `sr` has a key-free ranking backend.
 
@@ -127,9 +127,12 @@ the README must direct them there.
   transaction, migration, crash, and concurrency tests before any substitution.
 - Keep FrankenTUI behind `tui`. JSON/hook builds must not require terminal UI
   dependencies. The TUI consumes the same result model and scoring policy.
-- No Tantivy dependency, embedding model, external embedding service, or broad ML
-  framework for local retrieval. Justify new dependencies at the boundary that
-  needs them; preserve standalone checkout/build behavior.
+- Use FrankenSearch's `frankensearch-quill` as the sole lexical search engine,
+  with its default features disabled and a bounded in-memory adapter. No Tantivy
+  use is allowed in runtime, fallbacks, tests, benchmarks, or copied/reference
+  code; never enable Quill's optional oracle or legacy lexical features. Check
+  resolved normal/build/dev feature graphs. No embedding model, external embedding
+  service, or broad ML framework for retrieval. Preserve standalone builds.
 - Rust 2024, Cargo, committed `Cargo.lock`, and a toolchain pinned to verified
   dependency requirements. Do not inherit OCR's SIMD/nightly requirements by analogy.
 - Forbid unsafe code at crate roots. This workload does not justify SIMD islands
@@ -226,7 +229,7 @@ cannot justify an unqualified no-skill message.
 
 - A Choice has at most **255 total options: 254 real skills plus `__none__`**.
   The sentinel has a distinct type and cannot collide with a skill ID.
-- Default overflow is one deterministic local BM25 prefilter. Explicit requests
+- Default overflow is Quill's deterministic lexical BM25 prefilter. Explicit requests
   resolve before it. Pin tokenization, normalization, field weights, and tie-breaks.
   An experimental chunk mode needs separate bounds and quality proof; probabilities
   from different chunk candidate sets are not globally comparable.
