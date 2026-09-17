@@ -149,7 +149,12 @@ impl SessionChoices {
             .into_iter()
             .nth(index)
             .ok_or(SourceError::InvalidChoice)?;
-        Ok(bind(candidate, self.workspace, SelectionReason::InteractiveChoice, count))
+        Ok(bind(
+            candidate,
+            self.workspace,
+            SelectionReason::InteractiveChoice,
+            count,
+        ))
     }
 }
 
@@ -173,7 +178,10 @@ pub enum SourceError {
 impl SourceError {
     pub const fn kind(self) -> ErrorKind {
         match self {
-            Self::ConflictingFlags | Self::HarnessRequired | Self::InvalidPath | Self::InvalidChoice => ErrorKind::InvalidUsage,
+            Self::ConflictingFlags
+            | Self::HarnessRequired
+            | Self::InvalidPath
+            | Self::InvalidChoice => ErrorKind::InvalidUsage,
             Self::UnsupportedHarness | Self::RemoteSource => ErrorKind::UnsupportedInput,
             Self::CassUnavailableInMode => ErrorKind::UnsupportedSourceMode,
             Self::MissingSession => ErrorKind::MissingSession,
@@ -186,9 +194,15 @@ impl SourceError {
 
     pub const fn hint(self) -> &'static str {
         match self {
-            Self::CassUnavailableInMode => "Choose a direct transcript or normalized context in this mode.",
-            Self::AmbiguousSession | Self::InvalidChoice => "Select an exact source; use --latest only to request recency selection.",
-            Self::IncompleteInventory | Self::InventoryLimit => "Finish bounded discovery pagination or select an exact source.",
+            Self::CassUnavailableInMode => {
+                "Choose a direct transcript or normalized context in this mode."
+            }
+            Self::AmbiguousSession | Self::InvalidChoice => {
+                "Select an exact source; use --latest only to request recency selection."
+            }
+            Self::IncompleteInventory | Self::InventoryLimit => {
+                "Finish bounded discovery pagination or select an exact source."
+            }
             _ => "Use one supported explicit source with its required source options.",
         }
     }
@@ -242,53 +256,78 @@ impl SourceOptions {
             cass_session: self.cass_session.is_some(),
             // No probe or speculative read of stdin: only flags select it.
             stdin_present: false,
-            stdin_mode_explicit: self.context.as_ref().is_some_and(|p| p.as_path() == Path::new("-")),
-        }).map_err(|_| SourceError::ConflictingFlags)?;
+            stdin_mode_explicit: self
+                .context
+                .as_ref()
+                .is_some_and(|p| p.as_path() == Path::new("-")),
+        })
+        .map_err(|_| SourceError::ConflictingFlags)?;
         if (self.latest && mode != SelectedSource::Discovery)
             || (self.harness.is_some() && self.transcript.is_none())
             || (policy.allow_network && (policy.offline || policy.dry_run))
         {
             return Err(SourceError::ConflictingFlags);
         }
-        for path in [&self.context, &self.transcript, &self.cass_session].into_iter().flatten() {
+        for path in [&self.context, &self.transcript, &self.cass_session]
+            .into_iter()
+            .flatten()
+        {
             validate_path(path)?;
         }
         let target = match mode {
             SelectedSource::ClaudeHook => SourceTarget::ClaudeHookStdin,
             SelectedSource::NormalizedContext { stdin: true } => SourceTarget::NormalizedStdin,
-            SelectedSource::NormalizedContext { stdin: false } => SourceTarget::NormalizedFile(self.context.clone().ok_or(SourceError::InvalidPath)?),
+            SelectedSource::NormalizedContext { stdin: false } => {
+                SourceTarget::NormalizedFile(self.context.clone().ok_or(SourceError::InvalidPath)?)
+            }
             SelectedSource::NativeTranscript => {
                 let harness = self.harness.as_ref().ok_or(SourceError::HarnessRequired)?;
                 if harness.as_str() != "claude_code" {
                     return Err(SourceError::UnsupportedHarness);
                 }
-                SourceTarget::ClaudeTranscript(self.transcript.clone().ok_or(SourceError::InvalidPath)?)
+                SourceTarget::ClaudeTranscript(
+                    self.transcript.clone().ok_or(SourceError::InvalidPath)?,
+                )
             }
             SelectedSource::CassSession => {
                 if !policy.cass_allowed() {
                     return Err(SourceError::CassUnavailableInMode);
                 }
-                SourceTarget::CassSession(self.cass_session.clone().ok_or(SourceError::InvalidPath)?)
+                SourceTarget::CassSession(
+                    self.cass_session.clone().ok_or(SourceError::InvalidPath)?,
+                )
             }
             SelectedSource::Discovery => {
                 let inventory = discover(&workspace, policy)?;
                 return select_inventory(workspace, policy, interactive, self.latest, inventory);
             }
         };
-        if matches!(&target, SourceTarget::ClaudeTranscript(p) | SourceTarget::CassSession(p) if p.as_path() == Path::new("-")) {
+        if matches!(&target, SourceTarget::ClaudeTranscript(p) | SourceTarget::CassSession(p) if p.as_path() == Path::new("-"))
+        {
             return Err(SourceError::InvalidPath);
         }
         Ok(SelectionOutcome::Selected(SourceSelection {
-            target, workspace, expected_identity: None,
-            reason: SelectionReason::Explicit, candidate_count: 0,
+            target,
+            workspace,
+            expected_identity: None,
+            reason: SelectionReason::Explicit,
+            candidate_count: 0,
         }))
     }
 }
 
-fn bind(candidate: SessionCandidate, workspace: WorkspaceId, reason: SelectionReason, count: usize) -> SourceSelection {
+fn bind(
+    candidate: SessionCandidate,
+    workspace: WorkspaceId,
+    reason: SelectionReason,
+    count: usize,
+) -> SourceSelection {
     SourceSelection {
-        target: candidate.target, workspace, expected_identity: Some(candidate.identity),
-        reason, candidate_count: count,
+        target: candidate.target,
+        workspace,
+        expected_identity: Some(candidate.identity),
+        reason,
+        candidate_count: count,
     }
 }
 
@@ -319,7 +358,11 @@ fn select_inventory(
             return Err(SourceError::CassUnavailableInMode);
         }
         let path = match (&candidate.target, &candidate.identity.source) {
-            (SourceTarget::ClaudeTranscript(path), SourceProvenance::Native { adapter, .. }) if adapter.as_str() == "claude_code" => path,
+            (SourceTarget::ClaudeTranscript(path), SourceProvenance::Native { adapter, .. })
+                if adapter.as_str() == "claude_code" =>
+            {
+                path
+            }
             (SourceTarget::CassSession(path), SourceProvenance::Cass { .. }) => path,
             _ => return Err(SourceError::InvalidInventory),
         };
@@ -342,10 +385,15 @@ fn select_inventory(
         let mut newest = None;
         let mut tied = false;
         for (index, candidate) in candidates.iter().enumerate() {
-            let time = candidate.last_activity_unix_ms.ok_or(SourceError::AmbiguousSession)?;
+            let time = candidate
+                .last_activity_unix_ms
+                .ok_or(SourceError::AmbiguousSession)?;
             match newest {
                 None => newest = Some((time, index)),
-                Some((max, _)) if time > max => { newest = Some((time, index)); tied = false; }
+                Some((max, _)) if time > max => {
+                    newest = Some((time, index));
+                    tied = false;
+                }
                 Some((max, _)) if time == max => tied = true,
                 _ => {}
             }
@@ -354,13 +402,26 @@ fn select_inventory(
             return Err(SourceError::AmbiguousSession);
         }
         let (_, index) = newest.ok_or(SourceError::MissingSession)?;
-        return Ok(SelectionOutcome::Selected(bind(candidates.swap_remove(index), workspace, SelectionReason::LatestRequested, count)));
+        return Ok(SelectionOutcome::Selected(bind(
+            candidates.swap_remove(index),
+            workspace,
+            SelectionReason::LatestRequested,
+            count,
+        )));
     }
     if count == 1 {
-        return Ok(SelectionOutcome::Selected(bind(candidates.remove(0), workspace, SelectionReason::UniqueInWorkspace, count)));
+        return Ok(SelectionOutcome::Selected(bind(
+            candidates.remove(0),
+            workspace,
+            SelectionReason::UniqueInWorkspace,
+            count,
+        )));
     }
     if !interactive {
         return Err(SourceError::AmbiguousSession);
     }
-    Ok(SelectionOutcome::NeedsChoice(SessionChoices { workspace, candidates }))
+    Ok(SelectionOutcome::NeedsChoice(SessionChoices {
+        workspace,
+        candidates,
+    }))
 }
