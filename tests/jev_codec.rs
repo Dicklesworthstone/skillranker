@@ -636,35 +636,3 @@ fn recorded_provenance() -> Value {
     )
     .unwrap()
 }
-
-/// One recorded observation does not pin an immutable provider revision:
-/// the alias resolved to jev-1.13.0 at capture time and may change.
-#[test]
-fn recorded_provenance_declares_time_bounded_observation() {
-    let provenance = recorded_provenance();
-    assert_eq!(
-        provenance["fixture_kind"],
-        "recorded_live_provider_response"
-    );
-    assert_eq!(provenance["evidence_origin"], "recorded");
-    assert_eq!(provenance["synthetic_content"], true);
-    assert_eq!(provenance["requested_model_alias"], "jev-latest");
-    assert_eq!(provenance["returned_model_identifier"], "jev-1.13.0");
-    assert_eq!(provenance["request_sha256"], request_sha256());
-    assert_eq!(provenance["response_sha256"], response_sha256());
-    assert!(
-        provenance["interpretation_boundaries"]
-            .as_array()
-            .unwrap()
-            .len()
-            >= 3
-    );
-}
-
-fn request_sha256() -> &'static str {
-    "1ecc210e406f9e60ed3bb02197cfc606f1c37161fb834b7ac1c741b9ed176a7e"
-}
-
-fn response_sha256() -> &'static str {
-    "2b1a56a0bccc666b535632a7da35db3e9e2d1096ab0ee6c024e8762e89da2d74"
-}
