@@ -116,9 +116,7 @@ impl CanonicalOrigin {
         };
 
         // Authority ends at the FIRST of '/', '?', or '#'
-        let auth_end = rest
-            .find(|c| c == '/' || c == '?' || c == '#')
-            .unwrap_or(rest.len());
+        let auth_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
         let authority = &rest[..auth_end];
         let after_auth = &rest[auth_end..];
 
@@ -533,10 +531,10 @@ impl ProxyPolicy {
     pub fn inspect_ambient_process_env() -> Vec<(&'static str, String)> {
         let mut detected = Vec::new();
         for &known_proxy in AMBIENT_PROXY_VARS {
-            if let Ok(val) = std::env::var(known_proxy) {
-                if !val.is_empty() {
-                    detected.push((known_proxy, sanitize_url_for_diagnostics(&val)));
-                }
+            if let Ok(val) = std::env::var(known_proxy)
+                && !val.is_empty()
+            {
+                detected.push((known_proxy, sanitize_url_for_diagnostics(&val)));
             }
         }
         detected
@@ -557,7 +555,7 @@ pub fn sanitize_url_for_diagnostics(url: &str) -> String {
 
     // 2. Identify the end of authority (ends at first '/', '?', or '#')
     let auth_end = after_scheme
-        .find(|c| c == '/' || c == '?' || c == '#')
+        .find(['/', '?', '#'])
         .unwrap_or(after_scheme.len());
     let authority = &after_scheme[..auth_end];
     let after_auth = &after_scheme[auth_end..];
@@ -571,7 +569,7 @@ pub fn sanitize_url_for_diagnostics(url: &str) -> String {
     };
 
     // 4. In after_auth, separate path, query, and fragment
-    let (path, query_and_frag) = match after_auth.find(|c| c == '?' || c == '#') {
+    let (path, query_and_frag) = match after_auth.find(['?', '#']) {
         Some(idx) => (&after_auth[..idx], &after_auth[idx..]),
         None => (after_auth, ""),
     };
@@ -720,7 +718,7 @@ fn parse_authority(authority: &str) -> Result<(&str, Option<u16>), EndpointError
         let colon_count = authority.chars().filter(|&c| c == ':').count();
         if colon_count > 1 {
             // Multiple colons without brackets: unbracketed IPv6 literal
-            return Err(EndpointError::UnbracketedIpv6Forbidden);
+            Err(EndpointError::UnbracketedIpv6Forbidden)
         } else if colon_count == 1 {
             let colon_idx = authority.find(':').unwrap();
             let host = &authority[..colon_idx];
@@ -804,10 +802,10 @@ fn canonicalize_host(raw_host: &str) -> Result<(String, bool), EndpointError> {
     }
 
     // Top-level domain (last label) cannot be all numeric
-    if let Some(tld) = labels.last() {
-        if tld.chars().all(|c| c.is_ascii_digit()) {
-            return Err(EndpointError::NumericIpv4AliasForbidden);
-        }
+    if let Some(tld) = labels.last()
+        && tld.chars().all(|c| c.is_ascii_digit())
+    {
+        return Err(EndpointError::NumericIpv4AliasForbidden);
     }
 
     let mut canonical_labels = Vec::with_capacity(labels.len());

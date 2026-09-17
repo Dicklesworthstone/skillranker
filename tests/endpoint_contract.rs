@@ -355,15 +355,17 @@ fn origin_scoped_credential_routing_and_isolation() {
     let other_origin = CanonicalOrigin::parse("https://other.typesafe.ai").unwrap();
 
     // 1. Binding credentials to unencrypted HTTP is strictly forbidden for ALL loopback
-    let insecure_err = OriginScopedCredential::bind(credential.clone(), &loopback_origin)
-        .err()
-        .expect("insecure HTTP binding must fail");
+    let Err(insecure_err) = OriginScopedCredential::bind(credential.clone(), &loopback_origin)
+    else {
+        panic!("insecure HTTP binding must fail");
+    };
     assert_eq!(insecure_err, CredentialRoutingError::InsecureHttpForbidden);
     assert_canary_not_leaked(&format!("{insecure_err}"));
 
-    let insecure_lh = OriginScopedCredential::bind(credential.clone(), &localhost_origin)
-        .err()
-        .expect("insecure localhost binding must fail");
+    let Err(insecure_lh) = OriginScopedCredential::bind(credential.clone(), &localhost_origin)
+    else {
+        panic!("insecure localhost binding must fail");
+    };
     assert_eq!(insecure_lh, CredentialRoutingError::InsecureHttpForbidden);
 
     // 2. CanonicalOrigin::allow_credential also rejects unencrypted HTTP
@@ -390,10 +392,10 @@ fn origin_scoped_credential_routing_and_isolation() {
     assert_eq!(auth_header, format!("Bearer {CANARY}"));
 
     // 5. Request to another origin is strictly refused (OriginMismatch)
-    let mismatch_err = bound
-        .authorization_header_for(&other_origin)
-        .err()
-        .expect("mismatched origin must fail");
+    // A failure message must not format an unexpected credential-bearing Ok.
+    let Err(mismatch_err) = bound.authorization_header_for(&other_origin) else {
+        panic!("mismatched origin must fail");
+    };
     assert_eq!(mismatch_err, CredentialRoutingError::OriginMismatch);
     assert_canary_not_leaked(&format!("{mismatch_err}"));
 
