@@ -427,3 +427,131 @@ fn normalized_input_acceptance_does_not_emit_native_advice() {
         AdviceDisposition::Disabled(AdviceBlockReason::UnverifiedHarness)
     );
 }
+
+#[test]
+fn optional_hook_paths_reject_present_malformed_values() {
+    let original = serde_json::json!({"hook_event_name": "UserPromptSubmit", "prompt": "private-prompt"});
+    for policy in [UnknownFieldPolicy::RejectUnknown, UnknownFieldPolicy::RetainAdditive] {
+        for field in ["transcript_path", "cwd"] {
+            for invalid in [serde_json::json!(7), serde_json::json!(false), serde_json::json!([]), serde_json::json!({"private": "canary"})] {
+                let mut input = original.clone();
+                input[field] = invalid;
+                let error = ClaudeUserPromptSubmit::from_json(&serde_json::to_vec(&input).unwrap(), policy).unwrap_err();
+                assert_eq!(error, AdapterError::InvalidField);
+                assert!(!error.to_string().contains("canary"));
+            }
+            for valid in [serde_json::Value::Null, serde_json::json!("/private/source") ] {
+                let mut input = original.clone();
+                input[field] = valid.clone();
+                let parsed = ClaudeUserPromptSubmit::from_json(&serde_json::to_vec(&input).unwrap(), policy).unwrap();
+                let value = if field == "cwd" { parsed.cwd } else { parsed.transcript_path };
+                assert_eq!(value.as_ref().map(|text| text.as_str()), valid.as_str());
+            }
+        }
+        let absent = ClaudeUserPromptSubmit::from_json(&serde_json::to_vec(&original).unwrap(), policy).unwrap();
+        assert!(absent.cwd.is_none() && absent.transcript_path.is_none());
+    }
+}
+
+#[test]
+fn private_additive_keys_and_cass_metadata_do_not_leak_through_debug() {
+    let input = serde_json::json!({
+        "hook_event_name": "UserPromptSubmit", "prompt": "PROMPT-CANARY",
+        "PRIVATE-KEY-CANARY": {"nested": "VALUE-CANARY"}
+    });
+    let hook = ClaudeUserPromptSubmit::from_json(&serde_json::to_vec(&input).unwrap(), UnknownFieldPolicy::RetainAdditive).unwrap();
+    assert_eq!(hook.additive_keys().collect::<Vec<_>>(), ["PRIVATE-KEY-CANARY"]);
+    for rendered in [format!("{hook:?}"), format!("{hook:#?}")] {
+        assert!(!rendered.contains("CANARY"));
+    }
+    let mut cass = CassProducer::from_json(include_bytes!("fixtures/adapter-cass-producer.v1.json")).unwrap();
+    // Publicly constructed values must be safe to diagnose before validation.
+    cass.build_commit = Some("PRIVATE-COMMIT-CANARY".into());
+    for rendered in [format!("{cass:?}"), format!("{cass:#?}")] {
+        assert!(!rendered.contains("CANARY"));
+    }
+}
+
+#[test]
+fn tested_support_transfer_rechecks_every_native_advice_gate() {
+    let original = tested_claude("2.1.274");
+    let installed = AdapterVersion::new("2.1.274").unwrap();
+    for mutation in 0..7 {
+        let mut record = original.clone();
+        match mutation {
+            0 => record.support = SupportClass::Unverified,
+            1 => record.contract_version += 1,
+            2 => record.identity_semantics = SemanticsCompatibility::Incompatible,
+            3 => record.visibility_semantics = SemanticsCompatibility::Unverified,
+            4 => record.unverified_versions.push(installed.clone()),
+            5 => record.conformance.get_mut(&ConformanceDimension::Delivery).unwrap().status = ConformanceStatus::Fail,
+            6 => record.conformance.get_mut(&ConformanceDimension::Delivery).unwrap().evidence.clear(),
+            _ => unreachable!(),
+        }
+        assert_ne!(record.advice(CompatibilityQuestion::EmitNativeAdvice, Some(&installed)), AdviceDisposition::Eligible);
+        assert_eq!(transfer_tested_support(&record, &record.adapter_id, &installed), Err(AdapterError::SupportInheritanceForbidden), "mutation {mutation}");
+    }
+    transfer_tested_support(&original, &original.adapter_id, &installed).unwrap();
+}
+
+#[test]
+fn cass_provenance_requires_an_actual_commit_id_or_binary_digest() {
+    let original = CassProducer::from_json(include_bytes!("fixtures/adapter-cass-producer.v1.json")).unwrap();
+    for invalid in [String::new(), " ".into(), "PRIVATE-COMMIT-CANARY".into(), "a".repeat(39), "a".repeat(41), "z".repeat(40), "a".repeat(65)] {
+        let mut record = original.clone();
+        record.build_commit = Some(invalid);
+        assert!(record.validate_support_claim().is_err());
+        assert!(CassProducer::from_json(&serde_json::to_vec(&record).unwrap()).is_err());
+    }
+    for commit in ["a".repeat(40), "A".repeat(40), "b".repeat(64)] {
+        let mut record = original.clone();
+        record.build_commit = Some(commit);
+        let parsed = CassProducer::from_json(&serde_json::to_vec(&record).unwrap()).unwrap();
+        parsed.validate_support_claim().unwrap();
+    }
+    original.validate_archive_identity().unwrap();
+    assert_eq!(original.validate_support_claim(), Err(AdapterError::MissingCassProvenance));
+    let mut digest_only = original;
+    digest_only.binary_digest = Some(ContentHash::from_bytes(b"binary"));
+    digest_only.validate_support_claim().unwrap();
+}
+
+#[test]
+fn cass_cannot_enable_native_advice_by_claiming_default_hook_membership() {
+    let installed = AdapterVersion::new("2.1.274").unwrap();
+    for on_default_hook_path in [false, true] {
+        let mut record = tested_claude("2.1.274");
+        record.adapter_id = AdapterId::new(CASS_ID).unwrap();
+        record.kind = AdapterKind::CassSession;
+        record.on_default_hook_path = on_default_hook_path;
+        assert_eq!(record.advice(CompatibilityQuestion::EmitNativeAdvice, Some(&installed)), AdviceDisposition::Disabled(AdviceBlockReason::CassNotOnDefaultHookPath));
+        if on_default_hook_path {
+            let mut document = foundation_capabilities().unwrap();
+            document.adapters = vec![record];
+            assert_eq!(document.validate(), Err(AdapterError::InvalidField));
+        }
+    }
+}
+
+#[test]
+fn capability_version_definitions_must_be_unique_and_disjoint() {
+    let installed = AdapterVersion::new("2.1.274").unwrap();
+    for mutation in 0..3 {
+        let mut record = tested_claude("2.1.274");
+        match mutation {
+            0 => record.tested_versions.push(installed.clone()),
+            1 => record.unverified_versions = vec![installed.clone(), installed.clone()],
+            2 => record.unverified_versions.push(installed.clone()),
+            _ => unreachable!(),
+        }
+        let mut document = foundation_capabilities().unwrap();
+        document.adapters = vec![record];
+        assert_eq!(document.validate(), Err(AdapterError::InvalidField));
+        assert_eq!(CapabilitiesDocument::from_json(&serde_json::to_vec(&document).unwrap()), Err(AdapterError::InvalidField));
+    }
+    let mut document = foundation_capabilities().unwrap();
+    let mut record = tested_claude("2.1.274");
+    record.unverified_versions.push(AdapterVersion::new("2.1.275").unwrap());
+    document.adapters = vec![record];
+    assert_eq!(CapabilitiesDocument::from_json(&serde_json::to_vec(&document).unwrap()).unwrap(), document);
+}
