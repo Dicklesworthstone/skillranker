@@ -1,0 +1,107 @@
+{
+  "schema_version": "skillranker.foundation_verification.v1",
+  "date": "2026-09-17",
+  "scope": "Five foundation beads; not P0 phase acceptance, ranking, provider, harness or release proof",
+  "beads": [
+    "sr-roadmap-l1i.1.1",
+    "sr-roadmap-l1i.1.2",
+    "sr-roadmap-l1i.1.4",
+    "sr-roadmap-l1i.1.7",
+    "sr-roadmap-l1i.1.8"
+  ],
+  "base_commit": "e61fd842a1cfd4724a0a2c2352eac2f1182b9df9",
+  "final_build_and_contract_inputs_sha256": {
+    "Cargo.lock": "6e563c4d037a81e85324dcba2243ae809e66954128282c3d54d9d3d700ce3f81",
+    "Cargo.toml": "e2787e42dc7bcd45363dc0a2716681e96853add4191d4f04c6c605ef1a2a0bc1",
+    "rust-toolchain.toml": "5a13f4f286294e6f7b4dcc76ebca9ddebc0cfcbe53e37f9123bdd17f21096985",
+    "scripts/check_dependency_graph.py": "9dda34085ef9b5bf402e9e3e7f22adc59ec2068b795805e1d87262f37e94966c",
+    "scripts/test_eval_policy.py": "93059ca1f6f3ba09a9417932854cd02bb28986713476e591283e6a13f42a11fb",
+    "scripts/validate_eval_policy.py": "e4c5b49c9ad6de5f374ac67da1d1c44093496fe7a3d094dded483f5fc93ecd79",
+    "src/context/mod.rs": "bea16c86b8364d1c38c2121b353f318475453a24254accf6ba29c9e2db32d462",
+    "src/identity.rs": "d59972f51270bc5b8aa024ca8779b9707943b9f467ae20c06c51c0b11c4c9159",
+    "src/lib.rs": "e5273420b1c01ae315d238102d0d50af381c6b55241c6ee4c6c61da349ee14f6",
+    "src/limits.rs": "7b8367de4c3698b29fc9c01e2c32bbdb707b27a265c154dd3a54dfc630d02d8c",
+    "src/main.rs": "7a4a7076084abe59f93ee9bcdb40828e84231ec2217f0e2e69dc24905efbf701",
+    "src/roster/mod.rs": "213050e7a6a2dd450780c2e095204bec3c9219fce8cdbadba0755e5ef47bd668",
+    "tests/bootstrap_cli.rs": "c2505e7c666db2d7e9835ac21094487c17ca5d6fc175ed9682c10c5c773d235b",
+    "tests/eval/README.md": "5c70276c794af5e942423803d4001624b68c488621d094424749380e6645f5bb",
+    "tests/eval/evaluation_policy.v1.json": "b0f35abdc436c6cd91358d290850d22cd2572979067821e06e3b30cf6ffed5da",
+    "tests/eval/expected_values.v1.json": "a05aa971a0c99f1587c5ffcefcbc3842f0055fdbfb817b7fd694150a3ea5dda6",
+    "tests/eval/synthetic_cases.v1.jsonl": "397db4ca699a6bf0c6af11d26a314591499729e0700689f331cbb482469995d3",
+    "tests/fixtures/normalized-context.v1.json": "7a809b03731546429c673c17a7e521d87bf9484b4587e8c64199da9ad0c46592",
+    "tests/identity_contract.rs": "f08c94d0e7e0053dfde9f20b1d83c5f49129f3f55f0569e879874c19acc713f0",
+    "tests/limits_contract.rs": "0617b31cfc2a9730afe557c5f0b75bc6069e45e8fd57cf2ffbdc6ecd40478290"
+  },
+  "remote_checks": [
+    {
+      "command": "cargo check --locked --all-targets",
+      "result": "passed",
+      "worker": "hz3",
+      "build_id": "30024414133223566",
+      "receipt_root": "c9badbff9a18a0f7492cae0d0be1a566271a4ac45694f7c4b9cb92fdc0ec500c",
+      "command_sha256": "f76e19b8571f862e55060afc89f4acbfd93e5dc02470de4035db178f2781fbe2",
+      "log_sha256": "f3bf06afccdb5ac565053c0aed3ff9a92253a12d663a63b6ada1148bb5d984c8",
+      "differences_from_final_build_inputs": [
+        "tests/identity_contract.rs"
+      ],
+      "identity_contract_test_sha256": "70f47a44225f3fce2b5b201f85c099c9b202b7c2f54fffa3666086f41583f073"
+    },
+    {
+      "command": "cargo check --locked --all-targets --all-features -j 6",
+      "result": "passed",
+      "worker": "ovh-b",
+      "build_id": "30024414133223569",
+      "receipt_root": "419ca30458420c86bd65c1884f08497618d1ab455cadf41449f4e028b66e2bca",
+      "command_sha256": "7af468523b786863df0b98d1ffc7bec13784ce8d9eb47109372ac83f59a6728b",
+      "log_sha256": "ed70d3175853a902778c9f2fc722415821354c3eb45d19517ec44ef6e052486b",
+      "differences_from_final_build_inputs": [
+        "tests/identity_contract.rs"
+      ],
+      "identity_contract_test_sha256": "70f47a44225f3fce2b5b201f85c099c9b202b7c2f54fffa3666086f41583f073"
+    },
+    {
+      "command": "cargo clippy --locked --all-targets -j 6 -- -D warnings",
+      "result": "passed",
+      "worker": "hz3",
+      "build_id": "30024414133223567",
+      "receipt_root": "b604bfc7957de70792be04b98b8d5c5ba8191817949c0ce9b95f57426f7e3cb0",
+      "command_sha256": "c4cadb91a62de616d103cf9c29d51d4355bf9af24e3d88c01d5d05b360a1c905",
+      "log_sha256": "bdbf8ee5de165f1e932ad4fb1472d9f35ecca88cfef29de99b48248963b024a5",
+      "differences_from_final_build_inputs": [
+        "tests/identity_contract.rs"
+      ],
+      "identity_contract_test_sha256": "70f47a44225f3fce2b5b201f85c099c9b202b7c2f54fffa3666086f41583f073"
+    },
+    {
+      "command": "cargo clippy --locked --all-targets --all-features -j 6 -- -D warnings",
+      "result": "passed",
+      "worker": "ovh-b",
+      "build_id": "30024414133223570",
+      "receipt_root": "eeb66a3aed2c0fa75ca38e96465ed38a55f35a47872591e6e265e2d3243d43e6",
+      "command_sha256": "d071001a876da204c0ff3cae7e997a216345eb749c7d8184f5f7d63c23152e1c",
+      "log_sha256": "21aab1a2158d1938d13ff532546469ca352f0812356f42d530eab8b8672f74c5",
+      "differences_from_final_build_inputs": [],
+      "identity_contract_test_sha256": "f08c94d0e7e0053dfde9f20b1d83c5f49129f3f55f0569e879874c19acc713f0"
+    },
+    {
+      "command": "cargo test --locked -j 5",
+      "result": "passed",
+      "worker": "hz3",
+      "build_id": "30024414133223571",
+      "receipt_root": "e29b146b5151be418e6f0fc439991fc485876d8847e0e499568c2bd823b10379",
+      "command_sha256": "6528ce03380d51d2a16dd38edfa2f642afc6b3a3d85676cb04b062652c0e95f9",
+      "log_sha256": "dcf13f1f244628ff4fd4e71ae1d9c9ba6f508106a88c45811671423b36548bf3",
+      "differences_from_final_build_inputs": [],
+      "identity_contract_test_sha256": "f08c94d0e7e0053dfde9f20b1d83c5f49129f3f55f0569e879874c19acc713f0"
+    }
+  ],
+  "local_results": {
+    "format": "passed",
+    "dependency_graph": "passed",
+    "evaluation_cases": 12,
+    "evaluation_regression_tests_passed": 19,
+    "rust_tests_passed": 29,
+    "ubs": "static scan completed, zero critical findings; warnings reviewed; compilation delegated to RCH"
+  },
+  "artifact_directory": "/data/tmp/skillranker-execution-m0ip1wu3"
+}

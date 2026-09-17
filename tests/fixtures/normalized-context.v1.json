@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "harness": "fixture_harness",
+  "producer_id": "synthetic-example",
+  "workspace_root": "/synthetic/workspace",
+  "session_id": "session-example",
+  "agent_id": null,
+  "branch_id": null,
+  "context_epoch": null,
+  "current_request": {
+    "event_id": "request-2",
+    "text": "Continue investigating the failing Rust test.",
+    "attachments_omitted": false,
+    "essential_attachment_missing": false
+  },
+  "events": [
+    {
+      "event_id": "request-1",
+      "parent_id": null,
+      "turn_id": "turn-1",
+      "agent_id": null,
+      "branch_id": null,
+      "role": "user",
+      "kind": "message",
+      "timestamp_unix_ms": null,
+      "text": "Find the cause of the failing Rust test without weakening its assertions.",
+      "tool": null
+    }
+  ],
+  "explicit_skill_references": [],
+  "supplied_loads": []
+}

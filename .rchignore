@@ -1,0 +1,16 @@
+# Remote compilation needs source, never local credentials or runtime state.
+.env
+.env.*
+.secrets/
+.sr/
+.beads/
+.agent-mail*
+scratch/
+tmp/
+local-data/
+transcripts/
+tests/artifacts/
+**/__pycache__/
+target/
+target-*/
+target_*/

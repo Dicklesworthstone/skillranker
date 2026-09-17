@@ -1,0 +1,189 @@
+{
+  "schema_version": "skillranker.evaluation_policy.v1",
+  "policy_id": "skillranker-eval-policy-v1",
+  "status": "frozen_contract_not_evidence",
+  "owner_bead": "sr-roadmap-l1i.1.8",
+  "created_for_revision": "uncommitted-working-tree",
+  "purpose": "Freeze evaluation cases, cohorts, loss, split, promotion thresholds, and reporting semantics before any tuning or measured promotion claim.",
+  "non_claims": [
+    "This artifact is not an evaluator implementation.",
+    "This artifact is not a 300-family relevance cohort, 150-family harm cohort, or 500-invocation operational cohort.",
+    "Synthetic cases are representative contract oracles only; they do not establish measured SkillRanker quality.",
+    "No live TypeSafe/Jev, harness, network, or provider behavior is claimed by this artifact."
+  ],
+  "ranking_engine_boundary": {
+    "fresh_ranking_requires": ["user_owned_typesafe_api_key", "trusted_network_authorization"],
+    "local_paths_that_do_not_require_network": ["explicit_resolution", "valid_offline_cache", "demo_or_replay_with_recorded_responses"],
+    "provider_output_authority": "Provider option IDs are advisory data only; local roster/request maps determine valid skills and publication."
+  },
+  "case_model": {
+    "family_id": "Groups near-duplicates and repeated runs; all members of one family stay in one split.",
+    "primary_family_case": "At most one primary relevance case per independent family contributes to promotion denominators.",
+    "case_kinds": [
+      "positive_advisory",
+      "no_match_advisory",
+      "near_miss_advisory",
+      "multiple_valid_advisory",
+      "explicit_request",
+      "planning_or_explanation",
+      "loaded_reference_empty_y",
+      "repeatable_workflow_nonempty_y",
+      "overflow_retrieval",
+      "compacted_or_terse_context",
+      "roster_change",
+      "operational_failure_semantics"
+    ],
+    "acceptable_additional_invocations_y": "For each case, Y is the independently judged set of acceptable additional invocations under the current user constraints and harness permissions. Already available references can make Y empty; repeatable workflows can remain in Y.",
+    "explicit_separation": "Exact explicit skill requests are checked separately from advisory quality metrics so easy exact-name cases do not inflate model ranking quality.",
+    "unjudged_cases": "Excluded from relevance denominators with counts visible; operational failures over attempted cohorts remain reported."
+  },
+  "splits": {
+    "train": {
+      "allowed_use": "Fit optional priors or model-independent policy candidates only.",
+      "forbidden_use": "Do not tune on validation/final-test labels; do not include future feedback."
+    },
+    "validation": {
+      "allowed_use": "Choose thresholds and candidate policy revisions after training is fixed.",
+      "forbidden_use": "Do not repeatedly relabel this split as an untouched holdout after selecting policies on it."
+    },
+    "final_holdout": {
+      "allowed_use": "Evaluate one frozen selected policy once for promotion evidence.",
+      "forbidden_use": "Do not tune, redraw, cherry-pick, or backfill missing rerank stages after seeing results."
+    },
+    "diagnostic_synthetic": {
+      "allowed_use": "Contract and validator oracles only.",
+      "forbidden_use": "No promotion, calibration, or statistical quality claim."
+    }
+  },
+  "loss_policy": {
+    "loss_values": {
+      "correct_recommendation_on_positive": 0,
+      "correct_no_match_abstention": 0,
+      "false_abstention_on_positive": 1,
+      "incorrect_recommendation_on_positive": 2,
+      "needless_recommendation_on_no_match": 2,
+      "operationally_unavailable_on_attempted_case": 2
+    },
+    "normalized_loss": "y = loss / 2 for bounded-loss sampling reports.",
+    "mutual_exclusion": "Each attempted case receives exactly one tuning-loss class; operational status is still reported separately.",
+    "equal_loss_tie_break": ["fewer_operational_failures", "frozen_baseline_policy"],
+    "always_abstain_counterexample_required": true,
+    "rationale": "A loss that charges only wrong emitted suggestions is invalid because always abstaining would minimize it without helping positive cases."
+  },
+  "missing_failed_unstarted_semantics": {
+    "missing_replay_response": {
+      "status": "not_estimable_for_policies_requiring_that_response",
+      "denominator_effect": "Do not impute provider scores, mark as failed, or drop only because inconvenient."
+    },
+    "operational_failure_after_case_attempted": {
+      "status": "unavailable_operational_failure",
+      "loss": 2,
+      "denominator_effect": "Counts in attempted cohort operational denominator and common loss denominator for attempted-case policy comparisons."
+    },
+    "unstarted_due_to_batch_cap_or_deadline": {
+      "status": "unfinished_partial_report",
+      "denominator_effect": "Does not become an observed failure or success; incomplete cohort cannot promote."
+    },
+    "gate_skipped_stage_missing_fit": {
+      "status": "not_estimable_for_lower_gate_or_fit_policy",
+      "denominator_effect": "Do not fill missing fit/rerank values with zeros."
+    },
+    "unjudged_label": {
+      "status": "unknown_label",
+      "denominator_effect": "Exclude from relevance denominators with counts; for conservative upper risk bounds assign loss range [0,1] when applicable."
+    }
+  },
+  "metrics": {
+    "candidate_coverage_at_l": {
+      "denominator": "judged positive advisory primary cases with Y nonempty",
+      "success": "retrieved set intersects Y",
+      "notes": "Coverage means at least one acceptable skill; optional set recall is reported separately."
+    },
+    "end_to_end_top_one_precision": {
+      "denominator": "advisory cases that emit a suggestion",
+      "success": "first suggestion belongs to Y"
+    },
+    "positive_case_suggestion_rate": {
+      "denominator": "all judged positive advisory primary cases",
+      "success": "emitted top-one suggestion belongs to Y",
+      "misses": ["valid_abstention", "unavailable"]
+    },
+    "needless_suggestion_rate": {
+      "denominator": "all judged no-match advisory primary cases where Y is empty",
+      "success_event_counted": "any emitted suggestion"
+    },
+    "false_abstention": {
+      "denominator": "judged positive advisory primary cases",
+      "count": "valid relevance abstentions; operational failures reported separately"
+    },
+    "fit_brier": {
+      "denominator": "judged shortlist pairs in declared sampling frame",
+      "formula": "mean((fit - relevance_label)^2)"
+    }
+  },
+  "baselines": [
+    "quill_only_lexical",
+    "typesafe_cookbook_style_selection",
+    "choice_only",
+    "fit_only",
+    "proposed_blend",
+    "always_abstain_negative_control",
+    "latest_request_only_context"
+  ],
+  "promotion_requirements": {
+    "relevance_cohort": {
+      "minimum_primary_cases": 300,
+      "minimum_positive_cases": 150,
+      "minimum_no_match_cases": 100,
+      "minimum_near_miss_cases_across_groups": 50,
+      "unit": "one preselected primary case per independent task family",
+      "separate_from": ["controlled_harm_cohort", "operational_fallback_cohort"]
+    },
+    "overflow_candidate_coverage_at_254": {
+      "minimum_positive_overflow_cases": 50,
+      "minimum_rate": 0.98
+    },
+    "shortlist_candidate_coverage_at_m": {
+      "minimum_rate": 0.95,
+      "denominator": "positive advisory primary cases"
+    },
+    "top_one_precision": {
+      "minimum_rate": 0.90,
+      "minimum_two_sided_95_wilson_lower_endpoint": 0.80
+    },
+    "positive_case_suggestion_rate": {
+      "minimum_rate": 0.80,
+      "abstention_counts_as_miss": true
+    },
+    "needless_suggestion_rate": {
+      "maximum_rate": 0.05,
+      "maximum_two_sided_95_wilson_upper_endpoint": 0.10
+    },
+    "controlled_harm": {
+      "minimum_independent_task_family_pairs_for_zero_event_iid_claim": 150,
+      "maximum_one_sided_95_upper_bound": 0.02,
+      "endpoint": "new_harm_or_unresolved",
+      "interval": "one_sided_95_clopper_pearson_when_prespecified_binomial_model_is_justified",
+      "separate_from": "300_case_relevance_holdout"
+    },
+    "operational_fallback": {
+      "minimum_representative_hook_invocations": 500,
+      "maximum_fallback_rate": 0.05,
+      "include_provider_outages": true
+    }
+  },
+  "uncertainty_and_sampling": {
+    "model_assumptions_required": true,
+    "confidence_claim_boundary": "Prespecify population, sampling design and endpoint model before results. Independent families alone do not justify a binomial model. Wilson intervals are nominal model-based intervals; a quota-selected or diagnostic benchmark cannot claim their coverage without justified assumptions. Otherwise use a prespecified design-valid method or report not established.",
+    "primary_relevance_intervals": "two_sided_95_wilson_with_one_primary_case_per_independent_family",
+    "weighted_design_reports": "Use design-aware bounded-loss methods for stratified probability samples; weighted rows are not binomial pseudo-counts.",
+    "diagnostic_fixed_sets": "May report descriptive rates only; cannot pass inferential promotion gates.",
+    "zero_harm_warning": "A degenerate bootstrap over zero observed harms is invalid; zero of 100 has upper bound about 2.95%, zero of 150 about 1.98% under iid binomial assumptions.",
+    "seed_policy": "A seed proves replayability, not randomness; record randomization provenance and design status before labels are inspected."
+  },
+  "artifacts": {
+    "synthetic_cases": "tests/eval/synthetic_cases.v1.jsonl",
+    "expected_values": "tests/eval/expected_values.v1.json",
+    "validator": "scripts/validate_eval_policy.py"
+  }
+}

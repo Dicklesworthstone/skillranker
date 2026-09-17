@@ -1,4 +1,6 @@
 # Rust build and profiling output. Cargo.lock is intentionally tracked.
+__pycache__/
+*.py[cod]
 target/
 /target-*/
 /target_*/

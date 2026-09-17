@@ -1,0 +1,36 @@
+[package]
+name = "skillranker"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+description = "Session-specific skill advice powered by TypeSafe.ai Jev"
+license-file = "LICENSE"
+repository = "https://github.com/Dicklesworthstone/skillranker"
+publish = false
+
+[[bin]]
+name = "sr"
+path = "src/main.rs"
+
+[features]
+default = []
+# Reserved boundary; no TUI implementation or terminal dependency ships yet.
+tui = []
+
+[dependencies]
+asupersync = { version = "=0.5.0", default-features = false, features = ["runtime-core", "native-runtime", "tls-native-roots"] }
+blake3 = "1.8"
+frankensearch-core = { git = "https://github.com/Dicklesworthstone/frankensearch.git", rev = "39047c44c3a92ceb71d25c602913b8b2888e2fe7", default-features = false }
+frankensearch-quill = { git = "https://github.com/Dicklesworthstone/frankensearch.git", rev = "39047c44c3a92ceb71d25c602913b8b2888e2fe7", default-features = false }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Quill's Cx and our Cx must come from exactly the same package source.
+[patch.crates-io]
+asupersync = { git = "https://github.com/Dicklesworthstone/asupersync", rev = "81fb7b579ce5f161622f1524391f5202a641cc2e" }
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = "warn"

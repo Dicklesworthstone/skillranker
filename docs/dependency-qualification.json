@@ -1,0 +1,201 @@
+{
+  "bead": "sr-roadmap-l1i.1.7",
+  "date": "2026-09-17",
+  "evaluation_only_candidates": [
+    {
+      "decision": "evaluation/reporting only; not ordinary hook dependency",
+      "features": "stats helpers live in a larger numerical workspace; measure cost before default dependency",
+      "head": "4f687085db83492704017b1d5ed7e26f646e9c41",
+      "name": "fsci-stats",
+      "repo": "https://github.com/Dicklesworthstone/frankenscipy"
+    },
+    {
+      "decision": "seeded sampling/evaluation only with default-features=false",
+      "features": "default includes ndarray,getrandom,rayon; use default-features=false for deterministic seeded consumers",
+      "head": "7db69a9a764a38e4e050c46c2607a3be3ceea849",
+      "name": "fnp-random",
+      "repo": "https://github.com/Dicklesworthstone/franken_numpy"
+    },
+    {
+      "decision": "offline report prep only unless later bead justifies frame engine in sr",
+      "features": "use validate_mode one_to_one/many_to_one and count assertions to avoid duplicating observations",
+      "head": "7ca8c602ecc4de7bd6f8d95828e52b383d95d7cd",
+      "name": "fp-join/fp-frame",
+      "repo": "https://github.com/Dicklesworthstone/frankenpandas"
+    }
+  ],
+  "generated_by": "SapphireAnchor",
+  "global_cargo_requirements": [
+    "Use cargo tree -d and cargo tree -i asupersync after parent creates Cargo.toml/Cargo.lock; duplicate asupersync sources block the adapter."
+  ],
+  "notes": [
+    "No TypeSafe/Jev or other live provider calls were made.",
+    "Cargo tree inspected dependency graphs and updated/read Cargo's registry index as part of local dependency analysis; no source files in sibling repos changed.",
+    "SkillRanker currently has no Cargo.toml/Cargo.lock, so no build or lockfile proof exists for this bead."
+  ],
+  "notices_policy": {
+    "third_party_notices_now": "Do not fabricate THIRD_PARTY_NOTICES.md yet; no code was imported in this bead.",
+    "when_importing": "Record imported path, source repo, exact revision, source file hash, local modifications, carried tests/provenance, and include the actual MIT plus OpenAI/Anthropic rider text when copied source is retained."
+  },
+  "scope": "Dependency source qualification and license/source-slice evidence only; no runtime imports or Cargo/source implementation edits.",
+  "selected_runtime_dependencies": [
+    {
+      "api_evidence": [
+        "src/http/h1/http_client.rs exposes explicit asupersync::http::Client/HttpClient with send(cx) and no ambient client",
+        "HttpClientBuilder has request_timeout; effective request timeout meet-composes with remaining Cx budget and per-call override",
+        "TLS support is feature gated; add_root_certificate is available under tls; roots come from tls-native-roots or tls-webpki-roots or explicit added roots",
+        "tests/http_client_https_e2e.rs is loopback TLS proof only and does not prove public TypeSafe endpoint interop"
+      ],
+      "blockers_or_followups": [
+        "Current local HEAD differs from the plan note; parent should pin the current inspected rev above or deliberately re-run qualification if choosing the older plan rev.",
+        "Live public-root TypeSafe TLS/cancellation proof remains a later transport bead; loopback HTTPS source is not enough for that claim.",
+        "Crates.io publication of the exact dependency universe was not verified here; git rev pin is the qualified non-local source.",
+        "Because FrankenSearch depends on registry asupersync 0.5.0, SkillRanker must patch crates-io or otherwise prove a single asupersync source; duplicate git/registry sources would make Quill Cx types incompatible."
+      ],
+      "feature_graph_checks": [
+        {
+          "command": "cargo tree -p asupersync --no-default-features --features runtime-core,native-runtime,tls-native-roots -e normal -i tokio",
+          "result": "rc=0, warning: nothing to print"
+        },
+        {
+          "command": "cargo tree -p asupersync --no-default-features --features runtime-core,native-runtime,tls-native-roots -e features -i reqwest",
+          "result": "rc=101, package did not match any packages"
+        },
+        {
+          "command": "cargo tree -p asupersync --no-default-features --features runtime-core,native-runtime,tls-native-roots -e features -i ureq",
+          "result": "rc=101, package did not match any packages"
+        }
+      ],
+      "forbidden_features_for_core_hooks": [
+        "tokio-compat",
+        "benchmark-adapters",
+        "metrics",
+        "fuzz",
+        "ci-cross-platform",
+        "sqlite unless owned storage layer explicitly needs it"
+      ],
+      "inspected_head": "81fb7b579ce5f161622f1524391f5202a641cc2e",
+      "kind": "git-crate",
+      "license": "LicenseRef-MIT-OpenAI-Anthropic-Rider",
+      "license_file_sha256": "32a82e0a5754e72e51fae44b65a936c831c07376f21c90f5fb9e76897fcc3509",
+      "local_path": "/data/projects/asupersync",
+      "name": "asupersync",
+      "optional_features": [
+        "proc-macros only if implementation uses scope/spawn/join/race macros",
+        "tls-webpki-roots may replace or supplement tls-native-roots if deterministic roots are preferred and tested"
+      ],
+      "package_version": "0.5.0",
+      "plan_reviewed_head": "6060c0a0d83a0692c15c95012bd814ab8ef4c529",
+      "recommended_manifest": "[dependencies]\nasupersync = { version = \"0.5.0\", default-features = false, features = [\"runtime-core\", \"native-runtime\", \"tls-native-roots\"] }\n\n[patch.crates-io]\nasupersync = { git = \"https://github.com/Dicklesworthstone/asupersync\", rev = \"81fb7b579ce5f161622f1524391f5202a641cc2e\" }",
+      "repo": "https://github.com/Dicklesworthstone/asupersync"
+    },
+    {
+      "api_evidence": [
+        "QuillIndex::in_memory(QuillConfig) constructs an owned-buffer index without filesystem I/O",
+        "QuillIndex::index_documents(&Cx, &[IndexableDocument]).await, commit(&Cx).await, and search_paginated(&Cx, query, limit, offset, exact_count) are public shipping APIs",
+        "IndexableDocument has id, content, optional title, and metadata; metadata is stored with results and is not the searchable field by itself",
+        "Default schema fields include content id 1 and title id 2; parser binds content weight 1.0 and title boost 2.0",
+        "QuillConfig exposes query_fuel_budget, max_ingest_shards, deterministic_ingest, and validation for zero/invalid budgets"
+      ],
+      "blockers_or_followups": [
+        "SkillRanker tests must not import Quill's Tantivy oracle tests or enable tantivy-oracle; use independent expected-result fixtures instead.",
+        "Index tags/aliases into searchable title/content, not metadata-only, or recall silently weakens.",
+        "Crates.io publication was not verified here; git workspace rev is the qualified source.",
+        "Quill APIs take asupersync::Cx from Quill's resolved dependency source; root Cargo must ensure that source is identical to SkillRanker's direct asupersync source, typically with [patch.crates-io]."
+      ],
+      "deny_features": [
+        "durability for initial no-persist retrieval",
+        "bench-internals",
+        "conformance-internals",
+        "profile-internals",
+        "pruning-conformance",
+        "tantivy-oracle"
+      ],
+      "feature_graph_checks": [
+        {
+          "command": "cargo tree -p frankensearch-quill --no-default-features -e features -i tantivy",
+          "result": "rc=101, package did not match any packages"
+        },
+        {
+          "command": "cargo tree -p frankensearch-quill --no-default-features -e features -i tokio",
+          "result": "rc=101, package did not match any packages"
+        },
+        {
+          "command": "cargo tree -p frankensearch-quill --no-default-features -e features -i reqwest",
+          "result": "rc=101, package did not match any packages"
+        },
+        {
+          "command": "cargo tree -p frankensearch-quill --no-default-features -e features -i ureq",
+          "result": "rc=101, package did not match any packages"
+        }
+      ],
+      "inspected_head": "39047c44c3a92ceb71d25c602913b8b2888e2fe7",
+      "kind": "git-workspace-crate",
+      "license": "LicenseRef-MIT-OpenAI-Anthropic-Rider via workspace license-file",
+      "license_file_sha256": "32a82e0a5754e72e51fae44b65a936c831c07376f21c90f5fb9e76897fcc3509",
+      "local_path": "/data/projects/frankensearch/crates/frankensearch-quill",
+      "name": "frankensearch-quill",
+      "package_version": "0.3.1",
+      "recommended_core_manifest": "frankensearch-core = { git = \"https://github.com/Dicklesworthstone/frankensearch.git\", rev = \"39047c44c3a92ceb71d25c602913b8b2888e2fe7\", default-features = false }",
+      "recommended_manifest": "frankensearch-quill = { git = \"https://github.com/Dicklesworthstone/frankensearch.git\", rev = \"39047c44c3a92ceb71d25c602913b8b2888e2fe7\", default-features = false }",
+      "repo": "https://github.com/Dicklesworthstone/frankensearch.git",
+      "required_companion_crates": [
+        "frankensearch-core",
+        "frankensearch-index"
+      ]
+    }
+  ],
+  "skillranker_repo": {
+    "cargo_manifest_present": false,
+    "head": "e61fd842a1cfd4724a0a2c2352eac2f1182b9df9",
+    "license_sha256": "32a82e0a5754e72e51fae44b65a936c831c07376f21c90f5fb9e76897fcc3509",
+    "license_spdx_label": "LicenseRef-MIT-OpenAI-Anthropic-Rider",
+    "path": "/data/projects/skillranker"
+  },
+  "source_reuse_candidates": [
+    {
+      "candidate_files": [
+        {
+          "conditions": "copy patterns/tests only after removing secret previews and adding whole-payload/truncation-boundary privacy tests",
+          "path": "src/security/secret_scanner.rs",
+          "sha256": "0fdb1cefbd8b6df7175b0a6970424d816205697244af2412c9ba7b11ab7ca6d4"
+        },
+        {
+          "conditions": "parser currently logs raw YAML on parse errors; that behavior must not enter hooks",
+          "path": "src/core/spec_lens.rs",
+          "sha256": "65bf35439f18a65d34d66b533655c678f22401c3a118e4b95a2f9f12a734c5ad"
+        },
+        {
+          "conditions": "token/hash-feature ideas only; no embedding backend/config",
+          "path": "src/search/embeddings.rs",
+          "sha256": "820673d045719e3cfd001399cb4e4b0a2c55c8d5ce5a5cdfbac91c0c84debff8"
+        },
+        {
+          "conditions": "reward bookkeeping examples only; do not reuse as per-skill prior",
+          "path": "src/suggestions/bandit/types.rs",
+          "sha256": "e4cde0b2d7b3306b32850c8ee1e9828f16cb05ede0ec4ab47401027fcb7db6b1"
+        }
+      ],
+      "dependency_decision": "do not depend on ms at runtime",
+      "head": "c9a616bcb29c89e640a95f2bca344c3053fdf7d0",
+      "license_manifest_hazard": "Cargo.toml says MIT, but LICENSE sha256 matches SkillRanker's MIT plus OpenAI/Anthropic rider; copied code must use the actual rider notice.",
+      "repo": "https://github.com/Dicklesworthstone/meta_skill.git",
+      "source": "meta_skill"
+    }
+  ],
+  "toolchain": {
+    "cargo": "cargo 1.100.0-nightly (495c385d0 2026-09-16)",
+    "installed_toolchains": [
+      "stable-x86_64-unknown-linux-gnu",
+      "beta-x86_64-unknown-linux-gnu",
+      "nightly-x86_64-unknown-linux-gnu (active, default)",
+      "nightly-2026-08-04-x86_64-unknown-linux-gnu",
+      "nightly-2026-08-25-x86_64-unknown-linux-gnu",
+      "nightly-2026-08-31-x86_64-unknown-linux-gnu",
+      "1.85-x86_64-unknown-linux-gnu"
+    ],
+    "reason": "Inspected source repos that SkillRanker would consume all pin or have been reviewed against nightly-2026-08-31; current active floating nightly is newer and should not be used as the project pin.",
+    "recommended_pin": "nightly-2026-08-31",
+    "rustc": "rustc 1.100.0-nightly (923c95cdf 2026-09-16)"
+  }
+}

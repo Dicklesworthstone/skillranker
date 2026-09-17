@@ -19,9 +19,11 @@ Sign up at the [TypeSafe console](https://console.typesafe.ai) to get your own k
 ![Runtime](https://img.shields.io/badge/runtime-Asupersync-654ff0)
 ![Output](https://img.shields.io/badge/output-JSON%20%7C%20hooks%20%7C%20TUI-00897b)
 
-**Status: design stage.** This checkout contains the plan and documentation;
-there is no Rust implementation, Cargo manifest, or installable `sr` binary yet.
-Commands below describe the intended interfaces. The [implementation phases](COMPREHENSIVE_PLAN_TO_DESIGN_SKILLRANKER.md#implementation-order-and-dependencies)
+**Status: foundation implementation.** The Rust package contains identity and
+resource-limit contracts, focused tests, and a bootstrap `sr` binary supporting
+only `--help` and `--version`. Ranking, adapters, hooks, evaluation commands, and
+the TUI are still planned. Commands below describe those intended interfaces.
+The [implementation phases](COMPREHENSIVE_PLAN_TO_DESIGN_SKILLRANKER.md#implementation-order-and-dependencies)
 gate the core CLI, evaluation tools, hooks, and later experiments separately.
 
 ```bash
@@ -187,8 +189,9 @@ or override the agent's governing instructions.
 
 ### From source
 
-These build commands apply once the implementation and its Cargo files exist.
-The current documentation-only checkout cannot run them successfully.
+The current source builds the foundation binary with help and version commands.
+It does not yet provide the ranking workflow described below. The dated Rust
+toolchain and `Cargo.lock` are committed for reproducibility.
 
 ```bash
 git clone https://github.com/Dicklesworthstone/skillranker.git
@@ -196,7 +199,8 @@ cd skillranker
 cargo install --locked --path . --bin sr
 ```
 
-Include the inline TUI with its optional feature:
+The `tui` feature is an empty build boundary today. This future installation
+variant will include the inline TUI when its implementation and gates are complete:
 
 ```bash
 cargo install --locked --path . --bin sr --features tui
@@ -206,7 +210,7 @@ For a checkout-local binary:
 
 ```bash
 cargo build --locked --release --bin sr
-./target/release/sr capabilities --json
+./target/release/sr --help
 ```
 
 ### Runtime setup

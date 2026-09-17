@@ -1,0 +1,136 @@
+{
+  "schema_version": "skillranker.expected_values.v1",
+  "policy_id": "skillranker-eval-policy-v1",
+  "owner_bead": "sr-roadmap-l1i.1.8",
+  "status": "deterministic_contract_examples_not_measured_results",
+  "loss_examples": [
+    {
+      "example_id": "positive_correct_recommendation",
+      "case_type": "positive_advisory",
+      "y_nonempty": true,
+      "decision": "ranked_in_y",
+      "loss": 0,
+      "normalized_y": 0.0
+    },
+    {
+      "example_id": "positive_false_abstention",
+      "case_type": "positive_advisory",
+      "y_nonempty": true,
+      "decision": "abstain",
+      "loss": 1,
+      "normalized_y": 0.5
+    },
+    {
+      "example_id": "positive_wrong_recommendation",
+      "case_type": "positive_advisory",
+      "y_nonempty": true,
+      "decision": "ranked_not_in_y",
+      "loss": 2,
+      "normalized_y": 1.0
+    },
+    {
+      "example_id": "no_match_correct_abstention",
+      "case_type": "no_match_advisory",
+      "y_nonempty": false,
+      "decision": "abstain",
+      "loss": 0,
+      "normalized_y": 0.0
+    },
+    {
+      "example_id": "no_match_needless_suggestion",
+      "case_type": "no_match_advisory",
+      "y_nonempty": false,
+      "decision": "ranked_any_skill",
+      "loss": 2,
+      "normalized_y": 1.0
+    },
+    {
+      "example_id": "attempted_operational_unavailable",
+      "case_type": "attempted_case",
+      "y_nonempty": null,
+      "decision": "unavailable_operational_failure",
+      "loss": 2,
+      "normalized_y": 1.0
+    }
+  ],
+  "always_abstain_counterexample": {
+    "description": "A loss that ignores missed useful suggestions would reward always abstaining. The frozen common loss makes that policy visibly worse on positive cases.",
+    "cohort": [
+      {"case_id": "p1", "y_nonempty": true, "always_abstain_loss": 1, "candidate_policy_loss": 0},
+      {"case_id": "p2", "y_nonempty": true, "always_abstain_loss": 1, "candidate_policy_loss": 0},
+      {"case_id": "p3", "y_nonempty": true, "always_abstain_loss": 1, "candidate_policy_loss": 0},
+      {"case_id": "p4", "y_nonempty": true, "always_abstain_loss": 1, "candidate_policy_loss": 2},
+      {"case_id": "n1", "y_nonempty": false, "always_abstain_loss": 0, "candidate_policy_loss": 0},
+      {"case_id": "n2", "y_nonempty": false, "always_abstain_loss": 0, "candidate_policy_loss": 0}
+    ],
+    "expected": {
+      "always_abstain_total_loss": 4,
+      "always_abstain_mean_loss": 0.6666666667,
+      "always_abstain_mean_normalized_loss": 0.3333333333,
+      "candidate_policy_total_loss": 2,
+      "candidate_policy_mean_loss": 0.3333333333,
+      "candidate_policy_mean_normalized_loss": 0.1666666667,
+      "conclusion": "always_abstain_fails_positive_case_value"
+    }
+  },
+  "missing_failed_unstarted_examples": [
+    {
+      "example_id": "missing_replay_for_lower_gate_policy",
+      "case_count": 10,
+      "available_complete_cases": 7,
+      "missing_replay_responses": 3,
+      "expected_status": "not_estimable",
+      "forbidden_summary": "Do not evaluate only the 7 favorable complete cases and call the policy passed."
+    },
+    {
+      "example_id": "incorrect_replaced_by_timeouts",
+      "original_incorrect_cases": 10,
+      "attempted_timeouts_without_response": 10,
+      "expected_loss_for_attempted_operational_failures_each": 2,
+      "expected_total_loss": 20,
+      "forbidden_summary": "Do not remove attempted timeouts from the denominator to reduce loss to zero."
+    },
+    {
+      "example_id": "batch_cap_unstarted",
+      "scheduled_cases": 100,
+      "started_cases": 80,
+      "unstarted_cases": 20,
+      "expected_status": "partial_unfinished",
+      "forbidden_summary": "Do not classify the 20 unstarted cases as failed attempts or successful abstentions; the cohort cannot promote."
+    }
+  ],
+  "coverage_examples": [
+    {
+      "example_id": "candidate_coverage_not_set_recall",
+      "acceptable_y": ["skill-a", "skill-b", "skill-c", "skill-d", "skill-e", "skill-f", "skill-g", "skill-h", "skill-i", "skill-j", "skill-k", "skill-l", "skill-m", "skill-n", "skill-o", "skill-p", "skill-q", "skill-r", "skill-s", "skill-t"],
+      "retrieved": ["skill-a", "near-miss-1", "near-miss-2"],
+      "candidate_coverage_success": true,
+      "set_recall": 0.05,
+      "explanation": "Promotion coverage asks whether at least one acceptable skill is retrieved; recovering all acceptable skills is a separately named set-recall metric."
+    }
+  ],
+  "harm_interval_examples": [
+    {
+      "example_id": "zero_of_100_iid_upper_bound",
+      "flagged": 0,
+      "n": 100,
+      "one_sided_95_upper_bound_formula": "1 - 0.05^(1/n)",
+      "expected_upper_bound_rounded_6": 0.029513,
+      "passes_2_percent_gate": false
+    },
+    {
+      "example_id": "zero_of_150_iid_upper_bound",
+      "flagged": 0,
+      "n": 150,
+      "one_sided_95_upper_bound_formula": "1 - 0.05^(1/n)",
+      "expected_upper_bound_rounded_6": 0.019773,
+      "passes_2_percent_gate": true
+    }
+  ],
+  "cohort_separation_examples": {
+    "relevance_holdout_minimum_primary_cases": 300,
+    "controlled_harm_minimum_independent_task_family_pairs_for_zero_event_iid_claim": 150,
+    "operational_fallback_minimum_invocations": 500,
+    "must_not_conflate": true
+  }
+}
