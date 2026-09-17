@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Fixed
+
+- Matrix source-reference validation rejects unittest methods overwritten or
+  deleted in the class body instead of counting their earlier declarations as
+  test evidence. A surviving method still makes the class reference eligible;
+  declaration validation remains distinct from an execution receipt.
+
 ### Added
 
 - Rust 2024 package with a pinned toolchain/lockfile, help/version bootstrap CLI,

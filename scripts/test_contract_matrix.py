@@ -146,6 +146,18 @@ fn documented_contract() {}
             with self.subTest(reference=reference, source=source):
                 self.assertEqual(self.validate_fixture(reference, files={reference.split("::")[0]: source}), 1)
 
+    def test_shadowed_unittest_methods_do_not_establish_evidence(self):
+        source = ("import unittest\nclass Contract(unittest.TestCase):\n"
+                  "    def test_behavior(self): pass\n"
+                  "    test_behavior = None\n")
+        for reference in ("scripts/check.py::Contract", "scripts/check.py::Contract::test_behavior"):
+            with self.subTest(reference=reference):
+                self.assertEqual(self.validate_fixture(reference, files={"scripts/check.py": source}), 1)
+        source += "    def test_surviving(self): pass\n"
+        self.assertEqual(self.validate_fixture("scripts/check.py::Contract", files={"scripts/check.py": source}), 0)
+        self.assertEqual(self.validate_fixture("scripts/check.py::Contract::test_surviving",
+                                               files={"scripts/check.py": source}), 0)
+
     def test_missing_executed_references_rejected(self):
         sources = {"scripts/check.py": "def real(): pass\n", "tests/contract.rs": "#[test]\nfn real() {}\n"}
         for reference in ("scripts/missing.py::real", "scripts/check.py::missing",

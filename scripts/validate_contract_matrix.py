@@ -199,10 +199,21 @@ def reference_exists(reference):
             if isinstance(node, ast.ClassDef):
                 if not is_unittest_case(node, nodes):
                     return False
-                methods = [child.name for child in node.body
-                           if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))
-                           and child.name.startswith("test_")]
-                return bool(methods) if len(parts) == 2 else methods.count(parts[2]) == 1
+                methods = {}
+                for child in node.body:
+                    if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        methods[child.name] = child.name.startswith("test_")
+                    elif isinstance(child, (ast.Assign, ast.AnnAssign, ast.AugAssign, ast.Delete)):
+                        if isinstance(child, ast.AnnAssign) and child.value is None:
+                            continue
+                        targets = child.targets if isinstance(child, (ast.Assign, ast.Delete)) else [child.target]
+                        for target in targets:
+                            for name in ast.walk(target):
+                                if isinstance(name, ast.Name):
+                                    methods[name.id] = False
+                    elif isinstance(child, ast.ClassDef):
+                        methods[child.name] = False
+                return any(methods.values()) if len(parts) == 2 else methods.get(parts[2], False)
             return (len(parts) == 2 and isinstance(node, ast.FunctionDef)
                     and reference in TRUSTED_CHECK_ENTRYPOINTS)
         # Cargo discovers integration tests only as direct children of tests/.
