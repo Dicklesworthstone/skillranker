@@ -1,6 +1,8 @@
 //! Local roster identity and visibility contracts. Discovery and validation of
 //! actual files/invocation rules belong to the selected harness adapter.
 
+pub mod retrieval;
+
 use crate::context::PrivateText;
 use crate::identity::{ContentHash, IdentityError, OpaqueLoadTarget, SkillId, SourceId};
 use serde::{Deserialize, Deserializer, Serialize};

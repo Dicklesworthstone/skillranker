@@ -1,8 +1,8 @@
 # Narrow Quill dependency integration
 
 `sr-roadmap-l1i.3.8` qualifies the shipping Quill API and enforces its dependency
-boundary. It does not yet implement roster retrieval (`.3.10`) or the bounded
-literal query compiler (`.3.9`), and does not advertise a working rank command.
+boundary. `sr-roadmap-l1i.3.9` adds the bounded literal query compiler described
+below. Roster retrieval (`.3.10`) and a working rank command remain separate work.
 
 The manifest pins `frankensearch-quill` and `frankensearch-core` to
 `39047c44c3a92ceb71d25c602913b8b2888e2fe7`, both with default features disabled.
@@ -67,3 +67,55 @@ RCH_REQUIRE_REMOTE=1 rch exec -- cargo test --locked --test quill_contract -- --
 Use a frozen source snapshot and the repository's required check/Clippy/test
 gates before closing the bead. Revision-bound results are recorded in the live
 bead; the commands above alone are not a passing verification claim.
+
+## Bounded literal query compilation
+
+`roster::retrieval::compile_query` accepts the invocation's `Cx` and three explicit
+local text fields: latest request, active task, and recent errors. The caller
+selects these fields under the context/disclosure policy, including `--no-tools`.
+The compiler neither discovers context nor redacts it, and never sends it anywhere.
+
+Policy `quill-literal-or-v1` admits up to 4,096 Unicode scalars from each source
+before invoking Quill's shipping `FrankensearchDefault` analyzer. It examines only
+one extra scalar to detect truncation. A partial final alphanumeric token is
+discarded so truncation cannot invent a word prefix. Input truncation is reported
+per source. Analyzer work and stored token data are bounded by these three source
+prefixes, even when the caller supplies a much larger string.
+
+Terms are interleaved in request/task/error order and deduplicated by their
+normalized Quill token text. This preserves task and error evidence for terse
+continuations. Each term is individually quoted, with quotes/backslashes escaped;
+only the compiler supplies ` OR ` separators. The renderer uses the original
+token spelling because Unicode lowercase expansion need not survive a second
+tokenization unchanged (for example, dotted capital I). This still yields the
+same analyzed term as document ingestion. No Boolean, field, range, glob, boost,
+or whole-request phrase syntax comes from conversational text.
+
+The output admits at most 128 distinct terms and 4,096 Unicode scalars, counting
+quotes, escape characters and separators. Terms that do not fit are skipped and
+counted, allowing a later shorter term to fit; candidates are never invented to
+compensate. The native parser validates the completed string, and a structural
+check requires exactly the expected terms, optional OR clauses, and the pinned
+content/title fields and boosts (1 and 2). Any parser recovery, truncation, or
+changed meaning is a typed failure. No analyzed terms returns an explicit empty
+compilation; analyzed terms that cannot fit return an unrepresentable-query error.
+
+Diagnostics expose counts and truncation flags. Input/query `Debug` output and
+errors omit private text; the compiled query is intentionally not serializable.
+The explicit `as_str()` accessor is for local Quill execution and must not be
+logged. Cancellation is checked between bounded synchronous stages. Logical work
+bounds do not establish a hard real-time or RSS guarantee.
+
+`tests/quill_query.rs` exercises real native search for OR semantics, syntax
+injection, multilingual normalization, exact size/term caps, context preservation,
+empty input, zero matches, cancellation and fuel refusal with successful twins.
+It logs structured case/count/timing events without query/document bodies.
+
+```bash
+RCH_REQUIRE_REMOTE=1 rch exec -- cargo test --locked --test quill_query -- --nocapture
+```
+
+The later roster adapter must call this compiler only for advisory overflow,
+map empty compilation to `retrieval-empty`, propagate failures and truncation,
+and resolve only actual Quill hits through its roster snapshot. This module does
+not implement roster admission, explicit-resolution bypass, or an alternate engine.
