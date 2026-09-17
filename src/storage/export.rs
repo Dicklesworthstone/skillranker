@@ -211,10 +211,10 @@ pub fn export_private_atomic(
     guard.disarm();
 
     // 7. Ensure permissions are strictly 0o600
-    if let Ok(meta) = std::fs::metadata(target_path) {
-        if meta.mode() & 0o777 != 0o600 {
-            let _ = std::fs::set_permissions(target_path, std::fs::Permissions::from_mode(0o600));
-        }
+    if let Ok(meta) = std::fs::metadata(target_path)
+        && meta.mode() & 0o777 != 0o600
+    {
+        let _ = std::fs::set_permissions(target_path, std::fs::Permissions::from_mode(0o600));
     }
 
     // 8. Flush parent directory to persist directory entry durability
@@ -275,11 +275,11 @@ fn atomic_no_clobber_publish(from: &Path, to: &Path) -> Result<(), ExportError> 
 
         let parent = to
             .parent()
-            .and_then(|p| {
+            .map(|p| {
                 if p.as_os_str().is_empty() {
-                    Some(Path::new("."))
+                    Path::new(".")
                 } else {
-                    Some(p)
+                    p
                 }
             })
             .unwrap_or_else(|| Path::new("."));

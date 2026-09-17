@@ -2,11 +2,18 @@
 //! payload. Decoding, byte/depth limits and native adapter conformance live at
 //! the input boundary; serializing this entire envelope to a provider is invalid.
 
+pub mod branch;
 #[cfg(unix)]
 pub mod cass;
 pub mod jsonl;
 pub mod signals;
 pub mod source;
+
+pub use branch::{
+    ActiveBranch, BranchAdvice, BranchResolution, BranchResolutionTarget, LoadedSkillRecord,
+    ResolvedWorktree, SkillSuppressionVerdict, SkillUsageKind, UnresolvedBranchReason,
+    WorktreeError, evaluate_loaded_skill_eligibility, resolve_active_branch, resolve_worktree,
+};
 
 use crate::identity::{
     AgentId, BranchId, ContentHash, ContextEpoch, EventId, HarnessId, ProducerId, SessionId,

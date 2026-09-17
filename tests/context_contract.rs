@@ -1,0 +1,524 @@
+//! Context and Branch Resolution Contract Tests
+//!
+//! Verifies boundary `p3_branch_resolution`:
+//! - Unit Property Test: `tests/context_contract.rs::branch_and_worktree`
+//! - Parent/subagent forks isolation: sibling events are strictly excluded.
+//! - Out-of-order timestamps: parent links prevail over timestamp sorting.
+//! - Compaction and resumed epochs: epochs advance on compaction; task boundaries tracked.
+//! - Compacted reference versus workflow: workflows always eligible; references suppressed
+//!   only when proven available in current epoch with matching version.
+//! - Unresolved branch withholds session-specific advice.
+//! - Worktree identity: distinct canonical worktree IDs for linked worktrees; non-Git and detached HEAD.
+
+use skillranker::context::branch::{
+    ActiveBranch, BranchAdvice, BranchResolutionTarget, LoadedSkillRecord, SkillUsageKind,
+    UnresolvedBranchReason, evaluate_loaded_skill_eligibility, resolve_active_branch,
+    resolve_worktree,
+};
+use skillranker::context::{EventKind, NormalizedEvent, PrivateText, Role};
+use skillranker::identity::{BranchId, ContentHash, ContextEpoch, EventId, SkillId, TurnId};
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+fn temp_dir(label: &str) -> PathBuf {
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let path = std::env::temp_dir().join(format!(
+        "sr-ctx-test-{}-{}-{}",
+        std::process::id(),
+        SEQ.fetch_add(1, Ordering::Relaxed),
+        label
+    ));
+    fs::create_dir_all(&path).unwrap();
+    path
+}
+
+fn git(dir: &Path, args: &[&str]) -> String {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .env("GIT_AUTHOR_NAME", "Tester")
+        .env("GIT_AUTHOR_EMAIL", "tester@example.com")
+        .env("GIT_COMMITTER_NAME", "Tester")
+        .env("GIT_COMMITTER_EMAIL", "tester@example.com")
+        .output()
+        .expect("run git command");
+    assert!(
+        output.status.success(),
+        "git command failed: {:?} (stderr: {})",
+        args,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+struct EventBuilder<'a> {
+    id: &'a str,
+    parent: Option<&'a str>,
+    role: Role,
+    kind: EventKind,
+    text: &'a str,
+    ts: Option<i64>,
+    branch: Option<&'a str>,
+}
+
+impl<'a> EventBuilder<'a> {
+    fn new(id: &'a str) -> Self {
+        Self {
+            id,
+            parent: None,
+            role: Role::Assistant,
+            kind: EventKind::Message,
+            text: "",
+            ts: None,
+            branch: None,
+        }
+    }
+
+    fn parent(mut self, p: &'a str) -> Self {
+        self.parent = Some(p);
+        self
+    }
+
+    fn role(mut self, r: Role) -> Self {
+        self.role = r;
+        self
+    }
+
+    fn kind(mut self, k: EventKind) -> Self {
+        self.kind = k;
+        self
+    }
+
+    fn text(mut self, t: &'a str) -> Self {
+        self.text = t;
+        self
+    }
+
+    fn ts(mut self, ts: i64) -> Self {
+        self.ts = Some(ts);
+        self
+    }
+
+    fn branch(mut self, b: &'a str) -> Self {
+        self.branch = Some(b);
+        self
+    }
+
+    fn build(self) -> NormalizedEvent {
+        NormalizedEvent {
+            event_id: Some(EventId::new(self.id).unwrap()),
+            parent_id: self.parent.map(|p| EventId::new(p).unwrap()),
+            turn_id: Some(TurnId::new(format!("turn-{}", self.id)).unwrap()),
+            agent_id: None,
+            branch_id: self.branch.map(|b| BranchId::new(b).unwrap()),
+            role: self.role,
+            kind: self.kind,
+            timestamp_unix_ms: self.ts,
+            text: PrivateText::new(self.text),
+            tool: None,
+        }
+    }
+}
+
+// ==============================================================================
+// Unit Property Test: tests/context_contract.rs::branch_and_worktree
+// ==============================================================================
+
+#[test]
+fn branch_and_worktree() {
+    // 1. Sibling Branch Isolation and Parent-Link Lineage
+    // Root R forks into Branch A (A1 -> A2) and Branch B (B1 -> B2)
+    let root = EventBuilder::new("root")
+        .role(Role::User)
+        .kind(EventKind::Message)
+        .text("start")
+        .ts(100)
+        .branch("main")
+        .build();
+    let a1 = EventBuilder::new("a1")
+        .parent("root")
+        .kind(EventKind::Message)
+        .text("a1")
+        .ts(110)
+        .branch("feat-a")
+        .build();
+    let a2 = EventBuilder::new("a2")
+        .parent("a1")
+        .kind(EventKind::Message)
+        .text("a2")
+        .ts(120)
+        .branch("feat-a")
+        .build();
+    let b1 = EventBuilder::new("b1")
+        .parent("root")
+        .kind(EventKind::Message)
+        .text("b1")
+        .ts(115)
+        .branch("feat-b")
+        .build();
+    let b2 = EventBuilder::new("b2")
+        .parent("b1")
+        .kind(EventKind::Message)
+        .text("b2")
+        .ts(125)
+        .branch("feat-b")
+        .build();
+
+    let all_events = vec![root.clone(), a1.clone(), b1.clone(), a2.clone(), b2.clone()];
+
+    // Resolving for target leaf A2
+    let target_a = BranchResolutionTarget {
+        target_event_id: Some(EventId::new("a2").unwrap()),
+        target_branch_id: None,
+        target_agent_id: None,
+    };
+    let res_a = resolve_active_branch(&all_events, &target_a);
+    assert!(res_a.is_resolved());
+    let active_a = res_a.active_branch().unwrap();
+    assert_eq!(active_a.events.len(), 3);
+    assert_eq!(
+        active_a.events[0].event_id.as_ref().unwrap().as_str(),
+        "root"
+    );
+    assert_eq!(active_a.events[1].event_id.as_ref().unwrap().as_str(), "a1");
+    assert_eq!(active_a.events[2].event_id.as_ref().unwrap().as_str(), "a2");
+    // Assert sibling branch isolation: no B events on A's active branch
+    assert!(!active_a.contains_event(&EventId::new("b1").unwrap()));
+    assert!(!active_a.contains_event(&EventId::new("b2").unwrap()));
+
+    // Resolving for target leaf B2
+    let target_b = BranchResolutionTarget {
+        target_event_id: Some(EventId::new("b2").unwrap()),
+        target_branch_id: None,
+        target_agent_id: None,
+    };
+    let res_b = resolve_active_branch(&all_events, &target_b);
+    assert!(res_b.is_resolved());
+    let active_b = res_b.active_branch().unwrap();
+    assert_eq!(active_b.events.len(), 3);
+    assert_eq!(
+        active_b.events[0].event_id.as_ref().unwrap().as_str(),
+        "root"
+    );
+    assert_eq!(active_b.events[1].event_id.as_ref().unwrap().as_str(), "b1");
+    assert_eq!(active_b.events[2].event_id.as_ref().unwrap().as_str(), "b2");
+    // Assert sibling branch isolation: no A events on B's active branch
+    assert!(!active_b.contains_event(&EventId::new("a1").unwrap()));
+    assert!(!active_a.contains_event(&EventId::new("b2").unwrap()));
+
+    // 2. Out-of-Order Timestamps vs Parent-Link Order
+    // Events on Branch B have skewed timestamps (B2 earlier than B1 in timestamp),
+    // but parent links strictly define lineage.
+    let skew_root = EventBuilder::new("s_root")
+        .role(Role::User)
+        .text("root")
+        .ts(500)
+        .build();
+    let skew_b1 = EventBuilder::new("s_b1")
+        .parent("s_root")
+        .text("b1")
+        .ts(900)
+        .build();
+    // B2 has timestamp 600, which is LESS than B1 (900)!
+    let skew_b2 = EventBuilder::new("s_b2")
+        .parent("s_b1")
+        .text("b2")
+        .ts(600)
+        .build();
+    let skew_events = vec![skew_b2.clone(), skew_root.clone(), skew_b1.clone()];
+
+    let target_skew = BranchResolutionTarget {
+        target_event_id: Some(EventId::new("s_b2").unwrap()),
+        target_branch_id: None,
+        target_agent_id: None,
+    };
+    let res_skew = resolve_active_branch(&skew_events, &target_skew);
+    assert!(res_skew.is_resolved());
+    let active_skew = res_skew.active_branch().unwrap();
+    // Lineage must be strictly s_root -> s_b1 -> s_b2, ignoring timestamp ordering!
+    assert_eq!(
+        active_skew.events[0].event_id.as_ref().unwrap().as_str(),
+        "s_root"
+    );
+    assert_eq!(
+        active_skew.events[1].event_id.as_ref().unwrap().as_str(),
+        "s_b1"
+    );
+    assert_eq!(
+        active_skew.events[2].event_id.as_ref().unwrap().as_str(),
+        "s_b2"
+    );
+
+    // 3. Compaction, Resumed Epochs, and Task Boundaries
+    let c_root = EventBuilder::new("c_root")
+        .role(Role::User)
+        .text("prompt")
+        .ts(100)
+        .build();
+    let c_task = EventBuilder::new("c_task")
+        .parent("c_root")
+        .role(Role::System)
+        .kind(EventKind::TaskBoundary)
+        .text("tb1")
+        .ts(110)
+        .build();
+    let c_pre = EventBuilder::new("c_pre")
+        .parent("c_task")
+        .text("pre")
+        .ts(120)
+        .build();
+    let c_compact = EventBuilder::new("c_comp")
+        .parent("c_pre")
+        .role(Role::System)
+        .kind(EventKind::Compaction)
+        .text("summary")
+        .ts(130)
+        .build();
+    let c_post = EventBuilder::new("c_post")
+        .parent("c_comp")
+        .text("post")
+        .ts(140)
+        .build();
+    let c_events = vec![c_root, c_task, c_pre, c_compact, c_post];
+
+    let target_comp = BranchResolutionTarget {
+        target_event_id: Some(EventId::new("c_post").unwrap()),
+        target_branch_id: None,
+        target_agent_id: None,
+    };
+    let res_comp = resolve_active_branch(&c_events, &target_comp);
+    assert!(res_comp.is_resolved());
+    let active_comp = res_comp.active_branch().unwrap();
+    assert_eq!(active_comp.compaction_count, 1);
+    assert_eq!(active_comp.task_boundary_count, 1);
+    assert_eq!(active_comp.current_epoch.as_str(), "epoch-1");
+
+    // 4. Compacted Reference versus Workflow Eligibility
+    let skill_ref = SkillId::new("cargo-docs").unwrap();
+    let skill_wf = SkillId::new("deploy-release").unwrap();
+    let hash_v1 = ContentHash::from_bytes(b"v1-content");
+    let hash_v2 = ContentHash::from_bytes(b"v2-content");
+
+    // Loaded records: skill_ref loaded in epoch-0, skill_wf loaded in epoch-0
+    let loaded_ref_epoch0 = LoadedSkillRecord {
+        skill_id: skill_ref.clone(),
+        event_id: Some(EventId::new("c_pre").unwrap()),
+        turn_id: Some(TurnId::new("turn-c_pre").unwrap()),
+        usage_kind: SkillUsageKind::Reference,
+        epoch: ContextEpoch::new("epoch-0").unwrap(),
+        source_content: Some(hash_v1.clone()),
+        rendered_content: None,
+        has_dynamic_arguments: false,
+        turn_scoped: false,
+    };
+    let loaded_wf_epoch0 = LoadedSkillRecord {
+        skill_id: skill_wf.clone(),
+        event_id: Some(EventId::new("c_pre").unwrap()),
+        turn_id: Some(TurnId::new("turn-c_pre").unwrap()),
+        usage_kind: SkillUsageKind::Workflow,
+        epoch: ContextEpoch::new("epoch-0").unwrap(),
+        source_content: Some(hash_v1.clone()),
+        rendered_content: None,
+        has_dynamic_arguments: false,
+        turn_scoped: false,
+    };
+
+    // Case A: Workflow is ALWAYS eligible, even before compaction
+    let pre_branch = ActiveBranch {
+        branch_id: None,
+        leaf_event_id: Some(EventId::new("c_pre").unwrap()),
+        events: vec![],
+        current_epoch: ContextEpoch::new("epoch-0").unwrap(),
+        compaction_count: 0,
+        task_boundary_count: 0,
+        ancestor_chain_truncated: false,
+    };
+    let mut pre_branch_with_events = pre_branch.clone();
+    pre_branch_with_events.events = vec![EventBuilder::new("c_pre").text("pre").build()];
+
+    let v_wf = evaluate_loaded_skill_eligibility(
+        &skill_wf,
+        SkillUsageKind::Workflow,
+        Some(&hash_v1),
+        None,
+        Some(&pre_branch_with_events),
+        &[loaded_ref_epoch0.clone(), loaded_wf_epoch0.clone()],
+    );
+    assert!(
+        v_wf.is_eligible(),
+        "Workflow must remain eligible for re-invocation"
+    );
+
+    // Case B: Reference in current epoch (epoch-0) with matching hash is SUPPRESSED
+    let v_ref_pre = evaluate_loaded_skill_eligibility(
+        &skill_ref,
+        SkillUsageKind::Reference,
+        Some(&hash_v1),
+        None,
+        Some(&pre_branch_with_events),
+        &[loaded_ref_epoch0.clone(), loaded_wf_epoch0.clone()],
+    );
+    assert!(
+        v_ref_pre.is_suppressed(),
+        "Reference proven present in current epoch must be suppressed"
+    );
+
+    // Case C: Reference after compaction (now in epoch-1) is ELIGIBLE
+    // active_comp is in epoch-1
+    let v_ref_post = evaluate_loaded_skill_eligibility(
+        &skill_ref,
+        SkillUsageKind::Reference,
+        Some(&hash_v1),
+        None,
+        Some(active_comp),
+        &[loaded_ref_epoch0.clone(), loaded_wf_epoch0],
+    );
+    assert!(
+        v_ref_post.is_eligible(),
+        "Compacted reference whose presence is not proven in epoch-1 must be eligible"
+    );
+
+    // Case D: Reference version mismatch is ELIGIBLE
+    let v_ref_v2 = evaluate_loaded_skill_eligibility(
+        &skill_ref,
+        SkillUsageKind::Reference,
+        Some(&hash_v2),
+        None,
+        Some(&pre_branch_with_events),
+        std::slice::from_ref(&loaded_ref_epoch0),
+    );
+    assert!(
+        v_ref_v2.is_eligible(),
+        "Reference with new version must be eligible"
+    );
+
+    // Case E: Reference loaded on a sibling branch is NOT suppressed on active branch
+    let sibling_loaded_ref = LoadedSkillRecord {
+        skill_id: skill_ref.clone(),
+        event_id: Some(EventId::new("b1").unwrap()), // on branch B
+        turn_id: Some(TurnId::new("turn-b1").unwrap()),
+        usage_kind: SkillUsageKind::Reference,
+        epoch: ContextEpoch::new("epoch-0").unwrap(),
+        source_content: Some(hash_v1.clone()),
+        rendered_content: None,
+        has_dynamic_arguments: false,
+        turn_scoped: false,
+    };
+    let v_ref_sibling = evaluate_loaded_skill_eligibility(
+        &skill_ref,
+        SkillUsageKind::Reference,
+        Some(&hash_v1),
+        None,
+        Some(active_a), // active branch is A, does not contain b1
+        &[sibling_loaded_ref],
+    );
+    assert!(
+        v_ref_sibling.is_eligible(),
+        "Skill loaded only on a sibling branch must NOT be suppressed on active branch"
+    );
+
+    // 5. Unresolved Ambiguous Sibling Forks Withholds Advice
+    // When no target is specified and multiple sibling leaves exist
+    let target_unspecified = BranchResolutionTarget::default();
+    let res_ambig = resolve_active_branch(&all_events, &target_unspecified);
+    assert!(!res_ambig.is_resolved());
+    let reason = res_ambig.unresolved_reason().unwrap();
+    assert!(matches!(
+        reason,
+        UnresolvedBranchReason::AmbiguousSiblingForks { .. }
+    ));
+
+    let advice: BranchAdvice<&str> = BranchAdvice::Withheld {
+        reason: reason.clone(),
+    };
+    assert!(!advice.is_available());
+    assert_eq!(advice.withheld_reason(), Some(reason));
+
+    // When branch is unresolved, loaded-state suppression is withheld
+    let v_unresolved = evaluate_loaded_skill_eligibility(
+        &skill_ref,
+        SkillUsageKind::Reference,
+        Some(&hash_v1),
+        None,
+        None, // unresolved branch
+        &[loaded_ref_epoch0],
+    );
+    assert!(
+        v_unresolved.is_eligible(),
+        "When active branch is unresolved, session-specific suppression is withheld"
+    );
+
+    // 6. Worktree Resolution (Main Git, Linked Worktree, Non-Git, Detached HEAD)
+    let temp_root = temp_dir("worktree");
+    let main_repo = temp_root.join("main");
+    let linked_repo = temp_root.join("linked");
+    let non_git = temp_root.join("nongit");
+    fs::create_dir_all(&main_repo).unwrap();
+    fs::create_dir_all(&non_git).unwrap();
+
+    // Setup main git repo
+    git(
+        &main_repo,
+        &["init", "--quiet", "--template=", "--initial-branch=main"],
+    );
+    git(
+        &main_repo,
+        &["commit", "--quiet", "--allow-empty", "-m", "init"],
+    );
+
+    // Main repo worktree
+    let wt_main = resolve_worktree(&main_repo).unwrap();
+    assert!(wt_main.is_git);
+    assert!(!wt_main.is_linked_worktree);
+    assert_eq!(wt_main.git_branch.as_ref().unwrap().as_str(), "main");
+    assert!(!wt_main.is_detached_head);
+
+    // Linked worktree
+    git(
+        &main_repo,
+        &[
+            "worktree",
+            "add",
+            "--quiet",
+            "-b",
+            "feature-linked",
+            linked_repo.to_str().unwrap(),
+        ],
+    );
+    let wt_linked = resolve_worktree(&linked_repo).unwrap();
+    assert!(wt_linked.is_git);
+    assert!(wt_linked.is_linked_worktree);
+    assert_eq!(
+        wt_linked.git_branch.as_ref().unwrap().as_str(),
+        "feature-linked"
+    );
+    assert!(!wt_linked.is_detached_head);
+    // Distinct WorkspaceId despite sharing common Git object directory
+    assert_ne!(
+        wt_main.workspace_id, wt_linked.workspace_id,
+        "Linked worktrees must receive distinct WorkspaceIds"
+    );
+
+    // Detached HEAD
+    let head_commit = git(&main_repo, &["rev-parse", "HEAD"]);
+    git(&main_repo, &["checkout", "--quiet", &head_commit]);
+    let wt_detached = resolve_worktree(&main_repo).unwrap();
+    assert!(wt_detached.is_git);
+    assert!(wt_detached.is_detached_head);
+    assert_eq!(wt_detached.git_branch, None);
+
+    // Non-Git Directory
+    let wt_nongit = resolve_worktree(&non_git).unwrap();
+    assert!(!wt_nongit.is_git);
+    assert!(!wt_nongit.is_linked_worktree);
+    assert_eq!(wt_nongit.git_branch, None);
+    assert!(!wt_nongit.is_detached_head);
+    assert_ne!(wt_nongit.workspace_id, wt_main.workspace_id);
+
+    // Cleanup
+    let _ = fs::remove_dir_all(&temp_root);
+}
