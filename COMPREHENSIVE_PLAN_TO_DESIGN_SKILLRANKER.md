@@ -808,7 +808,7 @@ Use platform configuration directories; Linux fallback `~/.config/sr/config.toml
 | 2 | usage/config | Invalid flags, config, or conflicting modes |
 | 3 | session | Missing or ambiguous session |
 | 4 | provider/network | Transport/authentication/provider failure |
-| 5 | roster | Empty, unusable, or unresolved requested roster |
+| 5 | roster/retrieval | Empty/unusable roster, unresolved explicit request, or Quill retrieval failure |
 | 6 | timeout | Overall deadline exhausted |
 | 7 | input/adapter | Malformed, oversized, or unsupported input |
 | 8 | privacy | Requested network operation disallowed |
