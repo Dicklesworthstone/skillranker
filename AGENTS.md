@@ -407,10 +407,12 @@ preflight backup/WAL/temporary space and fail before mutation if it is insuffici
 - Stdout is data; stderr is diagnostics. Keep `capabilities --json` synchronized
   with schemas, adapters/events, compiled features, limits, examples, and exits.
   Distinguish planned commands from implemented capabilities and tested harness
-  versions from unverified ones. This repository currently contains design docs;
-  state that before README commands/build instructions. P4 CLI does not imply P6
-  hooks, P8 calibration, or P9 TUI availability. Recorded shadow trials require
-  explicit ledger initialization and separate trusted network consent.
+  versions from unverified ones. The foundation build implements a Rust contract
+  library and a bootstrap `sr` binary with only help and version commands; ranking
+  and integrations remain planned. Keep that status explicit before README
+  commands/build instructions. P4 CLI does not imply P6 hooks, P8 calibration, or
+  P9 TUI availability. Recorded shadow trials require explicit ledger initialization
+  and separate trusted network consent.
 - Ordinary CLI exits: `0` success, `2` usage/config, `3` session, `4` network/provider/budget,
   `5` roster/retrieval, `6` timeout, `7` input/adapter, `8` privacy, `9` required storage,
   `10` provider contract, `11` offline/cache-only miss. JSON errors include schema version, unavailable decision,
