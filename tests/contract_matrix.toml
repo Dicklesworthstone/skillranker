@@ -1,0 +1,1097 @@
+# tests/contract_matrix.toml
+#
+# SkillRanker test and evidence contract matrix.
+# Maps every roadmap implementation boundary to unit/property test identifiers,
+# an e2e suite owner, required platforms/features, earliest executable phase,
+# and current execution status.
+#
+# Rule: P0 rows for future product tests are planned, never fake passed results.
+# Later phase gates require their complete real cases.
+
+schema_version = 1
+created_for_phase = "P0"
+
+# ==============================================================================
+# Phase P0: Contracts, Scaffolding and Evidence Policy
+# ==============================================================================
+
+[[boundaries]]
+id = "p0_bootstrap"
+owner_bead = "sr-roadmap-l1i.1.1"
+phase = "P0"
+title = "Bootstrap single Rust 2024 package and reproducible build boundaries"
+unit_property_tests = [
+    "tests/bootstrap_cli.rs::foundation_compiles_and_exports_expected_crate_contract"
+]
+e2e_suite = "runner-smoke"
+e2e_cases = ["success"]
+assertion_ids = ["behavior"]
+platforms = ["linux"]
+features = []
+status = "executed"
+
+[[boundaries]]
+id = "p0_identity_provenance"
+owner_bead = "sr-roadmap-l1i.1.2"
+phase = "P0"
+title = "Identity, provenance, visibility and normalized event types"
+unit_property_tests = [
+    "tests/identity_contract.rs::identity_contract_invariants"
+]
+e2e_suite = "runner-smoke"
+e2e_cases = ["isolation"]
+assertion_ids = ["behavior"]
+platforms = ["linux"]
+features = []
+status = "executed"
+
+[[boundaries]]
+id = "p0_output_schemas"
+owner_bead = "sr-roadmap-l1i.1.3"
+phase = "P0"
+title = "Decision, error, quality, trace and report schemas"
+unit_property_tests = [
+    "tests/output_contract.rs::output_contract_invariants"
+]
+e2e_suite = "runner-smoke"
+e2e_cases = ["expected-refusal"]
+assertion_ids = ["behavior"]
+platforms = ["linux"]
+features = []
+status = "executed"
+
+[[boundaries]]
+id = "p0_resource_limits"
+owner_bead = "sr-roadmap-l1i.1.4"
+phase = "P0"
+title = "Validated resource budgets and clock types"
+unit_property_tests = [
+    "tests/limits_contract.rs::limits_contract_invariants"
+]
+e2e_suite = "runner-smoke"
+e2e_cases = ["isolation"]
+assertion_ids = ["behavior"]
+platforms = ["linux"]
+features = []
+status = "executed"
+
+[[boundaries]]
+id = "p0_config_authority"
+owner_bead = "sr-roadmap-l1i.1.5"
+phase = "P0"
+title = "Trusted configuration layers and authority policy schema"
+unit_property_tests = [
+    "tests/config_contract.rs::config_contract_invariants"
+]
+e2e_suite = "runner-smoke"
+e2e_cases = ["isolation"]
+assertion_ids = ["behavior"]
+platforms = ["linux"]
+features = []
+status = "executed"
+
+[[boundaries]]
+id = "p0_adapter_contracts"
+owner_bead = "sr-roadmap-l1i.1.6"
+phase = "P0"
+title = "Versioned adapter and capability contracts"
+unit_property_tests = [
+    "tests/adapter_contract.rs::adapter_contract_invariants"
+]
+e2e_suite = "runner-smoke"
+e2e_cases = ["expected-refusal"]
+assertion_ids = ["behavior"]
+platforms = ["linux"]
+features = []
+status = "executed"
+
+[[boundaries]]
+id = "p0_dependency_slices"
+owner_bead = "sr-roadmap-l1i.1.7"
+phase = "P0"
+title = "Pinned dependency source slices and license obligations"
+unit_property_tests = [
+    "scripts/check_dependency_graph.py::check_pinned_dependencies"
+]
+e2e_suite = "runner-smoke"
+e2e_cases = ["success"]
+assertion_ids = ["behavior"]
+platforms = ["linux"]
+features = []
+status = "executed"
+
+[[boundaries]]
+id = "p0_eval_policy"
+owner_bead = "sr-roadmap-l1i.1.8"
+phase = "P0"
+title = "Evaluation cases, cohorts, loss and promotion policy"
+unit_property_tests = [
+    "scripts/test_eval_policy.py::EvaluationPolicyContract"
+]
+e2e_suite = "runner-smoke"
+e2e_cases = ["success"]
+assertion_ids = ["behavior"]
+platforms = ["linux"]
+features = []
+status = "executed"
+
+[[boundaries]]
+id = "p0_process_engine"
+owner_bead = "sr-roadmap-l1i.1.14"
+phase = "P0"
+title = "Bounded process and evidence engine for P0 test runner"
+unit_property_tests = [
+    "scripts/e2e/test_runner.py::RunnerMechanicsContract"
+]
+e2e_suite = "runner-smoke"
+e2e_cases = ["success", "expected-refusal", "isolation"]
+assertion_ids = ["behavior"]
+platforms = ["linux"]
+features = []
+status = "executed"
+
+[[boundaries]]
+id = "p0_evidence_scaffolding"
+owner_bead = "sr-roadmap-l1i.1.9"
+phase = "P0"
+title = "Sanitized test and evidence scaffolding entrypoint"
+unit_property_tests = [
+    "tests/contract_matrix_contract.rs::contract_matrix_validates"
+]
+e2e_suite = "runner-smoke"
+e2e_cases = ["success", "expected-refusal", "isolation"]
+assertion_ids = ["behavior"]
+platforms = ["linux"]
+features = []
+status = "executed"
+
+[[boundaries]]
+id = "p0_adversarial_certification"
+owner_bead = "sr-roadmap-l1i.1.12"
+phase = "P0"
+title = "Adversarial test driver verification and fault rejection"
+unit_property_tests = [
+    "scripts/e2e/test_runner_contract.py::RunnerContractCertification"
+]
+e2e_suite = "runner-contract"
+e2e_cases = [
+    "pipe-failure",
+    "nonzero-exit",
+    "child-signal",
+    "child-hang",
+    "bad-json",
+    "planted-secret",
+    "duplicate-id",
+    "unreached-fault",
+    "retry-pass-rejected"
+]
+assertion_ids = ["behavior", "absence_of_effects"]
+platforms = ["linux"]
+features = []
+status = "planned"
+
+[[boundaries]]
+id = "p0_contract_reconciliation"
+owner_bead = "sr-roadmap-l1i.1.10"
+phase = "P0"
+title = "Reconciliation of public contracts and staged capabilities"
+unit_property_tests = [
+    "tests/contract_reconciliation.rs::public_contracts_agree"
+]
+e2e_suite = "runner-smoke"
+e2e_cases = ["success"]
+assertion_ids = ["behavior"]
+platforms = ["linux"]
+features = []
+status = "planned"
+
+[[boundaries]]
+id = "p0_acceptance_gate"
+owner_bead = "sr-roadmap-l1i.1.11"
+phase = "P0"
+title = "P0 contracts acceptance gate unblocking foundation tracks"
+unit_property_tests = [
+    "tests/p0_gate.rs::all_p0_contracts_verified"
+]
+e2e_suite = "runner-smoke"
+e2e_cases = ["success", "isolation"]
+assertion_ids = ["behavior"]
+platforms = ["linux"]
+features = []
+status = "planned"
+
+# ==============================================================================
+# Phase P1: Asupersync Transport and Typed Jev Contract
+# ==============================================================================
+
+[[boundaries]]
+id = "p1_runtime_scopes"
+owner_bead = "sr-roadmap-l1i.2.1"
+phase = "P1"
+title = "Runtime scopes, entry deadlines and cancellation tokens"
+unit_property_tests = [
+    "tests/runtime_contract.rs::deadlines_and_cancellation"
+]
+e2e_suite = "transport"
+e2e_cases = ["deadline-exhaustion", "cancellation-propagation"]
+assertion_ids = ["timing_bounded", "cancellation_clean"]
+platforms = ["linux"]
+features = []
+status = "planned"
+
+[[boundaries]]
+id = "p1_bounded_blocking"
+owner_bead = "sr-roadmap-l1i.2.2"
+phase = "P1"
+title = "Bounded blocking filesystem, regex and database execution"
+unit_property_tests = [
+    "tests/runtime_contract.rs::bounded_blocking_leaves"
+]
+e2e_suite = "transport"
+e2e_cases = ["stalled-leaf-isolation"]
+assertion_ids = ["leaf_bounded"]
+platforms = ["linux"]
+features = []
+status = "planned"
+
+[[boundaries]]
+id = "p1_trusted_subprocess"
+owner_bead = "sr-roadmap-l1i.2.3"
+phase = "P1"
+title = "Trusted bounded subprocess execution"
+unit_property_tests = [
+    "tests/subprocess_contract.rs::subprocess_bounds"
+]
+e2e_suite = "transport"
+e2e_cases = ["child-reaping", "pipe-saturation"]
+assertion_ids = ["tree_reaped", "no_deadlock"]
+platforms = ["linux"]
+features = []
+status = "planned"
+
+[[boundaries]]
+id = "p1_canonical_origin"
+owner_bead = "sr-roadmap-l1i.2.4"
+phase = "P1"
+title = "Canonicalize TypeSafe origins and credential isolation"
+unit_property_tests = [
+    "tests/endpoint_contract.rs::endpoint_canonicalization"
+]
+e2e_suite = "transport"
+e2e_cases = ["origin-canonicalization", "credential-exclusion"]
+assertion_ids = ["clean_origin", "no_credential_leak"]
+platforms = ["linux"]
+features = []
+status = "planned"
+
+[[boundaries]]
+id = "p1_typed_jev_contract"
+owner_bead = "sr-roadmap-l1i.2.5"
+phase = "P1"
+title = "TypeSafe typed request and answer envelopes"
+unit_property_tests = [
+    "tests/jev_contract.rs::request_and_answer_envelopes"
+]
+e2e_suite = "transport"
+e2e_cases = ["typed-request-serialization", "answer-validation"]
+assertion_ids = ["schema_valid", "finite_distributions"]
+platforms = ["linux"]
+features = []
+status = "planned"
+
+[[boundaries]]
+id = "p1_distribution_validation"
+owner_bead = "sr-roadmap-l1i.2.6"
+phase = "P1"
+title = "Validate distributions, confidence and usage reconciliation"
+unit_property_tests = [
+    "tests/jev_contract.rs::distribution_sum_and_confidence"
+]
+e2e_suite = "transport"
+e2e_cases = ["nonfinite-rejected", "distribution-sum-tolerance"]
+assertion_ids = ["exact_argmax", "unknown_usage_preserved"]
+platforms = ["linux"]
+features = []
+status = "planned"
+
+[[boundaries]]
+id = "p1_asupersync_https"
+owner_bead = "sr-roadmap-l1i.2.7"
+phase = "P1"
+title = "Asupersync HTTPS transport with verified trust roots and cancellation"
+unit_property_tests = [
+    "tests/transport_contract.rs::https_local_tls_and_cancel"
+]
+e2e_suite = "transport"
+e2e_cases = ["local-tls-handshake", "transport-cancellation"]
+assertion_ids = ["tls_verified", "zero_leak_on_cancel"]
+platforms = ["linux"]
+features = []
+status = "planned"
+
+[[boundaries]]
+id = "p1_admission_budget"
+owner_bead = "sr-roadmap-l1i.2.8"
+phase = "P1"
+title = "Invocation-wide attempt admission and budget guards"
+unit_property_tests = [
+    "tests/transport_contract.rs::attempt_budget_admission"
+]
+e2e_suite = "transport"
+e2e_cases = ["attempt-cap-enforced"]
+assertion_ids = ["attempt_limit_honored"]
+platforms = ["linux"]
+features = []
+status = "planned"
+
+[[boundaries]]
+id = "p1_classified_retries"
+owner_bead = "sr-roadmap-l1i.2.9"
+phase = "P1"
+title = "Classified retries and Retry-After compliance"
+unit_property_tests = [
+    "tests/transport_contract.rs::retry_after_and_jitter"
+]
+e2e_suite = "transport"
+e2e_cases = ["retry-after-delay", "4xx-no-retry"]
+assertion_ids = ["retry_behavior_correct"]
+platforms = ["linux"]
+features = []
+status = "planned"
+
+[[boundaries]]
+id = "p1_jev_contract_smoke"
+owner_bead = "sr-roadmap-l1i.2.10"
+phase = "P1"
+title = "Separately consented bounded Jev live contract smoke test"
+unit_property_tests = [
+    "tests/jev_smoke.rs::budgeted_live_contract_smoke"
+]
+e2e_suite = "transport"
+e2e_cases = ["consented-live-smoke"]
+assertion_ids = ["smoke_valid"]
+platforms = ["linux"]
+features = []
+status = "planned"
+
+[[boundaries]]
+id = "p1_transport_failure_matrix"
+owner_bead = "sr-roadmap-l1i.2.11"
+phase = "P1"
+title = "Transport shutdown, failure and cancellation regression matrix"
+unit_property_tests = [
+    "tests/transport_failures.rs::transport_failure_cases"
+]
+e2e_suite = "transport"
+e2e_cases = ["stalled-dns", "handshake-timeout", "429-backoff"]
+assertion_ids = ["safe_error_reporting"]
+platforms = ["linux"]
+features = []
+status = "planned"
+
+[[boundaries]]
+id = "p1_acceptance_gate"
+owner_bead = "sr-roadmap-l1i.2.12"
+phase = "P1"
+title = "Accept transport/runtime readiness on the single Rust package"
+unit_property_tests = [
+    "tests/p1_gate.rs::all_p1_invariants_verified"
+]
+e2e_suite = "transport"
+e2e_cases = ["full-transport-suite"]
+assertion_ids = ["p1_gate_passed"]
+platforms = ["linux"]
+features = []
+status = "planned"
+
+# ==============================================================================
+# Phase P2: Standalone Roster, Privacy and Quill Retrieval
+# ==============================================================================
+
+[[boundaries]]
+id = "p2_descriptor_reads"
+owner_bead = "sr-roadmap-l1i.3.1"
+phase = "P2"
+title = "Authorized descriptor-based skill reads"
+unit_property_tests = [
+    "tests/roster_contract.rs::descriptor_reads"
+]
+e2e_suite = "roster"
+e2e_cases = ["safe-descriptor-walk", "symlink-escape-blocked"]
+assertion_ids = ["no_symlink_escape"]
+platforms = ["linux"]
+features = []
+status = "planned"
+
+[[boundaries]]
+id = "p2_secret_scanning"
+owner_bead = "sr-roadmap-l1i.3.2"
+phase = "P2"
+title = "Standalone secret scanning and whole-payload redaction"
+unit_property_tests = [
+    "tests/privacy_contract.rs::redaction_before_truncation"
+]
+e2e_suite = "roster"
+e2e_cases = ["planted-secret-redacted", "split-boundary-redacted"]
+assertion_ids = ["zero_secret_leak"]
+platforms = ["linux"]
+features = []
+status = "planned"
+
+[[boundaries]]
+id = "p2_frontmatter_parsing"
+owner_bead = "sr-roadmap-l1i.3.3"
+phase = "P2"
+title = "Parse bounded harness-compatible skill metadata"
+unit_property_tests = [
+    "tests/roster_contract.rs::frontmatter_limits_and_fallbacks"
+]
+e2e_suite = "roster"
+e2e_cases = ["oversized-frontmatter-rejected", "valid-frontmatter-parsed"]
+assertion_ids = ["frontmatter_bounded"]
+platforms = ["linux"]
+features = []
+status = "planned"
+
+[[boundaries]]
+id = "p2_visible_roots"
+owner_bead = "sr-roadmap-l1i.3.4"
+phase = "P2"
+title = "Discover harness-visible roots and source precedence"
+unit_property_tests = [
+    "tests/roster_contract.rs::root_precedence_and_shadowing"
+]
+e2e_suite = "roster"
+e2e_cases = ["shadowing-precedence-honored"]
+assertion_ids = ["correct_shadowing"]
+platforms = ["linux"]
+features = []
+status = "planned"
+
+[[boundaries]]
+id = "p2_id_resolution"
+owner_bead = "sr-roadmap-l1i.3.5"
+phase = "P2"
+title = "Resolve stable IDs, aliases, collisions and invocation restrictions"
+unit_property_tests = [
+    "tests/roster_contract.rs::stable_id_and_collision_checks"
+]
+e2e_suite = "roster"
+e2e_cases = ["collision-detected-and-excluded"]
+assertion_ids = ["unique_ids"]
+platforms = ["linux"]
+features = []
+status = "planned"
+
+[[boundaries]]
+id = "p2_explicit_resolution"
+owner_bead = "sr-roadmap-l1i.3.6"
+phase = "P2"
+title = "Resolve explicit requirements locally before inference"
+unit_property_tests = [
+    "tests/roster_contract.rs::local_explicit_resolution"
+]
+e2e_suite = "roster"
+e2e_cases = ["explicit-resolved-offline"]
+assertion_ids = ["no_network_needed"]
+platforms = ["linux"]
+features = []
+status = "planned"
+
+[[boundaries]]
+id = "p2_roster_imports"
+owner_bead = "sr-roadmap-l1i.3.7"
+phase = "P2"
+title = "Validate explicit roster imports without side effects"
+unit_property_tests = [
+    "tests/roster_contract.rs::roster_import_validation"
+]
+e2e_suite = "roster"
+e2e_cases = ["dry-run-import-clean"]
+assertion_ids = ["zero_mutation"]
+platforms = ["linux"]
+features = []
+status = "planned"
+
+[[boundaries]]
+id = "p2_quill_integration"
+owner_bead = "sr-roadmap-l1i.3.8"
+phase = "P2"
+title = "Integrate narrow Quill crate and feature boundaries"
+unit_property_tests = [
+    "tests/quill_contract.rs::quill_lexical_search"
+]
+e2e_suite = "roster"
+e2e_cases = ["in-memory-quill-commit"]
+assertion_ids = ["quill_bounded"]
+platforms = ["linux"]
+features = []
+status = "planned"
+
+[[boundaries]]
+id = "p2_literal_disjunction"
+owner_bead = "sr-roadmap-l1i.3.9"
+phase = "P2"
+title = "Compile bounded literal disjunction queries"
+unit_property_tests = [
+    "tests/quill_contract.rs::literal_disjunction_queries"
+]
+e2e_suite = "roster"
+e2e_cases = ["escaped-disjunction-queries"]
+assertion_ids = ["disjunction_exact"]
+platforms = ["linux"]
+features = []
+status = "planned"
+
+[[boundaries]]
+id = "p2_roster_retrieval"
+owner_bead = "sr-roadmap-l1i.3.10"
+phase = "P2"
+title = "Deterministic in-memory roster retrieval and tie-breaking"
+unit_property_tests = [
+    "tests/quill_contract.rs::deterministic_shortlist"
+]
+e2e_suite = "roster"
+e2e_cases = ["deterministic-tie-breaking"]
+assertion_ids = ["deterministic_ordering"]
+platforms = ["linux"]
+features = []
+status = "planned"
+
+[[boundaries]]
+id = "p2_dependency_revalidation"
+owner_bead = "sr-roadmap-l1i.3.11"
+phase = "P2"
+title = "Revalidate every roster dependency before publication"
+unit_property_tests = [
+    "tests/roster_contract.rs::roster_revalidation"
+]
+e2e_suite = "roster"
+e2e_cases = ["changed-shortlist-invalidated"]
+assertion_ids = ["revalidation_clean"]
+platforms = ["linux"]
+features = []
+status = "planned"
+
+[[boundaries]]
+id = "p2_exclusion_reasons"
+owner_bead = "sr-roadmap-l1i.3.12"
+phase = "P2"
+title = "Expose typed discovery and exclusion evidence"
+unit_property_tests = [
+    "tests/roster_contract.rs::exclusion_reason_codes"
+]
+e2e_suite = "roster"
+e2e_cases = ["exclusion-evidence-reported"]
+assertion_ids = ["typed_reasons"]
+platforms = ["linux"]
+features = []
+status = "planned"
+
+[[boundaries]]
+id = "p2_roster_cli"
+owner_bead = "sr-roadmap-l1i.3.13"
+phase = "P2"
+title = "Local roster inspection and snapshot diff CLI"
+unit_property_tests = [
+    "tests/roster_cli.rs::roster_inspection"
+]
+e2e_suite = "roster"
+e2e_cases = ["roster-json-pagination"]
+assertion_ids = ["pagination_stable"]
+platforms = ["linux"]
+features = []
+status = "planned"
+
+[[boundaries]]
+id = "p2_atomic_export"
+owner_bead = "sr-roadmap-l1i.3.14"
+phase = "P2"
+title = "Publish private exports atomically with bounded permissions"
+unit_property_tests = [
+    "tests/roster_contract.rs::atomic_private_exports"
+]
+e2e_suite = "roster"
+e2e_cases = ["atomic-rename-permissions-0600"]
+assertion_ids = ["owner_only_permissions"]
+platforms = ["linux"]
+features = []
+status = "planned"
+
+[[boundaries]]
+id = "p2_roster_snapshot"
+owner_bead = "sr-roadmap-l1i.3.15"
+phase = "P2"
+title = "Roster snapshot and authorized delta computation"
+unit_property_tests = [
+    "tests/roster_contract.rs::snapshot_delta_computation"
+]
+e2e_suite = "roster"
+e2e_cases = ["snapshot-diff-accurate"]
+assertion_ids = ["delta_exact"]
+platforms = ["linux"]
+features = []
+status = "planned"
+
+[[boundaries]]
+id = "p2_roster_regression_matrix"
+owner_bead = "sr-roadmap-l1i.3.16"
+phase = "P2"
+title = "Verify standalone roster, privacy and Quill retrieval regression matrix"
+unit_property_tests = [
+    "tests/roster_failures.rs::roster_failure_cases"
+]
+e2e_suite = "roster"
+e2e_cases = ["0-skills", "1-skill", "254-skills", "255-skills", "1000-skills"]
+assertion_ids = ["all_scale_invariants_pass"]
+platforms = ["linux"]
+features = []
+status = "planned"
+
+[[boundaries]]
+id = "p2_acceptance_gate"
+owner_bead = "sr-roadmap-l1i.3.17"
+phase = "P2"
+title = "Accept roster, redaction, snapshot and Quill foundation"
+unit_property_tests = [
+    "tests/p2_gate.rs::all_p2_invariants_verified"
+]
+e2e_suite = "roster"
+e2e_cases = ["full-roster-suite"]
+assertion_ids = ["p2_gate_passed"]
+platforms = ["linux"]
+features = []
+status = "planned"
+
+# ==============================================================================
+# Phase P3: Exact-Session Context and Adapter Conformance
+# ==============================================================================
+
+[[boundaries]]
+id = "p3_source_selection"
+owner_bead = "sr-roadmap-l1i.4.1"
+phase = "P3"
+title = "Exact source selection and source-failure isolation"
+unit_property_tests = [
+    "tests/context_contract.rs::exact_source_selection"
+]
+e2e_suite = "context"
+e2e_cases = ["no-cross-session-fallthrough"]
+assertion_ids = ["exact_session_bound"]
+platforms = ["linux"]
+features = []
+status = "planned"
+
+[[boundaries]]
+id = "p3_normalized_envelopes"
+owner_bead = "sr-roadmap-l1i.4.2"
+phase = "P3"
+title = "Parse bounded normalized local envelopes"
+unit_property_tests = [
+    "tests/context_contract.rs::normalized_envelopes"
+]
+e2e_suite = "context"
+e2e_cases = ["bounded-normalized-parsing"]
+assertion_ids = ["normalized_bounded"]
+platforms = ["linux"]
+features = []
+status = "planned"
+
+[[boundaries]]
+id = "p3_native_jsonl"
+owner_bead = "sr-roadmap-l1i.4.3"
+phase = "P3"
+title = "Read bounded native JSONL snapshots and incremental updates"
+unit_property_tests = [
+    "tests/context_contract.rs::native_jsonl_incremental"
+]
+e2e_suite = "context"
+e2e_cases = ["partial-tail-deferred", "compaction-detected"]
+assertion_ids = ["incremental_clean"]
+platforms = ["linux"]
+features = []
+status = "planned"
+
+[[boundaries]]
+id = "p3_branch_resolution"
+owner_bead = "sr-roadmap-l1i.4.4"
+phase = "P3"
+title = "Resolve active branches, compaction and worktree context"
+unit_property_tests = [
+    "tests/context_contract.rs::branch_and_worktree"
+]
+e2e_suite = "context"
+e2e_cases = ["sibling-branch-isolation"]
+assertion_ids = ["no_branch_confusion"]
+platforms = ["linux"]
+features = []
+status = "planned"
+
+[[boundaries]]
+id = "p3_claude_overlay"
+owner_bead = "sr-roadmap-l1i.4.5"
+phase = "P3"
+title = "Implement authoritative Claude prompt overlay"
+unit_property_tests = [
+    "tests/context_contract.rs::claude_prompt_overlay"
+]
+e2e_suite = "context"
+e2e_cases = ["hook-prompt-overlaid-once"]
+assertion_ids = ["authoritative_prompt"]
+platforms = ["linux"]
+features = []
+status = "planned"
+
+[[boundaries]]
+id = "p3_cass_adapter"
+owner_bead = "sr-roadmap-l1i.4.6"
+phase = "P3"
+title = "Implement optional capability-checked cass adapter"
+unit_property_tests = [
+    "tests/context_contract.rs::cass_adapter"
+]
+e2e_suite = "context"
+e2e_cases = ["cass-bounded-pipe", "offline-cass-mock"]
+assertion_ids = ["cass_safe"]
+platforms = ["linux"]
+features = []
+status = "planned"
+
+[[boundaries]]
+id = "p3_tool_associations"
+owner_bead = "sr-roadmap-l1i.4.7"
+phase = "P3"
+title = "Normalize tool/result associations and loaded-skill evidence"
+unit_property_tests = [
+    "tests/context_contract.rs::tool_associations"
+]
+e2e_suite = "context"
+e2e_cases = ["loaded-evidence-extracted"]
+assertion_ids = ["tool_association_exact"]
+platforms = ["linux"]
+features = []
+status = "planned"
+
+[[boundaries]]
+id = "p3_request_context"
+owner_bead = "sr-roadmap-l1i.4.8"
+phase = "P3"
+title = "Render bounded request-first context and visible truncation"
+unit_property_tests = [
+    "tests/context_contract.rs::bounded_request_rendering"
+]
+e2e_suite = "context"
+e2e_cases = ["visible-head-tail-truncation"]
+assertion_ids = ["rendered_within_budget"]
+platforms = ["linux"]
+features = []
+status = "planned"
+
+[[boundaries]]
+id = "p3_task_anchors"
+owner_bead = "sr-roadmap-l1i.4.9"
+phase = "P3"
+title = "Preserve task anchors and explicit directives"
+unit_property_tests = [
+    "tests/context_contract.rs::task_anchors"
+]
+e2e_suite = "context"
+e2e_cases = ["task-anchor-preserved"]
+assertion_ids = ["anchor_intact"]
+platforms = ["linux"]
+features = []
+status = "planned"
+
+[[boundaries]]
+id = "p3_project_signals"
+owner_bead = "sr-roadmap-l1i.4.10"
+phase = "P3"
+title = "Collect safe bounded project signals without external monitoring"
+unit_property_tests = [
+    "tests/context_contract.rs::project_signals"
+]
+e2e_suite = "context"
+e2e_cases = ["dirty-paths-repo-relative"]
+assertion_ids = ["bounded_project_signals"]
+platforms = ["linux"]
+features = []
+status = "planned"
+
+[[boundaries]]
+id = "p3_disclosure_profiles"
+owner_bead = "sr-roadmap-l1i.4.11"
+phase = "P3"
+title = "Implement trusted standard/minimal disclosure profiles"
+unit_property_tests = [
+    "tests/privacy_contract.rs::disclosure_profiles"
+]
+e2e_suite = "context"
+e2e_cases = ["minimal-profile-drops-tools"]
+assertion_ids = ["profile_respected"]
+platforms = ["linux"]
+features = []
+status = "planned"
+
+[[boundaries]]
+id = "p3_disclosure_receipts"
+owner_bead = "sr-roadmap-l1i.4.12"
+phase = "P3"
+title = "Produce bounded field-level disclosure receipts"
+unit_property_tests = [
+    "tests/privacy_contract.rs::disclosure_receipts"
+]
+e2e_suite = "context"
+e2e_cases = ["disclosure-receipt-matches-payload"]
+assertion_ids = ["receipt_accurate"]
+platforms = ["linux"]
+features = []
+status = "planned"
+
+[[boundaries]]
+id = "p3_conformance_matrix"
+owner_bead = "sr-roadmap-l1i.4.13"
+phase = "P3"
+title = "Native, normalized, cass and corrupted conformance matrix"
+unit_property_tests = [
+    "tests/context_failures.rs::context_failure_cases"
+]
+e2e_suite = "context"
+e2e_cases = ["corrupted-jsonl", "oversized-record", "missing-prompt"]
+assertion_ids = ["safe_context_rejection"]
+platforms = ["linux"]
+features = []
+status = "planned"
+
+[[boundaries]]
+id = "p3_acceptance_gate"
+owner_bead = "sr-roadmap-l1i.4.14"
+phase = "P3"
+title = "Accept exact-session context and privacy conformance"
+unit_property_tests = [
+    "tests/p3_gate.rs::all_p3_invariants_verified"
+]
+e2e_suite = "context"
+e2e_cases = ["full-context-suite"]
+assertion_ids = ["p3_gate_passed"]
+platforms = ["linux"]
+features = []
+status = "planned"
+
+# ==============================================================================
+# Phase P4: Useful Core CLI, Pure Ranking and Exact Cache
+# ==============================================================================
+
+[[boundaries]]
+id = "p4_strict_cli"
+owner_bead = "sr-roadmap-l1i.5.1"
+phase = "P4"
+title = "Strict CLI and provenance-aware configuration resolver"
+unit_property_tests = [
+    "tests/cli_contract.rs::strict_flags_and_provenance"
+]
+e2e_suite = "core-cli"
+e2e_cases = ["unknown-flag-rejected", "config-precedence-verified"]
+assertion_ids = ["strict_cli_parsing"]
+platforms = ["linux"]
+features = []
+status = "planned"
+
+[[boundaries]]
+id = "p4_dry_run"
+owner_bead = "sr-roadmap-l1i.5.5"
+phase = "P4"
+title = "Stateless dry-run preview for stages 1 and 2"
+unit_property_tests = [
+    "tests/cli_contract.rs::dry_run_semantics"
+]
+e2e_suite = "core-cli"
+e2e_cases = ["dry-run-zero-network-zero-mutation"]
+assertion_ids = ["stateless_preview"]
+platforms = ["linux"]
+features = []
+status = "planned"
+
+[[boundaries]]
+id = "p4_offline_demo"
+owner_bead = "sr-roadmap-l1i.5.6"
+phase = "P4"
+title = "Offline demo and non-actionable synthetic output envelopes"
+unit_property_tests = [
+    "tests/cli_contract.rs::offline_demo"
+]
+e2e_suite = "core-cli"
+e2e_cases = ["demo-inert-envelope"]
+assertion_ids = ["non_actionable_envelope"]
+platforms = ["linux"]
+features = []
+status = "planned"
+
+[[boundaries]]
+id = "p4_core_cli_acceptance"
+owner_bead = "sr-roadmap-l1i.5.21"
+phase = "P4"
+title = "Accept the useful standalone core CLI"
+unit_property_tests = [
+    "tests/p4_gate.rs::all_p4_invariants_verified"
+]
+e2e_suite = "core-cli"
+e2e_cases = ["full-core-cli-suite"]
+assertion_ids = ["p4_gate_passed"]
+platforms = ["linux"]
+features = []
+status = "planned"
+
+# ==============================================================================
+# Phase P5: Local Evidence, Replay, Feedback and Evaluation
+# ==============================================================================
+
+[[boundaries]]
+id = "p5_sqlite_storage"
+owner_bead = "sr-roadmap-l1i.6.1"
+phase = "P5"
+title = "WAL SQLite storage and schema migrations"
+unit_property_tests = [
+    "tests/storage_contract.rs::sqlite_wal_and_migrations"
+]
+e2e_suite = "replay"
+e2e_cases = ["sqlite-wal-concurrency", "migration-dry-run"]
+assertion_ids = ["storage_intact"]
+platforms = ["linux"]
+features = []
+status = "planned"
+
+[[boundaries]]
+id = "p5_offline_replay"
+owner_bead = "sr-roadmap-l1i.6.14"
+phase = "P5"
+title = "Offline faithful replay and policy comparison"
+unit_property_tests = [
+    "tests/replay_contract.rs::offline_replay_equivalence"
+]
+e2e_suite = "replay"
+e2e_cases = ["replay-matches-original"]
+assertion_ids = ["faithful_replay"]
+platforms = ["linux"]
+features = []
+status = "planned"
+
+[[boundaries]]
+id = "p5_eval_accounting"
+owner_bead = "sr-roadmap-l1i.6.28"
+phase = "P5"
+title = "Evaluation accounting, sampling math and robustness reports"
+unit_property_tests = [
+    "tests/eval_accounting.rs::evaluation_math_oracles"
+]
+e2e_suite = "replay"
+e2e_cases = ["loss-denominators-exact"]
+assertion_ids = ["math_correct"]
+platforms = ["linux"]
+features = []
+status = "planned"
+
+# ==============================================================================
+# Phase P6: Recorded Claude Shadow Hooks and User Controls
+# ==============================================================================
+
+[[boundaries]]
+id = "p6_claude_installer"
+owner_bead = "sr-roadmap-l1i.7.1"
+phase = "P6"
+title = "Claude settings manager and atomic hook installer"
+unit_property_tests = [
+    "tests/hook_installer.rs::claude_settings_merge"
+]
+e2e_suite = "shadow-hook"
+e2e_cases = ["install-diff-preview", "atomic-install-rollback"]
+assertion_ids = ["install_clean"]
+platforms = ["linux"]
+features = []
+status = "planned"
+
+[[boundaries]]
+id = "p6_shadow_hook_execution"
+owner_bead = "sr-roadmap-l1i.7.3"
+phase = "P6"
+title = "Shadow hook execution with non-blocking quiet failure"
+unit_property_tests = [
+    "tests/hook_contract.rs::shadow_hook_non_blocking"
+]
+e2e_suite = "shadow-hook"
+e2e_cases = ["quiet-on-failure", "stdin-deadline-enforced"]
+assertion_ids = ["non_blocking_hook"]
+platforms = ["linux"]
+features = []
+status = "planned"
+
+# ==============================================================================
+# Phase P7: Measured Advisory Rollout and Release
+# ==============================================================================
+
+[[boundaries]]
+id = "p7_advisory_rollout"
+owner_bead = "sr-roadmap-l1i.8.1"
+phase = "P7"
+title = "Advisory hook injection and operational telemetry"
+unit_property_tests = [
+    "tests/rollout_contract.rs::advisory_mode_injection"
+]
+e2e_suite = "rollout"
+e2e_cases = ["advisory-output-injected"]
+assertion_ids = ["advisory_within_limits"]
+platforms = ["linux"]
+features = []
+status = "planned"
+
+# ==============================================================================
+# Phase P8: Evidence-Gated Learning and Sequential Monitoring
+# ==============================================================================
+
+[[boundaries]]
+id = "p8_learning_lifecycle"
+owner_bead = "sr-roadmap-l1i.9.8"
+phase = "P8"
+title = "Learned-policy lifecycle and statistical validity"
+unit_property_tests = [
+    "tests/learning_contract.rs::calibration_and_supermartingale"
+]
+e2e_suite = "learning"
+e2e_cases = ["supermartingale-crossing-bound", "policy-rollback-atomic"]
+assertion_ids = ["alpha_conserved", "rollback_exact"]
+platforms = ["linux"]
+features = []
+status = "planned"
+
+# ==============================================================================
+# Phase P9: Individually Gated Later Experiments
+# ==============================================================================
+
+[[boundaries]]
+id = "p9_quill_passages"
+owner_bead = "sr-roadmap-l1i.10.1.1"
+phase = "P9"
+title = "Quill heading passages retrieval within selected skills"
+unit_property_tests = [
+    "tests/passages_contract.rs::heading_passages_retrieval"
+]
+e2e_suite = "passages"
+e2e_cases = ["equal-budget-comparison", "no-match-lead-fallback"]
+assertion_ids = ["budget_neutral", "passages_accurate"]
+platforms = ["linux"]
+features = []
+status = "planned"
+
+[[boundaries]]
+id = "p9_frankentui"
+owner_bead = "sr-roadmap-l1i.10.7"
+phase = "P9"
+title = "FrankenTUI nine-row inspection and terminal recovery"
+unit_property_tests = [
+    "tests/tui_contract.rs::tui_rendering_and_recovery"
+]
+e2e_suite = "passages"
+e2e_cases = ["non-tty-fallback", "terminal-state-restored"]
+assertion_ids = ["tui_clean_recovery"]
+platforms = ["linux"]
+features = ["tui"]
+status = "planned"
