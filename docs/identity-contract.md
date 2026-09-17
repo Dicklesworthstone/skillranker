@@ -21,6 +21,10 @@ implementation. Future private persistence codecs and public receipts must each
 declare their fields. Identifier Debug formatting hides its value. Normalized
 context is serializable for explicit local input interchange, **not** for provider
 payloads or routine logs. Text and local paths also have private Debug output.
+Option IDs, invocation names and display names hide their values in Debug too;
+terminal sanitization alone does not remove private content. Explicit local
+serialization remains lossless. Serde decoding errors can contain input text;
+input boundaries must map them to fixed public error kinds rather than log them.
 
 Opaque identifiers are nonempty and at most 512 UTF-8 bytes. They reject
 whitespace, controls and bidi controls. This bound does not replace outer reader

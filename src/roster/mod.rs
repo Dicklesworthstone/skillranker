@@ -9,9 +9,15 @@ use std::path::{Path, PathBuf};
 
 /// A callable identifier, distinct from a title or internal source-qualified ID.
 /// Passing these lexical checks does not prove a harness accepts the name.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Eq, PartialEq, Serialize)]
 #[serde(transparent)]
 pub struct InvocationName(String);
+
+impl fmt::Debug for InvocationName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("InvocationName(<private>)")
+    }
+}
 
 impl InvocationName {
     pub fn new(name: impl Into<String>) -> Result<Self, IdentityError> {
@@ -42,9 +48,15 @@ impl<'de> Deserialize<'de> for InvocationName {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Eq, PartialEq, Serialize)]
 #[serde(transparent)]
 pub struct DisplayName(String);
+
+impl fmt::Debug for DisplayName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("DisplayName(<private>)")
+    }
+}
 
 impl DisplayName {
     /// Preserve readable text while stripping terminal controls and directional

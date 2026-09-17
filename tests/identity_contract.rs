@@ -445,6 +445,34 @@ fn display_names_are_not_invocations_and_manual_only_stays_manual() {
     assert_eq!(aliases.len(), 2);
 }
 
+#[test]
+fn untrusted_option_and_roster_names_do_not_leak_through_debug() {
+    let canary = "PRIVATE-CANARY";
+    let option = OptionId::new(canary).unwrap();
+    let invocation = InvocationName::new(canary).unwrap();
+    let display = DisplayName::from_text(canary);
+    assert_eq!(format!("{option:?}"), "OptionId(<request-id>)");
+    assert_eq!(format!("{invocation:?}"), "InvocationName(<private>)");
+    assert_eq!(format!("{display:?}"), "DisplayName(<private>)");
+    assert!(!format!("{:?}", ChoiceTarget::Skill(option.clone())).contains(canary));
+    // Explicit data access/serialization remains lossless; Debug is not output.
+    assert_eq!(option.as_str(), canary);
+    assert_eq!(invocation.as_str(), canary);
+    assert_eq!(display.as_str(), canary);
+    assert_eq!(
+        serde_json::to_string(&option).unwrap(),
+        "\"PRIVATE-CANARY\""
+    );
+    assert_eq!(
+        serde_json::to_string(&invocation).unwrap(),
+        "\"PRIVATE-CANARY\""
+    );
+    assert_eq!(
+        serde_json::to_string(&display).unwrap(),
+        "\"PRIVATE-CANARY\""
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn local_paths_preserve_native_bytes_without_leaking_in_debug() {

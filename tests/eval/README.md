@@ -19,3 +19,10 @@ python3 scripts/test_eval_policy.py
 ```
 
 A passing validation means the contract artifacts are internally consistent. It does not claim that SkillRanker has passed any relevance, harm, operational, live-provider, or release gate.
+
+The checker rejects duplicate definitions, invalid Unicode/JSON whitespace,
+fractional or negative counts, numeric strings and booleans used as numbers.
+It checks roster/oracle references, preserves attempted and unfinished case
+denominators, and requires both positive and negative interval examples.
+Regression tests retain synthetic files in a reported temporary directory for
+diagnosis; they never read real sessions or call a provider.

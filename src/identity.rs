@@ -119,9 +119,15 @@ fn validate_skill_id(value: &str) -> Result<(), IdentityError> {
 identifier!(validate_skill_id; SkillId);
 
 /// Distinct from skill IDs: this is only a handle inside one provider question.
-#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize)]
+#[derive(Clone, Eq, PartialEq, Ord, PartialOrd, Serialize)]
 #[serde(transparent)]
 pub struct OptionId(String);
+
+impl fmt::Debug for OptionId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("OptionId(<request-id>)")
+    }
+}
 
 impl OptionId {
     pub fn new(value: impl Into<String>) -> Result<Self, IdentityError> {

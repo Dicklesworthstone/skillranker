@@ -444,12 +444,11 @@ impl WallClockMillis {
         duration: DurationMillis,
         name: &'static str,
     ) -> Result<Self, LimitError> {
-        let rhs = i64::try_from(duration.as_millis())
-            .map_err(|_| LimitError::ArithmeticOverflow { name })?;
-        self.0
-            .checked_add(rhs)
+        // Validate the sum, not the unsigned duration in isolation: a large
+        // duration can still produce a valid timestamp from a negative start.
+        i64::try_from(i128::from(self.0) + i128::from(duration.as_millis()))
             .map(Self)
-            .ok_or(LimitError::ArithmeticOverflow { name })
+            .map_err(|_| LimitError::ArithmeticOverflow { name })
     }
 }
 
@@ -538,10 +537,16 @@ impl InvocationDeadline {
     }
 
     pub fn remaining_before_cleanup(self, now: MonotonicMillis) -> DurationMillis {
+        if now < self.start {
+            return DurationMillis(0);
+        }
         self.latest_work_time().saturating_duration_since(now)
     }
 
     pub fn remaining_until_expiry(self, now: MonotonicMillis) -> DurationMillis {
+        if now < self.start {
+            return DurationMillis(0);
+        }
         self.expires_at().saturating_duration_since(now)
     }
 
@@ -607,8 +612,12 @@ impl WallClockExpiry {
     pub const fn expires_at(self) -> WallClockMillis {
         self.expires_at
     }
+    /// True outside the half-open validity window, including rollback before
+    /// creation. A wall-clock sample alone cannot detect rollback within that
+    /// window: cache callers must additionally enforce monotonic elapsed time
+    /// and invalidate entries when their clock-rollback detector fires.
     pub fn is_expired(self, now: WallClockMillis) -> bool {
-        now >= self.expires_at
+        now < self.not_before || now >= self.expires_at
     }
 }
 

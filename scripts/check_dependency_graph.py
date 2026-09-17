@@ -5,12 +5,12 @@ import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
 BANNED_PREFIXES = ("tokio", "reqwest", "ureq", "tantivy", "fastembed", "candle")
-BANNED_NAMES = {"meta_skill", "meta-skill", "ort", "ort-sys", "tch", "torch-sys"}
+BANNED_NAMES = {"ms", "meta_skill", "meta-skill", "ort", "ort-sys", "tch", "torch-sys"}
 
 
 def main() -> None:
     result = subprocess.run(
-        ["cargo", "tree", "--locked", "--all-features", "--color", "never",
+        ["cargo", "tree", "--locked", "--all-features", "--target", "all", "--color", "never",
          "-e", "normal,build,dev", "--prefix", "none"],
         cwd=ROOT, check=True, capture_output=True, text=True, timeout=120,
     )

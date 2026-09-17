@@ -283,6 +283,8 @@ fn wall_clock_expiry_is_distinct_from_monotonic_deadline() {
     let expiry = WallClockExpiry::new(wall_start, ttl).unwrap();
 
     assert_eq!(expiry.not_before(), wall_start);
+    assert!(expiry.is_expired(WallClockMillis::from_unix_millis(1_699_999_999_999)));
+    assert!(!expiry.is_expired(wall_start));
     assert_eq!(
         expiry.expires_at(),
         WallClockMillis::from_unix_millis(1_700_000_060_000)
@@ -296,6 +298,45 @@ fn wall_clock_expiry_is_distinct_from_monotonic_deadline() {
         monotonic_deadline.expires_at(),
         MonotonicMillis::from_millis(3_000)
     );
+}
+
+#[test]
+fn invalid_monotonic_samples_cannot_increase_remaining_budget() {
+    let deadline =
+        InvocationDeadline::default_from_start(MonotonicMillis::from_millis(1_000)).unwrap();
+    for now in [0, 999, 4_000, u64::MAX] {
+        let now = MonotonicMillis::from_millis(now);
+        assert_eq!(deadline.remaining_before_cleanup(now).as_millis(), 0);
+        assert_eq!(deadline.remaining_until_expiry(now).as_millis(), 0);
+        assert!(deadline.ensure_can_start_work(now, "test").is_err());
+    }
+    let start = deadline.start();
+    assert_eq!(deadline.remaining_before_cleanup(start).as_millis(), 2_800);
+    assert_eq!(deadline.remaining_until_expiry(start).as_millis(), 3_000);
+    assert!(deadline.ensure_can_start_work(start, "test").is_ok());
+}
+
+#[test]
+fn wall_clock_addition_checks_the_result_across_the_full_signed_range() {
+    let maximum = DurationMillis::new("ttl", u64::MAX, u64::MAX).unwrap();
+    assert_eq!(
+        WallClockMillis::from_unix_millis(i64::MIN)
+            .checked_add(maximum, "test")
+            .unwrap(),
+        WallClockMillis::from_unix_millis(i64::MAX)
+    );
+    assert_eq!(
+        WallClockMillis::from_unix_millis(0).checked_add(maximum, "test"),
+        Err(LimitError::ArithmeticOverflow { name: "test" })
+    );
+    let one = DurationMillis::new("ttl", 1, 1).unwrap();
+    assert_eq!(
+        WallClockMillis::from_unix_millis(-1)
+            .checked_add(one, "test")
+            .unwrap(),
+        WallClockMillis::from_unix_millis(0)
+    );
+    assert!(WallClockExpiry::new(WallClockMillis::from_unix_millis(i64::MAX), one).is_err());
 }
 
 #[test]
