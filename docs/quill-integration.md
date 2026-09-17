@@ -94,7 +94,9 @@ or whole-request phrase syntax comes from conversational text.
 The output admits at most 128 distinct terms and 4,096 Unicode scalars, counting
 quotes, escape characters and separators. Terms that do not fit are skipped and
 counted, allowing a later shorter term to fit; candidates are never invented to
-compensate. The native parser validates the completed string, and a structural
+compensate. Validation requires the renderer's quoted-literal/OR grammar because
+Quill's lenient parser can silently discard unquoted punctuation. The native
+parser validates the completed string, and a structural
 check requires exactly the expected terms, optional OR clauses, and the pinned
 content/title fields and boosts (1 and 2). Any parser recovery, truncation, or
 changed meaning is a typed failure. No analyzed terms returns an explicit empty

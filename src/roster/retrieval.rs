@@ -194,10 +194,44 @@ fn validate_query(rendered: &str, expected: &BTreeSet<&str>) -> Result<(), Query
             was_truncated: parsed.was_truncated,
         });
     }
-    if !preserves_terms(&parsed.query, expected) {
+    if !is_literal_disjunction(rendered) || !preserves_terms(&parsed.query, expected) {
         return Err(QueryCompileError::MeaningChanged);
     }
     Ok(())
+}
+
+fn is_literal_disjunction(mut rendered: &str) -> bool {
+    // The lenient parser can erase unquoted punctuation without a diagnostic
+    // (for example, alpha* becomes alpha). An AST match alone therefore cannot
+    // establish that the renderer supplied only quoted literals and ORs.
+    loop {
+        let Some(body) = rendered.strip_prefix('"') else {
+            return false;
+        };
+        let mut chars = body.char_indices();
+        loop {
+            match chars.next() {
+                Some((_, '\\')) => {
+                    if !matches!(chars.next(), Some((_, '\\' | '"'))) {
+                        return false;
+                    }
+                }
+                Some((end, '"')) => {
+                    rendered = &body[end + 1..];
+                    break;
+                }
+                Some(_) => {}
+                None => return false,
+            }
+        }
+        if rendered.is_empty() {
+            return true;
+        }
+        let Some(rest) = rendered.strip_prefix(" OR ") else {
+            return false;
+        };
+        rendered = rest;
+    }
 }
 
 fn bounded_source(source: &str) -> (&str, bool) {
@@ -292,7 +326,7 @@ mod tests {
     #[test]
     fn syntactically_valid_but_changed_meaning_is_refused() {
         let expected = BTreeSet::from(["alpha", "beta"]);
-        for query in [
+        for (case, query) in [
             "alpha AND beta",
             "title:alpha OR beta",
             "alpha* OR beta",
@@ -300,10 +334,14 @@ mod tests {
             "alpha OR gamma",
             "alpha^4 OR beta",
             "*",
-        ] {
+        ]
+        .into_iter()
+        .enumerate()
+        {
             assert_eq!(
                 validate_query(query, &expected),
-                Err(QueryCompileError::MeaningChanged)
+                Err(QueryCompileError::MeaningChanged),
+                "syntax fixture {case}"
             );
         }
         assert_eq!(validate_query("\"alpha\" OR \"beta\"", &expected), Ok(()));
@@ -315,6 +353,11 @@ mod tests {
         assert_eq!(rendered, "\"a\\\"b\\\\猫\"");
         assert_eq!(rendered.chars().count(), 9);
         assert_eq!(quote_literal("OR"), "\"OR\"");
+        assert!(is_literal_disjunction(&rendered));
+        assert!(is_literal_disjunction("\"alpha\" OR \"beta\""));
+        for invalid in ["alpha* OR beta", "\"alpha\" OR ", "\"a\\q\"", "\"alpha"] {
+            assert!(!is_literal_disjunction(invalid));
+        }
     }
 
     #[test]
