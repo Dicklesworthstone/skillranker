@@ -6,6 +6,7 @@
 //! checks (symlink targets, file types, origin canonicalization) remain with
 //! the boundaries that perform those effects.
 
+pub mod redaction;
 use crate::identity::forbidden_identity_character;
 use crate::output::ErrorKind;
 use std::fmt;

@@ -14,6 +14,11 @@
   rejection, exact question/option matching, validated usage and distributions,
   and separate raw versus rounding-normalized probabilities. Synthetic codec
   checks do not establish recorded-live response compatibility or transport readiness.
+- Standalone bounded secret redaction under `privacy::redaction`, with
+  whole-field-before-excerpt scanning, merged-match counts and final JSON
+  payload inspection. Pattern/test provenance is recorded in
+  [third-party notices](THIRD_PARTY_NOTICES.md). This library boundary does
+  not yet establish live ranking or hook integration.
 
 - Rust 2024 package with a pinned toolchain/lockfile, help/version bootstrap CLI,
   identity/provenance types, bounded resource accounting, and frozen evaluation
