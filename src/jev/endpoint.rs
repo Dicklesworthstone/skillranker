@@ -27,6 +27,9 @@ pub const DEFAULT_TYPESAFE_ENDPOINT: &str = "https://api.typesafe.ai";
 /// The one-time joined API path for Jev SystemOne evaluations.
 pub const SYSTEMONE_PATH: &str = "/v1/systemone";
 
+/// User agent header value for SkillRanker requests to TypeSafe.
+pub const SKILLRANKER_USER_AGENT: &str = concat!("skillranker/", env!("CARGO_PKG_VERSION"));
+
 /// Maximum allowed bytes for raw endpoint input.
 pub const MAX_ENDPOINT_INPUT_BYTES: usize = 2048;
 
@@ -43,7 +46,7 @@ pub const AMBIENT_PROXY_VARS: &[&str] = &[
 ];
 
 /// Supported URL schemes.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub enum Scheme {
     Https,
     Http,
@@ -186,6 +189,11 @@ impl CanonicalOrigin {
         Self::parse(DEFAULT_TYPESAFE_ENDPOINT).expect("default production origin is valid")
     }
 
+    /// Parse and canonicalize an endpoint from a configuration override.
+    pub fn from_override(endpoint: &crate::config::EndpointOverride) -> Result<Self, EndpointError> {
+        Self::parse(endpoint.as_str())
+    }
+
     /// Returns the canonical origin string representation (e.g. `https://api.typesafe.ai`).
     pub fn as_str(&self) -> &str {
         &self.canonical
@@ -288,6 +296,11 @@ impl EndpointConfig {
         let origin = CanonicalOrigin::production();
         let target = origin.join_systemone();
         Self { origin, target }
+    }
+
+    /// Construct endpoint configuration from an endpoint override.
+    pub fn from_override(endpoint: &crate::config::EndpointOverride) -> Result<Self, EndpointError> {
+        Self::from_base_origin_str(endpoint.as_str())
     }
 
     pub fn origin(&self) -> &CanonicalOrigin {
@@ -494,31 +507,48 @@ impl ProxyPolicy {
         }
         detected
     }
+
+    /// Detect if any ambient proxy environment variables are present in the process environment.
+    pub fn inspect_ambient_process_env() -> Vec<(&'static str, String)> {
+        let mut detected = Vec::new();
+        for &known_proxy in AMBIENT_PROXY_VARS {
+            if let Ok(val) = std::env::var(known_proxy) {
+                if !val.is_empty() {
+                    detected.push((known_proxy, sanitize_url_for_diagnostics(&val)));
+                }
+            }
+        }
+        detected
+    }
 }
 
 /// Remove userinfo credentials and query strings from URLs before logging in diagnostics.
 pub fn sanitize_url_for_diagnostics(url: &str) -> String {
-    if let Some(colon_slash) = url.find("://") {
+    let (prefix, rest) = if let Some(colon_slash) = url.find("://") {
         let scheme_end = colon_slash + 3;
-        let rest = &url[scheme_end..];
-        let (authority, remainder) = match rest.find('/') {
-            Some(slash) => (&rest[..slash], &rest[slash..]),
-            None => (rest, ""),
-        };
-        let sanitized_authority = if let Some(at_idx) = authority.find('@') {
-            format!("[REDACTED]@{}", &authority[at_idx + 1..])
-        } else {
-            authority.to_owned()
-        };
-        let sanitized_remainder = if let Some(q_idx) = remainder.find('?') {
-            format!("{}[QUERY-REDACTED]", &remainder[..q_idx])
-        } else {
-            remainder.to_owned()
-        };
-        format!("{}{}{}", &url[..scheme_end], sanitized_authority, sanitized_remainder)
+        (&url[..scheme_end], &url[scheme_end..])
     } else {
-        "[UNPARSED-URL]".to_owned()
-    }
+        ("", url)
+    };
+
+    let (authority, remainder) = match rest.find('/') {
+        Some(slash) => (&rest[..slash], &rest[slash..]),
+        None => (rest, ""),
+    };
+
+    let sanitized_authority = if let Some(at_idx) = authority.find('@') {
+        format!("[REDACTED]@{}", &authority[at_idx + 1..])
+    } else {
+        authority.to_owned()
+    };
+
+    let sanitized_remainder = if let Some(q_idx) = remainder.find('?') {
+        format!("{}[QUERY-REDACTED]", &remainder[..q_idx])
+    } else {
+        remainder.to_owned()
+    };
+
+    format!("{prefix}{sanitized_authority}{sanitized_remainder}")
 }
 
 /// Errors encountered while validating and canonicalizing endpoints.
@@ -607,6 +637,9 @@ fn parse_authority(authority: &str) -> Result<(&str, Option<u16>), EndpointError
             return Err(EndpointError::InvalidHost(format!("unexpected trailing data after IPv6: '{after_bracket}'")));
         };
         Ok((ipv6_str, port))
+    } else if Ipv6Addr::from_str(authority).is_ok() {
+        // Unbracketed IPv6 address without port
+        Ok((authority, None))
     } else {
         // Standard hostname or IPv4
         match authority.rfind(':') {
@@ -636,8 +669,12 @@ fn canonicalize_host(raw_host: &str) -> Result<(String, bool), EndpointError> {
         return Ok((ipv4.to_string(), is_loopback));
     }
 
-    // Try parsing as IPv6
-    if let Ok(ipv6) = Ipv6Addr::from_str(raw_host) {
+    // Try parsing as IPv6 (bracketed or unbracketed)
+    let inner_ipv6 = raw_host
+        .strip_prefix('[')
+        .and_then(|s| s.strip_suffix(']'))
+        .unwrap_or(raw_host);
+    if let Ok(ipv6) = Ipv6Addr::from_str(inner_ipv6) {
         let is_loopback = ipv6.is_loopback();
         // Canonical IPv6 in brackets
         return Ok((format!("[{ipv6}]"), is_loopback));
@@ -646,8 +683,15 @@ fn canonicalize_host(raw_host: &str) -> Result<(String, bool), EndpointError> {
     // Hostname canonicalization
     let is_loopback = raw_host.eq_ignore_ascii_case("localhost");
 
+    // Strip trailing dot if present (DNS root zone notation, e.g. api.typesafe.ai. -> api.typesafe.ai)
+    let host_to_split = if raw_host.ends_with('.') && raw_host.len() > 1 && !raw_host.ends_with("..") {
+        &raw_host[..raw_host.len() - 1]
+    } else {
+        raw_host
+    };
+
     let mut canonical_labels = Vec::new();
-    for label in raw_host.split('.') {
+    for label in host_to_split.split('.') {
         if label.is_empty() {
             return Err(EndpointError::InvalidHost("empty label in hostname".to_owned()));
         }

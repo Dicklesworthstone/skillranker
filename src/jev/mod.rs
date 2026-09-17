@@ -6,9 +6,10 @@
 //! routing, redirect prohibition, and request/response validation.
 
 pub mod endpoint;
+pub mod codec;
 
 pub use endpoint::{
     CanonicalOrigin, CredentialRoutingError, EndpointConfig, EndpointError,
     OriginScopedCredential, ProxyPolicy, RedirectError, RedirectPolicy, Scheme,
-    TargetUrl, DEFAULT_TYPESAFE_ENDPOINT, SYSTEMONE_PATH,
+    TargetUrl, DEFAULT_TYPESAFE_ENDPOINT, SKILLRANKER_USER_AGENT, SYSTEMONE_PATH,
 };
