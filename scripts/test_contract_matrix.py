@@ -8,6 +8,9 @@ Verifies:
 """
 
 from pathlib import Path
+import copy
+import subprocess
+import sys
 import contextlib
 import io
 import json
@@ -17,9 +20,30 @@ import unittest
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parent.parent
-import sys
 sys.path.insert(0, str(ROOT / "scripts"))
-import validate_contract_matrix as vcm
+import validate_contract_matrix as vcm  # noqa: E402
+
+
+def authority_toml(data):
+    lines = ['schema_version = 1', 'created_for_phase = "P0"']
+    for row in data["boundaries"]:
+        lines += ["[[boundaries]]"]
+        lines += [key + " = " + json.dumps(row[key]) for key in ("id", *vcm.BOUND_FIELDS)]
+    return "\n".join(lines) + "\n"
+
+
+def declaration_fixture():
+    # Two real roadmap IDs make the wrong-but-existing owner and omitted
+    # aggregate member tests meaningful, with one complete successful twin.
+    row = {"id": "fixture", "owner_bead": "sr-roadmap-l1i.1.1", "phase": "P0",
+           "member_beads": ["sr-roadmap-l1i.1.1", "sr-roadmap-l1i.1.2"],
+           "platforms": ["linux"], "features": [], "title": "Reviewed fixture",
+           "e2e_suite": "runner-smoke", "e2e_cases": ["success"], "assertion_ids": ["behavior"],
+           "unit_property_tests": ["scripts/test_contract_matrix.py::ContractMatrixTests"], "status": "executed"}
+    data = {"schema_version": 1, "created_for_phase": "P0", "boundaries": [row]}
+    authority = tomllib.loads(authority_toml(data))
+    beads = {name: {"issue_type": "task"} for name in row["member_beads"]}
+    return data, authority, beads, {"runner-smoke": {"success": {"behavior"}}}
 
 
 class ContractMatrixTests(unittest.TestCase):
@@ -37,22 +61,31 @@ class ContractMatrixTests(unittest.TestCase):
                 (root / "scripts").mkdir(exist_ok=True)
                 (root / "scripts/escape.py").symlink_to(outside)
             issues = root / "issues.jsonl"
-            issues.write_text('{"id": "fixture-owner"}\n', encoding="utf-8")
+            issues.write_text('{"id":"sr-roadmap-l1i.1.1","issue_type":"task"}\n', encoding="utf-8")
             matrix = root / "matrix.toml"
             matrix.write_text(f'''schema_version = 1
 created_for_phase = "P0"
 [[boundaries]]
 id = "fixture"
-owner_bead = "fixture-owner"
+owner_bead = "sr-roadmap-l1i.1.1"
+member_beads = ["sr-roadmap-l1i.1.1"]
+title = "Source declaration resolution"
 phase = "P0"
-platforms = []
+platforms = ["linux"]
 features = []
 unit_property_tests = [{json.dumps(reference)}]
-e2e_cases = []
-assertion_ids = []
+e2e_suite = "runner-smoke"
+e2e_cases = ["success"]
+assertion_ids = ["behavior"]
 status = "{status}"
 ''', encoding="utf-8")
-            with patch.multiple(vcm, ROOT=root, MATRIX_FILE=matrix, ISSUES_FILE=issues):
+            authority = root / "authority.toml"
+            authority.write_text(authority_toml(tomllib.loads(matrix.read_text())), encoding="utf-8")
+            suite = root / "scripts/e2e/suites/runner-smoke.json"
+            suite.parent.mkdir(parents=True, exist_ok=True)
+            suite.write_bytes((ROOT / "scripts/e2e/suites/runner-smoke.json").read_bytes())
+            with patch.multiple(vcm, ROOT=root, MATRIX_FILE=matrix, ISSUES_FILE=issues,
+                                AUTHORITY_FILE=authority):
                 with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
                     return vcm.validate()
 
@@ -147,108 +180,164 @@ class Contract:
                     f"boundary '{b['id']}' in phase '{b['phase']}' cannot have status '{b['status']}' at P0",
                 )
 
-    def test_rejection_of_duplicate_boundary_id(self):
-        """Duplicate boundary IDs must be rejected."""
-        sample = """
-schema_version = 1
-created_for_phase = "P0"
+    def test_reviewed_complete_inventory_accepts_honest_twin(self):
+        data, authority, beads, catalogs = declaration_fixture()
+        with patch.object(vcm, "ROOT", ROOT):
+            self.assertEqual(set(vcm.validate_documents(data, authority, beads, catalogs)), {"fixture"})
 
-[[boundaries]]
-id = "duplicate_id"
-owner_bead = "sr-roadmap-l1i.1.1"
-phase = "P0"
-title = "Boundary 1"
-unit_property_tests = []
-e2e_suite = "runner-smoke"
-e2e_cases = []
-assertion_ids = []
-platforms = ["linux"]
-features = []
-status = "planned"
+    def test_mutated_declarations_rejected_for_specific_reason(self):
+        # Expectations are independent fixed codes, not calculated from the validator.
+        cases = [
+            ("owner", lambda d: d["boundaries"][0].update(owner_bead="sr-roadmap-l1i.1.2"), "authority-owner_bead"),
+            ("suite", lambda d: d["boundaries"][0].update(e2e_suite="invented"), "authority-e2e_suite"),
+            ("case", lambda d: d["boundaries"][0].update(e2e_cases=["invented"]), "authority-e2e_cases"),
+            ("assertion", lambda d: d["boundaries"][0].update(assertion_ids=["invented"]), "authority-assertion_ids"),
+            ("empty", lambda d: d["boundaries"][0].update(e2e_cases=[]), "selection-shape"),
+            ("duplicate", lambda d: d["boundaries"][0].update(e2e_cases=["success", "success"]), "duplicate-selection"),
+            ("no-unit", lambda d: d["boundaries"][0].update(unit_property_tests=[]), "selection-shape"),
+            ("bad-platform", lambda d: d["boundaries"][0].update(platforms=["darwin"]), "authority-platforms"),
+            ("bad-feature", lambda d: d["boundaries"][0].update(features=["tui"]), "authority-features"),
+            ("missing-member", lambda d: d["boundaries"][0].update(member_beads=["sr-roadmap-l1i.1.1"]), "authority-member_beads"),
+            ("boolean-version", lambda d: d.update(schema_version=True), "schema-version"),
+            ("invalid-phase", lambda d: d["boundaries"][0].update(phase=[]), "boundary-phase"),
+            ("invalid-status", lambda d: d["boundaries"][0].update(status={}), "boundary-status"),
+            ("non-string-selection", lambda d: d["boundaries"][0].update(e2e_cases=[7]), "selection-value"),
+            ("duplicate-row", lambda d: d["boundaries"].append(copy.deepcopy(d["boundaries"][0])), "duplicate-boundary"),
+            ("missing-field", lambda d: d["boundaries"][0].pop("features"), "boundary-fields"),
+            ("private-extra", lambda d: d["boundaries"][0].update(private="SYNTHETIC_PRIVATE_VALUE"), "boundary-fields"),
+        ]
+        for name, mutate, expected in cases:
+            with self.subTest(case=name):
+                data, authority, beads, catalogs = declaration_fixture()
+                mutate(data)
+                with self.assertRaisesRegex(vcm.InvalidMatrix, "^" + expected + "$"):
+                    vcm.validate_documents(data, authority, beads, catalogs)
 
-[[boundaries]]
-id = "duplicate_id"
-owner_bead = "sr-roadmap-l1i.1.2"
-phase = "P0"
-title = "Boundary 2"
-unit_property_tests = []
-e2e_suite = "runner-smoke"
-e2e_cases = []
-assertion_ids = []
-platforms = ["linux"]
-features = []
-status = "planned"
-"""
-        with tempfile.NamedTemporaryFile("w", suffix=".toml") as tmp:
-            tmp.write(sample)
-            tmp.flush()
-            orig = vcm.MATRIX_FILE
-            try:
-                vcm.MATRIX_FILE = Path(tmp.name)
-                ret = vcm.validate()
-                self.assertEqual(ret, 1, "validator must reject duplicate boundary IDs")
-            finally:
-                vcm.MATRIX_FILE = orig
+    def test_authority_cannot_omit_required_rows_or_roadmap_members(self):
+        for mode, expected in (("missing-row", "boundary-coverage"),
+                               ("empty-authority", "empty-boundary-inventory"),
+                               ("missing-member", "roadmap-coverage"),
+                               ("wrong-phase", "member-phase"),
+                               ("wrong-owner", "owner-not-member")):
+            with self.subTest(mode=mode):
+                data, authority, beads, catalogs = declaration_fixture()
+                if mode == "missing-row":
+                    extra = copy.deepcopy(authority["boundaries"][0])
+                    extra["id"] = "required_extra"
+                    authority["boundaries"].append(extra)
+                elif mode == "empty-authority":
+                    authority["boundaries"] = []
+                else:
+                    for document in (data, authority):
+                        row = document["boundaries"][0]
+                        if mode == "missing-member":
+                            row["member_beads"] = ["sr-roadmap-l1i.1.1"]
+                        elif mode == "wrong-phase":
+                            row["phase"] = "P1"
+                            document["created_for_phase"] = "P1"
+                        else:
+                            row["owner_bead"] = "sr-roadmap-l1i.1.3"
+                with self.assertRaisesRegex(vcm.InvalidMatrix, "^" + expected + "$"):
+                    vcm.validate_documents(data, authority, beads, catalogs)
 
-    def test_rejection_of_future_passed_claim(self):
-        """Falsely marking a future phase boundary as passed must be rejected."""
-        sample = """
-schema_version = 1
-created_for_phase = "P0"
+    def test_real_catalog_overrides_invented_authority_cases(self):
+        for field, value, code in (("e2e_suite", "invented", "unregistered-executed-suite"),
+                                   ("e2e_cases", ["invented"], "unknown-case"),
+                                   ("assertion_ids", ["invented"], "unknown-assertion")):
+            data, authority, beads, catalogs = declaration_fixture()
+            for document in (data, authority):
+                document["boundaries"][0][field] = value
+            with self.subTest(field=field), self.assertRaisesRegex(vcm.InvalidMatrix, "^" + code + "$"):
+                vcm.validate_documents(data, authority, beads, catalogs)
 
-[[boundaries]]
-id = "fake_p4_claim"
-owner_bead = "sr-roadmap-l1i.5.1"
-phase = "P4"
-title = "Fake P4 Passed"
-unit_property_tests = []
-e2e_suite = "core-cli"
-e2e_cases = []
-assertion_ids = []
-platforms = ["linux"]
-features = []
-status = "passed"
-"""
-        with tempfile.NamedTemporaryFile("w", suffix=".toml") as tmp:
-            tmp.write(sample)
-            tmp.flush()
-            orig = vcm.MATRIX_FILE
-            try:
-                vcm.MATRIX_FILE = Path(tmp.name)
-                ret = vcm.validate()
-                self.assertEqual(ret, 1, "validator must reject future boundary marked passed at P0")
-            finally:
-                vcm.MATRIX_FILE = orig
+    def test_future_execution_cannot_be_authorized_by_matrix(self):
+        data, authority, beads, catalogs = declaration_fixture()
+        for document in (data, authority):
+            row = document["boundaries"][0]
+            row.update(phase="P1", owner_bead="sr-roadmap-l1i.2.1", member_beads=["sr-roadmap-l1i.2.1"])
+        beads = {"sr-roadmap-l1i.2.1": {"issue_type": "task"}}
+        with self.assertRaisesRegex(vcm.InvalidMatrix, "^future-execution$"):
+            vcm.validate_documents(data, authority, beads, catalogs)
+        data["boundaries"][0]["status"] = "planned"
+        self.assertEqual(len(vcm.validate_documents(data, authority, beads, catalogs)), 1)
 
-    def test_rejection_of_unknown_owner_bead(self):
-        """Owner beads not in .beads/issues.jsonl must be rejected."""
-        sample = """
-schema_version = 1
-created_for_phase = "P0"
+    def test_missing_empty_malformed_and_duplicate_bead_inventory_rejected(self):
+        for content in (None, "", "{", "[]", '{"id":"a","id":"b"}', '{"id":"a"}\n{"id":"a"}\n'):
+            with tempfile.TemporaryDirectory() as temporary:
+                path = Path(temporary) / "issues.jsonl"
+                if content is not None:
+                    path.write_text(content)
+                with patch.object(vcm, "ISSUES_FILE", path), self.subTest(content=content):
+                    with self.assertRaises((vcm.InvalidMatrix, OSError, ValueError)):
+                        vcm.load_beads()
 
-[[boundaries]]
-id = "invented_bead"
-owner_bead = "sr-roadmap-invented-bead-999"
-phase = "P0"
-title = "Invented Bead Boundary"
-unit_property_tests = []
-e2e_suite = "runner-smoke"
-e2e_cases = []
-assertion_ids = []
-platforms = ["linux"]
-features = []
-status = "planned"
-"""
-        with tempfile.NamedTemporaryFile("w", suffix=".toml") as tmp:
-            tmp.write(sample)
-            tmp.flush()
-            orig = vcm.MATRIX_FILE
-            try:
-                vcm.MATRIX_FILE = Path(tmp.name)
-                ret = vcm.validate()
-                self.assertEqual(ret, 1, "validator must reject unknown owner beads")
-            finally:
-                vcm.MATRIX_FILE = orig
+    def test_missing_receipts_and_fixture_interpreter_substitution_rejected(self):
+        with self.assertRaisesRegex(vcm.InvalidMatrix, "^missing-suite-receipt$"):
+            vcm.validate_mechanics_receipts({}, {})
+        with self.assertRaisesRegex(vcm.InvalidMatrix, "^unsupported-evidence-tier$"):
+            vcm.validate_mechanics_receipts({}, {}, required_tier="rust-product")
+
+    def test_checked_in_matrix_and_fail_closed_cli(self):
+        command = [sys.executable, "-I", "-B", str(ROOT / "scripts/validate_contract_matrix.py")]
+        good = subprocess.run(command, capture_output=True, text=True, timeout=20, check=False)
+        self.assertEqual(good.returncode, 0, good.stderr)
+        self.assertIn("unit execution and product acceptance not certified", good.stdout)
+        missing = subprocess.run(command + ["--require-mechanics"], capture_output=True, text=True, timeout=20, check=False)
+        self.assertEqual(missing.returncode, 1)
+        self.assertIn("missing-suite-receipt", missing.stderr)
+
+    def test_receipt_gate_requires_real_matching_complete_reports(self):
+        # Retain all real runs and mutations; run this in a frozen checkout.
+        # A complete accepted twin prevents an always-reject validator passing.
+        import hashlib
+        sys.path.insert(0, str(ROOT / "scripts/e2e"))
+        import evidence
+        parent = Path(tempfile.mkdtemp(prefix="sr-matrix-receipts-"))
+        receipts = {}
+        for suite, pattern in (("runner-smoke", "sr-e2e-*"), ("runner-contract", "sr-contract-*")):
+            result = subprocess.run([str(ROOT / "scripts/e2e/run.sh"), "--suite", suite,
+                                     "--artifacts", str(parent)], capture_output=True,
+                                    timeout=150, check=False)
+            (parent / (suite + ".log")).write_bytes(result.stdout + result.stderr)
+            self.assertEqual(result.returncode, 0, f"real {suite} failed; retained at {parent}")
+            matches = list(parent.glob(pattern))
+            self.assertEqual(len(matches), 1)
+            receipts[suite] = matches[0]
+        data, authority, beads, catalogs = declaration_fixture()
+        rows = vcm.validate_documents(data, authority, beads, catalogs)
+        vcm.validate_mechanics_receipts(rows, receipts)
+        original = receipts["runner-smoke"]
+        for field, value in (("source_sha256", "0" * 64), ("binary_sha256", "0" * 64),
+                             ("lock_sha256", "0" * 64), ("platform", "darwin"),
+                             ("features", ["tui"]), ("binary_role", "rust-product")):
+            with self.subTest(identity_field=field):
+                candidate = Path(tempfile.mkdtemp(prefix="mismatch-", dir=parent))
+                events = [evidence.decode(line) for line in (original / "events.jsonl").read_bytes().splitlines()]
+                events[0]["identity"][field] = value
+                raw = b"".join(evidence.encode(event) for event in events)
+                summary = evidence.read_json(original / "summary.json")
+                summary["events_sha256"] = hashlib.sha256(raw).hexdigest()
+                (candidate / "events.jsonl").write_bytes(raw)
+                (candidate / "summary.json").write_bytes(evidence.encode(summary))
+                with self.assertRaisesRegex(vcm.InvalidMatrix, "^incompatible-suite-receipt$"):
+                    vcm.validate_mechanics_receipts(rows, {**receipts, "runner-smoke": candidate})
+        partial = subprocess.run([str(ROOT / "scripts/e2e/run.sh"), "--suite", "runner-smoke",
+                                  "--case", "success", "--artifacts", str(parent)],
+                                 capture_output=True, timeout=30, check=False)
+        self.assertEqual(partial.returncode, 3)
+        partial_dir = next(path for path in parent.glob("sr-e2e-*") if path != original)
+        with self.assertRaisesRegex(vcm.InvalidMatrix, "^incomplete-suite-receipt$"):
+            vcm.validate_mechanics_receipts(rows, {**receipts, "runner-smoke": partial_dir})
+        absent = Path(tempfile.mkdtemp(prefix="absent-", dir=parent))
+        with self.assertRaisesRegex(vcm.InvalidMatrix, "^incompatible-suite-receipt$"):
+            vcm.validate_mechanics_receipts(rows, {**receipts, "runner-smoke": absent})
+        # A valid report for a different required cell cannot satisfy it.
+        for field, value in (("platforms", ["darwin"]), ("features", ["tui"])):
+            mismatched = copy.deepcopy(rows)
+            mismatched["fixture"][field] = value
+            with self.assertRaisesRegex(vcm.InvalidMatrix, "^incompatible-boundary-receipt$"):
+                vcm.validate_mechanics_receipts(mismatched, receipts)
+        vcm.validate_mechanics_receipts(rows, receipts)
 
 
 if __name__ == "__main__":

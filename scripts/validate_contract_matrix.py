@@ -1,45 +1,121 @@
 #!/usr/bin/env python3
-"""Strict validation of tests/contract_matrix.toml against roadmap boundaries.
+"""Validate reviewed coverage declarations; optionally verify mechanics receipts.
 
-Verifies:
-- Valid TOML format and required schema fields.
-- Every boundary has a unique ID, valid phase, known owner bead from .beads/issues.jsonl.
-- Platforms, features, unit_property_tests, e2e_cases, assertion_ids are valid arrays.
-- Status is strictly one of 'planned', 'executed', 'passed', 'failed'.
-- P0 future product boundaries must be 'planned', not fake passed results.
+Declaration validation is never a test-execution or product acceptance receipt.
+The separate authority file is reviewed policy, not generated runtime evidence.
 """
 
 from pathlib import Path
 import ast
+import argparse
+import os
 import re
 import json
+import stat
+import subprocess
 import sys
 import tomllib
 
 ROOT = Path(__file__).resolve().parent.parent
 MATRIX_FILE = ROOT / "tests/contract_matrix.toml"
 ISSUES_FILE = ROOT / ".beads/issues.jsonl"
+AUTHORITY_FILE = ROOT / "tests/contract_authority.toml"
+MAX_DOCUMENT = 4 * 1024 * 1024
+BOUND_FIELDS = ("owner_bead", "phase", "member_beads", "platforms", "features",
+                "e2e_suite", "e2e_cases", "assertion_ids")
 
 VALID_PHASES = {"P0", "P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8", "P9"}
 VALID_STATUSES = {"planned", "executed", "passed", "failed"}
 
 
-def load_known_bead_ids():
-    ids = set()
-    if not ISSUES_FILE.is_file():
-        return ids
-    with ISSUES_FILE.open("r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                data = json.loads(line)
-            except (json.JSONDecodeError, ValueError):
-                continue
-            if "id" in data:
-                ids.add(data["id"])
-    return ids
+class InvalidMatrix(ValueError):
+    """Fixed diagnostic codes avoid copying file contents into logs."""
+
+
+def require(condition, code):
+    if not condition:
+        raise InvalidMatrix(code)
+
+
+def read_document(path):
+    descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+    with os.fdopen(descriptor, "rb") as stream:
+        info = os.fstat(stream.fileno())
+        require(stat.S_ISREG(info.st_mode) and info.st_size <= MAX_DOCUMENT, "document-file")
+        value = stream.read(MAX_DOCUMENT + 1)
+        require(len(value) <= MAX_DOCUMENT, "document-limit")
+        return value.decode("utf-8")
+
+
+def unique_object(pairs):
+    result = {}
+    for key, value in pairs:
+        require(key not in result, "duplicate-json-key")
+        result[key] = value
+    return result
+
+
+def load_beads():
+    beads = {}
+    for line in read_document(ISSUES_FILE).splitlines():
+        if not line.strip():
+            continue
+        value = json.loads(line, object_pairs_hook=unique_object)
+        require(type(value) is dict and type(value.get("id")) is str
+                and value["id"] and value["id"] not in beads, "bead-record")
+        beads[value["id"]] = value
+    require(bool(beads), "empty-bead-inventory")
+    return beads
+
+
+def strings(value, *, empty=False):
+    require(type(value) is list and (empty or bool(value)) and len(value) <= 1024,
+            "selection-shape")
+    require(all(type(item) is str and 0 < len(item) <= 256
+                and item.isascii() and all(32 < ord(char) < 127 for char in item)
+                for item in value), "selection-value")
+    require(len(set(value)) == len(value), "duplicate-selection")
+    return value
+
+
+def indexed_boundaries(document, *, authority=False):
+    require(type(document) is dict and set(document) == {"schema_version", "created_for_phase", "boundaries"},
+            "document-fields")
+    require(type(document["schema_version"]) is int and document["schema_version"] == 1, "schema-version")
+    require(type(document["created_for_phase"]) is str
+            and document["created_for_phase"] in VALID_PHASES, "created-for-phase")
+    rows = document["boundaries"]
+    require(type(rows) is list and 0 < len(rows) <= 1024, "empty-boundary-inventory")
+    result = {}
+    fields = {"id", *BOUND_FIELDS} | (set() if authority else {"title", "unit_property_tests", "status"})
+    for row in rows:
+        require(type(row) is dict and set(row) == fields, "boundary-fields")
+        require(type(row["id"]) is str and re.fullmatch(r"[a-z][a-z0-9_]{0,95}", row["id"]), "boundary-id")
+        require(row["id"] not in result, "duplicate-boundary")
+        require(type(row["phase"]) is str and row["phase"] in VALID_PHASES, "boundary-phase")
+        require(type(row["owner_bead"]) is str and bool(row["owner_bead"]), "boundary-owner")
+        require(type(row["e2e_suite"]) is str and re.fullmatch(r"[a-z][a-z0-9-]{0,63}", row["e2e_suite"]), "boundary-suite")
+        for field in ("member_beads", "platforms", "features", "e2e_cases", "assertion_ids"):
+            strings(row[field], empty=field == "features")
+        if not authority:
+            strings(row["unit_property_tests"])
+            require(type(row["title"]) is str and 0 < len(row["title"]) <= 512, "boundary-title")
+            require(type(row["status"]) is str and row["status"] in VALID_STATUSES, "boundary-status")
+        result[row["id"]] = row
+    return result
+
+
+def mechanics_catalogs():
+    # These are trusted repository drivers. The child-scenario JSON is not the
+    # outer certificate's catalog and cannot confer authority on invented IDs.
+    sys.path.insert(0, str(Path(__file__).resolve().parent / "e2e"))
+    import evidence
+    import runner_contract
+    smoke = evidence.manifest(evidence.read_json(ROOT / "scripts/e2e/suites/runner-smoke.json"))
+    return {
+        "runner-smoke": {case["id"]: set(case["assertions"]) for case in smoke["cases"]},
+        "runner-contract": {name: {"satisfied"} for name in runner_contract.CHECKS},
+    }
 
 
 def reference_exists(reference):
@@ -146,80 +222,110 @@ def reference_exists(reference):
         return False
 
 
-def validate():
-    if not MATRIX_FILE.is_file():
-        print(f"Error: {MATRIX_FILE} not found", file=sys.stderr)
+def validate_documents(data, authority, beads, catalogs):
+    rows = indexed_boundaries(data)
+    expected = indexed_boundaries(authority, authority=True)
+    require(data["created_for_phase"] == authority["created_for_phase"], "authority-phase")
+    require(set(rows) == set(expected), "boundary-coverage")
+    required_beads = {key for key, value in beads.items()
+                      if key.startswith("sr-roadmap-l1i.") and value.get("issue_type") != "epic"}
+    require(bool(required_beads), "empty-roadmap-inventory")
+    covered = set()
+    for bid, row in rows.items():
+        for field in BOUND_FIELDS:
+            require(row[field] == expected[bid][field], "authority-" + field)
+        members = row["member_beads"]
+        require(row["owner_bead"] in members, "owner-not-member")
+        require(set(members) <= required_beads and not (set(members) & covered), "member-coverage")
+        for member in members:
+            match = re.fullmatch(r"sr-roadmap-l1i\.(\d+)(?:\.\d+)+", member)
+            require(match is not None and int(match[1]) - 1 == int(row["phase"][1:]), "member-phase")
+        covered.update(members)
+        future = int(row["phase"][1:]) > int(data["created_for_phase"][1:])
+        require(not future or row["status"] == "planned", "future-execution")
+        require(row["phase"] == "P0" or len(members) == 1 or row["status"] == "planned",
+                "expand-product-aggregate-before-execution")
+        if row["status"] != "planned":
+            require(all(reference_exists(ref) for ref in row["unit_property_tests"]), "unresolved-test-reference")
+            require(row["e2e_suite"] in catalogs, "unregistered-executed-suite")
+        if row["e2e_suite"] in catalogs:
+            catalog = catalogs[row["e2e_suite"]]
+            for case in row["e2e_cases"]:
+                require(case in catalog, "unknown-case")
+                require(set(row["assertion_ids"]) <= catalog[case], "unknown-assertion")
+    require(covered == required_beads, "roadmap-coverage")
+    return rows
+
+
+def validate_mechanics_receipts(rows, receipts, *, required_tier="runner-mechanics"):
+    """Recheck complete mechanics reports against this checkout and interpreter.
+
+    This deliberately cannot attest Rust tests or a product gate. Unit execution
+    needs its own command and build evidence in the phase acceptance review.
+    """
+    require(required_tier == "runner-mechanics", "unsupported-evidence-tier")
+    require(set(receipts) == {"runner-smoke", "runner-contract"}, "missing-suite-receipt")
+    require(all(isinstance(path, Path) for path in receipts.values()), "receipt-path")
+    sys.path.insert(0, str(Path(__file__).resolve().parent / "e2e"))
+    import evidence
+    import runner
+    import runner_contract
+    binary = Path(sys.executable).resolve()
+    expected = runner.identity(binary)
+    certificate_identity = runner.identity(binary, runner_contract.FIXTURE)
+    smoke = evidence.manifest(evidence.read_json(ROOT / "scripts/e2e/suites/runner-smoke.json"))
+    try:
+        results = {
+            "runner-smoke": evidence.validate(receipts["runner-smoke"], smoke, expected),
+            "runner-contract": runner_contract.validate_certificate(receipts["runner-contract"], certificate_identity),
+        }
+    except evidence.InvalidEvidence:
+        raise InvalidMatrix("incompatible-suite-receipt") from None
+    for result in results.values():
+        require(result["runner_status"] == "passed" and result["product_gate"] == "not-applicable",
+                "incomplete-suite-receipt")
+    for row in rows.values():
+        if row["phase"] == "P0":
+            require(row["e2e_suite"] in results and row["platforms"] == [expected["platform"]]
+                    and row["features"] == expected["features"], "incompatible-boundary-receipt")
+    require(expected == runner.identity(binary)
+            and certificate_identity == runner.identity(binary, runner_contract.FIXTURE), "source-changed")
+
+
+def validate(*, receipts=None):
+    try:
+        data = tomllib.loads(read_document(MATRIX_FILE))
+        authority = tomllib.loads(read_document(AUTHORITY_FILE))
+        rows = validate_documents(data, authority, load_beads(), mechanics_catalogs())
+        if receipts is not None:
+            validate_mechanics_receipts(rows, receipts)
+    except InvalidMatrix as error:
+        print("invalid contract matrix: " + str(error), file=sys.stderr)
         return 1
-
-    with MATRIX_FILE.open("rb") as f:
-        data = tomllib.load(f)
-
-    if data.get("schema_version") != 1:
-        print(f"Error: unexpected schema_version: {data.get('schema_version')}", file=sys.stderr)
+    except (OSError, ValueError, TypeError, RecursionError, UnicodeError, subprocess.SubprocessError):
+        print("invalid contract matrix: document-or-receipt", file=sys.stderr)
         return 1
-
-    if data.get("created_for_phase") not in VALID_PHASES:
-        print(f"Error: invalid created_for_phase: {data.get('created_for_phase')}", file=sys.stderr)
-        return 1
-
-    boundaries = data.get("boundaries")
-    if not isinstance(boundaries, list) or len(boundaries) == 0:
-        print("Error: boundaries must be a non-empty array", file=sys.stderr)
-        return 1
-
-    known_beads = load_known_bead_ids()
-    seen_ids = set()
-
-    for idx, b in enumerate(boundaries):
-        bid = b.get("id")
-        if not bid or not isinstance(bid, str):
-            print(f"Error: boundary [{idx}] missing string 'id'", file=sys.stderr)
-            return 1
-        if bid in seen_ids:
-            print(f"Error: duplicate boundary id: '{bid}'", file=sys.stderr)
-            return 1
-        seen_ids.add(bid)
-
-        owner = b.get("owner_bead")
-        if not owner or not isinstance(owner, str):
-            print(f"Error: boundary '{bid}' missing string 'owner_bead'", file=sys.stderr)
-            return 1
-        if known_beads and owner not in known_beads:
-            print(f"Error: boundary '{bid}' owner_bead '{owner}' not found in .beads/issues.jsonl", file=sys.stderr)
-            return 1
-
-        phase = b.get("phase")
-        if phase not in VALID_PHASES:
-            print(f"Error: boundary '{bid}' invalid phase '{phase}'", file=sys.stderr)
-            return 1
-
-        status = b.get("status")
-        if status not in VALID_STATUSES:
-            print(f"Error: boundary '{bid}' invalid status '{status}'", file=sys.stderr)
-            return 1
-
-        # Check arrays
-        for field in ("platforms", "features", "unit_property_tests", "e2e_cases", "assertion_ids"):
-            val = b.get(field)
-            if not isinstance(val, list):
-                print(f"Error: boundary '{bid}' field '{field}' must be a list", file=sys.stderr)
-                return 1
-
-        # Invariant: Future phases (P1-P9) must have status "planned" at P0 stage
-        if phase != "P0" and status not in ("planned",):
-            print(f"Error: future boundary '{bid}' (phase {phase}) cannot be marked '{status}' at P0", file=sys.stderr)
-            return 1
-
-        if status != "planned":
-            for reference in b["unit_property_tests"]:
-                if not reference_exists(reference):
-                    print(f"Error: boundary '{bid}' has an unresolved executed test reference", file=sys.stderr)
-                    return 1
-
-    print(f"validated contract matrix: {len(boundaries)} boundaries across {len(VALID_PHASES)} phases")
-    print("all boundary IDs unique, owner beads verified against roadmap, future phases planned")
+    print(f"validated {len(rows)} coverage declarations; unit execution and product acceptance not certified")
+    if receipts is not None:
+        print("complete matching runner mechanics receipts verified; product gate not applicable")
     return 0
 
 
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--require-mechanics", action="store_true")
+    parser.add_argument("--smoke-receipt", type=Path)
+    parser.add_argument("--certificate-receipt", type=Path)
+    args = parser.parse_args()
+    receipts = None
+    if args.require_mechanics or args.smoke_receipt is not None or args.certificate_receipt is not None:
+        receipts = {}
+        if args.smoke_receipt is not None:
+            receipts["runner-smoke"] = args.smoke_receipt
+        if args.certificate_receipt is not None:
+            receipts["runner-contract"] = args.certificate_receipt
+    return validate(receipts=receipts)
+
+
 if __name__ == "__main__":
-    sys.exit(validate())
+    sys.exit(main())
