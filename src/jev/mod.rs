@@ -5,9 +5,16 @@
 //! This module provides pure base-origin canonicalization, origin-scoped credential
 //! routing, redirect prohibition, and request/response validation.
 
+pub mod admission;
 pub mod codec;
 pub mod endpoint;
 
+pub use admission::{
+    AdmissionError, AdmissionRefusal, AttemptAdmission, AttemptBudget, AttemptId, AttemptPermit,
+    CostReceipt, DEFAULT_GUARD_GENERATION, DEFAULT_MIN_ATTEMPT_RESERVE_MS, DiscardedAttempt,
+    RankingStage, SentAttempt,
+};
+pub use codec::Usage;
 pub use endpoint::{
     AMBIENT_PROXY_VARS, CanonicalOrigin, CredentialRoutingError, DEFAULT_TYPESAFE_ENDPOINT,
     EndpointConfig, EndpointError, OriginScopedCredential, ProxyPolicy, RedirectError,
