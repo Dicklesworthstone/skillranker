@@ -6,6 +6,7 @@
 //! routing, redirect prohibition, and request/response validation.
 
 pub mod admission;
+pub mod client;
 pub mod codec;
 pub mod endpoint;
 
@@ -14,7 +15,10 @@ pub use admission::{
     CostReceipt, DEFAULT_GUARD_GENERATION, DEFAULT_MIN_ATTEMPT_RESERVE_MS, DiscardedAttempt,
     RankingStage, SentAttempt,
 };
-pub use codec::Usage;
+pub use codec::{
+    Answer, ChoiceAnswer, CodecError, MAX_CHOICE_OPTIONS, MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES,
+    NoulCriteria, Question, Request, Response, SUM_TOLERANCE, Usage,
+};
 pub use endpoint::{
     AMBIENT_PROXY_VARS, CanonicalOrigin, CredentialRoutingError, DEFAULT_TYPESAFE_ENDPOINT,
     EndpointConfig, EndpointError, OriginScopedCredential, ProxyPolicy, RedirectError,

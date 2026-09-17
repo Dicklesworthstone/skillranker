@@ -2,7 +2,7 @@
 //! No transport, redaction, ranking policy, or permission is implied by decoding.
 //! Callers must redact every field before encoding and authorize any transmission.
 
-use crate::output::{JsonSeed, check_depth};
+use crate::output::{CliExit, ErrorKind, JsonSeed, check_depth};
 use serde::de::DeserializeSeed;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -28,6 +28,20 @@ pub enum CodecError {
     InvalidProbability,
     InvalidDistribution,
     InvalidChoice,
+}
+
+impl CodecError {
+    pub const fn kind(&self) -> ErrorKind {
+        match self {
+            Self::TooLarge => ErrorKind::OversizedInput,
+            Self::InvalidRequest | Self::DuplicateId => ErrorKind::InvalidUsage,
+            _ => ErrorKind::InvalidProviderResponse,
+        }
+    }
+
+    pub const fn exit_code(&self) -> CliExit {
+        self.kind().exit_code()
+    }
 }
 impl fmt::Display for CodecError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -281,6 +295,12 @@ pub struct Usage {
     pub output_tokens: u64,
 }
 
+impl Usage {
+    pub const fn total_tokens(&self) -> u64 {
+        self.input_tokens.saturating_add(self.output_tokens)
+    }
+}
+
 pub struct Response {
     pub requested_model: String,
     pub returned_model: String,
@@ -305,13 +325,45 @@ impl ChoiceAnswer {
     pub fn raw_probabilities(&self) -> &BTreeMap<String, f64> {
         &self.raw_probabilities
     }
+    pub fn raw_sum(&self) -> f64 {
+        self.raw_sum
+    }
     pub fn normalized_probability(&self, option: &str) -> Option<f64> {
         self.raw_probabilities
             .get(option)
             .map(|value| value / self.raw_sum)
     }
+    pub fn normalized_probabilities(&self) -> BTreeMap<String, f64> {
+        self.raw_probabilities
+            .iter()
+            .map(|(k, &v)| (k.clone(), v / self.raw_sum))
+            .collect()
+    }
     pub fn confidence(&self) -> f64 {
         self.confidence
+    }
+    /// Returns all options sharing the exact maximum probability in the distribution.
+    pub fn argmax_options(&self) -> Vec<&str> {
+        let max_val = self
+            .raw_probabilities
+            .values()
+            .fold(0.0_f64, |acc, &v| acc.max(v));
+        self.raw_probabilities
+            .iter()
+            .filter(|(_, v)| **v == max_val)
+            .map(|(k, _)| k.as_str())
+            .collect()
+    }
+    /// Whether the distribution has an exact tie for the highest probability.
+    pub fn has_tie(&self) -> bool {
+        self.argmax_options().len() > 1
+    }
+    /// Deterministic choice broken by stable skill ID (lexicographically smallest option among argmax candidates).
+    pub fn deterministic_choice(&self) -> &str {
+        self.argmax_options()
+            .into_iter()
+            .min()
+            .unwrap_or(&self.choice)
     }
 }
 
