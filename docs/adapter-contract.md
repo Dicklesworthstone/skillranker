@@ -34,8 +34,12 @@ real-harness smoke record for that version. Official-schema qualification,
 local CLI version observation, and fixture digests are retained as provenance;
 none of them authorizes native advice. `transfer_tested_support` rechecks this
 entire gate for the same adapter and installed version. Tested and unverified
-version lists must each be unique and cannot overlap. Cass is never the default
-hook path and cannot authorize native injection by claiming that flag.
+version lists must each be unique and cannot overlap. Both document validation
+and direct `AdapterRecord::advice` calls check the entire definition, including
+versions other than the installed version; an invalid directly constructed record
+returns `InvalidVersionDefinitions` and cannot transfer tested support. Cass is
+never the default hook path and cannot authorize native injection by claiming
+that flag.
 
 Unknown or unsupported capability schema versions are refused. Unknown hook
 events are refused. `UserPromptExpansion` is a known non-advisory event.
@@ -48,7 +52,8 @@ is optional event identity; its absence is unknown, not text-equality. Unknown
 keys follow `UnknownFieldPolicy`: SkillRanker-owned documents reject them;
 foreign harness envelopes may retain them as additive data that cannot change
 identity or visibility. `additionalContext` is at most 1,024 Unicode scalar
-values and at most one suggested invocation name.
+values and at most one suggested invocation name. Oversized text is rejected
+after counting at most 1,025 scalars, using the shared resource limit.
 
 Optional `transcript_path` and `cwd` accept strings, null, or absence. Present
 non-string values are errors rather than missing-source fallbacks. Retained
@@ -57,6 +62,13 @@ additive keys and values are private; debug formatting reports only their count.
 A missing first transcript is `HookTranscriptState::Missing` (`prompt_only` at
 the later output boundary). A malformed existing transcript is an error, not an
 empty history.
+
+`select_source` preserves declared source modes independently of whether stdin
+is currently available. Explicit normalized stdin remains stdin even without a
+detected pipe; the later reader reports empty or invalid input. An explicit stdin
+marker requires normalized-context or hook mode and cannot silently select
+discovery, a native transcript, or cass. Conflicting source flags are rejected
+before checking whether unsolicited piped input lacks an explicit mode.
 
 Cass JSON exports remain native/archive shapes and omit skills by default. They
 are not a SkillRanker normalized envelope. Archive identity may omit

@@ -7,7 +7,9 @@ use crate::context::PrivateText;
 use crate::identity::{
     AdapterId, AdapterVersion, ContentHash, EventId, IdentityError, SessionId, SourceId,
 };
-use crate::limits::{HOOK_STDIN_BYTES, LimitError, NORMALIZED_CONTEXT_DEPTH};
+use crate::limits::{
+    HOOK_ADDITIONAL_CONTEXT_SCALARS, HOOK_STDIN_BYTES, LimitError, NORMALIZED_CONTEXT_DEPTH,
+};
 use serde::de::{DeserializeSeed, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -15,7 +17,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 pub const CONTRACT_VERSION: u32 = 1;
-pub const ADDITIONAL_CONTEXT_MAX_CHARS: usize = 1024;
+pub const ADDITIONAL_CONTEXT_MAX_CHARS: usize = HOOK_ADDITIONAL_CONTEXT_SCALARS.max();
 pub const MAX_SUGGESTED_INVOCATION_NAMES: usize = 1;
 pub const USER_PROMPT_SUBMIT: &str = "UserPromptSubmit";
 pub const USER_PROMPT_EXPANSION: &str = "UserPromptExpansion";
@@ -204,6 +206,7 @@ pub enum AdviceBlockReason {
     MissingRequiredEvidence,
     FixtureDigestIsNotInstalledProof,
     InstalledVersionNotTested,
+    InvalidVersionDefinitions,
     DimensionNotEvaluated,
     DimensionFailed,
     CassNotOnDefaultHookPath,
@@ -273,6 +276,9 @@ impl AdapterRecord {
         if self.contract_version != CONTRACT_VERSION {
             return AdviceDisposition::Disabled(AdviceBlockReason::UnsupportedSemanticVersion);
         }
+        if !self.version_definitions_are_valid() {
+            return AdviceDisposition::Disabled(AdviceBlockReason::InvalidVersionDefinitions);
+        }
         match self.identity_semantics {
             SemanticsCompatibility::Compatible => {}
             SemanticsCompatibility::Incompatible => {
@@ -303,6 +309,14 @@ impl AdapterRecord {
             CompatibilityQuestion::AcceptInput => self.input_acceptance(),
             CompatibilityQuestion::EmitNativeAdvice => self.native_advice(installed),
         }
+    }
+
+    fn version_definitions_are_valid(&self) -> bool {
+        let mut versions = BTreeSet::new();
+        self.tested_versions
+            .iter()
+            .chain(&self.unverified_versions)
+            .all(|version| versions.insert(version))
     }
 
     fn input_acceptance(&self) -> AdviceDisposition {
@@ -349,13 +363,6 @@ impl AdapterRecord {
             .any(|version| version == installed)
         {
             return AdviceDisposition::Disabled(AdviceBlockReason::InstalledVersionNotTested);
-        }
-        if self
-            .unverified_versions
-            .iter()
-            .any(|version| version == installed)
-        {
-            return AdviceDisposition::Disabled(AdviceBlockReason::UnverifiedHarness);
         }
         for dimension in NATIVE_ADVICE_DIMENSIONS {
             let Some(cell) = self.conformance.get(dimension) else {
@@ -469,11 +476,7 @@ impl CapabilitiesDocument {
             if !ids.insert(adapter.adapter_id.clone()) {
                 return Err(AdapterError::InvalidField);
             }
-            let tested: BTreeSet<_> = adapter.tested_versions.iter().collect();
-            let unverified: BTreeSet<_> = adapter.unverified_versions.iter().collect();
-            if tested.len() != adapter.tested_versions.len()
-                || unverified.len() != adapter.unverified_versions.len()
-                || !tested.is_disjoint(&unverified)
+            if !adapter.version_definitions_are_valid()
                 || (adapter.kind == AdapterKind::CassSession && adapter.on_default_hook_path)
             {
                 return Err(AdapterError::InvalidField);
@@ -754,9 +757,9 @@ pub fn additional_context_allowed(
     if suggested_invocation_names > MAX_SUGGESTED_INVOCATION_NAMES {
         return Err(AdapterError::HookOutputLimit);
     }
-    if text.chars().count() > ADDITIONAL_CONTEXT_MAX_CHARS {
-        return Err(AdapterError::HookOutputLimit);
-    }
+    HOOK_ADDITIONAL_CONTEXT_SCALARS
+        .check_unicode_scalars(text)
+        .map_err(|_| AdapterError::HookOutputLimit)?;
     if text
         .chars()
         .any(|c| c.is_control() && !matches!(c, '\n' | '\t'))
@@ -864,7 +867,9 @@ pub struct SourceRequest {
     pub context_file: bool,
     pub native_transcript: bool,
     pub cass_session: bool,
+    /// Input availability is not authority to change the declared source.
     pub stdin_present: bool,
+    /// Explicit stdin selection for normalized context (or redundant hook input).
     pub stdin_mode_explicit: bool,
 }
 
@@ -878,10 +883,6 @@ pub enum SelectedSource {
 }
 
 pub fn select_source(request: SourceRequest) -> Result<SelectedSource, AdapterError> {
-    let explicit_stdin = request.stdin_mode_explicit || request.claude_hook;
-    if request.stdin_present && !explicit_stdin {
-        return Err(AdapterError::MissingExplicitStdinMode);
-    }
     let selected = [
         request.claude_hook,
         request.context_file,
@@ -891,14 +892,20 @@ pub fn select_source(request: SourceRequest) -> Result<SelectedSource, AdapterEr
     .iter()
     .filter(|flag| **flag)
     .count();
-    if selected > 1 {
+    if selected > 1
+        || (request.stdin_mode_explicit && !request.context_file && !request.claude_hook)
+    {
         return Err(AdapterError::ConflictingSourceFlags);
+    }
+    let explicit_stdin = request.stdin_mode_explicit || request.claude_hook;
+    if request.stdin_present && !explicit_stdin {
+        return Err(AdapterError::MissingExplicitStdinMode);
     }
     Ok(if request.claude_hook {
         SelectedSource::ClaudeHook
     } else if request.context_file {
         SelectedSource::NormalizedContext {
-            stdin: request.stdin_mode_explicit && request.stdin_present,
+            stdin: request.stdin_mode_explicit,
         }
     } else if request.native_transcript {
         SelectedSource::NativeTranscript

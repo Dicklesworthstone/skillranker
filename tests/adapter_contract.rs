@@ -667,3 +667,127 @@ fn capability_version_definitions_must_be_unique_and_disjoint() {
         document
     );
 }
+
+#[test]
+fn directly_constructed_records_cannot_bypass_version_definition_validation() {
+    let installed = AdapterVersion::new("2.1.274").unwrap();
+    let other = AdapterVersion::new("2.1.275").unwrap();
+    let original = tested_claude(installed.as_str());
+    let mut duplicate_tested = original.clone();
+    duplicate_tested.tested_versions.push(installed.clone());
+    let mut duplicate_unverified = original.clone();
+    duplicate_unverified.unverified_versions = vec![other.clone(), other.clone()];
+    let mut overlap_elsewhere = original.clone();
+    overlap_elsewhere.tested_versions.push(other.clone());
+    overlap_elsewhere.unverified_versions.push(other.clone());
+
+    for invalid in [duplicate_tested, duplicate_unverified, overlap_elsewhere] {
+        assert_ne!(
+            invalid.advice(CompatibilityQuestion::EmitNativeAdvice, Some(&installed)),
+            AdviceDisposition::Eligible
+        );
+        assert_eq!(
+            transfer_tested_support(&invalid, &invalid.adapter_id, &installed),
+            Err(AdapterError::SupportInheritanceForbidden)
+        );
+    }
+
+    let mut valid = original;
+    valid.unverified_versions.push(other);
+    assert_eq!(
+        valid.advice(CompatibilityQuestion::EmitNativeAdvice, Some(&installed)),
+        AdviceDisposition::Eligible
+    );
+    transfer_tested_support(&valid, &valid.adapter_id, &installed).unwrap();
+}
+
+#[test]
+fn explicit_normalized_stdin_selection_does_not_depend_on_pipe_presence() {
+    for stdin_present in [false, true] {
+        assert_eq!(
+            select_source(SourceRequest {
+                context_file: true,
+                stdin_mode_explicit: true,
+                stdin_present,
+                ..SourceRequest::default()
+            }),
+            Ok(SelectedSource::NormalizedContext { stdin: true })
+        );
+        for stdin_mode_explicit in [false, true] {
+            assert_eq!(
+                select_source(SourceRequest {
+                    claude_hook: true,
+                    stdin_mode_explicit,
+                    stdin_present,
+                    ..SourceRequest::default()
+                }),
+                Ok(SelectedSource::ClaudeHook)
+            );
+        }
+    }
+    assert_eq!(
+        select_source(SourceRequest {
+            context_file: true,
+            ..SourceRequest::default()
+        }),
+        Ok(SelectedSource::NormalizedContext { stdin: false })
+    );
+}
+
+#[test]
+fn explicit_stdin_cannot_fall_through_to_another_source() {
+    for (request, ordinary_selection) in [
+        (SourceRequest::default(), SelectedSource::Discovery),
+        (
+            SourceRequest {
+                native_transcript: true,
+                ..SourceRequest::default()
+            },
+            SelectedSource::NativeTranscript,
+        ),
+        (
+            SourceRequest {
+                cass_session: true,
+                ..SourceRequest::default()
+            },
+            SelectedSource::CassSession,
+        ),
+    ] {
+        assert_eq!(select_source(request), Ok(ordinary_selection));
+        for stdin_present in [false, true] {
+            assert_eq!(
+                select_source(SourceRequest {
+                    stdin_mode_explicit: true,
+                    stdin_present,
+                    ..request
+                }),
+                Err(AdapterError::ConflictingSourceFlags)
+            );
+        }
+    }
+    assert_eq!(
+        select_source(SourceRequest {
+            context_file: true,
+            native_transcript: true,
+            stdin_present: true,
+            ..SourceRequest::default()
+        }),
+        Err(AdapterError::ConflictingSourceFlags)
+    );
+}
+
+#[test]
+fn hook_output_budget_counts_unicode_scalars_and_preserves_safe_whitespace() {
+    let at_limit = format!("\n\t{}", "界".repeat(ADDITIONAL_CONTEXT_MAX_CHARS - 2));
+    additional_context_allowed(&at_limit, 1).unwrap();
+    assert_eq!(
+        additional_context_allowed(&format!("{at_limit}界"), 1),
+        Err(AdapterError::HookOutputLimit)
+    );
+    for control in ['\0', '\r', '\u{001b}', '\u{007f}', '\u{0085}'] {
+        assert_eq!(
+            additional_context_allowed(&format!("界{control}界"), 0),
+            Err(AdapterError::UnsafeHookText)
+        );
+    }
+}
