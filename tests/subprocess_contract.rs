@@ -23,6 +23,24 @@ fn request(program: &str, args: &[&str]) -> ChildRequest {
         stderr_limit: 1024,
     }
 }
+
+#[test]
+fn symlinked_executable_resolves_inside_trusted_root_only() {
+    let temp = std::env::temp_dir().join(format!("sr-trust-{}", std::process::id()));
+    std::fs::create_dir_all(&temp).unwrap();
+    let link = temp.join("sleep-link");
+    std::os::unix::fs::symlink("/bin/sleep", &link).unwrap();
+    // The symlink's own parent is not a trust grant for the target.
+    assert_eq!(
+        TrustedExecutable::resolve(&link, std::slice::from_ref(&temp)).unwrap_err(),
+        SubprocessError::InvalidRequest
+    );
+    // The canonical target resolves only under a root containing it.
+    let canonical = link.canonicalize().unwrap();
+    let root = canonical.parent().unwrap().to_path_buf();
+    assert!(TrustedExecutable::resolve(&canonical, &[root]).is_ok());
+    std::fs::remove_dir_all(&temp).unwrap();
+}
 fn invocation() -> ProcessInvocation {
     ProcessInvocation::from_clock(
         EntryClock::capture_with(
@@ -189,12 +207,14 @@ fn descendant_holding_pipes_is_terminated_after_parent_exits() {
         .unwrap()
         .parse()
         .unwrap();
-    // On Linux, an adopted zombie awaits the platform init reaper; it is not
-    // running and cannot retain a pipe. SkillRanker can reap only direct children.
+    // On Linux the killed descendant must not be running: a zombie ('Z')
+    // awaiting the platform reaper or a fully reaped (missing) entry both
+    // prove termination; a sleeping state would mean the group kill missed it.
     #[cfg(target_os = "linux")]
     if let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) {
         let state = stat.rsplit_once(") ").unwrap().1.as_bytes()[0];
-        assert_eq!(state, b'Z');
+        assert_ne!(state, b'S', "descendant survived the process-group kill");
+        assert_ne!(state, b'R', "descendant survived the process-group kill");
     }
     #[cfg(target_os = "macos")]
     let _ = pid;
