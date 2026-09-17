@@ -1,0 +1,47 @@
+[
+  {
+    "type": "user",
+    "uuid": "u1",
+    "message": {
+      "role": "user",
+      "content": "Synthetic task: inspect a Rust test."
+    }
+  },
+  {
+    "type": "assistant",
+    "uuid": "a1",
+    "parentUuid": "u1",
+    "message": {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "I will inspect the test."
+        },
+        {
+          "type": "tool_use",
+          "id": "t1",
+          "name": "Read",
+          "input": {
+            "file_path": "/synthetic/example.rs"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "type": "user",
+    "uuid": "u2",
+    "parentUuid": "a1",
+    "message": {
+      "role": "user",
+      "content": [
+        {
+          "type": "tool_result",
+          "tool_use_id": "t1",
+          "content": "Synthetic result."
+        }
+      ]
+    }
+  }
+]
