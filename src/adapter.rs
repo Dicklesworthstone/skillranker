@@ -327,7 +327,7 @@ impl AdapterRecord {
     }
 
     fn native_advice(&self, installed: Option<&AdapterVersion>) -> AdviceDisposition {
-        if matches!(self.kind, AdapterKind::CassSession) && !self.on_default_hook_path {
+        if matches!(self.kind, AdapterKind::CassSession) {
             return AdviceDisposition::Disabled(AdviceBlockReason::CassNotOnDefaultHookPath);
         }
         if matches!(self.kind, AdapterKind::NormalizedContext) {
@@ -390,16 +390,18 @@ impl AdapterRecord {
     }
 }
 
+/// Native support is reusable only for the same adapter and an eligible version.
+/// Version-list membership alone cannot stand in for the conformance evidence.
 pub fn transfer_tested_support(
     source: &AdapterRecord,
     target_id: &AdapterId,
     target_version: &AdapterVersion,
 ) -> Result<(), AdapterError> {
     if source.adapter_id != *target_id
-        || !source
-            .tested_versions
-            .iter()
-            .any(|version| version == target_version)
+        || source.advice(
+            CompatibilityQuestion::EmitNativeAdvice,
+            Some(target_version),
+        ) != AdviceDisposition::Eligible
     {
         return Err(AdapterError::SupportInheritanceForbidden);
     }
@@ -465,6 +467,15 @@ impl CapabilitiesDocument {
                 return Err(AdapterError::UnsupportedVersion);
             }
             if !ids.insert(adapter.adapter_id.clone()) {
+                return Err(AdapterError::InvalidField);
+            }
+            let tested: BTreeSet<_> = adapter.tested_versions.iter().collect();
+            let unverified: BTreeSet<_> = adapter.unverified_versions.iter().collect();
+            if tested.len() != adapter.tested_versions.len()
+                || unverified.len() != adapter.unverified_versions.len()
+                || !tested.is_disjoint(&unverified)
+                || (adapter.kind == AdapterKind::CassSession && adapter.on_default_hook_path)
+            {
                 return Err(AdapterError::InvalidField);
             }
         }
@@ -616,7 +627,7 @@ impl fmt::Debug for ClaudeUserPromptSubmit {
             .field("cwd", &self.cwd)
             .field("prompt", &self.prompt)
             .field("prompt_id", &self.prompt_id)
-            .field("additive_keys", &self.additive.keys().collect::<Vec<_>>())
+            .field("additive_field_count", &self.additive.len())
             .finish()
     }
 }
@@ -654,8 +665,8 @@ impl ClaudeUserPromptSubmit {
             .ok_or(AdapterError::InvalidField)?;
         let mut envelope = Self {
             session_id: optional_id(object, "session_id", SessionId::new)?,
-            transcript_path: optional_text(object, "transcript_path"),
-            cwd: optional_text(object, "cwd"),
+            transcript_path: optional_text(object, "transcript_path")?,
+            cwd: optional_text(object, "cwd")?,
             prompt: PrivateText::new(prompt),
             prompt_id: optional_id(object, "prompt_id", EventId::new)?,
             additive: BTreeMap::new(),
@@ -711,11 +722,15 @@ pub enum HookTranscriptState {
     Present,
 }
 
-fn optional_text(object: &Map<String, Value>, key: &str) -> Option<PrivateText> {
-    object
-        .get(key)
-        .and_then(Value::as_str)
-        .map(PrivateText::new)
+fn optional_text(
+    object: &Map<String, Value>,
+    key: &str,
+) -> Result<Option<PrivateText>, AdapterError> {
+    match object.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(value)) => Ok(Some(PrivateText::new(value))),
+        Some(_) => Err(AdapterError::InvalidField),
+    }
 }
 
 fn optional_id<T>(
@@ -751,7 +766,7 @@ pub fn additional_context_allowed(
     Ok(())
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CassProducer {
     pub version: AdapterVersion,
@@ -769,6 +784,33 @@ pub struct CassProducer {
     pub export_omits_skills_by_default: bool,
     #[serde(default = "true_flag")]
     pub export_retains_native_shapes: bool,
+}
+
+impl fmt::Debug for CassProducer {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CassProducer")
+            .field("version", &self.version)
+            .field("api_version", &self.api_version)
+            .field("contract_version", &self.contract_version)
+            .field("has_build_commit", &self.build_commit.is_some())
+            .field("binary_digest", &self.binary_digest)
+            .field("source_id", &self.source_id)
+            .field("remote_source", &self.remote_source)
+            .field(
+                "export_omits_skills_by_default",
+                &self.export_omits_skills_by_default,
+            )
+            .field(
+                "export_retains_native_shapes",
+                &self.export_retains_native_shapes,
+            )
+            .finish()
+    }
+}
+
+fn is_cass_commit_id(commit: &str) -> bool {
+    // cass emits a 12-digit abbreviation; full SHA-1/SHA-256 IDs are also valid.
+    matches!(commit.len(), 12 | 40 | 64) && commit.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 fn true_flag() -> bool {
@@ -791,12 +833,21 @@ impl CassProducer {
         if self.api_version == 0 || self.contract_version == 0 {
             return Err(AdapterError::UnsupportedVersion);
         }
+        if let Some(commit) = &self.build_commit
+            && commit != "unknown"
+            && !is_cass_commit_id(commit.strip_suffix("-dirty").unwrap_or(commit))
+        {
+            return Err(AdapterError::InvalidField);
+        }
         Ok(())
     }
 
     pub fn validate_support_claim(&self) -> Result<(), AdapterError> {
         self.validate_archive_identity()?;
-        if self.build_commit.is_none() && self.binary_digest.is_none() {
+        // Unknown and dirty producer labels are valid archive metadata, but
+        // neither identifies the built bytes without a separate binary digest.
+        let has_clean_commit = self.build_commit.as_deref().is_some_and(is_cass_commit_id);
+        if !has_clean_commit && self.binary_digest.is_none() {
             return Err(AdapterError::MissingCassProvenance);
         }
         Ok(())

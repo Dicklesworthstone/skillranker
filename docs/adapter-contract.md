@@ -32,7 +32,10 @@ of prompt timing, branch identity, visibility, restrictions, compaction, load
 evidence, hook output, deadline, and delivery marked `pass` with a passing
 real-harness smoke record for that version. Official-schema qualification,
 local CLI version observation, and fixture digests are retained as provenance;
-none of them authorizes native advice. Cass is never the default hook path.
+none of them authorizes native advice. `transfer_tested_support` rechecks this
+entire gate for the same adapter and installed version. Tested and unverified
+version lists must each be unique and cannot overlap. Cass is never the default
+hook path and cannot authorize native injection by claiming that flag.
 
 Unknown or unsupported capability schema versions are refused. Unknown hook
 events are refused. `UserPromptExpansion` is a known non-advisory event.
@@ -47,13 +50,24 @@ foreign harness envelopes may retain them as additive data that cannot change
 identity or visibility. `additionalContext` is at most 1,024 Unicode scalar
 values and at most one suggested invocation name.
 
+Optional `transcript_path` and `cwd` accept strings, null, or absence. Present
+non-string values are errors rather than missing-source fallbacks. Retained
+additive keys and values are private; debug formatting reports only their count.
+
 A missing first transcript is `HookTranscriptState::Missing` (`prompt_only` at
 the later output boundary). A malformed existing transcript is an error, not an
 empty history.
 
 Cass JSON exports remain native/archive shapes and omit skills by default. They
 are not a SkillRanker normalized envelope. Archive identity may omit
-`build_commit`; a support claim still needs that commit or a binary digest.
+`build_commit`; a support claim still needs a clean commit ID or a binary digest.
+Accepted commit labels are cass's 12-hex-digit abbreviation or full 40/64-hex-digit
+Git IDs, optionally suffixed with `-dirty`, and the literal `unknown` used by
+builds without Git metadata. Dirty and unknown labels remain valid archive
+metadata but require a binary digest for support claims. Malformed labels are
+rejected without echoing them. This validates provenance shape, not authenticity
+or harness conformance; those require independent evidence. `CassProducer` is
+SkillRanker's local metadata contract, not a direct parser for all cass output.
 
 The fixtures under `tests/fixtures/adapter-*.json` and
 `tests/fixtures/capabilities.v1.json` are synthetic. They have slots for later
