@@ -181,3 +181,16 @@ fn local_inspection_creates_no_effects_and_observer_detects_them() {
         // canary above proves the observer catches filesystem effects.
     }
 }
+
+#[test]
+fn offline_flags_are_recognized_and_mutually_exclusive() {
+    let f = Fixture::new();
+    let offline = f.run(&["doctor", "--config", "--offline"], &[]);
+    assert_eq!(offline.status.code(), Some(0));
+    let conflict = f.run(&["doctor", "--config", "--offline", "--allow-network"], &[]);
+    assert_eq!(conflict.status.code(), Some(2));
+    let report: Value = serde_json::from_slice(&conflict.stdout).unwrap();
+    assert_eq!(report["error"]["kind"], "invalid-usage");
+    let alone = f.run(&["doctor", "--config", "--allow-network"], &[]);
+    assert_eq!(alone.status.code(), Some(0));
+}

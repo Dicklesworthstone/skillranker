@@ -34,7 +34,17 @@ fn command() -> Command {
                 .conflicts_with("table")
                 .action(ArgAction::SetTrue),
         )
-        .arg(Arg::new("table").long("table").action(ArgAction::SetTrue));
+        .arg(Arg::new("table").long("table").action(ArgAction::SetTrue))
+        .arg(
+            Arg::new("offline")
+                .long("offline")
+                .action(ArgAction::SetTrue),
+        )
+        .arg(
+            Arg::new("allow-network")
+                .long("allow-network")
+                .action(ArgAction::SetTrue),
+        );
     for key in SettingKey::ALL {
         if let Some(flag) = key.spec().cli_flag {
             let name = flag.trim_start_matches('-');
@@ -130,6 +140,21 @@ fn execute(clock: &EntryClock, args: Vec<OsString>) -> Result<String, Failure> {
     if doctor.get_flag("help") {
         return Ok(HELP.into());
     }
+    let flags = crate::privacy::EffectFlags {
+        offline: doctor.get_flag("offline"),
+        allow_network: doctor.get_flag("allow-network"),
+        dry_run: false,
+        no_cache: false,
+        no_ledger: false,
+        no_persist: false,
+        save_case: false,
+    };
+    let _effects = crate::privacy::EffectPolicy::from_flags(flags).map_err(|conflicts| {
+        let first = conflicts
+            .first()
+            .expect("from_flags reports at least one conflict on error");
+        (2u8, "invalid-usage", first.to_string())
+    })?;
     let mut sources = ConfigSources::default();
     for key in SettingKey::ALL {
         let Some(flag) = key.spec().cli_flag else {
