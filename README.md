@@ -2,6 +2,10 @@
 
 # SkillRanker
 
+**Status: design stage.** This repository currently contains the plan and
+documentation. The commands below describe intended interfaces; the Rust
+implementation and installable binary are not yet present.
+
 **The right skill for the next step, powered by Jev from TypeSafe.ai.**
 
 A standalone Rust CLI that puts **[TypeSafe.ai's Jev](https://typesafe.ai)** at the
@@ -20,6 +24,7 @@ Sign up at the [TypeSafe console](https://console.typesafe.ai) to get your own k
 ![Output](https://img.shields.io/badge/output-JSON%20%7C%20hooks%20%7C%20TUI-00897b)
 
 ```bash
+sr demo --case useful     # Inspect an offline fixture before connecting a session
 sr rank --allow-network   # Rank skills for the selected session
 sr hook claude           # Run the Claude Code prompt-hook integration
 sr tui                   # Inspect rankings in an inline terminal display
@@ -38,8 +43,10 @@ sr tui                   # Inspect rankings in an inline terminal display
 - [Command Reference](#command-reference)
 - [Configuration](#configuration)
 - [How Ranking Works](#how-ranking-works)
+- [Explain And Replay A Result](#explain-and-replay-a-result)
 - [Local Feedback And Calibration](#local-feedback-and-calibration)
 - [Evaluation, Sampling, And Risk Monitoring](#evaluation-sampling-and-risk-monitoring)
+- [Control Requests And Interruptions](#control-requests-and-interruptions)
 - [Agent Hooks](#agent-hooks)
 - [Inline TUI](#inline-tui)
 - [Architecture](#architecture)
@@ -89,12 +96,16 @@ recommendations possible**.
 | Search a large library | Quill lexical prefiltering from FrankenSearch, admitting up to 254 skills plus a none option to each Choice |
 | Separate similar skills | Detailed reranking with bounded descriptions and body excerpts |
 | Recognize when no skill fits | Relevance gates, per-candidate fit checks, and sentinel-based abstention |
-| Understand the result | Raw probabilities, local rank scores, confidence, eligibility, and provenance stay distinct |
+| Understand a missing suggestion | `--why-not` traces where a candidate was excluded, with thresholds and concrete recovery hints |
+| Reproduce a surprising result | Opt-in case capture and offline replay compare compatible local policies without another Jev call |
+| Get started without sharing a session | Offline fixture demos and a readiness report identify the next setup step |
 | Keep the agent moving | A failed hook recommendation produces a quiet, non-blocking fallback |
-| Review what happens | Local observation statistics, explicit usefulness judgments, and held-out evaluation |
+| Control interruptions | Silent ordinary abstentions and scoped, expiring snoozes preserve explicit skill requests |
+| Bound repeated expense | Optional shared HTTP-attempt allowances and a provider circuit breaker cover concurrent local sessions |
+| Review what happens | Usefulness, interruptions, attempts, and cost share a report with explicit label coverage |
 | Evaluate within a budget | Offline replay, explicit live-request caps, and reproducible samples with recorded selection probabilities |
 | Assess recommendation harm | Controlled comparisons, uncertainty bounds, and optional monitoring across repeated evaluations |
-| Control disclosure | Network opt-in, redacted payload preview, an offline mode, and separate persistence controls |
+| Control disclosure | Network opt-in, field-level disclosure receipts, a minimal context profile, and separate persistence controls |
 
 The approach builds on the [TypeSafe skill-suggestion recipe](https://docs.typesafe.ai/cookbooks/skill_suggestion).
 SkillRanker adds session identity, harness visibility, bounded execution, and a
@@ -104,8 +115,12 @@ explains the full design and acceptance criteria.
 ## Quick Example
 
 ```bash
+# See a labeled fixture result without a key, network, or private session.
+sr demo --case useful
+
 # Inspect local configuration and the available adapters.
 sr doctor --json
+sr doctor --config
 sr capabilities --json
 
 # Inspect visible, shadowed, and excluded skill records.
@@ -117,8 +132,8 @@ sr rank --context scratch/context.json --dry-run
 # Evaluate an explicitly selected conversation.
 sr rank --context scratch/context.json --allow-network --json
 
-# Inspect raw distributions, discarded candidates, and score contributions.
-sr rank --context scratch/context.json --allow-network --explain --json
+# Find where an expected candidate was excluded; this adds no inference calls.
+sr rank --context scratch/context.json --allow-network --why-not SKILL_ID --explain
 
 # Preview the Claude hook settings change, then apply it.
 sr install-hook claude
@@ -231,22 +246,55 @@ The primary local platform scope is Linux and macOS. Consult
 
 ## Quick Start
 
-1. **Sign up and configure your own TypeSafe API key.** Create an account and key
+1. **Try an offline fixture.** Run `sr demo --case useful`, then try `none`,
+   `explicit`, or `unavailable`. These labeled examples exercise the local
+   pipeline without reading a private session or contacting Jev. Their output
+   is non-actionable and does not establish live provider health.
+2. **Sign up and configure your own TypeSafe API key.** Create an account and key
    in the [TypeSafe console](https://console.typesafe.ai), then export
    `TYPESAFE_API_KEY` using the [runtime setup](#runtime-setup) instructions.
    SkillRanker relies on Jev for its ranking evaluations.
-2. **Check the environment and roster.** Run `sr doctor --json`,
+3. **Check the environment and roster.** Run `sr doctor --json`,
    `sr capabilities --json`, and `sr roster --json` in the agent's workspace.
    Confirm that candidates are loadable, not merely present somewhere on disk.
-3. **Choose the session.** Supply `--context FILE`,
+4. **Choose the session.** Supply `--context FILE`,
    `--transcript FILE --harness claude_code`, or `--session PATH` for cass.
    Automatic discovery must resolve one unambiguous session.
-4. **Preview and rank.** Use `--dry-run` to inspect the redacted wide payload,
-   then `--allow-network --json` for a fresh evaluation.
-5. **Try the hook in shadow mode.** Preview and apply `sr install-hook claude`.
+5. **Preview and rank.** Use `--dry-run` to inspect the redacted wide payload
+   and disclosure receipt, then `--allow-network --json` for a fresh evaluation.
+6. **Try the hook in shadow mode.** Preview and apply `sr install-hook claude`.
    Shadow mode records observations without adding suggestions to agent context.
-6. **Enable advisory output deliberately.** Set `hook.mode = "advisory"` in
+7. **Enable advisory output deliberately.** Set `hook.mode = "advisory"` in
    trusted user configuration after reviewing the integration and its behavior.
+
+### Readiness checks
+
+`sr doctor` reports each prerequisite separately, names the next concrete step
+for a failed check, and lists local commands that remain useful:
+
+| Check | What it establishes |
+|---|---|
+| Input and roster | A usable source and loadable candidates are available |
+| Credential | A key is present; this alone does not authenticate it |
+| Network authorization | Trusted settings permit a live request |
+| Transport | Untested or previously verified by a separately authorized, budgeted live check |
+| Ledger | Optional history is ready or degraded; its absence need not block ranking |
+| Hook and snoozes | Shadow/advisory mode and active scoped interruption controls |
+
+Doctor runs locally by default and does not implicitly send a test request,
+install hooks, migrate storage, or change configuration. Demo uses bundled
+synthetic contexts and labeled synthetic or recorded responses without touching
+user configuration or state. Neither command supplies a replacement for Jev.
+
+A previous transport check includes its time, scope, and runtime/endpoint/configuration
+identity. Incompatible changes invalidate it; a stored check does not establish
+current provider availability.
+
+`sr capabilities --json` separates implemented adapters from tested harness
+versions/features and unverified versions. Adapter conformance covers prompt
+timing, branch identity, visibility, restrictions, compaction, load evidence, and
+hook output; real supported-harness checks complement protocol fixtures.
+Incompatible identity or visibility semantics disable advice.
 
 ## Command Reference
 
@@ -258,13 +306,20 @@ only by an explicit input mode.
 
 | Command | Purpose | Example |
 |---|---|---|
+| `sr demo --case CASE` | Inspect a labeled offline fixture | `sr demo --case unavailable` |
 | `sr rank` | Rank the next step | `sr rank --allow-network --json` |
 | `sr rank --context FILE` | Read normalized context; `-` means stdin | `sr rank --context scratch/context.json --dry-run` |
 | `sr rank --transcript FILE --harness NAME` | Read a supported native transcript | `sr rank --transcript scratch/session.jsonl --harness claude_code --offline` |
 | `sr rank --session PATH` | Export an exact session through cass | `sr rank --session scratch/session.jsonl --allow-network` |
+| `sr rank --why-not ID --explain` | Trace an expected candidate's exclusion | `sr rank --allow-network --why-not SKILL_ID --explain` |
+| `sr rank --save-case FILE` | Explicitly capture a bounded redacted replay case | `sr rank --allow-network --save-case scratch/case.json` |
+| `sr replay FILE` | Recompute a historical case offline | `sr replay scratch/case.json --compare-policy scratch/candidate.toml` |
 | `sr hook claude` | Handle the Claude prompt-hook protocol | `sr hook claude --shadow` |
 | `sr roster --json` | Inspect visibility, overrides, records, and exclusions | `sr roster --json` |
+| `sr roster --snapshot FILE` | Explicitly export a bounded private roster manifest | `sr roster --snapshot scratch/roster-snapshot.json` |
+| `sr roster --diff FILE` | Compare fresh discovery with a saved roster snapshot | `sr roster --diff scratch/roster-snapshot.json` |
 | `sr doctor --json` | Inspect local configuration and readiness | `sr doctor --json` |
+| `sr doctor --config` | Explain effective non-secret values and their sources | `sr doctor --config` |
 | `sr capabilities --json` | Describe commands, schemas, features, limits, and exits | `sr capabilities --json` |
 | `sr tui` | Open the inline viewer | `sr tui` |
 
@@ -277,8 +332,12 @@ only by an explicit input mode.
 | `sr stats` | Report observation and operational metrics | `sr stats --since 7d --by-skill` |
 | `sr observe` | Reconcile structured load events | `sr observe --session scratch/session.jsonl` |
 | `sr feedback` | Record an explicit usefulness judgment | `sr feedback EVENT_ID --skill SKILL_ID --verdict useful` |
+| `sr feedback --instead ID` | Record a better alternative for an event | `sr feedback EVENT_ID --skill SKILL_ID --instead ALTERNATIVE_ID` |
+| `sr snooze` | Preview a scoped temporary advisory mute | `sr snooze EVENT_ID --skill SKILL_ID --for 30m` |
+| `sr budget` | Inspect or preview a shared HTTP-attempt allowance | `sr budget --max-attempts 100 --window 1h` |
 | `sr eval` | Replay a labeled evaluation artifact offline by default | `sr eval --dataset scratch/evaluation.json --explain` |
 | `sr calibrate` | Report a candidate threshold configuration | `sr calibrate --evaluation scratch/report.json` |
+| `sr calibrate --rollback REVISION` | Preview restoration of managed policy fields | `sr calibrate --rollback POLICY_REVISION` |
 | `sr doctor --descriptions` | Check description quality locally | `sr doctor --descriptions` |
 | `sr gaps` | Report suspected coverage gaps | `sr gaps` |
 | `sr ledger init` | Initialize local history explicitly | `sr ledger init` |
@@ -286,9 +345,9 @@ only by an explicit input mode.
 | `sr ledger prune` | Preview retention cleanup | `sr ledger prune --before 2026-09-01` |
 | `sr ledger clear` | Preview clearing local history | `sr ledger clear` |
 
-`--apply` performs a previewed hook, calibration, or ledger mutation. Calibration
-consumes a labeled evaluation artifact; it does not silently change project
-settings after a number of observed loads. Description audits use the network
+`--apply` performs a previewed hook, snooze, budget, calibration, or ledger mutation.
+Calibration consumes a labeled evaluation artifact; it does not silently change
+project settings after a number of observed loads. Description audits use the network
 only with an explicit online request and network authorization.
 
 ### Evaluation controls
@@ -337,6 +396,7 @@ for the report's denominators and uncertainty rules.
 | `--roster FILE` | Harness discovery | Replace discovery with an explicit inventory |
 | `--require-skill ID` | None | Resolve an explicit required skill; repeatable |
 | `--latest` | Off | Explicitly choose the newest discovered session |
+| `--context-profile PROFILE` | `standard` | Choose standard context or the bounded `minimal` disclosure profile |
 | `--no-tools` | Off | Remove tool arguments and results from outgoing context |
 | `--no-cache` | Off | Disable response-cache reads and writes |
 | `--no-ledger` | Off | Disable all ledger and ingestion-cursor access; use transient evidence |
@@ -344,6 +404,8 @@ for the report's denominators and uncertainty rules.
 | `--offline` | Off | Guarantee zero network calls |
 | `--allow-network` | Off | Authorize network evaluation for this invocation |
 | `--explain` | Off | Include distributions, exclusions, truncation, and score contributions |
+| `--why-not ID` | None | Trace a candidate from the current snapshot with `--explain`, without adding requests |
+| `--save-case FILE` | Off | CLI-only, explicit capture for offline replay; cannot overwrite an existing file |
 | `--dry-run` | Off | Preview the redacted request without network or persistence effects |
 
 Sizes satisfy `1 ≤ K ≤ M ≤ 32`; fewer available candidates is normal. Parsing
@@ -466,7 +528,7 @@ paginate against a fixed snapshot; a changed snapshot requires restarting.
 | `0` | Ranked, explicit, valid abstention, or successful inspection |
 | `2` | Invalid usage or configuration |
 | `3` | Missing or ambiguous session |
-| `4` | Provider, authentication, or network failure |
+| `4` | Provider, authentication, or network failure; request-admission refusal |
 | `5` | Empty/unusable roster, unresolved explicit request, or Quill retrieval failure |
 | `6` | Overall deadline exhausted |
 | `7` | Malformed, oversized, or unsupported input |
@@ -528,6 +590,12 @@ Workspace configuration may tune bounded ranking values and exclusions. It
 cannot authorize networking, change endpoints/proxies, supply credentials,
 expand transcript access, disable redaction, or enable raw retention. Unknown
 keys and invalid values are reported before I/O.
+
+`sr doctor --config` shows each non-secret effective value, its winning source,
+ignored disallowed overrides, and the policy fingerprint. It reports credential
+presence/source without exposing values or secret-bearing endpoint components.
+Shared request allowances and snoozes are explicit trusted-user controls. Project
+configuration cannot enable, raise, or disable the allowance.
 
 ## How Ranking Works
 
@@ -597,6 +665,7 @@ instructing the agent to bypass that restriction by reading its file.
 | Skill file / frontmatter | 256 KiB / 16 KiB |
 | Discovery | 10,000 files / 32 MiB parsed bytes |
 | Quill query | 128 distinct terms / 4,096 Unicode scalar values |
+| Replay case capture/import | 16 MiB / nesting depth 64, with per-field limits |
 | Wide description | 160 characters |
 | Rerank description / body excerpt | 1,000 / 700 characters |
 | Serialized provider request / decoded response | 96 KiB / 2 MiB |
@@ -606,6 +675,13 @@ the entire shortlist, including candidates removed by scoring, or every explicit
 target. Any changed candidate invalidates the result; a runner-up cannot replace
 an answer conditioned on stale alternatives. A supplied roster replaces discovery
 but does not grant filesystem access or bypass invocation restrictions.
+
+`sr roster --snapshot FILE` explicitly exports an owner-only manifest that can
+contain private skill names. `sr roster --diff FILE` compares that snapshot with fresh
+authorized discovery, showing additions/removals, content and restriction changes,
+shadowing, and invocation-name changes. Incomplete source coverage remains unknown
+rather than becoming a confirmed deletion. Saved paths grant no new read access
+and cannot restore a removed skill.
 
 ### 3. Retrieve, then compare
 
@@ -725,6 +801,68 @@ Priors and phase weighting are optional evaluated policy choices. A skill is
 not penalized just because a previous suggestion went unobserved. After
 compaction, uncertain loaded-state evidence cannot suppress a skill indefinitely.
 
+## Explain And Replay A Result
+
+### Find where a candidate was lost
+
+`--why-not SKILL_ID --explain` follows a candidate through discovery, visibility
+and restrictions, local policy, Quill admission, the wide shortlist, fit/none
+eligibility, final ordering, and publication. It reports the first decisive
+exclusion and any later stages actually evaluated.
+
+```bash
+sr rank --context scratch/context.json --allow-network \
+  --why-not SKILL_ID --explain --json
+```
+
+An unevaluated stage reports `not-evaluated`; an unknown ID reports
+`not-in-snapshot`. Neither receives a fabricated zero fit. Explanations include
+threshold operands, tie handling, content/policy versions, and bounded recovery
+hints. They do not expand discovery, insert the target into a shortlist, change
+the ranked result or provider request bytes, or add a provider call. Hints identify
+actions and arguments for review; they do not execute commands or relax policy.
+
+### Save a case and compare local policies offline
+
+Explicit capture turns a surprising result into a reproducible case:
+
+```bash
+# Opt in to retaining this run's bounded redacted inputs and recorded answers.
+# Use a new output path in an existing private directory.
+sr rank --context scratch/context.json --allow-network \
+  --save-case scratch/ranking-case.json --explain --json
+
+# Reproduce the decision without accessing the source session or Jev.
+sr replay scratch/ranking-case.json
+
+# Compare compatible local thresholds/weights against the same recorded answers.
+sr replay scratch/ranking-case.json --policy scratch/baseline.toml \
+  --compare-policy scratch/candidate.toml
+```
+
+A case binds the actual redacted request inputs, exact option maps and content
+digests, validated recorded responses, eligibility evidence, policy, and
+model/adapter provenance. Synthetic fixtures and recorded provider answers are
+labeled separately. Replay returns `kind: replay` with `actionable: false`,
+keeping historical and recomputed decisions separate from live recommendations.
+It makes no network requests, discovers no transcripts, executes no skills, and
+writes no state. Embedded source paths remain inert.
+
+Local policy comparison requires compatible complete responses. Missing stages
+report `not-replayable`; a changed model, prompt, retrieval strategy, excerpt,
+or shortlist needs new consented evaluation. Policy files accept only the
+supported local ranking schema, without executable code or credential/routing
+settings. A changed score is not evidence of better task outcomes. Ordinary
+metadata-only history cannot reconstruct a case.
+
+Capture is opt-in because redacted prose can remain confidential. Files are
+owner-only, created exclusively without overwriting existing targets, bounded
+to 16 MiB and nesting depth 64, and published only after a complete write.
+Per-field limits still apply. Capture consumes the invocation deadline; a failed
+requested write reports a storage or timeout failure. `--save-case` conflicts
+with `--dry-run`, `--no-persist`, and hook mode. Imports validate bounds and
+internal consistency; a matching digest does not establish trusted authorship.
+
 ## Local Feedback And Calibration
 
 SkillRanker keeps observations and judgments separate.
@@ -739,9 +877,23 @@ SkillRanker keeps observations and judgments separate.
 | Not observed / unobservable / censored | The available record cannot establish an outcome |
 | Explicit usefulness judgment | An assessor labeled a particular event and skill version |
 
-`sr stats` reports adoption, observation coverage, censoring, latency, errors,
-abstentions, cache reuse, and actual provider usage, with denominators. Those
-operational metrics are not labeled task success or recommendation precision.
+`sr stats` puts usefulness, interruptions, and cost in one local report:
+
+| Measure | Interpretation |
+|---|---|
+| Evaluated turns, emitted suggestions, valid abstentions, muted/suppressed output | How often the selector evaluates and interrupts |
+| Operational failures, latency, cache reuse | Availability and overhead across the disclosed cohort |
+| Observed loads, observation coverage, censoring | What was seen, with missing evidence kept visible |
+| Independently judged useful suggestions and label coverage | Usefulness for the judged cohort |
+| HTTP attempts, known tokens, unknown usage, estimated cost | Recorded consumption and the limits of its accounting |
+
+Cost per judged-useful suggestion uses only that cohort's matched attempts and
+labels. With no useful labels, the ratio is not estimable. Unknown usage or
+missing/inapplicable pricing also prevents an exact monetary ratio; report known
+attempt and token counts instead. Unlabeled traffic does
+not inherit measured usefulness, adoption is not task success, and token savings
+are not estimated labor savings. Reports contain no raw examples by default and
+do not enable adaptation or advisory mode.
 
 Shadow, advisory-hook, CLI, and TUI records have separate denominators. Writing
 zero bytes in shadow mode does not count as delivered advice. A successful
@@ -765,6 +917,23 @@ sr calibrate --evaluation scratch/evaluation-report.json
 sr calibrate --evaluation scratch/evaluation-report.json --apply
 ```
 
+When a different skill would have helped, record the correction directly:
+
+```bash
+sr feedback EVENT_ID --skill ORIGINAL_ID --instead BETTER_ID
+```
+
+Both candidates resolve against the recorded event and roster version; a changed
+or unknown alternative needs a separately identified snapshot. The correction
+records the original as unsuitable and the alternative as useful, with assessor
+and revision provenance. `--instead` and `--verdict` are mutually exclusive.
+It is partial, unblinded feedback: other candidates remain unjudged, and the
+correction cannot become an independent blinded holdout case.
+An alternative absent from the historical roster is prospective feedback, not
+evidence that the original selector missed an available candidate.
+For “not now,” use [snooze](#snooze-advice-without-changing-usefulness) instead of
+a negative usefulness label.
+
 Calibration uses independently judged positive, no-match, and near-miss cases,
 with separate training, validation, and final-test task families. Priors are fit
 on training data, thresholds are chosen on validation data, and the frozen policy
@@ -786,6 +955,18 @@ size, prompts, or model can require new evaluations.
 Experimental priors use centered, shrunk Beta(1, 4) estimates from judged
 usefulness. They are disabled by default and can only reorder eligible candidates.
 A fixed observation count alone never enables learning.
+
+Policy rollback follows the same preview/apply workflow:
+
+```bash
+sr calibrate --rollback POLICY_REVISION
+sr calibrate --rollback POLICY_REVISION --apply
+```
+
+Rollback restores only managed ranking-policy fields after compatibility,
+digest, and conflict checks. It preserves current credentials, networking
+authorization, hook installation, feedback, and unrelated settings; it does not
+replace the entire configuration with an old file.
 
 Description diagnostics flag missing metadata, duplicate visible prefixes, and
 rerank disagreements. Gap reports identify **suspected** missing coverage while
@@ -830,6 +1011,15 @@ Reports bind results to dataset and split digests, roster content and visibility
 prompts, policy, runtime, and returned model identities/time ranges. Related
 sessions and task variants stay in one split. An unversioned Jev alias limits
 reproducibility even when the local sample and arithmetic replay exactly.
+
+Robustness evaluation includes option-order permutations, opaque-ID renaming,
+equivalent whitespace, duplicate-looking descriptions, irrelevant decoys, long
+distracting text, and hostile ranking instructions. Local transformations with
+unchanged semantics have exact parsing/scoring invariants. Jev comparisons report
+decision and coverage changes rather than demanding identical probabilities from
+a stochastic, candidate-dependent model. New provider inputs require new
+responses and consume the live budget. Related variants retain their original
+task family and split.
 
 ### Spend the evaluation budget deliberately
 
@@ -956,6 +1146,139 @@ production experiments or making extra network calls.
 substituted values, assumptions, and what further evidence would change the
 conclusion. These belong in reports; hook advice stays short.
 
+### Opt-in retrieval and description experiments
+
+The evaluation tools support three bounded experiments. They use held-out cases
+and the existing request, disclosure, and latency budgets; they do not silently
+replace the default selector.
+
+| Experiment | Scope and comparison |
+|---|---|
+| Relevant skill passages | Compare the fixed opening excerpt with Quill-selected heading-delimited passages inside an already selected skill, retaining its purpose/restriction prefix and the 700-character body budget |
+| Multiple overflow query views | Compare the combined query with up to three Quill views: current request, task anchor, and recent error; deduplicate and fuse their rankings into at most 254 candidates |
+| Description overlays | Compare an original description with a proposed evaluation-only overlay against user-supplied positive and near-miss cases |
+
+Passage retrieval reads only already authorized, bounded skill bytes, scans them
+for secrets before excerpting, and retains heading, position, and version. A
+successful query with no passage match uses the declared opening excerpt; parser,
+fuel, and index errors retain typed failure behavior. It loads no referenced
+files, scripts, or additional candidates.
+
+Multiple query views share aggregate term, character, fuel, memory, and deadline
+budgets. Each returns at most 254 matches. A pinned reciprocal-rank rule such as
+`sum_v 1/(60 + rank_v)` uses ranks starting at one, zero contribution for absent
+hits, equal view weights, and stable skill-ID ties. Identical normalized views
+are deduplicated. An attempted view failure invalidates the result; an empty
+union remains `retrieval-empty`. Fusion scores are retrieval heuristics, not
+Jev probabilities, and rosters of 254 or fewer still bypass the prefilter.
+
+Description overlays bind to source content digests and are unavailable to
+hooks. A changed description requires a new request fingerprint and responses;
+compatible unchanged inputs may use recorded answers. Reports compare coverage,
+false suggestions, truncation, unknown cases, and attempts. Stale or ambiguous
+sources are rejected. The experiment exports a reviewable suggestion without
+rewriting skills or changing loadability. Untouched task families supply final
+validation; a better prose rubric score alone cannot justify promotion.
+
+## Control Requests And Interruptions
+
+### Share an HTTP-attempt allowance across sessions
+
+An optional trusted-user allowance bounds HTTP attempts across local `sr`
+processes in a configured user/endpoint scope and named time window. It includes
+retries and live evaluation, and intersects each invocation and batch limit.
+Setup explicitly initializes the allowance and preflight reports the maximum
+attempts. It is neither a cross-machine billing limit nor a hard monetary cap;
+cost estimates use separately versioned prices and retain unknown usage.
+
+```bash
+sr budget                                      # Inspect local allowance and health
+sr budget --max-attempts 100 --window 1h         # Preview scope and window semantics
+sr budget --max-attempts 100 --window 1h --apply # Explicitly configure this limit
+```
+
+The allowance accepts 1–10,000 attempts in fixed one-hour UTC windows. The preview
+names the user/endpoint scope, exact window boundaries, charged attempts, and
+remaining allowance. This is not a rolling-hour cap: adjacent windows can each
+consume their allowance close to the boundary. Configuration changes preserve
+still-applicable charges. Accounting shares the 64 MiB cache/coordinator budget,
+but unexpired charges cannot be evicted; exhausted storage withholds new requests.
+Incomplete setup admits no provider calls until reconciled. Inspection itself
+makes no network requests.
+
+Each attempt is atomically reserved/debited before transmission. A timeout or
+crash never refunds a request that may have been sent. Restarting, evicting a
+cache entry, or pruning ordinary history cannot reset accounting. Missing,
+corrupt, or busy enforcement state withholds new requests; local explicit
+resolution and valid cache hits remain available. Clock anomalies retain charges
+until reconciliation. With `--no-persist`, an enabled shared allowance cannot
+admit provider attempts; local explicit resolution remains usable.
+This protected accounting and best-effort cooldown/lease state are separate from
+the optional observation ledger; `--no-ledger` does not disable the allowance.
+
+A provider circuit breaker limits repeated outage traffic. Three consecutive
+transient failures open a 30-second cooldown. Failed half-open probes double the
+cooldown to a five-minute cap, with a single fenced probe owner. A longer valid
+provider `Retry-After` prevents early attempts without making a hook wait for it.
+A half-open probe is the next permitted real request, with the same network
+authorization, deadline, and attempt debit; it adds no separate health call or
+background probe. Valid successful responses restore service and
+reset the local failure streak.
+Authentication or configuration errors require an explicit retry or relevant
+configuration change. Local exclusions, lexical misses, and relevance abstentions
+do not count as provider failures.
+
+Budget refusals, circuit refusals, provider outages, and relevance abstentions
+are reported separately. When circuit persistence is unavailable, protection is
+reported as process-local. Outages never substitute stale advice or another
+inference provider.
+
+| Admission refusal | CLI result |
+|---|---|
+| Attempt allowance exhausted | `unavailable / request-budget`, exit `4` |
+| Provider circuit prevents a call | `unavailable / provider-cooldown`, exit `4` |
+| Required accounting unusable | `unavailable / budget-state`, exit `4` |
+
+The hook translates each refusal into quiet fallback.
+
+### Snooze advice without changing usefulness
+
+Ordinary advisory abstentions are silent. When a valid suggestion is unwelcome
+for now, snooze it within the event's verified workspace, session, and agent
+branch:
+
+```bash
+# Preview the exact scope, expiry, and effect before applying.
+sr snooze EVENT_ID --skill SKILL_ID --for 30m
+sr snooze EVENT_ID --skill SKILL_ID --for 30m --apply
+
+# Or mute all advisory candidates, then clear that scope's snoozes explicitly.
+sr snooze EVENT_ID --all --for 30m --apply
+sr snooze EVENT_ID --clear --apply
+```
+
+Choose exactly one of `--skill`, `--all`, or `--clear`. The first two require a
+duration; clearing a snooze does not accept one.
+
+Snoozes are trusted-user configuration entries with backup/conflict checks, a
+maximum of 128 entries, and durations from one minute to 24 hours. Missing or
+ambiguous event attribution cannot create a broadly scoped mute. Doctor shows
+active entries and expiry anomalies; uncertain expiry remains muted until
+resolved or explicitly cleared.
+
+Snoozed skills remain visible in explanations but leave advisory eligibility
+before retrieval. Muting every advisory candidate skips Jev. Explicit skill
+requests still resolve normally. Ranking reads these controls with `--no-ledger`
+or `--no-persist`, as ordinary configuration, and never writes expiry cleanup.
+A snooze changes neither usefulness labels nor priors; ignored suggestions do
+not create snoozes.
+
+Automatic suppression across separate user turns is a distinct opt-in experiment.
+It requires unchanged task evidence, skill version, and policy within a bounded
+interval, and restores advice when renewed instructions or relevant tool changes
+invalidate that match. Publication suppression is recorded separately from
+ranking and exposure; missing history cannot prove advice was previously delivered.
+
 ## Agent Hooks
 
 The Claude Code integration uses `UserPromptSubmit` and the dedicated
@@ -976,10 +1299,11 @@ requested skills remain user requests, not adaptive top-three suggestions.
 A complete explicit list must fit the 1,024-character hook limit; an oversized
 list produces quiet fallback instead of silently dropping requests. Manual-only
 references never become instructions for autonomous invocation.
-A valid abstention may offer a short no-additional-skill message. Operational
-failures or unresolved target visibility produce no injected text. A partial
-roster can support a scoped positive recommendation when the target and its
-restrictions are verified; it cannot support a global no-match message.
+Ordinary valid abstentions produce no injected text. A short no-additional-skill
+message is a separate opt-in experiment. Operational failures or unresolved
+target visibility also stay quiet. A partial roster can support a scoped positive
+recommendation when the target and its restrictions are verified; it cannot
+support a global no-match message.
 
 **The hook never blocks the agent on a recommendation failure.** It emits no
 blocking decision fields and translates errors into empty stdout, a sanitized
@@ -1037,14 +1361,16 @@ flowchart TD
     A[Exact session and trusted configuration] --> B[Capture context and visible roster]
     B --> C[Normalize and resolve directives before redaction and budgeting]
     C -->|explicit request| X[Locally resolved explicit result]
-    C -->|local policy excludes all| N[Abstain]
+    C -->|exclusions or snoozes remove all| N[Abstain]
     C -->|advisory candidates| Q{More than 254 eligible skills?}
     Q -->|no| K{Exact valid cache?}
     Q -->|yes| QR[Quill BM25: up to 254 actual matches]
     QR -->|matches| K
     QR -->|empty or failed| U[Unavailable or quiet hook fallback]
     K -->|hit| P[Apply current eligibility and policy]
-    K -->|miss| W[TypeSafe Jev: wide Choice with none and gates]
+    K -->|miss| BUD[Check network authorization, deadline, attempts, and cooldown]
+    BUD -->|admitted| W[TypeSafe Jev: wide Choice with none and gates]
+    BUD -->|refused| U
     W -->|low need| N
     W -->|continue| R[TypeSafe Jev: detailed rerank with none and fits]
     R --> P
@@ -1064,12 +1390,12 @@ flowchart TD
 
 | Component | Responsibility |
 |---|---|
-| `context/` | Exact source selection, Claude and normalized adapters, optional cass, windowing, and project signals |
-| `privacy/` | Local redaction and trusted network, root, field, and persistence policy |
-| `roster/` | Harness visibility, bounded parsing, stable identities, and Quill lexical retrieval |
-| `jev/` | Asupersync HTTPS, typed protocol validation, question builders, eligibility, and scores |
+| `context/` | Exact source selection, Claude and normalized adapters, optional cass, context profiles, and project signals |
+| `privacy/` | Local redaction, disclosure receipts, and trusted network, root, field, and persistence policy |
+| `roster/` | Harness visibility, bounded parsing, stable identities, snapshot diffs, and Quill lexical retrieval |
+| `jev/` | Asupersync HTTPS, typed validation, questions, eligibility, scores, request admission, and circuit protection |
 | `ledger/` | SQLite transactions, observations, judgments, sampling manifests, calibration, and optional priors/monitoring |
-| `output/` | Versioned JSON, human table, Claude protocol, and optional TUI |
+| `output/` | Versioned JSON, stage explanations, demo/replay rendering, human table, Claude protocol, and optional TUI |
 | `cache.rs` | Separate request and decision fingerprints, TTL, and revalidation |
 | `hook_install.rs` | Managed configuration preview, apply, backup, and rollback |
 
@@ -1126,11 +1452,20 @@ with a hint to choose a supported local source. `--offline` conflicts with
 | Control | Effect |
 |---|---|
 | `--dry-run` | Preview exact redacted wide-request bytes for a stateless run; no network or persistent state access |
+| `--context-profile minimal` | Keep the request, indispensable task anchor, explicit constraints, and candidate descriptions; omit optional history, tool bodies, and dirty paths |
 | `--no-tools` | Remove tool arguments and results from provider context |
 | `--no-cache` | Disable cache reads and writes |
 | `--no-ledger` | Disable all ledger and ingestion-cursor reads/writes; use transient evidence |
 | `--no-persist` | Also disable persistent cache, cursors, locks, and other local state |
 | `--offline` | Disallow all network activity |
+
+The default context profile is `standard`. Dry-run and explain include a
+disclosure receipt showing source categories, included/omitted counts, truncation,
+and redaction counts without matched secret fragments. Minimal context returns
+unavailable if an omitted tool result or attachment is essential. Local load
+observations remain separate; the chosen profile enters request provenance.
+Workspace settings cannot widen a trusted disclosure profile.
+Smaller disclosure alone does not establish equivalent recommendation quality.
 
 A second-stage dry run requires explicit shortlist IDs or a validated recorded
 wide answer. It cannot know a model's shortlist without that evidence. The preview
@@ -1138,8 +1473,12 @@ corresponds to `--no-persist`; a persistent run can include additional historica
 evidence and therefore produce a different payload.
 
 These persistence controls govern `sr`'s state stores; configured inputs and
-ordinary configuration still require file reads. With `--no-persist`, leases and
-cooldowns are process-local, so cross-process coordination is unavailable.
+ordinary configuration still require file reads, including explicit snooze
+controls. With `--no-persist`, leases and cooldowns are process-local, so
+cross-process coordination is unavailable. An enabled shared attempt allowance
+requires durable enforcement, so it withholds provider calls under `--no-persist`
+while leaving local explicit resolution usable. Explicit case capture is
+incompatible with `--no-persist`.
 
 Local data uses platform directories, including `$XDG_DATA_HOME/sr` on Linux
 with `~/.local/share/sr` as the fallback. Database and cache files are owner-only.
@@ -1148,17 +1487,24 @@ has a default 30-day logical retention policy; response-cache entries expire aft
 at most ten minutes. Expiry excludes data from ordinary use; physical cleanup is
 an explicit ledger operation outside the hook. It is not a secure-erasure guarantee.
 
-Hooks do not initialize or migrate the ledger. `sr ledger init` creates it;
+Hooks do not initialize or migrate the ledger or enabled allowance accounting.
+`sr ledger init` creates the observation ledger;
 migration previews and `--apply` use backups that include committed SQLite WAL
-state. Ranking remains usable with degraded persistence when storage is absent,
-busy, or full. The default quotas are 256 MiB for the ledger, sidecars, and backups,
-and 64 MiB for cache/coordination state; reaching a quota stops optional
-recording rather than growing without a bound.
+state. Ordinary ranking remains usable with degraded optional persistence when
+storage is absent, busy, or full. An enabled shared allowance with unavailable
+accounting withholds new HTTP attempts; a requested case capture must either
+complete or report failure. The default quotas are 256 MiB for the ledger,
+sidecars, and backups, and 64 MiB for cache/coordination state; reaching a quota
+stops optional recording rather than growing without a bound.
 
 Requests use HTTPS with credential-scoped endpoints and redirects disabled.
 Redaction covers outgoing roster excerpts as well as conversation fields, but
 it cannot identify every piece of confidential prose. Review dry-run output
 before sharing it. There is no cross-user telemetry or remote feedback sink.
+
+Saved replay cases and roster snapshots are explicit private exports; hooks do
+not capture case bodies by default. Demo and replay do not turn fixture or
+historical answers into live service evaluations.
 
 ## Performance
 
@@ -1190,7 +1536,9 @@ be published as a timely result.
 
 Cache keys cover exact request inputs and current decision policy. New tool
 evidence, compaction, skill-content changes, exclusions, model/endpoint identity,
-and session changes can invalidate reuse. Stale results cannot drive hook output.
+and session changes can invalidate reuse. Context profiles, excerpt/query
+strategies, and effective snoozes enter the appropriate request/decision
+fingerprints. Stale results cannot drive hook output.
 Cache hits report zero new requests and tokens; unanswered attempts retain an
 unknown-usage marker rather than being counted as free.
 
@@ -1219,8 +1567,13 @@ aliases remain part of the report when an immutable revision is unavailable.
 | Networking denied, exit `8` | Use `--offline`, or explicitly choose `--allow-network` or trusted user network configuration |
 | Offline cache miss, exit `11` | No complete valid result is cached for these inputs; authorize a fresh run or retain the unavailable result |
 | No visible hook suggestions | Check whether the hook is in shadow mode, networking is disabled, or the decision is unavailable/abstain |
-| A similar but wrong skill wins | Inspect `--explain`, provide a usefulness judgment, and review description and retrieval quality |
-| A known skill is missing | Check the selected harness's visibility and overrides; an explicit roster replaces discovery |
+| A similar but wrong skill wins | Save an explicit replay case, inspect `--explain`, and use `feedback --instead` for a versioned correction |
+| A known skill is missing | Use `--why-not ID --explain`, inspect roster visibility/overrides, and compare a saved roster snapshot |
+| Advice is unwanted for now | Preview `sr snooze EVENT_ID --skill SKILL_ID --for 30m`; doctor lists active snoozes |
+| Shared allowance or circuit refuses requests, exit `4` | Inspect `sr budget` and the refusal's accounting/cooldown state; cache and local resolution may still work |
+| A key is present but ranking fails | Doctor separates credential presence, network permission, and verified transport; presence alone proves no live connection |
+| Replay reports `not-replayable` | Supply compatible complete recorded responses or run a separately authorized evaluation for changed inputs |
+| A setting differs from expectations | Use `sr doctor --config` to see its winning source and rejected overrides |
 | TUI unavailable | Build with `--features tui`, or use table/JSON output |
 | Evaluation stops with unfinished cases | Review the batch's HTTP-attempt and runtime caps; retries consume the request budget |
 | A zero-harm evaluation fails its gate | Check the number of independent task families and the one-sided upper bound; zero observed harms alone is insufficient |
@@ -1252,6 +1605,12 @@ Yes. TypeSafe.ai's Jev powers SkillRanker's ranking system, and you must provide
 your own key as `TYPESAFE_API_KEY`. There is no bundled key, local replacement
 model, or alternative inference provider. Sign up at the
 [TypeSafe console](https://console.typesafe.ai) and create your own API key.
+
+**Can I try an example before connecting a private session?**
+Yes. `sr demo --case useful` runs a labeled offline fixture without a key or user
+state. `none`, `explicit`, and `unavailable` show the other outcomes. Demo and
+saved-case replay return non-actionable results; fresh ranking still requires
+your own TypeSafe key and authorized Jev access.
 
 **Does SkillRanker execute a skill?**
 No. It recommends or returns a locally resolved target. The agent remains in
@@ -1288,9 +1647,16 @@ still reports the failure with a structured error and meaningful exit code.
 
 **Can it explain the model's reasoning?**
 `--explain` exposes returned distributions, exclusions, and score contributions.
-It does not invent free-text reasoning absent from the provider response.
+`--why-not ID` traces the first decisive exclusion and distinguishes unevaluated
+stages. Neither adds an explanation call to Jev or invents free-text reasoning.
 `sr eval --explain` also explains the report's arithmetic, uncertainty, and
 sampling assumptions.
+
+**Can I cap spending across several sessions?**
+An explicitly configured shared allowance limits local HTTP attempts, including
+retries and live evaluation, within a named window. It is not a dollar guarantee
+or a cross-machine billing cap. Unknown usage remains visible, and unavailable
+enforcement state prevents new requests.
 
 **Does evaluation spend API credits by default?**
 No. `sr eval` replays offline. Live runs require `--online`, trusted network
