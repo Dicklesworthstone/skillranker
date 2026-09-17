@@ -171,24 +171,34 @@ owner_bead = "sr-roadmap-l1i.1.12"
 phase = "P0"
 title = "Adversarial test driver verification and fault rejection"
 unit_property_tests = [
-    "scripts/e2e/test_runner_contract.py::RunnerContractCertification"
+    "scripts/e2e/test_runner_contract.py::ContractTests"
 ]
 e2e_suite = "runner-contract"
 e2e_cases = [
-    "pipe-failure",
-    "nonzero-exit",
-    "child-signal",
-    "child-hang",
-    "bad-json",
-    "planted-secret",
-    "duplicate-id",
+    "success",
+    "expected-refusal",
+    "nonzero",
+    "signal",
+    "timeout",
+    "descendant-cleanup",
+    "pipe-budget",
+    "malformed",
+    "truncated",
+    "duplicate-record",
+    "missing-record",
+    "foreign-case",
     "unreached-fault",
-    "retry-pass-rejected"
+    "failed-then-passed",
+    "hidden-pipeline-failure",
+    "unexpected-effects",
+    "false-assertion",
+    "wrong-outcome",
+    "private-diagnostics"
 ]
 assertion_ids = ["behavior", "absence_of_effects"]
 platforms = ["linux"]
 features = []
-status = "planned"
+status = "executed"
 
 [[boundaries]]
 id = "p0_contract_reconciliation"
