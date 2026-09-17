@@ -6,23 +6,20 @@
 
 use skillranker::config::{ConfigSources, ResolvedConfig};
 use skillranker::jev::{
-    CanonicalOrigin, CredentialRoutingError, EndpointConfig, EndpointError,
-    OriginScopedCredential, ProxyPolicy, RedirectError, RedirectPolicy, Scheme,
-    AMBIENT_PROXY_VARS, DEFAULT_TYPESAFE_ENDPOINT, SKILLRANKER_USER_AGENT, SYSTEMONE_PATH,
+    AMBIENT_PROXY_VARS, CanonicalOrigin, CredentialRoutingError, DEFAULT_TYPESAFE_ENDPOINT,
+    EndpointConfig, EndpointError, OriginScopedCredential, ProxyPolicy, RedirectError,
+    RedirectPolicy, SKILLRANKER_USER_AGENT, SYSTEMONE_PATH, Scheme,
 };
 use skillranker::privacy::ApiCredential;
 use std::ffi::OsString;
 
-/// Synthetic canary secret token used to verify that no diagnostics, error messages,
-/// or formatting strings ever leak credentials.
-const CANARY_SECRET: &str = "canary-sk-secret-token-xyz9876543210";
+/// Synthetic canary token used to verify that no diagnostics, error messages,
+/// or formatting strings ever leak credentials. Matches pattern from config_contract.
+const CANARY: &str = "canary-credential-0123456789";
 
 fn canary_credential() -> ApiCredential {
     let sources = ConfigSources {
-        environment: vec![(
-            OsString::from("TYPESAFE_API_KEY"),
-            OsString::from(CANARY_SECRET),
-        )],
+        environment: vec![(OsString::from("TYPESAFE_API_KEY"), OsString::from(CANARY))],
         ..Default::default()
     };
     let config = ResolvedConfig::resolve(sources, 1).expect("valid config with canary key");
@@ -34,8 +31,8 @@ fn canary_credential() -> ApiCredential {
 
 fn assert_canary_not_leaked(text: &str) {
     assert!(
-        !text.contains(CANARY_SECRET),
-        "security violation: secret token leaked in diagnostic: {text}"
+        !text.contains(CANARY),
+        "security violation: token leaked in diagnostic: {text}"
     );
 }
 
@@ -71,7 +68,7 @@ fn endpoint_canonicalization() {
 
     for variant in &variants {
         let parsed = CanonicalOrigin::parse(variant)
-            .unwrap_or_else(|e| panic!("failed to parse variant '{variant}': {e}"));
+            .expect("variant should normalize to valid canonical origin");
         assert_eq!(
             parsed, prod,
             "variant '{variant}' did not normalize to production canonical origin"
@@ -186,21 +183,21 @@ fn target_url_and_path_joining() {
 #[test]
 fn userinfo_query_and_fragment_rejection_without_token_leak() {
     // Userinfo with canary password
-    let userinfo_input = format!("https://user:{}@api.typesafe.ai/", CANARY_SECRET);
+    let userinfo_input = format!("https://user:{}@api.typesafe.ai/", CANARY);
     let err = CanonicalOrigin::parse(&userinfo_input).unwrap_err();
     assert_eq!(err, EndpointError::UserinfoForbidden);
     assert_canary_not_leaked(&format!("{err}"));
     assert_canary_not_leaked(&format!("{err:?}"));
 
     // Query string with canary token
-    let query_input = format!("https://api.typesafe.ai/?auth={}", CANARY_SECRET);
+    let query_input = format!("https://api.typesafe.ai/?auth={}", CANARY);
     let err = CanonicalOrigin::parse(&query_input).unwrap_err();
     assert_eq!(err, EndpointError::QueryForbidden);
     assert_canary_not_leaked(&format!("{err}"));
     assert_canary_not_leaked(&format!("{err:?}"));
 
     // Fragment with canary token
-    let frag_input = format!("https://api.typesafe.ai/#{}", CANARY_SECRET);
+    let frag_input = format!("https://api.typesafe.ai/#{}", CANARY);
     let err = CanonicalOrigin::parse(&frag_input).unwrap_err();
     assert_eq!(err, EndpointError::FragmentForbidden);
     assert_canary_not_leaked(&format!("{err}"));
@@ -281,7 +278,7 @@ fn origin_scoped_credential_routing_and_isolation() {
     let auth_header = bound
         .authorization_header_for(&prod_origin)
         .expect("authorization header emission for exact origin must succeed");
-    assert_eq!(auth_header, format!("Bearer {CANARY_SECRET}"));
+    assert_eq!(auth_header, format!("Bearer {CANARY}"));
 
     // 4. Request to another origin is strictly refused (OriginMismatch)
     let mismatch_err = bound
@@ -289,10 +286,7 @@ fn origin_scoped_credential_routing_and_isolation() {
         .err()
         .expect("mismatched origin must fail");
     assert!(
-        matches!(
-            mismatch_err,
-            CredentialRoutingError::OriginMismatch { .. }
-        ),
+        matches!(mismatch_err, CredentialRoutingError::OriginMismatch { .. }),
         "expected OriginMismatch, got: {mismatch_err:?}"
     );
     assert_canary_not_leaked(&format!("{mismatch_err}"));
@@ -325,7 +319,7 @@ fn redirect_policy_prohibits_all_3xx_and_sanitizes_destinations() {
     // Attacker redirect location with credentials and secret parameters
     let attacker_loc = format!(
         "https://user:{}@attacker.evil.com/steal?token={}",
-        CANARY_SECRET, CANARY_SECRET
+        CANARY, CANARY
     );
     let err = RedirectPolicy::validate_response_status(302, Some(&attacker_loc)).unwrap_err();
     let err_str = format!("{err}");
@@ -372,7 +366,7 @@ fn ambient_proxy_variables_detected_and_sanitized() {
     // Proxy URL with basic auth credentials and query string
     let proxy_val = format!(
         "http://proxyuser:{}@proxy.internal.corp:8080/?token={}",
-        CANARY_SECRET, CANARY_SECRET
+        CANARY, CANARY
     );
 
     let simulated_env = [

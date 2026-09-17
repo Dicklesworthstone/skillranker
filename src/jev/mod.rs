@@ -5,12 +5,11 @@
 //! This module provides pure base-origin canonicalization, origin-scoped credential
 //! routing, redirect prohibition, and request/response validation.
 
-pub mod endpoint;
 pub mod codec;
+pub mod endpoint;
 
 pub use endpoint::{
-    CanonicalOrigin, CredentialRoutingError, EndpointConfig, EndpointError,
-    OriginScopedCredential, ProxyPolicy, RedirectError, RedirectPolicy, Scheme,
-    TargetUrl, AMBIENT_PROXY_VARS, DEFAULT_TYPESAFE_ENDPOINT, SKILLRANKER_USER_AGENT,
-    SYSTEMONE_PATH,
+    AMBIENT_PROXY_VARS, CanonicalOrigin, CredentialRoutingError, DEFAULT_TYPESAFE_ENDPOINT,
+    EndpointConfig, EndpointError, OriginScopedCredential, ProxyPolicy, RedirectError,
+    RedirectPolicy, SKILLRANKER_USER_AGENT, SYSTEMONE_PATH, Scheme, TargetUrl,
 };

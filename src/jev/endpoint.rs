@@ -125,7 +125,9 @@ impl CanonicalOrigin {
             } else if scheme_raw.eq_ignore_ascii_case("http") {
                 (Scheme::Http, after_scheme)
             } else {
-                return Err(EndpointError::UnsupportedScheme(scheme_raw.to_ascii_lowercase()));
+                return Err(EndpointError::UnsupportedScheme(
+                    scheme_raw.to_ascii_lowercase(),
+                ));
             }
         } else {
             return Err(EndpointError::MissingScheme);
@@ -139,7 +141,11 @@ impl CanonicalOrigin {
 
         // Validate path: must be empty or "/"
         if !path.is_empty() && path != "/" {
-            if path == "/v1/systemone" || path == "/v1/systemone/" || path == "/v1" || path == "/v1/" {
+            if path == "/v1/systemone"
+                || path == "/v1/systemone/"
+                || path == "/v1"
+                || path == "/v1/"
+            {
                 return Err(EndpointError::DuplicatePathJoin {
                     path: path.to_owned(),
                 });
@@ -193,7 +199,9 @@ impl CanonicalOrigin {
     }
 
     /// Parse and canonicalize an endpoint from a configuration override.
-    pub fn from_override(endpoint: &crate::config::EndpointOverride) -> Result<Self, EndpointError> {
+    pub fn from_override(
+        endpoint: &crate::config::EndpointOverride,
+    ) -> Result<Self, EndpointError> {
         Self::parse(endpoint.as_str())
     }
 
@@ -302,7 +310,9 @@ impl EndpointConfig {
     }
 
     /// Construct endpoint configuration from an endpoint override.
-    pub fn from_override(endpoint: &crate::config::EndpointOverride) -> Result<Self, EndpointError> {
+    pub fn from_override(
+        endpoint: &crate::config::EndpointOverride,
+    ) -> Result<Self, EndpointError> {
         Self::from_base_origin_str(endpoint.as_str())
     }
 
@@ -335,7 +345,10 @@ impl OriginScopedCredential {
     ///
     /// # Errors
     /// Returns `CredentialRoutingError::InsecureHttpForbidden` if the origin is unencrypted HTTP.
-    pub fn bind(credential: ApiCredential, origin: &CanonicalOrigin) -> Result<Self, CredentialRoutingError> {
+    pub fn bind(
+        credential: ApiCredential,
+        origin: &CanonicalOrigin,
+    ) -> Result<Self, CredentialRoutingError> {
         if !origin.is_secure() {
             return Err(CredentialRoutingError::InsecureHttpForbidden {
                 origin: origin.to_string(),
@@ -355,14 +368,20 @@ impl OriginScopedCredential {
     ///
     /// # Errors
     /// Returns `CredentialRoutingError::OriginMismatch` if `target_origin` does not match the bound origin.
-    pub fn authorization_header_for(&self, target_origin: &CanonicalOrigin) -> Result<String, CredentialRoutingError> {
+    pub fn authorization_header_for(
+        &self,
+        target_origin: &CanonicalOrigin,
+    ) -> Result<String, CredentialRoutingError> {
         if target_origin != &self.origin {
             return Err(CredentialRoutingError::OriginMismatch {
                 expected: self.origin.to_string(),
                 actual: target_origin.to_string(),
             });
         }
-        Ok(format!("Bearer {}", self.credential.expose_for_authorization_header()))
+        Ok(format!(
+            "Bearer {}",
+            self.credential.expose_for_authorization_header()
+        ))
     }
 }
 
@@ -426,7 +445,10 @@ impl RedirectPolicy {
     ///
     /// Rejects any 3xx redirect status code to prevent routing requests or credentials
     /// to unintended destinations or attacker servers.
-    pub fn validate_response_status(status_code: u16, location_header: Option<&str>) -> Result<(), RedirectError> {
+    pub fn validate_response_status(
+        status_code: u16,
+        location_header: Option<&str>,
+    ) -> Result<(), RedirectError> {
         if (300..=399).contains(&status_code) {
             let sanitized_location = location_header.map(sanitize_url_for_diagnostics);
             Err(RedirectError::RedirectForbidden {
@@ -637,7 +659,9 @@ fn parse_authority(authority: &str) -> Result<(&str, Option<u16>), EndpointError
         } else if after_bracket.is_empty() {
             None
         } else {
-            return Err(EndpointError::InvalidHost(format!("unexpected trailing data after IPv6: '{after_bracket}'")));
+            return Err(EndpointError::InvalidHost(format!(
+                "unexpected trailing data after IPv6: '{after_bracket}'"
+            )));
         };
         Ok((ipv6_str, port))
     } else if Ipv6Addr::from_str(authority).is_ok() {
@@ -687,16 +711,19 @@ fn canonicalize_host(raw_host: &str) -> Result<(String, bool), EndpointError> {
     let is_loopback = raw_host.eq_ignore_ascii_case("localhost");
 
     // Strip trailing dot if present (DNS root zone notation, e.g. api.typesafe.ai. -> api.typesafe.ai)
-    let host_to_split = if raw_host.ends_with('.') && raw_host.len() > 1 && !raw_host.ends_with("..") {
-        &raw_host[..raw_host.len() - 1]
-    } else {
-        raw_host
-    };
+    let host_to_split =
+        if raw_host.ends_with('.') && raw_host.len() > 1 && !raw_host.ends_with("..") {
+            &raw_host[..raw_host.len() - 1]
+        } else {
+            raw_host
+        };
 
     let mut canonical_labels = Vec::new();
     for label in host_to_split.split('.') {
         if label.is_empty() {
-            return Err(EndpointError::InvalidHost("empty label in hostname".to_owned()));
+            return Err(EndpointError::InvalidHost(
+                "empty label in hostname".to_owned(),
+            ));
         }
 
         // Check if label contains non-ASCII characters
@@ -706,8 +733,8 @@ fn canonicalize_host(raw_host: &str) -> Result<(String, bool), EndpointError> {
             canonical_labels.push(lower);
         } else {
             // IDN Punycode encoding
-            let puny = encode_punycode_label(label)
-                .map_err(EndpointError::PunycodeEncodingError)?;
+            let puny =
+                encode_punycode_label(label).map_err(EndpointError::PunycodeEncodingError)?;
             let idn_label = format!("xn--{puny}");
             validate_ascii_label(&idn_label)?;
             canonical_labels.push(idn_label);
@@ -720,14 +747,20 @@ fn canonicalize_host(raw_host: &str) -> Result<(String, bool), EndpointError> {
 
 fn validate_ascii_label(label: &str) -> Result<(), EndpointError> {
     if label.len() > 63 {
-        return Err(EndpointError::InvalidHost(format!("label '{label}' exceeds 63 characters")));
+        return Err(EndpointError::InvalidHost(format!(
+            "label '{label}' exceeds 63 characters"
+        )));
     }
     if label.starts_with('-') || label.ends_with('-') {
-        return Err(EndpointError::InvalidHost(format!("label '{label}' cannot start or end with hyphen")));
+        return Err(EndpointError::InvalidHost(format!(
+            "label '{label}' cannot start or end with hyphen"
+        )));
     }
     for c in label.chars() {
         if !c.is_ascii_alphanumeric() && c != '-' {
-            return Err(EndpointError::InvalidHost(format!("invalid character '{c}' in hostname label")));
+            return Err(EndpointError::InvalidHost(format!(
+                "invalid character '{c}' in hostname label"
+            )));
         }
     }
     Ok(())
@@ -740,7 +773,10 @@ fn is_loopback_host(host: &str) -> bool {
     if let Ok(ipv4) = Ipv4Addr::from_str(host) {
         return ipv4.is_loopback();
     }
-    let inner = host.strip_prefix('[').and_then(|s| s.strip_suffix(']')).unwrap_or(host);
+    let inner = host
+        .strip_prefix('[')
+        .and_then(|s| s.strip_suffix(']'))
+        .unwrap_or(host);
     if let Ok(ipv6) = Ipv6Addr::from_str(inner) {
         return ipv6.is_loopback();
     }
