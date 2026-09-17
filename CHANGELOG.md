@@ -22,8 +22,10 @@
   signal/process support on Linux/macOS; other platforms refuse before spawn.
 - Pure TypeSafe Jev Choice/Noul codecs with bounded JSON, duplicate-key
   rejection, exact question/option matching, validated usage and distributions,
-  and separate raw versus rounding-normalized probabilities. Synthetic codec
-  checks do not establish recorded-live response compatibility or transport readiness.
+  and separate raw versus rounding-normalized probabilities. One consented
+  synthetic-content live capture (model jev-1.13.0 at capture time) is recorded
+  with provenance; it is a time-bounded wire observation, not a model pin, and
+  establishes no transport readiness or ranking gate.
 - Standalone bounded secret redaction under `privacy::redaction`, with
   whole-field-before-excerpt scanning, merged-match counts and final JSON
   payload inspection. Pattern/test provenance is recorded in

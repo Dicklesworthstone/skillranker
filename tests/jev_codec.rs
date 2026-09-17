@@ -1,4 +1,5 @@
-//! Deterministic synthetic protocol fixtures; none are recorded live responses.
+//! Deterministic synthetic protocol fixtures plus one recorded live provider
+//! capture (see tests/fixtures/jev-recorded-provenance.v1.json).
 
 use serde_json::{Value, json};
 use skillranker::jev::codec::{
@@ -589,4 +590,81 @@ fn depth_limit_applies_to_local_state_and_unknown_response_metadata() {
     assert_eq!(choice(&decode(&request, &value).unwrap()).choice(), "a");
     value["metadata"] = nested(64);
     error(decode(&request, &value), CodecError::InvalidJson);
+}
+
+#[test]
+fn recorded_live_capture_decodes_with_distinct_model_identity() {
+    let request_bytes = std::fs::read("tests/fixtures/jev-recorded-request.v1.json")
+        .expect("recorded request fixture");
+    let response_bytes = std::fs::read("tests/fixtures/jev-recorded-response.v1.json")
+        .expect("recorded response fixture");
+    let provenance = recorded_provenance();
+    assert_eq!(blake3_hex(&request_bytes), provenance["request_blake3"]);
+    assert_eq!(blake3_hex(&response_bytes), provenance["response_blake3"]);
+    let request = Request::from_json(&request_bytes).unwrap();
+    let response = request.decode_response(&response_bytes).unwrap();
+    assert_eq!(response.requested_model, "jev-latest");
+    assert_eq!(response.returned_model, "jev-1.13.0");
+    assert_ne!(response.requested_model, response.returned_model);
+    let (shape, round) = match (response.answers.get("shape"), response.answers.get("round")) {
+        (Some(Answer::Choice(shape)), Some(Answer::Noul(round))) => (shape, *round),
+        _ => panic!("recorded answers must keep their requested types"),
+    };
+    assert_eq!(shape.choice(), "circle");
+    assert!((shape.confidence() - 1.0).abs() < f64::EPSILON);
+    assert_eq!(shape.normalized_probability("circle").unwrap(), 1.0);
+    assert_eq!(shape.normalized_probability("square"), Some(0.0));
+    assert_eq!(shape.normalized_probability("__none__"), Some(0.0));
+    assert_eq!(round, 0.99);
+    assert_eq!(
+        response.usage,
+        Usage {
+            input_tokens: 372,
+            output_tokens: 57,
+        }
+    );
+}
+
+fn blake3_hex(bytes: &[u8]) -> String {
+    blake3::hash(bytes).to_string()
+}
+
+fn recorded_provenance() -> Value {
+    serde_json::from_str(
+        &std::fs::read_to_string("tests/fixtures/jev-recorded-provenance.v1.json")
+            .expect("recorded provenance fixture"),
+    )
+    .unwrap()
+}
+
+/// One recorded observation does not pin an immutable provider revision:
+/// the alias resolved to jev-1.13.0 at capture time and may change.
+#[test]
+fn recorded_provenance_declares_time_bounded_observation() {
+    let provenance = recorded_provenance();
+    assert_eq!(
+        provenance["fixture_kind"],
+        "recorded_live_provider_response"
+    );
+    assert_eq!(provenance["evidence_origin"], "recorded");
+    assert_eq!(provenance["synthetic_content"], true);
+    assert_eq!(provenance["requested_model_alias"], "jev-latest");
+    assert_eq!(provenance["returned_model_identifier"], "jev-1.13.0");
+    assert_eq!(provenance["request_sha256"], request_sha256());
+    assert_eq!(provenance["response_sha256"], response_sha256());
+    assert!(
+        provenance["interpretation_boundaries"]
+            .as_array()
+            .unwrap()
+            .len()
+            >= 3
+    );
+}
+
+fn request_sha256() -> &'static str {
+    "1ecc210e406f9e60ed3bb02197cfc606f1c37161fb834b7ac1c741b9ed176a7e"
+}
+
+fn response_sha256() -> &'static str {
+    "2b1a56a0bccc666b535632a7da35db3e9e2d1096ab0ee6c024e8762e89da2d74"
 }

@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "fixture_kind": "recorded_live_provider_response",
+  "evidence_origin": "recorded",
+  "synthetic_content": true,
+  "consent": {
+    "authorized_by": "repository maintainer in live session on 2026-09-17",
+    "scope": "single synthetic request with fixed inline test state; no session content, project files, or retries; one HTTP attempt; response retained only after sanitization checks"
+  },
+  "capture": {
+    "captured_at": "2026-09-17T17:28:53.003505+00:00",
+    "endpoint_origin": "https://api.typesafe.ai",
+    "path": "/v1/systemone",
+    "elapsed_ms": 399,
+    "http_status": 200,
+    "content_encoding": "identity"
+  },
+  "requested_model_alias": "jev-latest",
+  "returned_model_identifier": "jev-1.13.0",
+  "request_sha256": "1ecc210e406f9e60ed3bb02197cfc606f1c37161fb834b7ac1c741b9ed176a7e",
+  "response_sha256": "2b1a56a0bccc666b535632a7da35db3e9e2d1096ab0ee6c024e8762e89da2d74",
+  "request_blake3": "50ec363bdc3379e94fcde51d9762d65805d81b04b824feb3f06d2da13ecaa412",
+  "response_blake3": "51497738505083727f1c4d7a6f6f78b435e3d5e38197a2bae00f5551185ea67a",
+  "request_bytes": 426,
+  "response_bytes": 238,
+  "usage": {
+    "input_tokens": 372,
+    "output_tokens": 57
+  },
+  "sanitization": {
+    "credential_echo_scan": "rejected if key bytes appeared in body",
+    "field_allowlist": ["model", "answers", "usage"],
+    "answer_field_allowlists": {
+      "shape": ["type", "choice", "probabilities", "confidence"],
+      "round": ["type", "noul"]
+    },
+    "foreign_option_check": "probabilities keys must equal request criteria keys",
+    "model_length_cap": 128
+  },
+  "interpretation_boundaries": [
+    "This is one time-bounded observation of the documented wire protocol, not a reproducible model pin: the provider alias jev-latest resolved to jev-1.13.0 at capture time and may change.",
+    "It does not certify SkillRanker's Asupersync transport, network readiness, TLS configuration, or any ranking product gate.",
+    "The content is synthetic; no session or user data was transmitted."
+  ]
+}
