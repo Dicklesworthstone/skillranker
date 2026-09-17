@@ -7,6 +7,7 @@
 //! the boundaries that perform those effects.
 
 use crate::identity::forbidden_identity_character;
+use crate::output::ErrorKind;
 use std::fmt;
 use std::path::{Component, Path, PathBuf};
 
@@ -38,6 +39,10 @@ pub enum FlagConflict {
 }
 
 impl FlagConflict {
+    pub const fn kind(self) -> ErrorKind {
+        ErrorKind::InvalidUsage
+    }
+
     pub const fn flags(self) -> (&'static str, &'static str) {
         match self {
             Self::OfflineWithAllowNetwork => ("--offline", "--allow-network"),
@@ -240,6 +245,19 @@ pub enum ProviderAdmissionRefusal {
     DryRun,
     NetworkNotAuthorized,
     MissingCredential,
+}
+
+impl ProviderAdmissionRefusal {
+    /// An offline refusal occurs only when no complete valid cached result
+    /// exists, so it is a cache miss rather than an authorization failure.
+    /// Dry run never plans a provider call; reaching this guard is a denial.
+    pub const fn kind(self) -> ErrorKind {
+        match self {
+            Self::Offline => ErrorKind::CacheMiss,
+            Self::DryRun | Self::NetworkNotAuthorized => ErrorKind::NetworkDenied,
+            Self::MissingCredential => ErrorKind::Authentication,
+        }
+    }
 }
 
 impl fmt::Display for ProviderAdmissionRefusal {

@@ -1,6 +1,7 @@
 use skillranker::config::*;
 use skillranker::context::NormalizedContext;
 use skillranker::identity::ContentHash;
+use skillranker::output::{CliExit, ErrorKind};
 use skillranker::privacy::*;
 use std::collections::BTreeSet;
 use std::ffi::OsString;
@@ -1267,4 +1268,65 @@ fn raw_inputs_and_overrides_have_private_debug_output() {
     ] {
         assert_private(&refusal.to_string(), &[CANARY]);
     }
+}
+
+#[test]
+fn failures_map_onto_output_error_kinds_and_exit_codes() {
+    let err = resolve(ConfigSources {
+        project: vec![entry("network.enabled", RawValue::Bool(true))],
+        ..ConfigSources::default()
+    })
+    .unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::InvalidConfiguration);
+    assert_eq!(err.kind().exit_code(), CliExit::Usage);
+
+    let conflicts = EffectPolicy::from_flags(EffectFlags {
+        offline: true,
+        allow_network: true,
+        ..EffectFlags::default()
+    })
+    .unwrap_err();
+    assert_eq!(conflicts[0].kind(), ErrorKind::InvalidUsage);
+    assert_eq!(conflicts[0].kind().exit_code(), CliExit::Usage);
+
+    for (refusal, kind, exit, wire) in [
+        (
+            ProviderAdmissionRefusal::Offline,
+            ErrorKind::CacheMiss,
+            CliExit::CacheMiss,
+            "cache-miss",
+        ),
+        (
+            ProviderAdmissionRefusal::DryRun,
+            ErrorKind::NetworkDenied,
+            CliExit::Privacy,
+            "network-denied",
+        ),
+        (
+            ProviderAdmissionRefusal::NetworkNotAuthorized,
+            ErrorKind::NetworkDenied,
+            CliExit::Privacy,
+            "network-denied",
+        ),
+        (
+            ProviderAdmissionRefusal::MissingCredential,
+            ErrorKind::Authentication,
+            CliExit::Provider,
+            "authentication",
+        ),
+    ] {
+        assert_eq!(refusal.kind(), kind, "{refusal:?}");
+        assert_eq!(kind.exit_code(), exit, "{refusal:?}");
+        assert_eq!(kind.as_str(), wire, "{refusal:?}");
+    }
+    assert_eq!(
+        [
+            CliExit::Usage,
+            CliExit::Provider,
+            CliExit::Privacy,
+            CliExit::CacheMiss
+        ]
+        .map(|e| e as u8),
+        [2, 4, 8, 11]
+    );
 }

@@ -80,11 +80,12 @@ credential, so a blocked or unauthorized run never reports a key problem. The
 credential is a separate non-serializable value with redacted `Debug`; receipts
 record only its presence.
 
-Intended error mapping for the 1.3 output schema: configuration issues map to
-`invalid-configuration`, flag conflicts to `invalid-usage` (both exit 2); refused
-admission for missing consent, offline or dry run to `network-denied` (exit 8)
-unless an offline cache miss applies (`cache-miss`, exit 11); a missing key to
-`authentication` (exit 4). The code mapping is added once 1.3 lands.
+Each failure maps onto the output schema's `ErrorKind` through `kind()`:
+configuration issues are `invalid-configuration` and flag conflicts are
+`invalid-usage` (both exit 2). A refused admission maps as follows: missing consent
+or dry run gives `network-denied` (exit 8), and offline gives `cache-miss`
+(exit 11). An offline refusal only arises when no complete valid cached result
+exists. A missing key gives `authentication` (exit 4).
 
 ## Receipts and revalidation
 

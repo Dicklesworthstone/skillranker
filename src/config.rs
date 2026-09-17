@@ -12,6 +12,7 @@ use crate::limits::{
     DEFAULT_INVOCATION_DEADLINE_MS, DEFAULT_OUTPUT_CLEANUP_RESERVE_MS, RECENT_NORMALIZED_MESSAGES,
     RENDERED_CONTEXT_SCALARS,
 };
+use crate::output::ErrorKind;
 use crate::privacy::{
     ApiCredential, ContextProfile, CredentialError, CredentialStatus, EffectPolicy, NetworkConsent,
     RootError, SkillRoot, TrustedAbsoluteRoot, WorkspaceRelativeRoot,
@@ -479,6 +480,11 @@ pub struct ConfigErrors {
 }
 
 impl ConfigErrors {
+    /// Every configuration issue maps to `invalid-configuration` (exit 2).
+    pub const fn kind(&self) -> ErrorKind {
+        ErrorKind::InvalidConfiguration
+    }
+
     pub fn issues(&self) -> &[ConfigIssue] {
         &self.issues
     }
