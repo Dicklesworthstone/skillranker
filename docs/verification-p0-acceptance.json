@@ -469,7 +469,8 @@
     {
       "owner": "SilentFinch",
       "scope": "Rust adapter strictness, privacy and support provenance",
-      "requires": "reproduce and repair confirmed public-path regressions; fresh required-remote Rust verification"
+      "requires": "reproduce and repair confirmed public-path regressions; fresh required-remote Rust verification",
+      "bead": "sr-adapter-audit-3djt"
     }
   ]
 }

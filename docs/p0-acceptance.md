@@ -55,7 +55,11 @@ The bootstrap Rust suite itself launches the compiled `sr` process. Actual
 runner infrastructure rows retain their concrete smoke/certification cases.
 
 Default matrix validation checks declarations and source references. It makes
-no unit execution or product acceptance claim. `--require-mechanics` additionally
+no unit execution or product acceptance claim. Source resolution recognizes a
+conservative declaration subset; it does not execute Python or replace Cargo
+discovery, compilation, and test results. The acceptance review separately
+matches every required Rust reference against an executed passing test and
+rejects skipped/filtered unit evidence. `--require-mechanics` additionally
 requires complete smoke and outer certification reports matching the independently
 computed source, binary, lockfile, toolchain, platform, and feature identity.
 The outer certificate has 54 checks, not merely the 19 child scenarios. Its
