@@ -14,6 +14,8 @@ The initial release targets local Linux and macOS, Claude Code's `UserPromptSubm
 
 **No `ms` dependency:** reuse selected code and tests from `meta_skill` inside this project. Do not invoke its CLI, link its application crate, read its private database, inherit its configuration, or write outcomes into it. Discovery, parsing, redaction, retrieval, statistics, and feedback belong to `sr`.
 
+**Quill is the lexical search engine throughout SkillRanker.** Use `frankensearch-quill` from the user's FrankenSearch project. Do not use Tantivy for runtime search, fallback, testing, benchmarking, reference implementations, or copied code. Quill's optional upstream oracle is not enabled by this project.
+
 Keep README.md and AGENTS.md aligned with this plan as part of P0 and whenever a public contract changes. Their main architecture has been reconciled with the standalone design; examples and detailed schemas must track subsequent corrections too. Preserve their unrelated repository, licensing, coordination, and release rules. Command examples throughout these documents are proposed interfaces, not evidence that a working binary exists.
 
 ### Evidence and limits of the starting recipe
@@ -260,7 +262,6 @@ Inspected source revision: `c9a616bcb29c89e640a95f2bca344c3053fdf7d0`.
 | `src/security/secret_scanner.rs` | Secret patterns, overlap handling, regression fixtures | Remove application coupling and secret previews; add whole-payload and truncation-boundary tests |
 | `src/core/spec_lens.rs` | Frontmatter/body parsing behavior and fence-related regressions | Extract read-only metadata parsing; reject malformed YAML without printing its raw contents |
 | `src/search/embeddings.rs` | Deterministic tokenization and hash-feature ideas | Optional lexical clustering only; copy no API embedding backend or configuration |
-| `src/search/tantivy.rs` | BM25 behavior/reference tests | Existing implementation depends on Tantivy; it is not a ready-made lightweight standalone scorer |
 | `src/suggestions/bandit/types.rs` | Examples of reward bookkeeping | Do not reuse its signal-arm model as if it were a per-skill usefulness prior |
 
 Keep tests for copied edge cases and add tests for our narrower contracts. Copying code is not proof that it is correct, that it has no dependencies, or that its errors are safe to log. In particular, the inspected parser can print raw YAML on a parse error; that behavior must not enter a privacy-sensitive hook.
@@ -271,11 +272,19 @@ The inspected bandit learns weights for signals such as BM25, embeddings, and pr
 
 A TypeSafe Choice supports at most 255 options. Reserve one option, `__none__`, for abstention, leaving **254 real skills** per Choice. The roster itself can be larger. The sentinel has a separate type and cannot collide with a skill ID. [Choice contract](https://docs.typesafe.ai/primitives/choice)
 
-### Default: bounded local prefilter
+### Default: bounded Quill prefilter
 
-When more than 254 eligible skills remain, use in-memory BM25 over names, aliases, descriptions, and tags. Query with the latest request plus a bounded, weighted summary of the active task and recent errors; a terse “continue” must not discard all useful earlier evidence. Pin tokenizer/version, Unicode normalization, field weights, BM25 parameters, and deterministic tie-breaking.
+When more than 254 eligible skills remain, use Quill's native BM25 retrieval over names, aliases, descriptions, and tags. With 254 or fewer, admit the full eligible roster without a lexical filter. Query with the latest request plus bounded active-task and recent-error context; a terse “continue” must not discard useful earlier evidence. Pin Quill revision, schema/analyzer, query construction, field boosts, BM25 contract, and deterministic tie-breaking. Do not implement a second BM25 engine or copy a search backend from `meta_skill`.
 
-Exact explicit skill references bypass probabilistic retrieval and go through local resolution. For advisory retrieval, select the top 254 and expose roster count, eligible count, selected count, retrieval mode, and truncation. A lexical miss remains possible. Measure shortlist recall separately from rerank quality, including paraphrases and multilingual cases.
+Use the narrow `frankensearch-quill` crate with default features disabled, plus its necessary `frankensearch-core` document types. Do not use the hybrid facade, `frankensearch-lexical`, the Quill gauntlet, or the `tantivy-oracle`/`lexical-tantivy`/`cass-compat` features. Inspect the resolved normal/build/dev feature graph for every SkillRanker feature combination; an upstream optional dependency must never become an active Tantivy dependency here. Verification uses native Quill tests and independent small expected-result fixtures, with no Tantivy comparator.
+
+The inspected shipping API supports `QuillIndex::in_memory(QuillConfig)`, `index_documents(&Cx, &[IndexableDocument]).await`, `commit(&Cx).await`, and `search_paginated(&Cx, query, limit, offset, exact_count)`. Construct a roster snapshot locally, ingest documents in stable skill-ID order, commit it before querying, and request at most 254 hits with offset zero and no exact-count work. Quill orders equal scores by global document ID; pin and test the mapping and the cutoff tie behavior rather than assuming re-sorting an already-truncated result repairs it. Resolve returned document IDs only through that snapshot's skill map. There is no `fsfs` subprocess, embedding model, persistent search service, or foreign index import.
+
+For Quill's default schema, map `skill_id` to document ID, invocation name and aliases to `title`, and bounded description/tags to `content`; metadata is stored-only, so putting tags solely in metadata would make them unsearchable. Pin the supported field boost behavior rather than assuming arbitrary custom fields. Compile a bounded plain-term query using Quill's analyzer and tested literal escaping (initial cap: 128 distinct terms and 4,096 Unicode scalar values, within Quill's inspected 10,000-character parser ceiling); raw conversational text must not become Boolean, wildcard, range, or field-selection syntax. Record parser diagnostics/truncation and fail unavailable if the adapter cannot preserve the intended query. Custom-schema and preparsed-query helpers in the inspected index are feature-gated for benchmarks; do not enable those features to implement a production adapter.
+
+Use explicit `QuillConfig` budgets, deterministic single-shard ingest, query fuel, and the invocation's `Cx`; measure index construction and search separately. An in-memory index satisfies `--no-persist`, and its build/commit/query consume the same overall deadline. Quill's logical allocation budgets are not hard RSS caps. Benchmark the bounded roster sizes before claiming the cache-hit latency target. A long-lived TUI may retain an index only while its roster/content/analyzer fingerprint still matches; a one-shot hook cannot assume that index survives process exit.
+
+Exact explicit skill references bypass probabilistic retrieval and go through local resolution. For advisory overflow, admit up to 254 actual Quill matches and expose roster count, eligible count, admitted count, `retrieval: quill-bm25`, engine/schema version, and truncation. Fewer matches reduce the effective M/K. Zero matches mean `unavailable / retrieval-empty` (exit 5), not proof that no skill fits. Query fuel exhaustion, cancellation, and index failure are operational failures with quiet hook fallback; never silently switch engines or turn a partial result into a complete candidate set. A lexical miss remains possible. Measure candidate coverage separately from rerank quality, including paraphrases and multilingual cases.
 
 Do not special-case overflow based on whether `ms` is installed. A single local implementation supplies the same behavior everywhere.
 
@@ -324,7 +333,7 @@ Start with `gate = 0.30` as an experimental setting, not a learned optimum. Belo
 
 If the gate passes, retain the best `M` real candidates from the wide distribution, ignoring the sentinel for shortlist size. Keep the wide sentinel probability as evidence. Do not early-exit solely because the short-description sentinel wins: the detailed pass can rescue a lookalike or poorly described skill.
 
-Default configured `M = 8`, `K = 5`; validate `1 ≤ K ≤ M ≤ 32` **before** adapting to roster size. Then use `M_effective = min(M, eligible_count)` and `K_effective = min(K, M_effective)`. A singleton roster is not a configuration error, and its Choice contains that skill plus the sentinel. Fewer than five eligible skills is normal.
+Default configured `M = 8`, `K = 5`; validate `1 ≤ K ≤ M ≤ 32` **before** adapting to candidate counts. Then use `M_effective = min(M, admitted_wide_count)` and `K_effective = min(K, M_effective)`. A singleton roster or single Quill match is not a configuration error, and its Choice contains that skill plus the sentinel. Fewer than five candidates is normal.
 
 ### Call 2: detailed rerank
 
@@ -548,7 +557,7 @@ An optional `--online` description audit can send bounded, redacted pairs to Jev
 
 `sr gaps` reports **suspected** coverage gaps only. High need plus low shortlist fits can mean missing skills, bad retrieval, ambiguous context, stale visibility, truncation, or model error. Show retrieval/context quality and evidence before proposing a new skill.
 
-Gap text requires optional, explicitly enabled retention of redacted request excerpts with a short expiry; metadata-only history cannot reconstruct requests for clustering. Hash-feature cosine is lexical similarity with collisions, not semantic embedding. Use local token/TF-IDF clustering, show nearest examples, and allow unclustered cases. No new embedding API or model is required.
+Gap text requires optional, explicitly enabled retention of redacted request excerpts with a short expiry; metadata-only history cannot reconstruct requests for clustering. Use Quill for lexical lookup of retained examples and candidate neighbors. Optional local token/TF-IDF clustering is an analysis transform over those examples, not another search engine; hash-feature cosine is lexical similarity with collisions, not semantic embedding. Show nearest examples and allow unclustered cases. No new embedding API or model is required.
 
 Export a local review report. Do not invoke `ms build`, mutate descriptions, or create skills automatically.
 
@@ -807,7 +816,7 @@ Use platform configuration directories; Linux fallback `~/.config/sr/config.toml
 | 10 | provider-contract | Invalid structured response |
 | 11 | cache-miss | No complete valid result is available under offline/cache-only constraints |
 
-JSON failures use `schema_version`, `decision: unavailable`, and `error: {code, kind, message, hint, retryable}`; kinds are stable kebab-case identifiers. Incomplete context and unrenderable output limits map to code 7; roster/explicit-resolution failures to 5; superseded input to 3. Define `retryable` as whether a fresh invocation with the same intended inputs may succeed, not permission to ignore network/deadline policy. Ranking can succeed with a storage warning; explicit feedback/admin commands cannot claim success if their required write failed.
+JSON failures use `schema_version`, `decision: unavailable`, and `error: {code, kind, message, hint, retryable}`; kinds are stable kebab-case identifiers. Incomplete context and unrenderable output limits map to code 7; roster/explicit-resolution and Quill retrieval failures to 5; superseded input to 3; overall deadline exhaustion to 6. Define `retryable` as whether a fresh invocation with the same intended inputs may succeed, not permission to ignore network/deadline policy. Ranking can succeed with a storage warning; explicit feedback/admin commands cannot claim success if their required write failed.
 
 `sr hook` translates these failures into its non-blocking protocol. Broken pipe and process signals follow normal platform conventions and are not counted as valid emissions.
 
@@ -838,7 +847,7 @@ skillranker/
       discover.rs            harness visibility and traversal
       frontmatter.rs         bounded metadata parser
       identity.rs            stable IDs, collisions, content versions
-      retrieval.rs           in-memory BM25
+      retrieval.rs           bounded in-memory Quill index and candidate adapter
     jev/
       types.rs               typed request/answer schema
       transport.rs           asupersync HTTPS and bounded retries
@@ -868,9 +877,9 @@ skillranker/
     eval/                    labeled cases, splits, scoring contracts
 ```
 
-Core dependencies include asupersync (with verified TLS roots/runtime features), clap, serde/serde_json, blake3, rusqlite, regex, a maintained bounded YAML parser, platform-directory handling, and appropriate error/configuration support. Pin actual versions in implementation after compatibility verification. FrankenTUI is optional; do not introduce another async runtime, Tantivy, or an embedding service for the initial release.
+Core dependencies include asupersync (with verified TLS roots/runtime features), `frankensearch-quill` and required core types, clap, serde/serde_json, blake3, rusqlite, regex, a maintained bounded YAML parser, platform-directory handling, and appropriate error/configuration support. Pin actual versions in implementation after compatibility verification, including a compatible shared Asupersync revision. FrankenTUI is optional. No Tantivy dependency or use is permitted in any SkillRanker runtime, test, benchmark, or tooling feature; do not introduce another async runtime or an embedding service.
 
-A line-count estimate such as “the client is 200 lines” or “BM25 is 80 lines” is not an implementation contract. Transport validation, privacy, Unicode, cancellation, and tests determine the necessary code.
+A line-count estimate such as “the client is 200 lines” is not an implementation contract. Transport validation, privacy, Unicode, cancellation, the Quill integration, and tests determine the necessary code.
 
 ### Evaluation numerics and data preparation
 
@@ -904,6 +913,7 @@ There is no implementation yet in this workspace. This plan defines work and rel
 | Privacy/bounds | Unicode boundaries, long prompt, secret split near excerpt boundary, secrets in skill descriptions/tool args; all outgoing paths redacted |
 | Roster | Missing roots, plugin sources, shadows, name/display mismatch, manual-only skills, supplied manifests, symlink replacement, malformed YAML, change during API request; only eligible local targets emitted |
 | Selection sizes | 0, 1, 5, 8, 254, 255, and >1,000 skills; sentinel counted in every Choice, deterministic shortlist |
+| Quill retrieval | In-memory commit visibility, literal query escaping, title/content mapping, ties, zero/few hits, stale snapshots, fuel exhaustion/cancellation, repeated build cost; no active Tantivy dependency in any supported feature graph |
 | Ranking | Zero/one probabilities, NaN, missing IDs, duplicate keys, wrong sums, per-candidate sentinel tests before blending, reference versus workflow reuse, singleton default K/M; no accidental recommendation |
 | Priority rules | Explicit skill request with low gate; exclusion; unavailable exact name; compaction invalidation; no probabilistic override |
 | Cache | Tool result, content, config, endpoint, model, privacy, roster, loaded state, branch, partial stage hits, TTL clock rollback, expired lease owner; exact invalidation and no stale hook fallback |
@@ -925,7 +935,7 @@ Lab replay validates deterministic scheduling and policy behavior. It does not t
 
 Build a versioned dataset spanning positive tasks, no-skill tasks, near-miss skills, multiple valid skills, explicit requests, explanation/planning skills, long conversations, terse continuations, loaded/compacted sessions, roster changes, and overflow retrieval misses.
 
-Have an adjudicator identify acceptable skills from the full visible roster independently of the model shortlist. Separate retrieval recall from rerank precision and abstention quality. Include a simple lexical baseline, the cookbook-style selection baseline, Choice-only, fit-only, and the proposed blend. Compare context-rich input against latest-request-only input before assuming more history helps.
+Have an adjudicator identify acceptable skills from the full visible roster independently of the model shortlist. Separate retrieval recall from rerank precision and abstention quality. Include a Quill-only lexical baseline, the cookbook-style selection baseline, Choice-only, fit-only, and the proposed blend. Compare context-rich input against latest-request-only input before assuming more history helps. Every lexical baseline uses Quill.
 
 For each case, let Y be the independently judged set of acceptable **additional invocations under the current user constraints and harness permissions**. An already-available reference may make Y empty, while a repeatable workflow may remain in Y. Separate explicit-resolution tests from advisory metrics so easy exact-name requests cannot inflate model quality. Exclude unjudged cases from relevance denominators with counts; report operational failures over the full attempted cohort.
 
@@ -1068,7 +1078,7 @@ Freeze these thresholds, the split, and the primary metrics before tuning. Chang
 | --- | --- | --- | --- |
 | P0 | Align companion design documentation; freeze schemas, trust policy, resource limits, adapter/source revision manifest, and initial evaluation cases | None | README/AGENTS design contracts reconciled; examples validate; critical unknowns named; reusable source slices and notices identified |
 | P1 | Transport/runtime spike and typed response validator | P0 | Exact feature build, local TLS/timeout/cancellation proof, live bounded contract check |
-| P2 | Standalone roster, metadata parsing, redaction, identities, BM25 | P0 | Visibility/collision/bounds fixtures; no `ms` runtime or data dependency |
+| P2 | Standalone roster, metadata parsing, redaction, identities, Quill retrieval | P0 | Visibility/collision/bounds and Quill adapter fixtures; no `ms` dependency or active Tantivy feature/dependency |
 | P3 | Claude/normalized context adapters, incremental readers, optional cass bridge | P0 | Exact-session/prompt-timing/privacy tests; cass version differences explicit |
 | P4 | Pure pipeline, sentinel/gates/rerank, cache, JSON/table, dry-run | P1, P2, P3 | Correct finite outputs, exact invalidation, API failure distinct from abstention |
 | P5 | Minimal local event/observation ledger and explicit evaluation runner with sampling manifests | P4 | Idempotent observations, unknown-state handling, validated sampling/denominators, labeled benchmark report |
@@ -1088,7 +1098,7 @@ Do not hold the usable CLI hostage to TUI, corpus mining, a second database engi
 | Provider total context/question limits or model alias changes | Rejected requests, invalid comparisons | P1 contract fixtures/smoke test; version/time-bound evaluation; bounded payloads |
 | Native harness visibility and hook evolution | Suggestions cannot be loaded or arrive too late | Pin tested harness versions; capture real fixtures and delivery tests per adapter |
 | Incomplete or injected context | Wrong recommendations or leaked data | Strict adapters, bounded redaction, authority separation, adversarial evaluation |
-| BM25 misses/paraphrases | Relevant skill never reaches Jev | Measure retrieval recall; tune locally; evaluate explicit chunk experiment |
+| Quill lexical misses/paraphrases | Relevant skill never reaches Jev | Measure candidate coverage; tune Quill analyzer/query mapping; evaluate explicit chunk experiment |
 | Process startup, TLS, and roster rehash latency | Hook stalls or falls back too often | Separate stage benchmarks and cold tests; optimize measured cost before adding a daemon |
 | Blocking leaf operations outlive cancellation | Timeout promise fails | Real stalled-operation tests; remove or isolate unbounded leaves |
 | Observation and suggestion feedback bias | Popular skills become self-reinforcing | Separate adoption from judged usefulness; disable priors initially |
@@ -1112,6 +1122,7 @@ The following were inspected for this revision on 2026-09-17. Local HEAD values 
 - Local `frankenscipy` HEAD `4f687085db83492704017b1d5ed7e26f646e9c41`: stats interval helpers, their endpoint tests, inverse-beta source, and stats dependency surface; inspected files were clean. These were source checks, not executed library tests.
 - Local `franken_numpy` HEAD `7db69a9a764a38e4e050c46c2607a3be3ceea849`: seeded generator, no-replacement selection, rejection-based shuffle, and optional random-crate features; inspected files were clean.
 - Local `frankenpandas` HEAD `7ca8c602ecc4de7bd6f8d95828e52b383d95d7cd`: join-cardinality options, grouping, duplicate handling, and Python-binding packaging; inspected files were clean.
+- Local FrankenSearch checkout `/dp/frankensearch` (resolves to `/data/projects/frankensearch`), HEAD `39047c44c3a92ceb71d25c602913b8b2888e2fe7`: Quill crate manifest, in-memory index/build/commit/search API, default schema, query parser, fuel configuration, and optional-feature boundaries. This is source inspection; the SkillRanker integration has not been compiled or benchmarked.
 
 The main corrections from the earlier plan are: standalone reuse instead of an `ms` bridge; explicit session/visibility authority; a real none option and mathematically defined scores; observation separated from correctness and counterfactual claims; exact cache keys; bounded whole-invocation work; privacy across every payload field; and dependency-bound release evidence.
 
