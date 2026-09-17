@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "suite": "runner-smoke",
+  "tier": "runner-mechanics",
+  "timeout_ms": 10000,
+  "cases": [
+    {"id":"success","mode":"pass","timeout_ms":2000,"output_bytes":8192,"expected_exit":0,"expected_outcome":"ok","assertions":["behavior"],"require_fault":false},
+    {"id":"expected-refusal","mode":"refuse","timeout_ms":2000,"output_bytes":8192,"expected_exit":7,"expected_outcome":"refused","assertions":["behavior"],"require_fault":true},
+    {"id":"isolation","mode":"isolation","timeout_ms":2000,"output_bytes":8192,"expected_exit":0,"expected_outcome":"ok","assertions":["behavior"],"require_fault":false}
+  ]
+}
