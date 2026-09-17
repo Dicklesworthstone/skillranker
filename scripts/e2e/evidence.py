@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import math
 import os
 import re
 import stat
@@ -40,8 +41,15 @@ def unique_object(pairs):
 
 def decode(data):
     require(len(data) <= MAX_DOCUMENT, "document-limit")
+
+    def finite_float(value):
+        number = float(value)
+        require(math.isfinite(number), "nonfinite")
+        return number
+
     try:
         return json.loads(data, object_pairs_hook=unique_object,
+                          parse_float=finite_float,
                           parse_constant=lambda _: require(False, "nonfinite"))
     except (ValueError, UnicodeError, RecursionError) as exc:
         raise InvalidEvidence("invalid-json") from exc

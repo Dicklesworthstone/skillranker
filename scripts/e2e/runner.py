@@ -194,7 +194,6 @@ def invoke(command, descriptors, deadline, output_limit, timeout_ms):
         finally:
             process.stdout.close()
             process.stderr.close()
-    elapsed = max(0, int((time.monotonic() - started) * 1000))
     # Bubblewrap propagates a killed namespace child as the shell-style 128+signal
     # status; direct termination of Bubblewrap itself has a negative return code.
     if (process.returncode < 0 or process.returncode >= 128) and reason is None:
@@ -206,6 +205,12 @@ def invoke(command, descriptors, deadline, output_limit, timeout_ms):
     except ev.InvalidEvidence:
         if reason is None:
             reason = "protocol"
+    finished = time.monotonic()
+    # Cleanup and decoding belong to the case deadline too. A cancellation or
+    # expired deadline in either phase must not produce a successful terminal.
+    if reason is None:
+        reason = "interrupted" if STOP else "timeout" if finished >= deadline else None
+    elapsed = max(0, int((finished - started) * 1000))
     return records, process.returncode, reason, elapsed, counts
 
 

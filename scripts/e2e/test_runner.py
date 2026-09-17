@@ -11,6 +11,7 @@ import time
 import unittest
 import uuid
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import evidence as ev
@@ -307,6 +308,77 @@ class RunnerTests(unittest.TestCase):
             change(spec)
             with self.assertRaises(ev.InvalidEvidence):
                 ev.manifest(spec)
+
+
+class EvidenceBoundaryTests(unittest.TestCase):
+    def test_exponent_overflow_is_rejected_with_finite_twins(self):
+        for data in (b"1e999", b"-1e999", b'{"nested":[1e999]}'):
+            with self.subTest(data=data), self.assertRaises(ev.InvalidEvidence):
+                ev.decode(data)
+        self.assertEqual(ev.decode(b'{"values":[1e308,1e-308,0.0]}'),
+                         {"values": [1e308, 1e-308, 0.0]})
+
+    def test_cleanup_completion_obeys_deadline(self):
+        command = ["/usr/bin/printf", "{}\n"]
+        records, code, reason, _, _ = runner.invoke(command, (), time.monotonic() + 5, 8192, 5000)
+        self.assertEqual((records, code, reason), ([{}], 0, None))
+        cleanup = runner.kill_owned
+        entered_in_time = []
+        deadline = time.monotonic() + 1
+
+        def delayed_cleanup(process):
+            cleanup(process)
+            entered_in_time.append(time.monotonic() < deadline)
+            time.sleep(max(0, deadline - time.monotonic()) + 0.02)
+
+        with patch.object(runner, "kill_owned", side_effect=delayed_cleanup):
+            records, code, reason, elapsed, _ = runner.invoke(command, (), deadline, 8192, 1000)
+        self.assertEqual(entered_in_time, [True], "process must finish before injecting late cleanup")
+        self.assertEqual((records, code, reason), ([{}], 0, "timeout"))
+        self.assertGreaterEqual(elapsed, 1000)
+
+    def test_cancellation_during_cleanup_cannot_return_success(self):
+        cleanup = runner.kill_owned
+        old_stop = runner.STOP
+
+        def cancel_during_cleanup(process):
+            cleanup(process)
+            runner.STOP = True
+
+        try:
+            runner.STOP = False
+            with patch.object(runner, "kill_owned", side_effect=cancel_during_cleanup):
+                records, code, reason, _, _ = runner.invoke(
+                    ["/usr/bin/printf", "{}\n"], (), time.monotonic() + 5, 8192, 5000)
+            self.assertEqual((records, code, reason), ([{}], 0, "interrupted"))
+        finally:
+            runner.STOP = old_stop
+
+    def test_decoding_completion_obeys_deadline(self):
+        decode = ev.decode
+        entered_in_time = []
+        deadline = time.monotonic() + 1
+
+        def delayed_decode(data):
+            result = decode(data)
+            entered_in_time.append(time.monotonic() < deadline)
+            time.sleep(max(0, deadline - time.monotonic()) + 0.02)
+            return result
+
+        with patch.object(ev, "decode", side_effect=delayed_decode):
+            records, code, reason, elapsed, _ = runner.invoke(
+                ["/usr/bin/printf", "{}\n"], (), deadline, 8192, 1000)
+        self.assertEqual(entered_in_time, [True], "child must finish before injecting slow decode")
+        self.assertEqual((records, code, reason), ([{}], 0, "timeout"))
+        self.assertGreaterEqual(elapsed, 1000)
+
+    def test_retry_fixture_really_emits_failure_before_success(self):
+        result = subprocess.run([sys.executable, "-I", "-B", str(runner.FIXTURE),
+                                 "failthenpass", "retry", "run-fixture"],
+                                env=runner.SAFE_ENV, capture_output=True, timeout=5, check=True)
+        records = [ev.decode(line) for line in result.stdout.splitlines()]
+        self.assertEqual([record["passed"] for record in records if record["kind"] == "assertion"], [False, True])
+        self.assertEqual(ev.classify(case("retry", "failthenpass"), records, 0, run_id="run-fixture")[0], "protocol")
 
 
 if __name__ == "__main__":

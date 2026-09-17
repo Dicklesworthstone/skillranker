@@ -312,6 +312,8 @@ def validate_certificate(directory, expected_identity=None):
     ev.keys(summary, {"schema_version", "run_id", "suite", "runner_status", "product_gate", "identity_stable",
                       "counts", "events_sha256"})
     ev.require(type(summary["identity_stable"]) is bool and type(summary["schema_version"]) is int, "certificate-stability")
+    ev.require(not summary["identity_stable"] or all(report["identity_stable"] for _, report in actual_runs.values()),
+               "certificate-inner-stability")
     counts = {"planned": len(CHECKS), "passed": 0, "failed": 0, "blocked": 0}
     for event in events[1:]:
         counts[event["status"]] += 1
@@ -354,6 +356,7 @@ def run_contract(binary, artifacts):
     inner_id = "run-" + uuid.uuid4().hex
     started = time.monotonic()
     inner, inner_summary = runner.run(spec, binary, parent, fixture=FIXTURE, run_id=inner_id)
+    inner_stable = inner_summary["identity_stable"]
     events = read_events(inner)
     references = [evidence_reference("adversarial", inner, inner_id)]
     candidates = []
@@ -372,6 +375,7 @@ def run_contract(binary, artifacts):
         positive_spec = positive_specification()
         positive_id = "run-" + uuid.uuid4().hex
         positive, positive_summary = runner.run(positive_spec, binary, parent, fixture=FIXTURE, run_id=positive_id)
+        inner_stable = inner_stable and positive_summary["identity_stable"]
         references.append(evidence_reference("positive", positive, positive_id))
         check("honest-complete-twin", positive_summary["runner_status"] == "passed"
               and ev.validate(positive, positive_spec, before, expected_run_id=positive_id)["counts"]["passed"] == 3)
@@ -379,6 +383,7 @@ def run_contract(binary, artifacts):
         check("duplicate-selection", rejected(lambda: runner.run(spec, binary, parent, ["success", "success"], fixture=FIXTURE)))
         partial_id = "run-" + uuid.uuid4().hex
         partial_directory, partial = runner.run(positive_spec, binary, parent, ["success"], fixture=FIXTURE, run_id=partial_id)
+        inner_stable = inner_stable and partial["identity_stable"]
         references.append(evidence_reference("partial", partial_directory, partial_id))
         check("partial-selection", partial["runner_status"] == "partial" and partial["counts"]["skipped"] == 2)
         oversized = copy.deepcopy(spec)
@@ -423,7 +428,7 @@ def run_contract(binary, artifacts):
     else:
         outcomes = dict.fromkeys(CHECKS, "unavailable")
     ev.require(set(outcomes) == set(CHECKS), "missing-contract-check")
-    stable = before == runner.identity(binary, FIXTURE) and driver_hash == runner.digest_file(__file__)
+    stable = inner_stable and before == runner.identity(binary, FIXTURE) and driver_hash == runner.digest_file(__file__)
     header = {"schema_version": 1, "engine_schema_version": 2, "kind": "header", "seq": 0, "run_id": run_id,
               "suite": "runner-contract", "tier": "runner-mechanics", "checks": list(CHECKS), "identity": before,
               "driver_sha256": driver_hash, "specification_sha256": hashlib.sha256(canonical(spec)).hexdigest(),

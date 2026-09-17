@@ -138,6 +138,28 @@ class ContractTests(unittest.TestCase):
             with self.assertRaises(ev.InvalidEvidence):
                 contract.validate_certificate(self.mutated(change))
 
+    def test_unstable_expected_failure_cannot_certify_stable_source(self):
+        directory = self.mutated(lambda _events, _summary: None)
+        events = contract.read_events(directory)
+        reference = events[0]["inner_runs"][0]
+        inner = directory / reference["directory"]
+        report = ev.read_json(inner / "summary.json")
+        report["identity_stable"] = False
+        (inner / "summary.json").write_bytes(contract.canonical(report))
+        self.assertEqual(ev.validate(inner, contract.specification())["runner_status"], "failed")
+        reference.update(contract.evidence_reference("adversarial", inner, reference["run_id"]))
+        data = b"".join(contract.canonical(event) for event in events)
+        (directory / "events.jsonl").write_bytes(data)
+        summary = ev.read_json(directory / "summary.json")
+        summary["events_sha256"] = hashlib.sha256(data).hexdigest()
+        (directory / "summary.json").write_bytes(contract.canonical(summary))
+        with self.assertRaisesRegex(ev.InvalidEvidence, "certificate-inner-stability"):
+            contract.validate_certificate(directory)
+        # Preserve an honest failed report instead of hiding the changed source.
+        summary.update(identity_stable=False, runner_status="failed")
+        (directory / "summary.json").write_bytes(contract.canonical(summary))
+        self.assertEqual(contract.validate_certificate(directory)["runner_status"], "failed")
+
     def test_missing_or_replaced_inner_receipts_reject_certificate(self):
         mutations = (
             lambda events, _: events[0]["inner_runs"][0].update(directory="sr-e2e-missing0"),
