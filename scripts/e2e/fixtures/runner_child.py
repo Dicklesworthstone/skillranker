@@ -9,11 +9,11 @@ import sys
 import time
 from pathlib import Path
 
-mode, case = sys.argv[1:]
+mode, case, run_id = sys.argv[1:]
 
 
 def emit(kind, **fields):
-    print(json.dumps({"schema_version": 1, "case": case, "kind": kind, **fields}), flush=True)
+    print(json.dumps({"schema_version": 2, "run_id": run_id, "case": case, "kind": kind, **fields}), flush=True)
 
 
 passed = True

@@ -18,13 +18,13 @@ import runner
 
 
 def case(name, mode="pass", **overrides):
-    return {"id": name, "mode": mode, "timeout_ms": 2000, "output_bytes": 8192,
+    return {"id": name, "mode": mode, "timeout_ms": 5000, "output_bytes": 8192,
             "expected_exit": 0, "expected_outcome": "ok", "assertions": ["behavior"],
             "require_fault": False, **overrides}
 
 
-def suite(cases, timeout_ms=30_000):
-    return {"schema_version": 1, "suite": "runner-test", "tier": "runner-mechanics",
+def suite(cases, timeout_ms=60_000):
+    return {"schema_version": 2, "suite": "runner-test", "tier": "runner-mechanics",
             "timeout_ms": timeout_ms, "cases": cases}
 
 
@@ -39,7 +39,9 @@ class RunnerTests(unittest.TestCase):
                                   expected_outcome="refused", require_fault=True),
             case("isolation", "isolation"), case("secret", "secret"),
             case("badexit", "badexit"), case("signal", "signal"),
-            case("hang", "hang", timeout_ms=1000), case(cls.descendant_case, "childhang", timeout_ms=1000),
+            # These are cleanup mechanics, not a product latency benchmark. Leave
+            # time for the real child to start before testing its forced timeout.
+            case("hang", "hang"), case(cls.descendant_case, "childhang"),
             case("flood", "flood", output_bytes=512), case("badjson", "badjson"),
             case("duplicate", "duplicate"), case("noresult", "noresult"),
             case("faultmiss", "faultmiss", require_fault=True), case("retry", "failthenpass")])
@@ -229,7 +231,7 @@ class RunnerTests(unittest.TestCase):
         env = {**runner.SAFE_ENV, "TYPESAFE_API_KEY": "SYNTHETIC_INHERITED_SECRET",
                "HTTPS_PROXY": "https://SYNTHETIC_PROXY_SECRET", "PYTHONPATH": "/secret/imports"}
         command = [str(runner.HERE / "run.sh"), "--suite", "runner-smoke", "--artifacts", str(self.artifacts)]
-        result = subprocess.run(command, env=env, capture_output=True, timeout=10, check=False)
+        result = subprocess.run(command, env=env, capture_output=True, timeout=30, check=False)
         self.assertEqual(result.returncode, 0, result.stderr)
         directory = self.artifacts / json.loads(result.stdout)["run"]
         for content in (result.stdout, result.stderr, (directory / "events.jsonl").read_bytes(),

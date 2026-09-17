@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import uuid
 from pathlib import Path
 
 # run.sh uses isolated Python; import only this checked-in sibling module.
@@ -87,14 +88,14 @@ def source_digest(root=ROOT):
     return digest.hexdigest()
 
 
-def identity(binary):
+def identity(binary, fixture=FIXTURE):
     commit = subprocess.run(["/usr/bin/git", "-c", "core.fsmonitor=false", "rev-parse", "HEAD"],
                             cwd=ROOT, env=SAFE_ENV, stdin=subprocess.DEVNULL,
                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=3, check=True)
     return {"source_sha256": source_digest(), "binary_sha256": digest_file(binary),
             "runner_sha256": ev.sha(b"".join(bytes.fromhex(digest_file(HERE / name)) for name in
                                             ("run.sh", "runner.py", "evidence.py"))),
-            "fixture_sha256": digest_file(FIXTURE), "lock_sha256": digest_file(ROOT / "Cargo.lock"),
+            "fixture_sha256": digest_file(fixture), "lock_sha256": digest_file(ROOT / "Cargo.lock"),
             "toolchain_sha256": digest_file(ROOT / "rust-toolchain.toml"),
             "git_commit": commit.stdout.decode("ascii").strip(), "platform": sys.platform,
             "architecture": platform.machine(), "python": platform.python_version(),
@@ -236,12 +237,15 @@ def open_input(path, expected_hash):
             raise
 
 
-def run(spec, binary, artifacts, selection=None):
+def run(spec, binary, artifacts, selection=None, *, fixture=FIXTURE, run_id=None):
     global STOP
     STOP = False
     spec = ev.manifest(spec)
     binary = Path(binary).resolve(strict=True)
-    before = identity(binary)
+    fixture = Path(fixture).resolve(strict=True)
+    before = identity(binary, fixture)
+    run_id = "run-" + uuid.uuid4().hex if run_id is None else run_id
+    ev.identifier(run_id)
     planned = [case["id"] for case in spec["cases"]]
     selected = planned if selection is None else selection
     ev.identifiers(selected)
@@ -258,7 +262,7 @@ def run(spec, binary, artifacts, selection=None):
 
     def emit(event):
         nonlocal budget
-        event = {"seq": len(events), **event}
+        event = {"seq": len(events), "run_id": run_id, **event}
         data = ev.encode(event)
         budget += len(data)
         ev.require(budget <= ev.MAX_DOCUMENT, "artifact-limit")
@@ -281,7 +285,7 @@ def run(spec, binary, artifacts, selection=None):
                          and SANDBOX.is_file() and PRLIMIT.is_file())
             binary_fd = open_input(binary, before["binary_sha256"]) if supported else None
             try:
-                fixture_fd = open_input(FIXTURE, before["fixture_sha256"]) if supported else None
+                fixture_fd = open_input(fixture, before["fixture_sha256"]) if supported else None
             except BaseException:
                 if binary_fd is not None:
                     os.close(binary_fd)
@@ -313,7 +317,7 @@ def run(spec, binary, artifacts, selection=None):
                     result = {"kind": "case_result", "case": case["id"], "status": "blocked",
                               "reason": reason, "exit_code": None, "elapsed_ms": 0,
                               "stdout_bytes": 0, "stderr_bytes": 0, "assertions": [], "attempt": 1,
-                              "observed": None, "fault_observed": False}
+                              "observed": None, "fault_observed": False, "fault_witness": None}
                     if reason is None:
                         emit({"kind": "case_start", "case": case["id"], "step": "child-execution",
                               "expected": ev.expectations(case)})
@@ -323,13 +327,14 @@ def run(spec, binary, artifacts, selection=None):
                             os.lseek(fixture_fd, 0, os.SEEK_SET)
                             records, code, transport, elapsed, counts = invoke(
                                 command + ["--", "/tested-binary", "-I", "-B", "/fixture.py",
-                                           case["mode"], case["id"]], (binary_fd, fixture_fd),
+                                           case["mode"], case["id"], run_id], (binary_fd, fixture_fd),
                                 min(deadline, time.monotonic() + case["timeout_ms"] / 1000),
                                 case["output_bytes"], case["timeout_ms"])
-                            reason, assertions, observed = ev.classify(case, records, code, transport)
+                            reason, assertions, observed = ev.classify(case, records, code, transport, run_id=run_id)
+                            witness = ev.fault_witness(case, records, run_id)
                             result.update(exit_code=code, elapsed_ms=elapsed, stdout_bytes=counts[0],
                                           stderr_bytes=counts[1], assertions=assertions, observed=observed,
-                                          fault_observed=ev.fault_observed(case, records))
+                                          fault_observed=witness is not None, fault_witness=witness)
                         except (OSError, subprocess.SubprocessError):
                             reason = "spawn"
                         result.update(status="passed" if reason == "matched" else "failed", reason=reason)
@@ -338,14 +343,14 @@ def run(spec, binary, artifacts, selection=None):
                 for descriptor in (binary_fd, fixture_fd):
                     if descriptor is not None:
                         os.close(descriptor)
-        stable = identity(binary) == before
+        stable = identity(binary, fixture) == before
         summary = ev.summarize(events[0], events, stable)
         descriptor = os.open(directory / "summary.json", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(descriptor, "wb") as stream:
             stream.write(ev.encode(summary))
             stream.flush()
             os.fsync(stream.fileno())
-        ev.validate(directory, spec, before)
+        ev.validate(directory, spec, before, expected_run_id=run_id)
         return directory, summary
     finally:
         for signum, handler in old_handlers.items():
@@ -354,22 +359,27 @@ def run(spec, binary, artifacts, selection=None):
 
 def main():
     parser = SafeParser(description=__doc__)
-    parser.add_argument("--suite", required=True, choices=["runner-smoke"])
+    parser.add_argument("--suite", required=True, choices=["runner-smoke", "runner-contract"])
     parser.add_argument("--binary", default=sys.executable,
                         help="Python interpreter for runner-mechanics fixtures; not a product binary")
     parser.add_argument("--artifacts", required=True, help="existing artifact parent directory")
     parser.add_argument("--case", action="append", dest="selection")
     try:
         args = parser.parse_args()
-        spec = ev.read_json(HERE / "suites" / (args.suite + ".json"))
-        directory, summary = run(spec, args.binary, args.artifacts, args.selection)
+        if args.suite == "runner-contract":
+            ev.require(args.selection is None, "contract-selection")
+            import runner_contract
+            directory, summary = runner_contract.run_contract(args.binary, args.artifacts)
+        else:
+            spec = ev.read_json(HERE / "suites" / (args.suite + ".json"))
+            directory, summary = run(spec, args.binary, args.artifacts, args.selection)
         # Generated basename only: caller-supplied paths/arguments never become log text.
-        print(ev.encode({"schema_version": 1, "run": directory.name,
+        print(ev.encode({"schema_version": ev.VERSION, "run": directory.name,
                          "runner_status": summary["runner_status"], "product_gate": "not-applicable"})
               .decode("ascii"), end="")
         return {"passed": 0, "partial": 3, "blocked": 4}.get(summary["runner_status"], 1)
     except (ev.InvalidEvidence, OSError, ValueError, subprocess.SubprocessError):
-        print('{"schema_version":1,"runner_status":"incomplete","error":"runner-input-or-io"}',
+        print('{"schema_version":2,"runner_status":"incomplete","error":"runner-input-or-io"}',
               file=sys.stderr)
         return 2
 

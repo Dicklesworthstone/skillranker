@@ -7,13 +7,14 @@ import re
 import stat
 from pathlib import Path
 
-VERSION = 1
+VERSION = 2
 MAX_DOCUMENT = 1024 * 1024
 ID = re.compile(r"[a-z][a-z0-9-]{0,63}\Z", re.ASCII)
 DIGEST = re.compile(r"[0-9a-f]{64}\Z", re.ASCII)
 MODES = frozenset({"pass", "refuse", "badexit", "signal", "hang", "flood",
                    "badjson", "duplicate", "noresult", "faultmiss", "secret",
-                   "childhang", "failthenpass", "isolation"})
+                   "childhang", "failthenpass", "isolation", "pipeline", "truncated",
+                   "foreigncase", "effects", "falseassert", "wrongoutcome"})
 REASONS = frozenset({"matched", "exit", "protocol", "assertion", "outcome",
                      "effects", "fault", "timeout", "output-limit", "signal",
                      "sandbox-unavailable", "spawn", "aggregate-deadline",
@@ -118,7 +119,7 @@ def manifest(value):
     return value
 
 
-def classify(case, records, exit_code, transport_reason=None):
+def classify(case, records, exit_code, transport_reason=None, *, run_id):
     """Validate child claims against independent checked-in expectations."""
     if transport_reason:
         return transport_reason, [], None
@@ -126,16 +127,16 @@ def classify(case, records, exit_code, transport_reason=None):
     try:
         require(len(records) == len(case["assertions"]) + 1, "protocol")
         for record, expected in zip(records[:-1], case["assertions"], strict=True):
-            keys(record, {"schema_version", "case", "kind", "id", "passed"})
+            keys(record, {"schema_version", "run_id", "case", "kind", "id", "passed"})
             require(type(record["schema_version"]) is int and record["schema_version"] == VERSION
-                    and record["case"] == case["id"] and record["kind"] == "assertion"
+                    and record["run_id"] == run_id and record["case"] == case["id"] and record["kind"] == "assertion"
                     and record["id"] == expected and type(record["passed"]) is bool,
                     "protocol")
             assertions.append({"id": expected, "passed": record["passed"]})
         terminal = records[-1]
-        keys(terminal, {"schema_version", "case", "kind", "outcome", "effects", "fault_reached"})
+        keys(terminal, {"schema_version", "run_id", "case", "kind", "outcome", "effects", "fault_reached"})
         require(type(terminal["schema_version"]) is int and terminal["schema_version"] == VERSION
-                and terminal["case"] == case["id"] and terminal["kind"] == "result"
+                and terminal["run_id"] == run_id and terminal["case"] == case["id"] and terminal["kind"] == "result"
                 and terminal["outcome"] in {"ok", "refused"}
                 and type(terminal["effects"]) is int
                 and 0 <= terminal["effects"] <= 1_000_000
@@ -163,11 +164,13 @@ def expectations(case):
                                      "require_fault", "timeout_ms", "output_bytes")}
 
 
-def fault_observed(case, records):
+def fault_witness(case, records, run_id):
     fault = {"hang": "timeout-entered", "childhang": "descendant-started"}.get(case["mode"])
-    return (fault is not None and len(records) == 1 and type(records[0]) is dict
+    matched = (fault is not None and len(records) == 1 and type(records[0]) is dict
             and type(records[0].get("schema_version")) is int
-            and records == [{"schema_version": VERSION, "case": case["id"], "kind": "fault", "id": fault}])
+            and records == [{"schema_version": VERSION, "run_id": run_id,
+                             "case": case["id"], "kind": "fault", "id": fault}])
+    return {"run_id": run_id, "case": case["id"], "id": fault} if matched else None
 
 
 def summarize(header, events, identity_stable):
@@ -188,12 +191,26 @@ def summarize(header, events, identity_stable):
         status = "partial"
     else:
         status = "passed"
-    return {"schema_version": VERSION, "suite": header["suite"], "runner_status": status,
+    return {"schema_version": VERSION, "run_id": header["run_id"], "suite": header["suite"], "runner_status": status,
             "product_gate": "not-applicable", "identity_stable": identity_stable,
             "counts": counts, "events_sha256": sha(b"".join(encode(e) for e in events))}
 
 
-def validate(directory, expected_manifest, expected_identity=None):
+def validate_identity(identity):
+    keys(identity, {"source_sha256", "binary_sha256", "runner_sha256", "fixture_sha256",
+                    "lock_sha256", "toolchain_sha256", "git_commit", "platform", "architecture",
+                    "python", "features", "binary_role"})
+    for key in ("source_sha256", "binary_sha256", "runner_sha256", "fixture_sha256",
+                "lock_sha256", "toolchain_sha256"):
+        require(type(identity[key]) is str and DIGEST.fullmatch(identity[key]), "digest")
+    require(type(identity["git_commit"]) is str
+            and re.fullmatch(r"[0-9a-f]{40,64}", identity["git_commit"]), "commit")
+    for key in ("platform", "architecture", "python"):
+        require(type(identity[key]) is str and re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", identity[key]), "platform")
+    require(identity["features"] == [] and identity["binary_role"] == "fixture-interpreter", "features")
+
+
+def validate(directory, expected_manifest, expected_identity=None, *, expected_run_id=None):
     """Reconcile all evidence, independently of runner exit status. Raises on refusal.
 
     A valid failed/blocked/partial report remains a failed/blocked/partial report.
@@ -207,13 +224,16 @@ def validate(directory, expected_manifest, expected_identity=None):
     require(events and all(type(e) is dict for e in events), "events")
     require(all(encode(e) == line for e, line in zip(events, lines, strict=True)), "canonical")
     header = events[0]
-    keys(header, {"schema_version", "seq", "kind", "suite", "tier", "planned", "selected",
+    keys(header, {"schema_version", "run_id", "seq", "kind", "suite", "tier", "planned", "selected",
                   "manifest_sha256", "identity", "network", "artifact_limit", "seed"})
     require(type(header["schema_version"]) is int and header["schema_version"] == VERSION
             and header["kind"] == "header" and header["suite"] == spec["suite"]
             and header["tier"] == spec["tier"] and type(header["seed"]) is int and header["seed"] == 0
             and type(header["artifact_limit"]) is int and header["artifact_limit"] == MAX_DOCUMENT, "header")
     identifiers(header["planned"])
+    identifier(header["run_id"])
+    if expected_run_id is not None:
+        require(header["run_id"] == expected_run_id, "expected-run")
     identifiers(header["selected"])
     planned = [case["id"] for case in spec["cases"]]
     require(header["planned"] == planned and set(header["selected"]) <= set(planned), "selection")
@@ -221,43 +241,39 @@ def validate(directory, expected_manifest, expected_identity=None):
     require(header["manifest_sha256"] == sha(encode(spec)), "manifest-identity")
     require(type(header["network"]) is str and header["network"] in {"isolated", "unavailable"}, "network")
     identity = header["identity"]
-    keys(identity, {"source_sha256", "binary_sha256", "runner_sha256", "fixture_sha256",
-                    "lock_sha256", "toolchain_sha256", "git_commit", "platform", "architecture",
-                    "python", "features", "binary_role"})
-    for key in ("source_sha256", "binary_sha256", "runner_sha256", "fixture_sha256",
-                "lock_sha256", "toolchain_sha256"):
-        require(type(identity[key]) is str and DIGEST.fullmatch(identity[key]), "digest")
-    require(type(identity["git_commit"]) is str
-            and re.fullmatch(r"[0-9a-f]{40,64}", identity["git_commit"]), "commit")
-    for key in ("platform", "architecture", "python"):
-        require(type(identity[key]) is str and re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", identity[key]),
-                "platform")
-    require(identity["features"] == [] and identity["binary_role"] == "fixture-interpreter", "features")
+    validate_identity(identity)
     if expected_identity is not None:
         require(identity == expected_identity, "expected-identity")
     cases = {case["id"]: case for case in spec["cases"]}
     started, finished, active = set(), set(), None
     for index, event in enumerate(events):
         require(type(event.get("seq")) is int and event["seq"] == index, "sequence")
+        require(event.get("run_id") == header["run_id"], "event-run")
         if index == 0:
             continue
         require(type(event.get("case")) is str and event["case"] in header["selected"], "case")
         require(type(event.get("kind")) is str and event["kind"] in {"case_start", "case_result"}, "kind")
         case_id = event["case"]
         if event["kind"] == "case_start":
-            keys(event, {"seq", "kind", "case", "step", "expected"})
+            keys(event, {"run_id", "seq", "kind", "case", "step", "expected"})
             require(event["step"] == "child-execution"
                     and encode(event["expected"]) == encode(expectations(cases[case_id])), "expectations")
             require(active is None and case_id not in started and case_id not in finished, "duplicate-start")
             started.add(case_id)
             active = case_id
         else:
-            keys(event, {"seq", "kind", "case", "status", "reason", "exit_code", "elapsed_ms",
-                         "stdout_bytes", "stderr_bytes", "assertions", "attempt", "observed", "fault_observed"})
+            keys(event, {"run_id", "seq", "kind", "case", "status", "reason", "exit_code", "elapsed_ms",
+                         "stdout_bytes", "stderr_bytes", "assertions", "attempt", "observed", "fault_observed",
+                         "fault_witness"})
             require(type(event["fault_observed"]) is bool, "fault-observed")
+            require(event["fault_observed"] == (event["fault_witness"] is not None), "fault-witness")
             if event["fault_observed"]:
+                witness = event["fault_witness"]
+                keys(witness, {"run_id", "case", "id"})
+                fault_id = {"hang": "timeout-entered", "childhang": "descendant-started"}.get(cases[case_id]["mode"])
                 require(cases[case_id]["mode"] in {"hang", "childhang"}
-                        and event["status"] == "failed", "fault-observed")
+                        and event["status"] == "failed" and witness["run_id"] == header["run_id"]
+                        and witness["case"] == case_id and witness["id"] == fault_id, "fault-observed")
             require(event["kind"] == "case_result" and case_id not in finished, "terminal")
             require(type(event["status"]) is str and event["status"] in {"passed", "failed", "blocked"}
                     and type(event["reason"]) is str and event["reason"] in REASONS and type(event["attempt"]) is int
@@ -281,11 +297,13 @@ def validate(directory, expected_manifest, expected_identity=None):
                         require(assertion["id"] == aid and type(assertion["passed"]) is bool, "assertions")
                 if event["observed"] is not None:
                     keys(event["observed"], {"outcome", "effects", "fault_reached"})
-                    records = [{"schema_version": VERSION, "case": case_id, "kind": "assertion", **a}
+                    records = [{"schema_version": VERSION, "run_id": header["run_id"],
+                                "case": case_id, "kind": "assertion", **a}
                                for a in event["assertions"]]
-                    records.append({"schema_version": VERSION, "case": case_id, "kind": "result",
+                    records.append({"schema_version": VERSION, "run_id": header["run_id"],
+                                    "case": case_id, "kind": "result",
                                     **event["observed"]})
-                    reason, _, observed = classify(cases[case_id], records, event["exit_code"])
+                    reason, _, observed = classify(cases[case_id], records, event["exit_code"], run_id=header["run_id"])
                     require(observed is not None and reason == event["reason"], "observed-mismatch")
                 else:
                     require(event["reason"] in {"protocol", "timeout", "output-limit", "signal",
@@ -301,7 +319,7 @@ def validate(directory, expected_manifest, expected_identity=None):
                     require(event["reason"] != "matched", "false-failure")
             finished.add(case_id)
     summary = read_json(Path(directory) / "summary.json")
-    keys(summary, {"schema_version", "suite", "runner_status", "product_gate", "identity_stable",
+    keys(summary, {"schema_version", "run_id", "suite", "runner_status", "product_gate", "identity_stable",
                    "counts", "events_sha256"})
     require(type(summary["identity_stable"]) is bool and type(summary["schema_version"]) is int, "summary")
     keys(summary["counts"], {"planned", "selected", "started", "skipped", "passed", "failed", "blocked", "incomplete"})
