@@ -19,6 +19,11 @@ Sign up at the [TypeSafe console](https://console.typesafe.ai) to get your own k
 ![Runtime](https://img.shields.io/badge/runtime-Asupersync-654ff0)
 ![Output](https://img.shields.io/badge/output-JSON%20%7C%20hooks%20%7C%20TUI-00897b)
 
+**Status: design stage.** This checkout contains the plan and documentation;
+there is no Rust implementation, Cargo manifest, or installable `sr` binary yet.
+Commands below describe the intended interfaces. The [implementation phases](COMPREHENSIVE_PLAN_TO_DESIGN_SKILLRANKER.md#implementation-order-and-dependencies)
+gate the core CLI, evaluation tools, hooks, and later experiments separately.
+
 ```bash
 sr demo --case useful     # Inspect an offline fixture before connecting a session
 sr rank --allow-network   # Rank skills for the selected session
@@ -182,6 +187,9 @@ or override the agent's governing instructions.
 
 ### From source
 
+These build commands apply once the implementation and its Cargo files exist.
+The current documentation-only checkout cannot run them successfully.
+
 ```bash
 git clone https://github.com/Dicklesworthstone/skillranker.git
 cd skillranker
@@ -211,8 +219,8 @@ shared key.
 
 Set `TYPESAFE_API_KEY` through your shell or secret manager. The
 [environment example](.env.example) lists the service settings. For a local
-checkout, copy it to `.env` if that file does not already exist, fill in
-`TYPESAFE_API_KEY` with your own key, and restrict access with `chmod 600 .env`.
+checkout, create `.env` from the example only if it does not already exist and
+restrict access with `chmod 600 .env` **before** entering your own API key.
 The `.env` file is ignored by Git. Export its values into the process environment
 before running `sr` or starting an agent whose hooks need the key:
 
@@ -258,8 +266,13 @@ The primary local platform scope is Linux and macOS. Consult
    Automatic discovery must resolve one unambiguous session.
 5. **Preview and rank.** Use `--dry-run` to inspect the redacted wide payload
    and disclosure receipt, then `--allow-network --json` for a fresh evaluation.
-6. **Try the hook in shadow mode.** Preview and apply `sr install-hook claude`.
-   Shadow mode records observations without adding suggestions to agent context.
+6. **Prepare a recorded shadow trial.** Initialize optional history with
+   `sr ledger init`, then explicitly set `network.enabled = true` in
+   [trusted user configuration](#configuration) if you want live hook evaluations.
+   The earlier `--allow-network` flag authorized only that CLI run. Preview and
+   apply `sr install-hook claude`; shadow mode evaluates without injecting advice.
+   Without a ready ledger, the hook can rank but cannot promise recorded trial
+   evidence; without network consent, it cannot obtain fresh Jev answers.
 7. **Enable advisory output deliberately.** Set `hook.mode = "advisory"` in
    trusted user configuration after reviewing the integration and its behavior.
 
@@ -327,7 +340,7 @@ schemas, and optional features available in the installed build.
 | `sr install-hook claude` | Preview a managed hook settings change | `sr install-hook claude --apply` |
 | `sr uninstall-hook claude` | Preview removal of the managed entry | `sr uninstall-hook claude --apply` |
 | `sr stats` | Report observation and operational metrics | `sr stats --since 7d --by-skill` |
-| `sr observe` | Reconcile structured load events | `sr observe --session scratch/session.jsonl` |
+| `sr observe` | Reconcile structured load events | `sr observe --transcript scratch/session.jsonl --harness claude_code` |
 | `sr feedback` | Record an explicit usefulness judgment | `sr feedback EVENT_ID --skill SKILL_ID --verdict useful` |
 | `sr feedback --instead ID` | Record a better alternative for an event | `sr feedback EVENT_ID --skill SKILL_ID --instead ALTERNATIVE_ID` |
 | `sr snooze` | Preview a scoped temporary advisory mute | `sr snooze EVENT_ID --skill SKILL_ID --for 30m` |
@@ -362,15 +375,15 @@ request or runtime limit is reached and reports unfinished cases.
 | `--max-requests N` | Required for live runs | Maximum HTTP attempts across the batch, including retries |
 | `--max-runtime-ms N` | `600000` | Overall batch deadline, in addition to per-case deadlines |
 | `--sample-size N` | Full supplied frame | Select a bounded sample of task-family representatives |
-| `--seed S` | Recorded for sampling | Reproduce selection with the recorded RNG algorithm and version |
+| `--seed S` | Fresh recorded random seed when sampling | Deterministic diagnostic selection or reproduction of a recorded sample; a fixed seed alone is not probability-sampling evidence |
 | `--explain` | Off | Include equations, substituted values, assumptions, and interpretation in the report |
 
 ```bash
-# Freeze and replay a reproducible sample from a sufficiently large dataset.
+# Reproduce a diagnostic selection; seed 42 alone supports no sampling guarantee.
 sr eval --dataset scratch/evaluation.json --sample-size 100 --seed 42 --explain
 
-# Authorize a bounded live evaluation using your own TypeSafe API key.
-sr eval --dataset scratch/evaluation.json --sample-size 100 --seed 42 \
+# Draw and record a random sample, then authorize a bounded live evaluation.
+sr eval --dataset scratch/evaluation.json --sample-size 100 \
   --online --allow-network --max-requests 400 --max-runtime-ms 600000
 ```
 
@@ -695,11 +708,18 @@ Ambiguous skill metadata excludes that record and marks coverage partial.
 Configuration cannot execute interpolation or recursive includes. Evaluation
 imports use bounded streaming and enforce per-case limits as well as the total cap.
 
-Source snapshots supply both hashes and excerpts. Before emission, `sr` checks
-the entire shortlist, including candidates removed by scoring, or every explicit
-target. Any changed candidate invalidates the result; a runner-up cannot replace
-an answer conditioned on stale alternatives. A supplied roster replaces discovery
-but does not grant filesystem access or bypass invocation restrictions.
+Source snapshots supply both hashes and excerpts. Before publishing a live
+advisory decision or no-match claim, `sr` checks membership, precedence, and
+indexed/wide content that
+conditioned the decision, plus the entire shortlist's content and restrictions.
+A changed candidate outside the shortlist or a new overflow match can invalidate
+the result too. Explicit resolution checks every target and its name's precedence.
+Trusted adapter generations can avoid a rescan only when they cover all required
+dependencies. Otherwise bounded re-enumeration/content checks use the same deadline;
+missing required validation withholds output. A runner-up cannot replace an answer
+conditioned on stale alternatives. These are last-validation observations, not a
+freeze of the filesystem; the harness still checks its later load. A supplied
+roster replaces discovery but grants no new path access or invocation permissions.
 
 `sr roster --snapshot FILE` explicitly exports an owner-only manifest, bounded
 to 32 MiB and 10,000 records, without implicitly overwriting an existing file.
@@ -964,8 +984,15 @@ Ambiguous concurrent delivery remains unknown, and identical prompt text does
 not merge distinct turns. `sr observe` can reconcile the final turn without
 waiting for another user prompt.
 
+Observation requires an explicit source, with the same meaning as ranking:
+`--transcript FILE --harness NAME` is native, `--session PATH` selects cass, and
+`--context FILE` selects a normalized producer. Those namespaces remain distinct;
+matching a session ID or path cannot authorize updating another adapter's cursor.
+Unknown durable identity is an error. `sr observe` never calls Jev and requires
+a ready ledger; `--no-ledger` and `--no-persist` conflict with its promised update.
+
 ```bash
-sr observe --session scratch/session.jsonl
+sr observe --transcript scratch/session.jsonl --harness claude_code
 sr stats --since 7d --by-skill
 sr feedback EVENT_ID --skill SKILL_ID --verdict useful
 sr eval --dataset scratch/labeled-cases.json
@@ -1009,12 +1036,22 @@ case's prior snapshot. The default tuning loss is:
 | Correct suggestion or correct no-match abstention | 0 |
 | Abstention on a positive case | 1 |
 | Incorrect suggestion, including a needless suggestion on a no-match case | 2 |
+| Operationally unavailable result on an actually attempted case | 2 |
 
-Operational failures are reported separately and cannot be relabeled as tunable
-abstentions. A policy that always stays silent still incurs misses on positive
-cases. Reports mark a policy not estimable when compatible stage responses are
-missing: lowering a gate needs rerank evidence, and changing retrieval, shortlist
-size, prompts, or model can require new evaluations.
+Compare policies on the same predeclared judged cases and denominator. An
+operational failure keeps its `unavailable` status and separate failure count;
+its loss penalty prevents dropping hard cases from making a policy look better.
+On equal loss, prefer fewer failures, then the frozen baseline. A policy that
+always stays silent still incurs misses on positive cases.
+Bounded-loss sampling uses this loss divided by two; reports identify the scale
+and keep it distinct from a binary error rate.
+
+Missing replay evidence is different from an observed failed attempt. A policy
+whose required responses are absent is not estimable; do not invent a result or
+remove those cases to complete its comparison. Lowering a gate needs rerank
+evidence, and changing retrieval, shortlist size, prompts, or model can require
+new evaluations. A batch stopped before finishing the declared cohort remains
+partial and cannot promote a policy.
 
 Experimental priors use centered, shrunk Beta(1, 4) estimates from judged
 usefulness. They are disabled by default and can only reorder eligible candidates.
@@ -1087,16 +1124,27 @@ task family and split.
 
 ### Spend the evaluation budget deliberately
 
-`--sample-size` and `--seed` freeze a sampling manifest before selected cases
-run. The unit is one representative per independent task family, selected by a
+`--sample-size` freezes a sampling manifest before selected cases run. Unless
+replaying a recorded draw, omit `--seed` for a fresh seed from trusted OS randomness.
+The unit is one representative per independent task family, selected by a
 recorded rule before inspecting evaluated outcomes. The manifest records:
 
 - The consented frame, split digests, and observable strata, such as normal versus
   overflow retrieval and complete versus degraded input.
-- Stratum population and sample sizes, selected IDs, and each case's inclusion
-  probability; selection is uniform without replacement within a stratum.
-- The RNG algorithm, version, seed, policy/model identities, and label/request
-  budgets needed to replay selection.
+- Stratum population and sample sizes, selected IDs, and justified inclusion
+  probabilities for random selection without replacement within a stratum;
+  diagnostic selections leave these probabilities unknown.
+- The RNG algorithm, version, seed, randomization provenance, design status,
+  policy/model identities, and label/request budgets needed to replay selection.
+
+A manually fixed seed supplies reproducibility, not evidence for the claimed
+inclusion probabilities or design-based uncertainty. Such a run is diagnostic
+unless its input carries a matching prior randomization manifest; replaying that
+manifest is the same draw, not an additional independent sample. Imported
+provenance remains supplied/unverified. Full-frame evaluation needs no sampling
+randomness. Guarantees assume uniform selection within strata; the recorded PRNG
+and bounded-draw checks support the implementation without proving exact
+uniformity over every possible seed. Never redraw to obtain favorable results.
 
 Every represented stratum receives a positive allocation. Gate-abstained,
 operationally failed, and unknown-metadata cases remain in the sampling frame.
@@ -1299,6 +1347,14 @@ before it is visible, the old policy remains in force. Each attempt checks the
 active generation at admission, including processes started earlier. Already
 admitted requests cannot be recalled. Inspection itself makes no network requests.
 
+Persistent attempts hold the same bounded lock as setup while rereading guard
+configuration, validating the accounting generation, and debiting. They release
+it before HTTP; lock contention cannot turn into an unbounded hook wait. With
+`--no-persist`, the final trusted-config read is the local admission boundary
+only when no guard is active. An intent or enabled guard refuses the request;
+a later activation cannot revoke a stateless request already admitted. Retries
+must recheck, not reuse startup-time settings.
+
 Each attempt is atomically reserved/debited before transmission. Its single-use
 permit binds an attempt ID, request/endpoint, guard generation, window, and
 remaining monotonic deadline. No permits are preallocated for later windows.
@@ -1314,6 +1370,9 @@ until reconciliation. With `--no-persist`, an enabled shared allowance cannot
 admit provider attempts; local explicit resolution remains usable.
 This protected accounting and best-effort cooldown/lease state are separate from
 the optional observation ledger; `--no-ledger` does not disable the allowance.
+The debit must be durably committed before sending. The initial backend verifies
+WAL with `synchronous=FULL`; if that work cannot fit the deadline, it withholds
+the attempt. An asynchronous flush cannot satisfy the accounting guarantee.
 
 A provider circuit breaker limits repeated outage traffic. Three consecutive
 transient failures open a 30-second cooldown. Failed half-open probes double the
@@ -1415,9 +1474,14 @@ recommendation when the target and its restrictions are verified; it cannot
 support a global no-match message.
 
 **The hook never blocks the agent on a recommendation failure.** It emits no
-blocking decision fields and translates errors into empty stdout, a sanitized
-stderr diagnostic, and exit zero. Shadow mode suppresses both suggestions and
+blocking decision fields and maps errors found before publication to empty
+stdout, a sanitized stderr diagnostic, and exit zero. Shadow mode suppresses both suggestions and
 abstention text while retaining permitted local observations.
+
+The complete bounded envelope is rendered before publication. If stdout fails
+partway through, already-written bytes cannot be retracted: delivery remains
+unknown, and `sr` does not append replacement JSON or retry the whole message.
+Only a complete successful write can count as an emission.
 
 ```bash
 sr install-hook claude                  # Preview the exact settings change
@@ -1513,7 +1577,10 @@ flowchart TD
 One Rust package contains `sr` and reusable pure pipeline components. Asupersync
 owns task lifetimes, deadlines, HTTP/TLS, and deterministic lab replay. Quill
 provides bounded in-memory lexical retrieval. SQLite persistence uses `rusqlite`
-with bundled SQLite. FrankenTUI is optional.
+with bundled SQLite. The planned concurrent WAL stores require a verified SQLite
+3.51.3 or later to include the [WAL-reset corruption fix](https://www.sqlite.org/wal.html#walresetbug);
+the actual linked engine is checked separately from the Rust crate version.
+FrankenTUI is optional.
 
 **The inference engine is TypeSafe.ai's Jev.** The surrounding Rust code gathers
 and protects context, constructs typed questions, validates Jev's answers, and
@@ -1609,17 +1676,29 @@ at most ten minutes. Expiry excludes data from ordinary use; physical cleanup is
 an explicit ledger operation outside the hook. It is not a secure-erasure guarantee.
 
 Hooks do not initialize or migrate the ledger or enabled allowance accounting.
-`sr ledger init` creates the observation ledger;
-migration previews and `--apply` use backups that include committed SQLite WAL
+`sr ledger init` creates an absent observation ledger; repeating it preserves a
+compatible existing store and never resets its history or cursors.
+Migration previews and `--apply` use backups that include committed SQLite WAL
 state. Ordinary ranking remains usable with degraded optional persistence when
 storage is absent, busy, or full. An enabled shared allowance with unavailable
 accounting withholds new HTTP attempts; a requested case capture must either
 complete or report failure. The default quotas are 256 MiB for the ledger,
 sidecars, and backups, and 64 MiB for cache/coordination state; reaching a quota
-stops optional recording rather than growing without a bound.
+stops optional recording rather than growing without a bound. Recording stops
+early enough to preserve a bounded maintenance reserve. Doctor reports usable
+capacity and headroom; administrative operations preflight backup, WAL, temporary
+space, and available disk. If sufficient space is unavailable, they fail before
+mutation with a concrete recovery step instead of exceeding quota or discarding
+the only recoverable copy.
 Full roster membership snapshots share the ledger quota and retention rules;
 retained events reference deduplicated snapshots. Missing snapshot evidence
 disables unsupported historical corrections while ranking remains usable.
+
+Writes verify the store's incarnation and schema/data generation in their
+transaction. Clearing history advances the generation, preventing older in-flight
+work from repopulating it; new invocations can record afterward. Required stale
+writes fail, while optional recording is skipped visibly. Clearing history does
+not reset request allowances, disable future recording, or unlink a live database.
 
 Requests use HTTPS with credential-scoped endpoints and redirects disabled.
 Redaction covers outgoing roster excerpts as well as conversation fields, but
@@ -1648,8 +1727,9 @@ transactions rather than the inference timeout.
 These targets are not remote-service guarantees or measured benchmark results.
 Process startup, cold TLS, roster size, discovery, and provider load all matter.
 Quill index construction and search are timed separately, including on exact
-cache hits that must re-establish the current candidate set. Logical index
-allocation budgets do not replace measurements of actual process memory.
+cache hits that must re-establish the current candidate set. Include roster
+revalidation before publication in those timings. Logical index allocation
+budgets do not replace measurements of actual process memory.
 
 Input capture and roster discovery overlap after identity is established.
 The two inference stages remain sequential. Low-need decisions skip the rerank.

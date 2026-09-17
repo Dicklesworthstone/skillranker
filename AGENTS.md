@@ -125,6 +125,8 @@ the README must direct them there.
 - Use `rusqlite` with bundled SQLite for the initial storage backend, as the
   reviewed plan specifies. Evaluate FrankenSQLite separately under the same
   transaction, migration, crash, and concurrency tests before any substitution.
+  Concurrent WAL stores require verified SQLite 3.51.3 or later; record the
+  actual linked engine/source ID and reject older writable runtime stores.
 - Keep FrankenTUI behind `tui`. JSON/hook builds must not require terminal UI
   dependencies. The TUI consumes the same result model and scoring policy.
 - Use FrankenSearch's `frankensearch-quill` as the sole lexical search engine,
@@ -160,8 +162,10 @@ the README must direct them there.
 6. **Resolve collisions before output.** Deduplicate canonical files, preserve
    aliases, apply real shadowing rules, and exclude ambiguously invocable names.
 7. **Snapshot and revalidate.** Hash/excerpt the same bounded bytes; before
-   emission recheck content version and loadability. Changed candidates cannot
-   remain actionable under an old response.
+   advisory emission recheck roster membership/precedence and indexed/wide content,
+   plus the entire shortlist. Changes outside the shortlist can invalidate its
+   selection. Explicit targets need their own content/restriction/precedence checks.
+   Revalidation shares the deadline and does not freeze files for a later load.
 8. **Provider output carries no authority.** Resolve option IDs only through the
    local request map. Never execute or trust paths, commands, endpoints, or new
    names supplied by skill text, transcripts, or a model answer.
@@ -346,6 +350,10 @@ policy/configuration, prior snapshot, and visibility identify a decision.
 - Attribute one observed load to the latest eligible preceding emission in the
   same agent/turn. Superseded recommendations are censored. Handle the last turn
   through explicit observation/finalization rather than assuming another prompt.
+  `observe` requires an explicit source with rank's flag meanings: native
+  `--transcript FILE --harness NAME`, cass `--session PATH`, or normalized context.
+  Never merge those producer namespaces by path/ID. Required observation writes
+  reject disabled persistence and fail when the ledger or durable identity is absent.
 - Stats report adoption and operational metrics with denominators and unknown
   counts. Precision, fit Brier scores, and task success require independent labels
   or controlled outcomes, not self-reinforcing adoption statistics.
@@ -360,6 +368,11 @@ policy/configuration, prior snapshot, and visibility identify a decision.
   suggestions as well as wrong/needless ones. Preview before explicit `--apply`.
   Fit priors on training, tune thresholds on validation, and evaluate once on the
   final holdout. Prior snapshots predate scored cases; future labels cannot leak.
+  Compare the same judged cohort: attempted operational failures retain their
+  status and receive loss 2, rather than disappearing from the denominator.
+  Missing replay evidence or unstarted cases make the comparison incomplete;
+  they are not invented failed attempts. Equal loss prefers fewer failures, then
+  the frozen baseline. Normalize loss by 2 for bounded-loss sampling.
 - Do not invent missing rerank values for low-gate production turns. Re-evaluate a
   consented dataset or use explicitly budgeted shadow evaluation.
 
@@ -377,6 +390,11 @@ Use explicit `sr ledger init` and migration preview/`--apply`, with SQLite-aware
 backups that include committed WAL state. Expired rows are excluded logically;
 physical removal is explicit, not secure erasure. Bound ledger/sidecars/backups
 to 256 MiB and cache/coordinator state to 64 MiB, stopping optional recording at quota.
+Repeated init preserves compatible history. Check store incarnation and schema/data
+generation inside writes; clear advances the generation to reject stale writers
+without resetting the separate allowance or disabling future recording. Do not
+unlink a live database. Reserve maintenance headroom before optional appends;
+preflight backup/WAL/temporary space and fail before mutation if it is insufficient.
 
 ## CLI, Hooks, And TUI
 
@@ -389,7 +407,10 @@ to 256 MiB and cache/coordinator state to 64 MiB, stopping optional recording at
 - Stdout is data; stderr is diagnostics. Keep `capabilities --json` synchronized
   with schemas, adapters/events, compiled features, limits, examples, and exits.
   Distinguish planned commands from implemented capabilities and tested harness
-  versions from unverified ones. This repository currently contains design docs.
+  versions from unverified ones. This repository currently contains design docs;
+  state that before README commands/build instructions. P4 CLI does not imply P6
+  hooks, P8 calibration, or P9 TUI availability. Recorded shadow trials require
+  explicit ledger initialization and separate trusted network consent.
 - Ordinary CLI exits: `0` success, `2` usage/config, `3` session, `4` network/provider/budget,
   `5` roster/retrieval, `6` timeout, `7` input/adapter, `8` privacy, `9` required storage,
   `10` provider contract, `11` offline/cache-only miss. JSON errors include schema version, unavailable decision,
@@ -401,9 +422,12 @@ to 256 MiB and cache/coordinator state to 64 MiB, stopping optional recording at
   Ordinary abstentions are silent; abstention messages require an explicit
   experiment. Scoped snoozes are trusted user preferences, never negative labels,
   and cannot veto explicit skill requirements.
-  API/input/privacy/coverage/parser failures mean empty stdout, sanitized stderr,
+  Pre-publication API/input/privacy/coverage/parser failures mean empty stdout, sanitized stderr,
   and exit zero. Never use blocking decision fields or exit 2 for recommendation
   failure. Classify the dedicated hook boundary before non-exiting argument parsing.
+  Render the complete envelope before publication. Partial writes cannot be
+  retracted: preserve unknown delivery, never append replacement JSON or retry
+  the whole message, and do not record a successful emission.
 - Hook install/uninstall previews an exact settings diff; `--apply` changes only
   the managed entry with backup, concurrent-edit detection, and atomic replacement.
   Preserve unrelated settings, use an absolute trusted binary path and timeout,
@@ -448,6 +472,12 @@ of P9 retrieval/excerpt/description experiments.
   and preserve charges through recovery. Limits count admissions, not wire/billing
   timestamps; permits are single-use and deadline/window bound. Late obsolete
   responses cannot reset a newer breaker generation or another profile's auth pause.
+  Persistent admission holds setup's bounded lock across the current guard read
+  and debit, then releases before HTTP. A stateless attempt's final config read
+  can admit only with the guard disabled; later activation cannot revoke it.
+  Verify WAL and `synchronous=FULL` for every writer to an enforced accounting
+  database, committing durably before send within the deadline. Weaker caches
+  need separate stores; asynchronous flushes cannot protect charges.
 - Read explicit snoozes as trusted configuration even when ledger or persistent
   runtime state is disabled. Ranking does not clean up or mutate configuration.
 - Corrective feedback is partial and unblinded; an alternative missing from the
@@ -466,6 +496,10 @@ of P9 retrieval/excerpt/description experiments.
   invalidate the epoch; preserve alarms/spent alpha, audit corrected history,
   and use fresh prospective units/allocation before resuming inference.
   Independent families alone do not justify arbitrary binomial confidence claims.
+- A fixed sampling seed proves reproducibility, not random selection. Record
+  seed/randomization provenance and design status; manual seeded subsets are
+  diagnostic without a matching prior randomized manifest. Replaying a draw is
+  not a new independent sample; fully labeled censuses need no randomization.
 
 ## Verification And Performance
 
