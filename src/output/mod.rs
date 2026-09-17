@@ -839,7 +839,7 @@ fn validate_trace(m: &Map<String, Value>) -> Result<(), ContractError> {
     Ok(())
 }
 
-fn check_depth(value: &Value, depth: usize) -> Result<(), ContractError> {
+pub(crate) fn check_depth(value: &Value, depth: usize) -> Result<(), ContractError> {
     if depth > MAX_OUTPUT_DEPTH {
         return Err(ContractError::LimitExceeded);
     }

@@ -2,7 +2,7 @@
 //! No transport, redaction, ranking policy, or permission is implied by decoding.
 //! Callers must redact every field before encoding and authorize any transmission.
 
-use crate::output::JsonSeed;
+use crate::output::{JsonSeed, check_depth};
 use serde::de::DeserializeSeed;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -86,16 +86,24 @@ impl Question {
                 return Err(CodecError::InvalidRequest);
             }
         }
-        let question = Self::Choice { instructions, criteria };
+        let question = Self::Choice {
+            instructions,
+            criteria,
+        };
         question.validate()?;
         Ok(question)
     }
 
     fn validate(&self) -> Result<(), CodecError> {
         let instructions = match self {
-            Self::Choice { instructions, criteria } => {
-                if criteria.is_empty() || criteria.len() > MAX_CHOICE_OPTIONS
-                    || criteria.keys().any(|key| !valid_id(key)) {
+            Self::Choice {
+                instructions,
+                criteria,
+            } => {
+                if criteria.is_empty()
+                    || criteria.len() > MAX_CHOICE_OPTIONS
+                    || criteria.keys().any(|key| !valid_id(key))
+                {
                     return Err(CodecError::InvalidRequest);
                 }
                 instructions
@@ -113,7 +121,8 @@ fn description(value: &Value) -> bool {
     matches!(value, Value::String(_) | Value::Object(_) | Value::Array(_))
 }
 fn valid_id(value: &str) -> bool {
-    !value.is_empty() && value.len() <= crate::identity::MAX_ID_BYTES
+    !value.is_empty()
+        && value.len() <= crate::identity::MAX_ID_BYTES
         && !value.chars().any(char::is_control)
 }
 
@@ -136,7 +145,11 @@ impl Request {
                 return Err(CodecError::DuplicateId);
             }
         }
-        let request = Self { model, state, questions: map };
+        let request = Self {
+            model,
+            state,
+            questions: map,
+        };
         request.to_json()?;
         Ok(request)
     }
@@ -149,19 +162,34 @@ impl Request {
         Ok(request)
     }
 
-    pub fn model(&self) -> &str { &self.model }
-    pub fn questions(&self) -> &BTreeMap<String, Question> { &self.questions }
+    pub fn model(&self) -> &str {
+        &self.model
+    }
+    pub fn questions(&self) -> &BTreeMap<String, Question> {
+        &self.questions
+    }
 
     pub fn to_json(&self) -> Result<Vec<u8>, CodecError> {
-        if !valid_id(&self.model) || !description(&self.state) || self.questions.is_empty()
-            || self.questions.keys().any(|id| !valid_id(id)) {
+        if !valid_id(&self.model)
+            || !description(&self.state)
+            || self.questions.is_empty()
+            || self.questions.keys().any(|id| !valid_id(id))
+        {
             return Err(CodecError::InvalidRequest);
         }
-        for question in self.questions.values() { question.validate()?; }
+        check_depth(&self.state, 1).map_err(|_| CodecError::InvalidJson)?;
+        for question in self.questions.values() {
+            let instructions = match question {
+                Question::Choice { instructions, .. } | Question::Noul { instructions, .. } => {
+                    instructions
+                }
+            };
+            check_depth(instructions, 3).map_err(|_| CodecError::InvalidJson)?;
+            question.validate()?;
+        }
         let mut buffer = BoundedBuffer(Vec::new());
         serde_json::to_writer(&mut buffer, self).map_err(|_| CodecError::TooLarge)?;
-        // Reuse the same depth/duplicate boundary for locally constructed Values.
-        parse(&buffer.0, MAX_REQUEST_BYTES)?;
+        // Borrowed depth checks precede serialization; no duplicate value tree is built.
         Ok(buffer.0)
     }
 
@@ -170,7 +198,9 @@ impl Request {
     pub fn decode_response(&self, bytes: &[u8]) -> Result<Response, CodecError> {
         let wire: WireResponse = serde_json::from_value(parse(bytes, MAX_RESPONSE_BYTES)?)
             .map_err(|_| CodecError::InvalidAnswer)?;
-        if !valid_id(&wire.model) { return Err(CodecError::InvalidAnswer); }
+        if !valid_id(&wire.model) {
+            return Err(CodecError::InvalidAnswer);
+        }
         if !self.questions.keys().eq(wire.answers.keys()) {
             return Err(CodecError::QuestionMismatch);
         }
@@ -181,9 +211,14 @@ impl Request {
                     probability(noul)?;
                     Answer::Noul(noul)
                 }
-                (Question::Choice { criteria, .. }, WireAnswer::Choice {
-                    choice, probabilities, confidence,
-                }) => {
+                (
+                    Question::Choice { criteria, .. },
+                    WireAnswer::Choice {
+                        choice,
+                        probabilities,
+                        confidence,
+                    },
+                ) => {
                     if !criteria.keys().eq(probabilities.keys()) {
                         return Err(CodecError::OptionMismatch);
                     }
@@ -202,7 +237,10 @@ impl Request {
                         return Err(CodecError::InvalidChoice);
                     }
                     Answer::Choice(ChoiceAnswer {
-                        choice, raw_probabilities: probabilities, raw_sum: sum, confidence,
+                        choice,
+                        raw_probabilities: probabilities,
+                        raw_sum: sum,
+                        confidence,
                     })
                 }
                 _ => return Err(CodecError::QuestionMismatch),
@@ -210,8 +248,10 @@ impl Request {
             answers.insert(id, validated);
         }
         Ok(Response {
-            requested_model: self.model.clone(), returned_model: wire.model,
-            answers, usage: wire.usage,
+            requested_model: self.model.clone(),
+            returned_model: wire.model,
+            answers,
+            usage: wire.usage,
         })
     }
 }
@@ -226,8 +266,14 @@ struct WireResponse {
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 enum WireAnswer {
-    Noul { noul: f64 },
-    Choice { choice: String, probabilities: BTreeMap<String, f64>, confidence: f64 },
+    Noul {
+        noul: f64,
+    },
+    Choice {
+        choice: String,
+        probabilities: BTreeMap<String, f64>,
+        confidence: f64,
+    },
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
 pub struct Usage {
@@ -253,22 +299,37 @@ pub struct ChoiceAnswer {
     confidence: f64,
 }
 impl ChoiceAnswer {
-    pub fn choice(&self) -> &str { &self.choice }
-    pub fn raw_probabilities(&self) -> &BTreeMap<String, f64> { &self.raw_probabilities }
-    pub fn normalized_probability(&self, option: &str) -> Option<f64> {
-        self.raw_probabilities.get(option).map(|value| value / self.raw_sum)
+    pub fn choice(&self) -> &str {
+        &self.choice
     }
-    pub fn confidence(&self) -> f64 { self.confidence }
+    pub fn raw_probabilities(&self) -> &BTreeMap<String, f64> {
+        &self.raw_probabilities
+    }
+    pub fn normalized_probability(&self, option: &str) -> Option<f64> {
+        self.raw_probabilities
+            .get(option)
+            .map(|value| value / self.raw_sum)
+    }
+    pub fn confidence(&self) -> f64 {
+        self.confidence
+    }
 }
 
 fn probability(value: f64) -> Result<(), CodecError> {
-    if value.is_finite() && (0.0..=1.0).contains(&value) { Ok(()) }
-    else { Err(CodecError::InvalidProbability) }
+    if value.is_finite() && (0.0..=1.0).contains(&value) {
+        Ok(())
+    } else {
+        Err(CodecError::InvalidProbability)
+    }
 }
 fn parse(bytes: &[u8], maximum: usize) -> Result<Value, CodecError> {
-    if bytes.len() > maximum { return Err(CodecError::TooLarge); }
+    if bytes.len() > maximum {
+        return Err(CodecError::TooLarge);
+    }
     let mut decoder = serde_json::Deserializer::from_slice(bytes);
-    let value = JsonSeed(0).deserialize(&mut decoder).map_err(|_| CodecError::InvalidJson)?;
+    let value = JsonSeed(0)
+        .deserialize(&mut decoder)
+        .map_err(|_| CodecError::InvalidJson)?;
     decoder.end().map_err(|_| CodecError::InvalidJson)?;
     Ok(value)
 }
@@ -281,5 +342,7 @@ impl Write for BoundedBuffer {
         self.0.extend_from_slice(bytes);
         Ok(bytes.len())
     }
-    fn flush(&mut self) -> io::Result<()> { Ok(()) }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
 }

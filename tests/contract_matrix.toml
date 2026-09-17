@@ -301,7 +301,9 @@ member_beads = ["sr-roadmap-l1i.2.5"]
 phase = "P1"
 title = "Define TypeSafe typed request and answer codecs"
 unit_property_tests = [
-    "tests/jev_contract.rs::request_and_answer_envelopes"
+    "tests/jev_codec.rs::minimal_noul_request_and_decode_response_succeed",
+    "tests/jev_codec.rs::question_option_and_answer_type_maps_must_match_the_request",
+    "tests/jev_codec.rs::chosen_option_must_be_an_argmax_and_exact_ties_are_allowed"
 ]
 e2e_suite = "transport"
 e2e_cases = ["typed-request-serialization", "answer-validation"]

@@ -10,6 +10,10 @@
   declaration validation remains distinct from an execution receipt.
 
 ### Added
+- Pure TypeSafe Jev Choice/Noul codecs with bounded JSON, duplicate-key
+  rejection, exact question/option matching, validated usage and distributions,
+  and separate raw versus rounding-normalized probabilities. Synthetic codec
+  checks do not establish recorded-live response compatibility or transport readiness.
 
 - Rust 2024 package with a pinned toolchain/lockfile, help/version bootstrap CLI,
   identity/provenance types, bounded resource accounting, and frozen evaluation
