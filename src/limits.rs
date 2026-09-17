@@ -811,6 +811,11 @@ impl BatchBounds {
         if max_http_attempts == 0 {
             return Err(LimitError::MissingLiveBatchRequestCap);
         }
+        if max_runtime.as_millis() == 0 {
+            return Err(LimitError::ZeroIsNotUnlimited {
+                name: "batch_runtime",
+            });
+        }
         let bounds = Self {
             start,
             max_runtime,

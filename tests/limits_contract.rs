@@ -478,6 +478,26 @@ fn attempt_limits_and_receipts_preserve_default_budget_without_network_admission
 }
 
 #[test]
+fn live_batch_rejects_zero_runtime_from_duration_arithmetic() {
+    let start = MonotonicMillis::from_millis(1_000);
+    let zero = start.saturating_duration_since(start);
+    assert_eq!(
+        BatchBounds::live(start, zero, 1),
+        Err(LimitError::ZeroIsNotUnlimited {
+            name: "batch_runtime"
+        })
+    );
+
+    let positive = DurationMillis::new("batch_runtime", 201, 600_000).unwrap();
+    let batch = BatchBounds::live(start, positive, 1).unwrap();
+    assert_eq!(batch.per_case_deadline_at(start).unwrap().total(), positive);
+    assert_eq!(
+        BatchBounds::live(start, positive, 0),
+        Err(LimitError::MissingLiveBatchRequestCap)
+    );
+}
+
+#[test]
 fn batch_and_maintenance_bounds_are_separate_from_one_shot_invocation() {
     let batch = BatchBounds::replay_default(MonotonicMillis::from_millis(0)).unwrap();
     assert_eq!(batch.max_runtime().as_millis(), 600_000);
