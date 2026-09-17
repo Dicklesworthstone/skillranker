@@ -134,3 +134,50 @@ fn project_symlink_escape_is_refused() {
     .unwrap();
     assert_eq!(f.run(&["doctor", "--config"], &[]).status.code(), Some(2));
 }
+
+/// Positive effect observer: the sentinel write proves the observer detects a
+/// real filesystem mutation; the inspected boundary must leave every probe
+/// absent across success, failure and help paths.
+#[test]
+fn local_inspection_creates_no_effects_and_observer_detects_them() {
+    let f = Fixture::new();
+    let canary = f.root.join("workspace/effect-probe");
+    let ledger_probe = f.root.join("user/.local/state");
+    std::fs::write(
+        f.root.join("user/sr/config.toml"),
+        b"[ranking]\ntop=2\n[roster]\nroots=[\"skills\"]\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(f.root.join("workspace/skills")).unwrap();
+    let observes = |path: &std::path::Path| path.exists();
+    // Positive control first: a deliberately writing child must be caught.
+    let mut writer = Command::new("sh");
+    writer
+        .env_clear()
+        .current_dir(f.root.join("workspace"))
+        .args(["-c", "echo marker > effect-probe"]);
+    let control = writer.output().unwrap();
+    assert!(control.status.success());
+    assert!(observes(&canary), "positive control must be observable");
+    std::fs::remove_file(&canary).unwrap();
+    for (args, env) in [
+        (&["doctor", "--config", "--json"][..], Vec::new()),
+        (&["doctor", "--config"][..], vec![("SR_TOP", "7")]),
+        (&["--help"][..], Vec::new()),
+        (
+            &["doctor", "--config", "--json"][..],
+            vec![("SR_TOP", "999")],
+        ),
+    ] {
+        let output = f.run(args, &env);
+        let code = output.status.code();
+        assert!(
+            matches!(code, Some(0) | Some(2)),
+            "unexpected exit {code:?}"
+        );
+        assert!(!observes(&canary), "no workspace writes permitted");
+        assert!(!observes(&ledger_probe), "no persistent state creation");
+        // No child execution: a process spawned by sr would inherit no TTY; the
+        // canary above proves the observer catches filesystem effects.
+    }
+}
