@@ -1,0 +1,115 @@
+{
+  "schema_version": "skillranker.output_contract_verification.v1",
+  "date": "2026-09-17",
+  "bead": "sr-roadmap-l1i.1.3",
+  "scope": "Pure output schema validation on the committed foundation plus this bead; not live Jev, rank CLI, hook, report computation, or P0 phase acceptance",
+  "platform": "Linux x86_64",
+  "toolchain_file": "rust-toolchain.toml (nightly-2026-08-31)",
+  "base_commit": "21a8bda31b21035c795882d598908b7c8e080dfa",
+  "verification_copy": "/data/projects/skillranker-output-proof-tg5rmgp8",
+  "build_and_test_inputs_sha256": {
+    "COMPREHENSIVE_PLAN_TO_DESIGN_SKILLRANKER.md": "33571bc9d881374b138a56934315933a34ec47be3689c7841ccce0d015bd95f9",
+    "Cargo.lock": "6e563c4d037a81e85324dcba2243ae809e66954128282c3d54d9d3d700ce3f81",
+    "Cargo.toml": "e2787e42dc7bcd45363dc0a2716681e96853add4191d4f04c6c605ef1a2a0bc1",
+    "README.md": "98a17718555de4f2fa49f8efbf52d607a42cce6ddd457f23744040df9d2dd13c",
+    "rust-toolchain.toml": "5a13f4f286294e6f7b4dcc76ebca9ddebc0cfcbe53e37f9123bdd17f21096985",
+    "src/context/mod.rs": "bea16c86b8364d1c38c2121b353f318475453a24254accf6ba29c9e2db32d462",
+    "src/identity.rs": "33a01c23a604646c673e5881511b5c6d15dd0cf4208b8b101c44361214569e84",
+    "src/lib.rs": "4151fd6d12a559d2c45282c216de6842eea110c072494c1e1f71de4c6345c066",
+    "src/limits.rs": "1a988c44c00531cf2ee5d84a9204af4cdfe8e77658531f9f4dfc2b5a739d0c29",
+    "src/main.rs": "7a4a7076084abe59f93ee9bcdb40828e84231ec2217f0e2e69dc24905efbf701",
+    "src/output/mod.rs": "489c4a74a0e899737e775aba6359d5c439f41851e4c63051693913240b438816",
+    "src/roster/mod.rs": "d72df001efeda6791f4ff1e1590fd23c62f7d5000e52c7dc1f7d52fb8fb51fbf",
+    "tests/bootstrap_cli.rs": "c2505e7c666db2d7e9835ac21094487c17ca5d6fc175ed9682c10c5c773d235b",
+    "tests/eval/README.md": "0236775fe98ad10395956e06d6effa4cbb7e189ed3385ed804fc11cc467d6e65",
+    "tests/eval/evaluation_policy.v1.json": "b0f35abdc436c6cd91358d290850d22cd2572979067821e06e3b30cf6ffed5da",
+    "tests/eval/expected_values.v1.json": "a05aa971a0c99f1587c5ffcefcbc3842f0055fdbfb817b7fd694150a3ea5dda6",
+    "tests/eval/synthetic_cases.v1.jsonl": "50ffd624fb6d065f8a79e672daf8d5bd305c47d8f40358ba9d7543c149085f98",
+    "tests/fixtures/normalized-context.v1.json": "7a809b03731546429c673c17a7e521d87bf9484b4587e8c64199da9ad0c46592",
+    "tests/fixtures/output-abstain.v1.json": "7f6737083777e5e122c53e0982c06e2d06221736aef14c0451657353eaffb64f",
+    "tests/fixtures/output-demo.v1.json": "3e5028367ee3bebf039d61203a11ecf09eb1b9468f8160ec805a31565521a1a6",
+    "tests/fixtures/output-explicit.v1.json": "ff2ff0d3f5fa489670b863c5db51731cb7d05513eb501098536d62f2eed65f96",
+    "tests/fixtures/output-ranked.v1.json": "bd7863ea60710489fd733693f4803267f0421577d867265f06c3fb1a2d6b6b47",
+    "tests/fixtures/output-replay.v1.json": "eebbb2ec8183e59154d21d31792e520584686f945ecbadf2bcd76e6e88f6368e",
+    "tests/fixtures/output-report.v1.json": "8f92c4d4f784e5cd5c18342c33afe2227db451cab2d6974513716235e07e36e8",
+    "tests/fixtures/output-unavailable.v1.json": "4747a4d3195ddb319a511c706445db72a1e24af1967cf7cf87954db71b5e31e1",
+    "tests/identity_contract.rs": "831f213a4ae01d55a8aeaf3c5e057146c051c8f1360f8d2fbc5f3354c6233ae0",
+    "tests/limits_contract.rs": "8bf799044a9d8389e3d615e9fcfa6e1a0b834e02ac6af86efd2af7f72cb8581e",
+    "tests/output_contract.rs": "0b19d81cc35585b4c9e8c7ac96cf1a1900d0e451b701e4f8beca8d260d26eebf"
+  },
+  "remote_checks": [
+    {
+      "command": "RCH_REQUIRE_REMOTE=1 rch exec --source-content-receipt -- cargo test --locked -j 4",
+      "result": "passed",
+      "worker": "vmi1264463",
+      "build_id": "30024414133223647",
+      "receipt_root": "bf226978f5a19f5f5656c82d94a483b728c65b8ccc5e6c099286fa8d50f250e1",
+      "command_sha256": "75d20e122f32aacfed9cff50bfb0b203cdc9e91c2fefa88eda112ee8aad1932f",
+      "log_sha256": "c320aa3d590857cbeb27d7ad65e41eae8434260cc2182286b84626a9a21c8655",
+      "input_hashes_match": true,
+      "rust_tests_passed": 51,
+      "output_contract_tests_passed": 19
+    },
+    {
+      "command": "RCH_REQUIRE_REMOTE=1 rch exec --source-content-receipt -- cargo check --locked --all-targets -j 4",
+      "result": "passed",
+      "worker": "vmi1153651",
+      "build_id": "30024414133223648",
+      "receipt_root": "ffddb62b8624bd64c00a47f0de5f956ba5213e744c11b938f334da0fe80aa7ad",
+      "command_sha256": "f5b34b3ec490a13318eb8f03549e2ba61c1b94b1a2a29ed49e91c279ceb5f13d",
+      "log_sha256": "397848ed02909a636a1703a2b813d504a6807746ff28486059e4048217e6539b",
+      "input_hashes_match": true
+    },
+    {
+      "command": "RCH_REQUIRE_REMOTE=1 rch exec --source-content-receipt -- cargo clippy --locked --all-targets --all-features -j 4 -- -D warnings",
+      "result": "passed",
+      "worker": "ovh-b",
+      "build_id": "30024414133223660",
+      "receipt_root": "16d91f4c15951146868fc427bdffc195578993f090cdde37477b02236a9fb523",
+      "command_sha256": "cdee3301eb4f7765ef780101709b446215fc92b774371ed6e375ec3a506c2101",
+      "log_sha256": "49f3bf47d44a39a485681099446e0be6c29c0a7d31927b28ca556a002b5bd766",
+      "input_hashes_match": true
+    }
+  ],
+  "local_checks": {
+    "cargo_fmt_check": "passed",
+    "document_json_examples": 5,
+    "fixture_json_documents": 7,
+    "local_document_links": "passed",
+    "git_diff_check": "passed",
+    "ubs": {
+      "command": "UBS_SKIP_RUST_BUILD=1 ubs --staged --ci --no-color",
+      "result": "completed",
+      "critical": 0,
+      "warnings": 146,
+      "triage": "Assertions, parser unwraps, indexing, cloning and formatting are confined to bounded synthetic test cases. Production casts widen bounded counts or the explicit exit enum. No suppressions added; compilation delegated to RCH.",
+      "log_sha256": "c801ff74b2bff9650de01aabe937afa607038a78e04beb47217039142e8c4821"
+    }
+  },
+  "earlier_attempts": [
+    {
+      "attempt": "final Clippy on vmi1152480",
+      "result": "compiler exit 0, but SSH post-run source barrier failed; not accepted without receipt; repeated on ovh-b"
+    },
+    {
+      "attempt": "initial baseline plus first output implementation",
+      "tests": 51,
+      "check": "passed",
+      "clippy": "failed with three style findings; corrected before accepted runs"
+    },
+    {
+      "attempt": "snapshot placed outside canonical /data/projects root",
+      "result": "RCH refused; no local fallback"
+    },
+    {
+      "attempt": "Cargo offline optimization",
+      "result": "RCH per-job Git dependency checkout unavailable; retried locked commands with normal dependency fetch"
+    }
+  ],
+  "artifact_directory": "/data/tmp/skillranker-output-proof-tg5rmgp8",
+  "publication_context": {
+    "base_at_preparation": "a6d8325c4f8905097154643669d631903320a2d3",
+    "scope_note": "Peer adapter, runner and agent-document commits landed after the isolated proof base. Output source, tests, fixtures and examples match accepted hashes. The output export is published with this module after the dangling-export repair, preserving committed peer exports. Combined P0 integration remains a separate gate."
+  },
+  "output_contract_document_sha256": "f3be0d65ede292508053ec92221eaa28d62bb0c1ed8fd58c926da4ee8c98c972"
+}

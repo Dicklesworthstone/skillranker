@@ -1,0 +1,84 @@
+{
+  "schema_version": 1,
+  "event_id": "example-event-001",
+  "decision": "ranked",
+  "reason": "eligible-candidates",
+  "harness": "claude_code",
+  "context_quality": "complete",
+  "quality": {
+    "prompt_complete": true,
+    "task_anchor_known": true,
+    "history_windowed": true,
+    "attachments_omitted": false,
+    "source_gaps": false
+  },
+  "roster": {
+    "total": 2,
+    "eligible": 2,
+    "wide_candidates": 2,
+    "shortlist": 2,
+    "partial": false,
+    "retrieval": "full",
+    "provenance": {
+      "snapshot_id": "000000000000000000000000000000000000000000000000000000000000000a",
+      "policy_version": "ranking-v1",
+      "wide_set_id": "000000000000000000000000000000000000000000000000000000000000000b",
+      "rerank_set_id": "000000000000000000000000000000000000000000000000000000000000000c"
+    }
+  },
+  "needs_skill": 0.74,
+  "choice_confidence": 0.81,
+  "none_probability": 0.1,
+  "phase": "debugging",
+  "skills": [
+    {
+      "rank": 1,
+      "skill_id": "s_01",
+      "name": "rust-test-triage",
+      "invocation_name": "rust-test-triage",
+      "rank_score": 0.888889,
+      "rerank_probability": 0.6,
+      "wide_probability": 0.55,
+      "fits": 0.8,
+      "path": ".claude/skills/rust-test-triage/SKILL.md",
+      "content_hash": "0000000000000000000000000000000000000000000000000000000000000001"
+    },
+    {
+      "rank": 2,
+      "skill_id": "s_02",
+      "name": "rust-code-review",
+      "invocation_name": "rust-code-review",
+      "rank_score": 0.111111,
+      "rerank_probability": 0.3,
+      "wide_probability": 0.35,
+      "fits": 0.5,
+      "path": ".claude/skills/rust-code-review/SKILL.md",
+      "content_hash": "0000000000000000000000000000000000000000000000000000000000000002"
+    }
+  ],
+  "omitted_rank_mass": 0.0,
+  "cache": {
+    "hit": false,
+    "wide_hit": false,
+    "rerank_hit": false,
+    "age_ms": null,
+    "stale": false
+  },
+  "model": {
+    "requested": "jev-latest",
+    "wide_returned": "jev-latest",
+    "rerank_returned": "jev-latest",
+    "immutable_revision": null
+  },
+  "usage": {
+    "requests": 2,
+    "http_attempts": 2,
+    "input_tokens": 6400,
+    "output_tokens": 480,
+    "unknown_usage_attempts": 0
+  },
+  "persistence": "recorded",
+  "warnings": [],
+  "warnings_omitted": 0,
+  "elapsed_ms": 720
+}

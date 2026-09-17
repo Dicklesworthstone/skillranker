@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "kind": "report",
+  "actionable": false,
+  "run_status": "complete",
+  "gate_status": "passed",
+  "evidence_origin": "recorded",
+  "completeness": {
+    "cases_requested": 1,
+    "cases_completed": 1,
+    "stages_required": 1,
+    "stages_completed": 1,
+    "evidence_compatible": true
+  }
+}

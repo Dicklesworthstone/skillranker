@@ -822,13 +822,26 @@ The example below illustrates a two-candidate eligible set. Values are illustrat
   "reason": "eligible-candidates",
   "harness": "claude_code",
   "context_quality": "complete",
+  "quality": {
+    "prompt_complete": true,
+    "task_anchor_known": true,
+    "history_windowed": true,
+    "attachments_omitted": false,
+    "source_gaps": false
+  },
   "roster": {
     "total": 182,
     "eligible": 178,
     "wide_candidates": 178,
     "shortlist": 8,
     "partial": false,
-    "retrieval": "full"
+    "retrieval": "full",
+    "provenance": {
+      "snapshot_id": "000000000000000000000000000000000000000000000000000000000000000a",
+      "policy_version": "ranking-v1",
+      "wide_set_id": "000000000000000000000000000000000000000000000000000000000000000b",
+      "rerank_set_id": "000000000000000000000000000000000000000000000000000000000000000c"
+    }
   },
   "needs_skill": 0.74,
   "choice_confidence": 0.81,
@@ -845,7 +858,7 @@ The example below illustrates a two-candidate eligible set. Values are illustrat
       "wide_probability": 0.41,
       "fits": 0.8,
       "path": ".claude/skills/rust-cargo-test-triage/SKILL.md",
-      "content_hash": "example-content-digest-02"
+      "content_hash": "0000000000000000000000000000000000000000000000000000000000000002"
     },
     {
       "rank": 2,
@@ -857,7 +870,7 @@ The example below illustrates a two-candidate eligible set. Values are illustrat
       "wide_probability": 0.12,
       "fits": 0.6,
       "path": ".claude/skills/lean4-universe-levels/SKILL.md",
-      "content_hash": "example-content-digest-03"
+      "content_hash": "0000000000000000000000000000000000000000000000000000000000000003"
     }
   ],
   "omitted_rank_mass": 0.0,
@@ -878,6 +891,7 @@ The example below illustrates a two-candidate eligible set. Values are illustrat
   },
   "persistence": "recorded",
   "warnings": [],
+  "warnings_omitted": 0,
   "elapsed_ms": 720
 }
 ```

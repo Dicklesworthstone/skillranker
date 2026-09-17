@@ -1,0 +1,160 @@
+# Output contract v1
+
+`skillranker::output::OutputDocument` validates and serializes bounded JSON.
+It is an immutable data envelope: accepting a document does not establish user
+consent, current roster visibility, execution, delivery, or quality. The module
+has no filesystem, subprocess, network, persistence, or hook publication effects.
+
+Use `from_json` at an external byte boundary. It rejects duplicate keys at every
+depth, trailing JSON, incompatible versions, invalid discriminants, and malformed
+mandatory fields. `from_value` accepts locally constructed values; a permissive
+parser upstream cannot recover duplicate keys. `to_json` returns a complete buffer
+before a caller begins publication. All three enforce the 2 MiB encoded limit;
+nesting is limited to 64 levels. Unknown additive fields retain their JSON values,
+including nested nulls and 64-bit integers, through a round trip. Whitespace and
+object key order are not preserved. Unknown fields never grant authority.
+
+The public [README example](../README.md#json-output), comprehensive-plan example,
+and `tests/fixtures/output-*.json` are checked by `tests/output_contract.rs`.
+Every fixture is synthetic protocol data, including fixtures illustrating a
+recorded report; none establishes a live evaluation or a passed product gate.
+Illustrative hashes have valid syntax and do not identify actual skill files.
+
+## Decisions and nullability
+
+All full decisions have `schema_version: 1`, opaque `event_id`, `harness`, a
+kebab-case `reason`, `context_quality`, `quality`, `roster`, stage estimates,
+`skills`, `omitted_rank_mass`, cache/model/usage metadata, persistence status,
+warnings, `warnings_omitted`, and `elapsed_ms`.
+
+| Decision | Skills | Model estimates | Ordinary CLI exit |
+| --- | --- | --- | --- |
+| `ranked` | Nonempty, at most 32, consecutive ranks and distinct stable IDs | Evaluated probabilities, phase, and scores | 0 |
+| `explicit` | Nonempty locally resolved references | All estimates, phase, omitted mass, and model identities null; provider usage zero | 0 |
+| `abstain` | Empty | Evaluated stages retain values; other stages null | 0 |
+| `unavailable` | Empty | Available stage values may remain; absent stages null | Required error category |
+
+Each skill separates `skill_id`, display `name`, validated `invocation_name`,
+nullable local `path`, and a 64-character lowercase hexadecimal `content_hash`.
+Reserved `__none__` is never a skill ID. The schema validates identity syntax;
+only the roster/publication boundary can establish that a target is loadable.
+
+`wide_probability`, `rerank_probability`, and `fits` are provider estimates;
+`rank_score` is a local normalized score. All are finite and in [0,1]. Returned
+wide probabilities sum to at most one; returned rerank probabilities plus the
+none probability sum to at most one. A returned
+ranked candidate must beat `none_probability` strictly. Returned scores plus
+`omitted_rank_mass` sum to one within 0.0001 rounding tolerance; top-K output
+does not renormalize its displayed subset. The schema cannot recompute a scoring
+formula or validate the complete provider distribution from this selected subset.
+`choice_confidence` and `none_probability` are both null before rerank evaluation.
+Zero is an evaluated estimate, never an encoding for an unevaluated stage.
+
+`quality` requires five booleans: `prompt_complete`, `task_anchor_known`,
+`history_windowed`, `attachments_omitted`, and `source_gaps`. Summary values are
+`complete`, `prompt_only`, `partial`, and `insufficient`. Ranked results require
+a complete prompt and known anchor; insufficient context permits only unavailable
+output. Windowed history and omitted nonessential attachments are representable.
+Partial roster positives still require independent target revalidation; this
+schema does not authorize them or turn a partial result into a global negative.
+
+Roster counts are bounded by 10,000 discovered, 254 wide candidates and 32
+shortlist entries, with subset count checks. `retrieval` is `full`, `quill-bm25`,
+or `not-evaluated`. Required `provenance` contains a snapshot digest,
+`policy_version`, and nullable `wide_set_id`/`rerank_set_id` digests. Candidate-set
+IDs are present when the corresponding set is populated; they identify the
+comparison scope, not successful provider execution. Snapshot and set digests
+use `ContentHash`'s encoding; the roster builder supplies their canonical bytes.
+
+Cache fields require strict booleans and nullable age. Stale cached decisions
+cannot be serialized as fresh results. A full cache hit has zero current request,
+attempt, and token usage. Default v1 usage permits at most two logical requests
+and four HTTP attempts, with unknown-usage attempts explicitly counted. Returned
+model identities remain separate from the requested alias; a missing immutable
+revision remains null. Persistence is `recorded`, `disabled`, or `unavailable`;
+recorded metadata does not prove harness delivery.
+
+## Failure envelopes
+
+A failure before input admission may contain just version, unavailable decision,
+and `error: {code, kind, message, hint, retryable}`. It must not fabricate a session,
+roster, scores, or model metadata. `OutputDocument::failure` constructs this form
+with fixed diagnostics. Optional unresolved references contain `reference` and a
+`missing`, `ambiguous`, or `restricted` reason; they never substitute suggestions.
+
+| Exit | Stable `error.kind` values |
+| --- | --- |
+| 2 | `invalid-usage`, `invalid-configuration` |
+| 3 | `missing-session`, `ambiguous-session`, `superseded` |
+| 4 | `provider-failure`, `authentication`, `network-failure`, `request-budget`, `provider-cooldown`, `budget-state` |
+| 5 | `empty-roster`, `unusable-roster`, `unresolved-explicit`, `incomplete-roster`, `roster-changed`, `retrieval-empty`, `retrieval-failure` |
+| 6 | `timeout` |
+| 7 | `malformed-input`, `oversized-input`, `unsupported-input`, `unsupported-source-mode`, `insufficient-context`, `output-limit` |
+| 8 | `network-denied` |
+| 9 | `storage-failure` |
+| 10 | `invalid-provider-response` |
+| 11 | `cache-miss` |
+
+Codes and kinds must agree. Missing TypeSafe credentials use `authentication`;
+credentials themselves do not grant network consent. Retryability describes a
+fresh invocation with the intended inputs, not permission to retry past policy
+or deadline limits. Signals and broken pipes remain platform outcomes.
+
+Warnings contain bounded `kind`, positive or zero `count`, and `message`; there
+are at most 32 detail objects plus an omitted-detail count. Known text fields are
+bounded to 4,096 bytes and reject control characters. Schema errors and `Debug`
+never echo rejected keys, values, parser messages, or document bodies. Explicit
+serialization preserves data, so callers must still redact disclosure fields;
+validation is not a secret scanner or a terminal renderer.
+
+## Non-actionable artifacts
+
+Artifacts require `schema_version: 1`, `kind: demo|replay|report`, and
+`actionable: false`. They have no top-level decision or hook envelope. Demo and
+replay carry a `historical` decision, optionally with a `recomputed` decision;
+a missing historical decision is representable only in a partial run. Historical
+decisions are validated as inert data, including unavailable/error decisions.
+Demo evidence is synthetic and has `gate_status: not-applicable`.
+
+`completeness` records `cases_requested`, `cases_completed`, `stages_required`,
+`stages_completed`, and `evidence_compatible`. Counts are unsigned and bounded
+(10,000 cases and 20,000 stages), and completed counts cannot exceed requested
+counts. A complete run must account for all declared cases and stages. The
+evaluator must derive these counts from the requested cohort; the serializer
+cannot authenticate a supplied cohort or evidence claim.
+
+| Run status | Allowed gate statuses | Meaning of exit 0 |
+| --- | --- | --- |
+| `complete` | `passed`, `failed`, `not-established`, `not-applicable` | Artifact generation succeeded |
+| `partial` | `failed`, `not-established`, `not-applicable` | Available partial work was reported |
+
+`passed` additionally requires compatible, nonsynthetic evidence, a nonempty
+case cohort, and nonempty required stages. Missing comparison stages use
+partial/not-established. A known failed gate may be reported even if other work
+is partial. A fatal current error is allowed only in a partial artifact and
+retains its nonzero code; historical errors do not change report execution status.
+Promotion must verify cohort identity and actual evidence as well as these fields.
+
+## Snapshot-bound traces
+
+An optional `trace` contains `cursor`, `total`, `entries`, and `next_offset`.
+`TraceCursor` binds version, snapshot digest, query digest, and offset.
+`resume(current_snapshot, current_query, total)` rejects changed snapshots or
+queries and invalid offsets. Consumers must supply current expected identities;
+an imported page cannot establish currentness by comparing its own IDs to itself.
+This cursor is unrelated to transcript ingestion positions.
+An embedded trace must also match its enclosing decision's roster snapshot.
+
+Pages contain at most 128 entries; traces contain at most 80,000 entries (eight
+stages over the bounded 10,000-skill roster). A nonfinal page must make progress
+and advance exactly by its entry count; a final page has null `next_offset`.
+Each entry records stable `skill_id`, stage, status, nullable finite `value` and
+`threshold`, and nullable reason. Lexical scores may exceed one; these generic
+trace operands are not probability fields.
+
+Stages are `discovery`, `visibility`, `local-policy`, `quill-admission`,
+`wide-shortlist`, `fit-none`, `ordering`, and `publication`. Statuses are `passed`,
+`excluded`, `not-evaluated`, and `not-in-snapshot`. The latter two require null
+operands and reason. Reasons for observed stages are local identifiers, not
+invented model reasoning. Actual trace production and CLI pagination belong to
+their downstream implementation beads.
