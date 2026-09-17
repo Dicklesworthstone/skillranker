@@ -709,7 +709,9 @@ member_beads = ["sr-roadmap-l1i.4.1"]
 phase = "P3"
 title = "Implement exact source selection and source-mode errors"
 unit_property_tests = [
-    "tests/context_contract.rs::exact_source_selection"
+    "tests/source_selection.rs::exact_source_selection",
+    "tests/source_selection.rs::failed_chosen_source_never_reads_a_successful_neighbor",
+    "tests/source_selection.rs::linked_worktrees_are_distinct_despite_a_shared_git_directory"
 ]
 e2e_suite = "context"
 e2e_cases = ["no-cross-session-fallthrough"]

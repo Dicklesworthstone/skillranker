@@ -5,7 +5,7 @@
 //! resolved workspace. They remain responsible for filesystem authorization,
 //! native parsing and cass capability checks; selection grants none of those.
 
-use crate::adapter::{SelectedSource, SourceRequest, select_source};
+use crate::adapter::{AdapterError, SelectedSource, SourceRequest, select_source};
 use crate::identity::{HarnessId, SessionIdentity, SourceProvenance, WorkspaceId};
 use crate::limits::{DISCOVERY_FILES, DISCOVERY_PARSED_BYTES};
 use crate::output::ErrorKind;
@@ -34,6 +34,9 @@ impl SourcePolicy {
 /// `context = "-"` and `claude_hook` are the only stdin forms.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct SourceOptions {
+    /// Caller-observed offered stdin. Do not infer its format or read it here.
+    /// This is not the controlling-terminal availability used for a choice UI.
+    pub stdin_supplied: bool,
     pub claude_hook: bool,
     pub context: Option<LocalPath>,
     pub transcript: Option<LocalPath>,
@@ -162,6 +165,7 @@ impl SessionChoices {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SourceError {
     ConflictingFlags,
+    MissingStdinMode,
     HarnessRequired,
     UnsupportedHarness,
     InvalidPath,
@@ -179,6 +183,7 @@ impl SourceError {
     pub const fn kind(self) -> ErrorKind {
         match self {
             Self::ConflictingFlags
+            | Self::MissingStdinMode
             | Self::HarnessRequired
             | Self::InvalidPath
             | Self::InvalidChoice => ErrorKind::InvalidUsage,
@@ -194,6 +199,9 @@ impl SourceError {
 
     pub const fn hint(self) -> &'static str {
         match self {
+            Self::MissingStdinMode => {
+                "Select --context - or the dedicated hook input mode to read stdin."
+            }
             Self::CassUnavailableInMode => {
                 "Choose a direct transcript or normalized context in this mode."
             }
@@ -212,6 +220,7 @@ impl fmt::Display for SourceError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Self::ConflictingFlags => "conflicting source or network flags",
+            Self::MissingStdinMode => "stdin requires an explicit input mode",
             Self::HarnessRequired => "native transcript requires a harness",
             Self::UnsupportedHarness => "unsupported native transcript harness",
             Self::InvalidPath => "invalid source path",
@@ -254,14 +263,17 @@ impl SourceOptions {
             context_file: self.context.is_some(),
             native_transcript: self.transcript.is_some(),
             cass_session: self.cass_session.is_some(),
-            // No probe or speculative read of stdin: only flags select it.
-            stdin_present: false,
+            // Caller observation, never an internal probe or speculative read.
+            stdin_present: self.stdin_supplied,
             stdin_mode_explicit: self
                 .context
                 .as_ref()
                 .is_some_and(|p| p.as_path() == Path::new("-")),
         })
-        .map_err(|_| SourceError::ConflictingFlags)?;
+        .map_err(|error| match error {
+            AdapterError::MissingExplicitStdinMode => SourceError::MissingStdinMode,
+            _ => SourceError::ConflictingFlags,
+        })?;
         if (self.latest && mode != SelectedSource::Discovery)
             || (self.harness.is_some() && self.transcript.is_none())
             || (policy.allow_network && (policy.offline || policy.dry_run || policy.local_only))

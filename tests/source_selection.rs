@@ -17,7 +17,7 @@ fn path(value: impl Into<PathBuf>) -> LocalPath {
 }
 
 fn workspace() -> WorkspaceId {
-    WorkspaceId::new("workspace-main".into()).unwrap()
+    WorkspaceId::new("workspace-main").unwrap()
 }
 
 fn candidate(session: &str, time: i64) -> SessionCandidate {
@@ -25,11 +25,11 @@ fn candidate(session: &str, time: i64) -> SessionCandidate {
         target: SourceTarget::ClaudeTranscript(path(format!("{session}.jsonl"))),
         identity: SessionIdentity {
             source: SourceProvenance::Native {
-                adapter: AdapterId::new("claude_code".into()).unwrap(),
-                version: AdapterVersion::new("1".into()).unwrap(),
+                adapter: AdapterId::new("claude_code").unwrap(),
+                version: AdapterVersion::new("1").unwrap(),
             },
             workspace: Some(workspace()),
-            session: Some(SessionId::new(session.into()).unwrap()),
+            session: Some(SessionId::new(session).unwrap()),
             agent: None,
             branch: None,
             epoch: None,
@@ -88,7 +88,7 @@ fn exact_source_selection() {
         (
             SourceOptions {
                 transcript: Some(path("session.jsonl")),
-                harness: Some(HarnessId::new("claude_code".into()).unwrap()),
+                harness: Some(HarnessId::new("claude_code").unwrap()),
                 ..Default::default()
             },
             SourceTarget::ClaudeTranscript(path("session.jsonl")),
@@ -134,7 +134,7 @@ fn conflicting_flags_and_harness_errors_precede_discovery() {
     };
     assert_eq!(explicit(&native).unwrap_err(), SourceError::HarnessRequired);
     let unsupported = SourceOptions {
-        harness: Some(HarnessId::new("unverified-harness".into()).unwrap()),
+        harness: Some(HarnessId::new("unverified-harness").unwrap()),
         ..native
     };
     assert_eq!(
@@ -148,7 +148,7 @@ fn conflicting_flags_and_harness_errors_precede_discovery() {
             ..Default::default()
         },
         SourceOptions {
-            harness: Some(HarnessId::new("claude_code".into()).unwrap()),
+            harness: Some(HarnessId::new("claude_code").unwrap()),
             ..Default::default()
         },
     ] {
@@ -163,6 +163,18 @@ fn conflicting_flags_and_harness_errors_precede_discovery() {
 fn non_tty_and_json_shape_do_not_select_stdin() {
     let hook_bytes = br#"{"session_id":"private","hook_event_name":"UserPromptSubmit"}"#;
     let mut stdin = Cursor::new(hook_bytes);
+    let unsolicited = SourceOptions {
+        stdin_supplied: true,
+        ..Default::default()
+    };
+    let error = unsolicited
+        .resolve(workspace(), SourcePolicy::default(), false, |_, _| {
+            panic!("unsolicited pipe must fail before discovery")
+        })
+        .unwrap_err();
+    assert_eq!(error, SourceError::MissingStdinMode);
+    assert_eq!(error.kind(), ErrorKind::InvalidUsage);
+    // No offered stdin: a noninteractive invocation may discover a unique source.
     let resolved = SourceOptions::default()
         .resolve(workspace(), SourcePolicy::default(), false, |_, _| {
             Ok(inventory(vec![candidate("unique", 1)]))
@@ -174,9 +186,8 @@ fn non_tty_and_json_shape_do_not_select_stdin() {
             Ok(())
         })
         .unwrap();
-    assert_eq!(stdin.position(), 0);
-
     let normalized = explicit(&SourceOptions {
+        stdin_supplied: true,
         context: Some(path("-")),
         ..Default::default()
     })
@@ -192,6 +203,29 @@ fn non_tty_and_json_shape_do_not_select_stdin() {
     });
     assert_eq!(result, Err(SourceError::InvalidInventory));
     assert_eq!(stdin.position() as usize, hook_bytes.len());
+    let hook = explicit(&SourceOptions {
+        claude_hook: true,
+        stdin_supplied: true,
+        ..Default::default()
+    })
+    .unwrap();
+    assert_eq!(hook.target(), &SourceTarget::ClaudeHookStdin);
+    let file = SourceOptions {
+        context: Some(path("context.json")),
+        stdin_supplied: true,
+        ..Default::default()
+    };
+    assert_eq!(explicit(&file).unwrap_err(), SourceError::MissingStdinMode);
+    let conflicting = SourceOptions {
+        claude_hook: true,
+        context: Some(path("context.json")),
+        stdin_supplied: true,
+        ..Default::default()
+    };
+    assert_eq!(
+        explicit(&conflicting).unwrap_err(),
+        SourceError::ConflictingFlags
+    );
 }
 
 #[test]
@@ -352,8 +386,8 @@ fn latest_is_explicit_disclosed_and_rejects_unknown_or_tied_recency() {
 fn subagents_and_branches_never_collapse_into_one_session() {
     let a = candidate("same-session", 1);
     let mut b = a.clone();
-    b.identity.agent = Some(AgentId::new("child".into()).unwrap());
-    b.identity.branch = Some(BranchId::new("fork".into()).unwrap());
+    b.identity.agent = Some(AgentId::new("child").unwrap());
+    b.identity.branch = Some(BranchId::new("fork").unwrap());
     assert_eq!(
         SourceOptions::default()
             .resolve(workspace(), SourcePolicy::default(), false, |_, _| Ok(
@@ -440,8 +474,8 @@ fn cass_source_identity_survives_selection_and_local_policy_reaches_discovery() 
     let mut cass = candidate("archive-session", 1);
     cass.target = SourceTarget::CassSession(path("archive.json"));
     cass.identity.source = SourceProvenance::Cass {
-        source: Some(SourceId::new("local-archive".into()).unwrap()),
-        version: AdapterVersion::new("0.8.0".into()).unwrap(),
+        source: Some(SourceId::new("local-archive").unwrap()),
+        version: AdapterVersion::new("0.8.0").unwrap(),
     };
     let selection = selected(
         SourceOptions::default()
@@ -650,7 +684,7 @@ fn paths_are_bounded_and_diagnostics_do_not_expose_private_input() {
     assert!(!format!("{options:?} {selection:?}").contains(canary));
     let unsupported = SourceOptions {
         transcript: Some(path(canary)),
-        harness: Some(HarnessId::new(canary.into()).unwrap()),
+        harness: Some(HarnessId::new(canary).unwrap()),
         ..Default::default()
     };
     let error = explicit(&unsupported).unwrap_err();
