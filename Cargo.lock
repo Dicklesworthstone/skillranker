@@ -1852,6 +1852,7 @@ dependencies = [
  "blake3",
  "frankensearch-core",
  "frankensearch-quill",
+ "nix",
  "regex",
  "serde",
  "serde_json",
