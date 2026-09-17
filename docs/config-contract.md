@@ -21,8 +21,9 @@ The command boundary supplies bounded entries: dotted paths for file and CLI
 layers, and an environment snapshot. It must reject duplicate TOML keys during
 decoding and finish this validation before discovery, networking or mutation.
 Any issue invalidates the whole policy; up to 32 issues are listed, with the rest
-counted. Diagnostics name layers and keys, never values. Unknown key names are
-printed only when short and ASCII-graphic.
+counted. Diagnostics name layers and known registry keys, never values. Unknown
+key names are discarded from diagnostic state and rendered as `<unknown key>`;
+their text cannot appear in Display, Debug, or the public issue list.
 
 | Key | Environment | CLI | User | Project | Env | CLI |
 | --- | --- | --- | --- | --- | --- | --- |
