@@ -9,7 +9,7 @@ use crate::limits::{
     InvocationDeadline, LimitError, MonotonicMillis,
 };
 use asupersync::runtime::{Runtime, RuntimeBuilder};
-use asupersync::{Budget, CancelKind, Cx, Time};
+use asupersync::{Budget, CancelKind, Cx};
 use std::io::{self, Read};
 use std::time::{Duration, Instant};
 
@@ -20,6 +20,8 @@ pub enum RuntimeError {
     LateResultSuppressed,
     Cancelled,
     StdinTimeout,
+    UnboundedLeaf,
+    BlockingPoolUnavailable,
 }
 
 impl std::fmt::Display for RuntimeError {
@@ -32,6 +34,10 @@ impl std::fmt::Display for RuntimeError {
             }
             Self::Cancelled => f.write_str("invocation cancelled"),
             Self::StdinTimeout => f.write_str("stdin read reached the cleanup reserve"),
+            Self::UnboundedLeaf => {
+                f.write_str("uninterruptible blocking leaf is not admitted on the hook path")
+            }
+            Self::BlockingPoolUnavailable => f.write_str("blocking pool could not admit the leaf"),
         }
     }
 }
@@ -95,7 +101,7 @@ impl EntryClock {
     pub fn work_budget(&self) -> Result<Budget, RuntimeError> {
         let now = self.admit_new_work()?;
         let remaining = self.deadline.remaining_before_cleanup(now);
-        Ok(budget_until(now, remaining))
+        Ok(budget_until(remaining))
     }
 
     pub fn cleanup_budget(&self) -> Budget {
@@ -104,14 +110,18 @@ impl EntryClock {
         if remaining.as_millis() == 0 {
             Budget::MINIMAL
         } else {
-            budget_until(now, remaining)
+            budget_until(remaining)
         }
     }
 }
 
-fn budget_until(now: MonotonicMillis, remaining: DurationMillis) -> Budget {
-    let now_time = Time::from_nanos(now.as_millis().saturating_mul(1_000_000));
-    Budget::new().with_timeout(now_time, Duration::from_millis(remaining.as_millis()))
+fn budget_until(remaining: DurationMillis) -> Budget {
+    // Asupersync's native timers share a process epoch, not EntryClock's
+    // invocation epoch. Convert the remaining duration using the timer clock.
+    Budget::new().with_timeout(
+        asupersync::time::wall_now(),
+        Duration::from_millis(remaining.as_millis()),
+    )
 }
 
 /// Decide whether a completed result may be emitted.
@@ -144,7 +154,16 @@ impl ProcessInvocation {
     }
 
     pub fn from_clock(clock: EntryClock) -> Result<Self, RuntimeError> {
+        Self::from_clock_with_blocking_pool(clock, 1, 4)
+    }
+
+    pub fn from_clock_with_blocking_pool(
+        clock: EntryClock,
+        min_threads: usize,
+        max_threads: usize,
+    ) -> Result<Self, RuntimeError> {
         let runtime = RuntimeBuilder::current_thread()
+            .blocking_threads(min_threads.max(1), max_threads.max(1))
             .build()
             .map_err(|_| RuntimeError::RuntimeUnavailable)?;
         Ok(Self { clock, runtime })

@@ -124,3 +124,24 @@ fn user_cancel_is_the_signal_path() {
     assert_eq!(cx.cancel_reason().map(|r| r.kind), Some(CancelKind::User));
     assert!(invocation.shutdown());
 }
+
+#[test]
+fn later_invocation_uses_the_runtime_process_epoch() {
+    let _ = asupersync::time::wall_now();
+    thread::sleep(Duration::from_millis(120));
+    let clock = EntryClock::capture_with(
+        DurationMillis::new("total", 100, 3000).unwrap(),
+        DurationMillis::new("cleanup", 20, 3000).unwrap(),
+    )
+    .unwrap();
+    let invocation = ProcessInvocation::from_clock(clock).unwrap();
+    let cx = invocation.request_cx().unwrap();
+    cx.checkpoint()
+        .expect("fresh invocation must not inherit elapsed process time");
+    thread::sleep(Duration::from_millis(110));
+    assert!(cx.checkpoint().is_err());
+    assert_eq!(
+        cx.cancel_reason().map(|reason| reason.kind),
+        Some(CancelKind::Deadline)
+    );
+}
