@@ -2,10 +2,7 @@
 #![forbid(unsafe_code)]
 
 pub mod adapter;
-pub mod config;
 pub mod context;
 pub mod identity;
 pub mod limits;
-pub mod output;
-pub mod privacy;
 pub mod roster;
