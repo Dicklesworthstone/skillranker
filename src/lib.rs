@@ -4,6 +4,7 @@
 pub mod adapter;
 pub mod authorized_read;
 pub mod blocking;
+pub mod cli;
 pub mod config;
 pub mod context;
 pub mod identity;
@@ -13,4 +14,6 @@ pub mod output;
 pub mod privacy;
 pub mod roster;
 pub mod runtime;
+#[cfg(target_os = "linux")]
+pub mod storage;
 pub mod subprocess;
