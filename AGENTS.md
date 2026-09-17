@@ -181,6 +181,8 @@ is not permission for an arbitrary project to export session content.
 - Use HTTPS, verified public certificate roots, origin-scoped credentials, and
   disabled redirects. Never use accept-all TLS. Loopback HTTP tests must not
   carry production credentials.
+  `TYPESAFE_ENDPOINT` is a base origin with empty/root path; append
+  `/v1/systemone` once. Reject userinfo, query/fragment, and non-root paths.
 - Redact every outgoing bounded field, including skill descriptions/excerpts,
   current request, tool arguments, and results. Redact before truncation, then
   scan the assembled payload. Never retain matched secret text in diagnostics.
@@ -200,6 +202,10 @@ is not permission for an arbitrary project to export session content.
 - Bound YAML size, nesting/aliases, discovery walks, and file counts. Missing
   frontmatter may use a title/paragraph fallback; malformed frontmatter is an
   excluded record with a sanitized error, not an empty skill.
+  Reject duplicate keys/record definitions within each schema collection/namespace
+  in normalized input, rosters, configuration,
+  replay/evaluation artifacts, frontmatter, and provider responses. Bound new
+  input formats too; policy files cannot execute interpolation or recursive includes.
 - Invoke trusted subprocesses with argv arrays, bounded pipes, explicit
   environments, and deadlines. Omit provider credentials from child environments.
   Never interpolate transcript data into shell code.
@@ -231,6 +237,8 @@ cannot justify an unqualified no-skill message.
   The sentinel has a distinct type and cannot collide with a skill ID.
 - Default overflow is Quill's deterministic lexical BM25 prefilter. Explicit requests
   resolve before it. Pin tokenization, normalization, field weights, and tie-breaks.
+  Build a deduplicated disjunction of escaped literal terms, with size limits
+  measured after escaping/separators; no analyzed terms means retrieval-empty.
   An experimental chunk mode needs separate bounds and quality proof; probabilities
   from different chunk candidate sets are not globally comparable.
 - Wide gate: mean of `specialized_method`, `material_help`, and
@@ -321,6 +329,10 @@ policy/configuration, prior snapshot, and visibility identify a decision.
   exposed and excluded from exposure-based learning. Single-flight locks are
   bounded, namespace/request-scoped, fenced, recoverable, and never long SQLite
   write transactions. An expired owner cannot publish after its successor.
+  Share only exact validated responses; consumers keep distinct decisions and
+  exposure records. Cross-process result sharing needs the response cache and
+  is disabled by `--no-cache`; never hide bodies in coordination state. Only the
+  owner incurs each uniquely identified provider attempt.
 - Distinguish generated, prepared, emitted, and acknowledged delivery. Database
   commit and stdout cannot form one atomic transaction. Crash ambiguity remains
   unknown; do not claim exactly-once exposure.
@@ -337,6 +349,9 @@ policy/configuration, prior snapshot, and visibility identify a decision.
 - Stats report adoption and operational metrics with denominators and unknown
   counts. Precision, fit Brier scores, and task success require independent labels
   or controlled outcomes, not self-reinforcing adoption statistics.
+  Historical corrections need full membership/version and eligibility evidence,
+  including candidates outside the shortlist. Missing snapshots mean unknown,
+  not absence. Deduplicate bounded snapshots and honor quota/retention references.
 - Priors start disabled. Judged-usefulness priors are centered/shrunk and keyed by
   skill revision and policy context. Sparse cells fall back; an arbitrary count
   alone never establishes adequate labels or phase coverage.
@@ -368,7 +383,9 @@ to 256 MiB and cache/coordinator state to 64 MiB, stopping optional recording at
 - Bare `sr` ranks once, table on a TTY and JSON otherwise. Explicit formats win.
   Only `sr tui` enters the interactive UI. Stdin modes are explicit.
 - Use strict clap parsing and documented aliases. Reject misspellings, unknown
-  configuration keys, incompatible modes, and invalid bounds before I/O.
+  or duplicate configuration keys, incompatible modes, and invalid bounds after
+  bounded configuration reads and before discovery/network/mutation. Forbidden
+  project settings are errors; doctor may explain them without validating the policy.
 - Stdout is data; stderr is diagnostics. Keep `capabilities --json` synchronized
   with schemas, adapters/events, compiled features, limits, examples, and exits.
   Distinguish planned commands from implemented capabilities and tested harness
@@ -417,16 +434,26 @@ of P9 retrieval/excerpt/description experiments.
   data without resolving embedded source paths, executing skills, calling Jev,
   or updating native session state. Capture is a separate explicit privacy choice;
   it cannot reconstruct missing bodies from metadata-only history.
+  Freeze evaluation time, local eligibility, numeric priors/phase inputs, and
+  computation versions. Replay never consults today's clock/configuration/priors.
+  Declare incomplete stages; exporting no cache secret does not prevent artifact
+  integrity checks. Publish exports atomically without replacing raced-in targets.
 - Minimal context and disclosure receipts remain subject to essential-context
   checks. Project settings cannot widen a trusted disclosure profile.
 - An optional enforced shared attempt allowance debits before send and survives
   restart/pruning. Unavailable enforcement state withholds provider requests;
   ordinary optional-ledger degradation remains separate. Budget limits intersect
   invocation/batch caps and apply to retries/probes too. No background probes.
+  Activate a durable guard intent before accounting setup, match ready generations,
+  and preserve charges through recovery. Limits count admissions, not wire/billing
+  timestamps; permits are single-use and deadline/window bound. Late obsolete
+  responses cannot reset a newer breaker generation or another profile's auth pause.
 - Read explicit snoozes as trusted configuration even when ledger or persistent
   runtime state is disabled. Ranking does not clean up or mutate configuration.
 - Corrective feedback is partial and unblinded; an alternative missing from the
   historical roster is prospective feedback, not an original ranking mistake.
+  Paired labels commit atomically with revision checks and distinct skill IDs;
+  unknown membership is not proof that the alternative was absent.
 - Policy rollback restores only managed policy fields after conflict checks;
   it never restores old credentials, network consent, or whole configuration files.
 - Preserve label coverage and unknown usage in value reports. No unlabeled
@@ -434,6 +461,11 @@ of P9 retrieval/excerpt/description experiments.
 - Passage selection and multiple query views use Quill exclusively, shared
   resource limits, and versioned request fingerprints. Promote only after
   held-out equal-budget comparisons, keeping the original policy available.
+- Sequential monitoring tests the declared harm-or-unresolved composite endpoint.
+  Missing-only alarms are not harm findings. Post-finalization label corrections
+  invalidate the epoch; preserve alarms/spent alpha, audit corrected history,
+  and use fresh prospective units/allocation before resuming inference.
+  Independent families alone do not justify arbitrary binomial confidence claims.
 
 ## Verification And Performance
 

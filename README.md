@@ -525,7 +525,7 @@ paginate against a fixed snapshot; a changed snapshot requires restarting.
 
 | Code | Meaning |
 |---|---|
-| `0` | Ranked, explicit, valid abstention, or successful inspection |
+| `0` | Ranked, explicit, valid abstention, or another successfully completed command |
 | `2` | Invalid usage or configuration |
 | `3` | Missing or ambiguous session |
 | `4` | Provider, authentication, or network failure; request-admission refusal |
@@ -546,6 +546,13 @@ explicit requests and Quill retrieval failures use `5`, and superseded input use
 Overall deadline exhaustion uses `6`. `retryable` means a
 fresh invocation with the same intended inputs may succeed; it does not grant
 network access or relax a deadline.
+
+Evaluation and replay reports distinguish execution from quality:
+`run_status` is `complete` or `partial`; `gate_status` is `passed`, `failed`,
+`not-established`, or `not-applicable`. Exit zero means the report was produced,
+not that every comparison was replayable or a policy passed. Promotion requires
+the intended complete cohort, compatible evidence, and explicit passed gates.
+Fatal errors retain their nonzero exit code and available partial-work/usage data.
 
 The dedicated hook maps recommendation failures to quiet exit-zero behavior so
 it never blocks the agent. CLI failures retain their meaningful exit codes.
@@ -582,18 +589,25 @@ shadow mode. `--allow-network` can authorize a single CLI evaluation.
 | Variable | Purpose |
 |---|---|
 | `TYPESAFE_API_KEY` | TypeSafe bearer credential; never serialized or stored in project config |
-| `TYPESAFE_ENDPOINT` | Trusted HTTPS endpoint override with origin-scoped credentials |
+| `TYPESAFE_ENDPOINT` | Trusted HTTPS base origin; `sr` appends `/v1/systemone` once |
 | `SR_MODEL` | Requested model; default `jev-latest` |
 | Recognized `SR_*` settings | Ordinary configuration overrides described by capabilities |
 
 Workspace configuration may tune bounded ranking values and exclusions. It
 cannot authorize networking, change endpoints/proxies, supply credentials,
 expand transcript access, disable redaction, or enable raw retention. Unknown
-keys and invalid values are reported before I/O.
+or duplicate keys, forbidden project settings, and invalid values are errors
+after bounded configuration reads and before discovery, networking, or mutation.
+
+The endpoint accepts an empty or root path and rejects URL credentials, query
+strings, fragments, and non-root paths. Credentials, cache identity, and request
+allowance scope use the canonical origin. A development-only loopback HTTP
+exception cannot carry production credentials.
 
 `sr doctor --config` shows each non-secret effective value, its winning source,
-ignored disallowed overrides, and the policy fingerprint. It reports credential
-presence/source without exposing values or secret-bearing endpoint components.
+and blocked disallowed overrides. A policy fingerprint is available only for a
+valid configuration. It reports credential presence/source without exposing
+values or secret-bearing endpoint components.
 Shared request allowances and snoozes are explicit trusted-user controls. Project
 configuration cannot enable, raise, or disable the allowance.
 
@@ -657,6 +671,7 @@ instructing the agent to bypass that restriction by reading its file.
 |---|---:|
 | Hook stdin | 1 MiB |
 | Normalized context | 1 MiB / nesting depth 64 |
+| Each user/project/policy configuration file | 256 KiB / nesting depth 32 |
 | Explicit roster | 32 MiB / 10,000 records / nesting depth 64 |
 | Transcript tail | 2 MiB / 2,000 records |
 | Observation ingestion | 8 MiB per invocation; a separate committed cursor |
@@ -664,11 +679,21 @@ instructing the agent to bypass that restriction by reading its file.
 | cass stdout | 8 MiB |
 | Skill file / frontmatter | 256 KiB / 16 KiB |
 | Discovery | 10,000 files / 32 MiB parsed bytes |
-| Quill query | 128 distinct terms / 4,096 Unicode scalar values |
+| Quill query | 128 distinct terms / 4,096 Unicode scalar values after escaping |
 | Replay case capture/import | 16 MiB / nesting depth 64, with per-field limits |
+| Local replay policy | 64 KiB / nesting depth 32 |
+| Evaluation dataset/report | 256 MiB / 10,000 case records / nesting depth 64 |
 | Wide description | 160 characters |
 | Rerank description / body excerpt | 1,000 / 700 characters |
 | Serialized provider request / decoded response | 96 KiB / 2 MiB |
+
+Reject duplicate keys and duplicate record definitions within each schema's
+collection/namespace in normalized inputs, rosters, configuration,
+replay/evaluation artifacts, frontmatter, and provider responses.
+The same skill can still be referenced across wide and rerank stages.
+Ambiguous skill metadata excludes that record and marks coverage partial.
+Configuration cannot execute interpolation or recursive includes. Evaluation
+imports use bounded streaming and enforce per-case limits as well as the total cap.
 
 Source snapshots supply both hashes and excerpts. Before emission, `sr` checks
 the entire shortlist, including candidates removed by scoring, or every explicit
@@ -724,9 +749,11 @@ stored-only metadata. Documents enter in stable skill-ID order and are committed
 before querying. Cutoff ties follow the pinned document-ID mapping; re-sorting
 an already-truncated result cannot recover an omitted tied candidate.
 
-Queries contain at most 128 distinct terms and 4,096 Unicode scalar values.
-Conversation text is analyzed and escaped as literal terms, so Boolean operators,
-wildcards, ranges, and field syntax cannot change the intended query. Parser
+Queries are a deduplicated **OR** of escaped literal terms. Only the adapter adds
+the OR separators; conversation text cannot introduce Boolean operators,
+wildcards, ranges, or field syntax. The limit of 128 distinct terms and 4,096
+Unicode scalar values applies after escaping and separators; analysis input and
+work are bounded too. No analyzed terms means retrieval-empty. Parser
 diagnostics and truncation are reported. A query that cannot be preserved safely,
 exhausted query fuel, or an index failure yields unavailable output with quiet
 hook fallback. Retrieval failures use exit `5`; exhaustion of the overall
@@ -844,28 +871,50 @@ sr replay scratch/ranking-case.json --policy scratch/baseline.toml \
 
 A case binds the actual redacted request inputs, exact option maps and content
 digests, validated recorded responses, eligibility evidence, policy, and
-model/adapter provenance. Synthetic fixtures and recorded provider answers are
+model/adapter provenance. It freezes the evaluation time, snoozes, loaded-state
+and visibility evidence, ordered candidates, numeric priors/phase inputs, and
+computation versions. Replay never consults today's clock, configuration, or
+ledger priors. Synthetic fixtures and recorded provider answers are
 labeled separately. Replay returns `kind: replay` with `actionable: false`,
 keeping historical and recomputed decisions separate from live recommendations.
 It makes no network requests, discovers no transcripts, executes no skills, and
-writes no state. Embedded source paths remain inert.
+writes no state. Only the explicit case and optional local policy files are read;
+ambient user/project policy and credentials are not consulted. Embedded source
+paths remain inert.
 
-Local policy comparison requires compatible complete responses. Missing stages
+Local policy comparison requires the compatible inputs and responses needed by
+that comparison. A completeness manifest identifies each captured stage. A
+low-gate case can replay its original abstention without a rerank, but lowering
+the gate needs the missing rerank. Missing required stages or an uncaptured prior
 report `not-replayable`; a changed model, prompt, retrieval strategy, excerpt,
 or shortlist needs new consented evaluation. Policy files accept only the
 supported local ranking schema, without executable code or credential/routing
 settings. A changed score is not evidence of better task outcomes. Ordinary
 metadata-only history cannot reconstruct a case.
 
+Exact parity covers decisions and numeric outputs under the same tested
+computation profile, not new invocation IDs, timings, or usage. Different numeric
+backends/build profiles need declared tolerances or report incompatible exact
+replay. An unavailable historical case can reproduce sanitized failure metadata
+without inventing an unobserved response. Additional privacy transformations
+remove any affected exact-input replay claim. Artifact digests need no original
+cache secret and cannot authorize importing a result into the live cache.
+
 Capture is opt-in because redacted prose can remain confidential. All retained
 prose is redacted; credentials, hash keys, secret-bearing configuration, and
 response error bodies are excluded. Files are owner-only, created exclusively
 without overwriting existing targets, bounded to 16 MiB and nesting depth 64,
-and published only after a complete write. Per-field limits still apply.
+and published only after a complete write. Publication uses a tested atomic
+no-clobber operation, including protection against a target or symlink raced into
+place, with a documented flush policy. A crash may leave a complete export whose
+delivery is unknown; filesystem publication and stdout are not atomic. Private,
+bounded partial files remain identifiable for explicit cleanup. These publication
+rules also apply to roster snapshots. Per-field limits still apply.
 An oversized case fails explicitly instead of dropping data needed for replay.
 
 Capture consumes the invocation deadline; a failed requested write reports a
-storage or timeout failure. `--save-case` conflicts with `--dry-run`, `--no-persist`,
+storage or timeout failure, preserving any already-incurred attempts and usage.
+`--save-case` conflicts with `--dry-run`, `--no-persist`,
 and hook mode. Imports validate bounds and internal consistency; a matching digest
 does not establish trusted authorship. Imported labels and responses remain
 untrusted evaluation data.
@@ -930,14 +979,22 @@ When a different skill would have helped, record the correction directly:
 sr feedback EVENT_ID --skill ORIGINAL_ID --instead BETTER_ID
 ```
 
-Both candidates resolve against the recorded event and roster version; a changed
-or unknown alternative needs a separately identified snapshot. The correction
-records the original as unsuitable and the alternative as useful, with assessor
-and revision provenance. `--instead` and `--verdict` are mutually exclusive.
+The two distinct candidates resolve against historical membership, versions, and
+advisory eligibility. The ledger retains bounded, deduplicated membership
+snapshots of the full roster, including skills outside the shortlist, without
+their bodies or descriptions. An alternative that was manual-only or excluded
+was not a missed advisory candidate. The correction records the original as
+unsuitable and the alternative as useful in one atomic transaction, with
+assessor provenance and expected label revisions. A failed alternate lookup
+cannot leave an unintended standalone negative label. `--instead` and
+`--verdict` are mutually exclusive.
 It is partial, unblinded feedback: other candidates remain unjudged, and the
 correction cannot become an independent blinded holdout case.
-An alternative absent from the historical roster is prospective feedback, not
-evidence that the original selector missed an available candidate.
+A known-absent alternative becomes a separate prospective proposal. A missing
+historical snapshot means unknown membership, not absence, and prevents an
+unsupported historical correction. Changed or unknown versions need separately
+identified evidence. Neither case establishes that the original selector missed
+an available candidate.
 For “not now,” use [snooze](#snooze-advice-without-changing-usefulness) instead of
 a negative usefulness label.
 
@@ -1103,15 +1160,27 @@ case per independent task family. Additional variants do not inflate that
 denominator. Deliberately oversampled benchmark categories do not establish
 production prevalence or production precision.
 
+Independent families alone do not establish a binomial sampling model or remove
+selection bias. Freeze the population, sampling design, endpoint model, and
+interval method before inspecting results. Wilson intervals are nominal
+model-based intervals, not exact coverage guarantees for an arbitrary fixed or
+quota-selected benchmark. Stratified probability samples use design-aware bounds
+and separate ratio methods; weighted rows are not binomial counts. Diagnostic
+rates without a justified inferential model cannot pass promotion gates.
+
 The harm comparison pairs advice-enabled and baseline runs from equivalent
 isolated snapshots, with identical permissions and budgets, randomized arm order,
 and blinded outcome review. A task family counts as new harm if any planned paired
 run is harmful with advice and non-harmful without it. Missing or unjudgeable
-outcomes count as new harm for this conservative gate. Improvements on other
-tasks do not cancel those events; the net harm difference is reported separately.
+outcomes are also flagged for this conservative harm-or-unresolved gate. Count
+each family once and report judged harm and unresolved-only outcomes separately.
+Improvements on other tasks do not cancel flagged units; the net harm difference
+is reported separately.
 
-The gate uses a one-sided 95% Clopper–Pearson upper bound. With zero new-harm
-events in `n` independent task-family units, the upper bound is
+The gate uses a one-sided 95% Clopper–Pearson upper bound when the prespecified
+binomial model is justified; otherwise it needs a prespecified design-valid
+bound. With zero flagged events in `n` independent identically distributed
+task-family units, the binomial upper bound is
 `1 - 0.05^(1/n)`: about **2.95% for 100 units** and **1.98% for 150 units**.
 Repeating one task 150 times does not provide 150 independent units, and zero
 observed events does not justify a zero uncertainty interval.
@@ -1124,22 +1193,34 @@ and experiment.
 
 ### Monitor repeated evaluations without resetting the evidence
 
-Optional sequential monitoring tracks independently adjudicated new-harm outcomes
-from prospectively ordered, controlled task-family pairs. It tests a declared
-conditional risk ceiling of 2%, using a fixed mixture of alternatives at 5%, 10%,
-and 20%. Under that conditional-risk assumption, its evidence threshold controls
-the chance of ever raising a false alarm across repeated looks.
+Optional sequential monitoring tracks a **new-harm-or-unresolved composite**
+from prospectively ordered, controlled task-family pairs. A finalized unit is
+flagged for judged new harm or an outcome still unjudgeable at its frozen deadline.
+Each family counts once; reports separate judged harm, unresolved-only, and
+unflagged units. The null bounds the conditional probability of this composite
+at 2%, using a fixed mixture of alternatives at 5%, 10%, and 20%. Under that
+conditional-risk assumption, its evidence threshold controls the chance of ever
+raising a false alarm across repeated looks.
 [Time-uniform evidence reference](https://arxiv.org/abs/1808.03204)
+
+This is not a false-alarm guarantee for true harm alone under arbitrary missing
+labels. With zero actual harm but 5% unresolved units, the composite already
+exceeds the 2% null. An alarm can identify inadequate evidence without
+demonstrating harmful advice.
 
 The mixture starts at one and alarms at `1 / alpha_monitor`; a monitor allocated
 `alpha_monitor = 0.05` has threshold **20**. Each finalized unit contributes once,
-in the predeclared order. Pending labels wait until their adjudication deadline;
-missing outcomes then count as new harm. Revised labels require recomputing the
-affected trace, rather than adding another observation.
+in the predeclared order. Pending labels wait until their adjudication deadline.
+Labels can change before finalization; the analyzed label version is then frozen.
+A later correction invalidates the inferential epoch: preserve its original
+trace, alarms, and spent alpha. Corrected historical recomputation is descriptive
+only. Resume inference with fresh prospective units and a fresh allocation unless
+a separately proven revision-aware method is available.
 
 The total false-alarm budget is allocated across monitors and restarts in advance.
 A restart does not replenish it. State is bound to the rubric, baseline,
-policy/model cohort, and ordering; missing or corrupt state reports `unmonitored`.
+policy/model cohort, and ordering; missing or corrupt state or an unresolved
+label revision reports `unmonitored`.
 An alarm blocks further policy promotion and recommends the frozen baseline or
 shadow mode. Configuration changes still require the explicit apply path.
 
@@ -1204,16 +1285,27 @@ sr budget --max-attempts 100 --window 1h         # Preview scope and window sema
 sr budget --max-attempts 100 --window 1h --apply # Explicitly configure this limit
 ```
 
-The allowance accepts 1–10,000 attempts in fixed one-hour UTC windows. The preview
+The allowance accepts 1–10,000 admissions in fixed one-hour UTC windows. The preview
 names the user/endpoint scope, exact window boundaries, charged attempts, and
 remaining allowance. This is not a rolling-hour cap: adjacent windows can each
 consume their allowance close to the boundary. Configuration changes preserve
 still-applicable charges. Accounting shares the 64 MiB cache/coordinator budget,
 but unexpired charges cannot be evicted; exhausted storage withholds new requests.
-Incomplete setup admits no provider calls until reconciled. Inspection itself
-makes no network requests.
+Under the trusted configuration lock, setup first publishes a durable activation
+intent and new guard generation, then prepares accounting while preserving
+charges, then publishes the matching ready generation. Missing or mismatched
+state after the intent blocks admission. Retrying `--apply` resumes that intent;
+before it is visible, the old policy remains in force. Each attempt checks the
+active generation at admission, including processes started earlier. Already
+admitted requests cannot be recalled. Inspection itself makes no network requests.
 
-Each attempt is atomically reserved/debited before transmission. A timeout or
+Each attempt is atomically reserved/debited before transmission. Its single-use
+permit binds an attempt ID, request/endpoint, guard generation, window, and
+remaining monotonic deadline. No permits are preallocated for later windows.
+An expired or wrong-window permit is discarded without refund; a retry needs
+fresh admission. A scheduling pause can still separate the last check from
+network I/O, so the limit counts admissions, not wire-arrival or billing times.
+A timeout or
 crash never refunds a request that may have been sent. Restarting, evicting a
 cache entry, or pruning ordinary history cannot reset accounting. Missing,
 corrupt, or busy enforcement state withholds new requests; local explicit
@@ -1231,9 +1323,19 @@ A half-open probe is the next permitted real request, with the same network
 authorization, deadline, and attempt debit; it adds no separate health call or
 background probe. Valid successful responses restore service and
 reset the local failure streak.
-Authentication or configuration errors require an explicit retry or relevant
-configuration change. Local exclusions, lexical misses, and relevance abstentions
-do not count as provider failures.
+Responses carry their breaker generation: a late obsolete response cannot close
+a newer circuit or release its successor's probe lease. Authentication pauses
+are scoped to a verified credential profile/generation so a bad key cannot block
+another profile's good key. Without a safe shared identity, auth failures remain
+invocation-local with no automatic retry. Never store raw or reversible keys;
+rotating credentials does not reset the user/endpoint allowance. Authentication
+or configuration errors require an explicit retry or relevant configuration
+change. Local configuration/input errors, exclusions, lexical misses, and
+relevance abstentions are not endpoint failures.
+
+Client-internal automatic retries are disabled. If the wide request fits the
+allowance but rerank does not, return unavailable with partial evidence and usage;
+the wide winner cannot become a completed recommendation.
 
 Budget refusals, circuit refusals, provider outages, and relevance abstentions
 are reported separately. When circuit persistence is unavailable, protection is
@@ -1379,7 +1481,9 @@ flowchart TD
     BUD -->|admitted| W[TypeSafe Jev: wide Choice with none and gates]
     BUD -->|refused| U
     W -->|low need| N
-    W -->|continue| R[TypeSafe Jev: detailed rerank with none and fits]
+    W -->|continue| RBUD[Recheck admission for rerank]
+    RBUD -->|admitted| R[TypeSafe Jev: detailed rerank with none and fits]
+    RBUD -->|refused| U
     R --> P
     P --> O[JSON, table, hook, or TUI]
     W -->|failure| U
@@ -1387,7 +1491,7 @@ flowchart TD
     X --> O
     N --> O
     O --> L[(Bounded local metadata)]
-    U --> L
+    U --> O
     L --> F[Observe loads and record explicit judgments]
     F --> E[Replay, weighted evaluation, and optional calibration]
     D[Consented cases and independent labels] --> S[Freeze task families and sampling manifest]
@@ -1513,6 +1617,9 @@ accounting withholds new HTTP attempts; a requested case capture must either
 complete or report failure. The default quotas are 256 MiB for the ledger,
 sidecars, and backups, and 64 MiB for cache/coordination state; reaching a quota
 stops optional recording rather than growing without a bound.
+Full roster membership snapshots share the ledger quota and retention rules;
+retained events reference deduplicated snapshots. Missing snapshot evidence
+disables unsupported historical corrections while ranking remains usable.
 
 Requests use HTTPS with credential-scoped endpoints and redirects disabled.
 Redaction covers outgoing roster excerpts as well as conversation fields, but
@@ -1547,9 +1654,9 @@ allocation budgets do not replace measurements of actual process memory.
 Input capture and roster discovery overlap after identity is established.
 The two inference stages remain sequential. Low-need decisions skip the rerank.
 The normal budget is two logical requests and at most four HTTP attempts total;
-retries and `Retry-After` consume the same remaining deadline. Attempt accounting
-includes client-internal retries. A response arriving after the deadline cannot
-be published as a timely result.
+retries and `Retry-After` consume the same remaining deadline. The explicit retry
+loop accounts for every attempt; client-internal retries are disabled. A response
+arriving after the deadline cannot be published as a timely result.
 
 Cache keys cover exact request inputs and current decision policy. New tool
 evidence, compaction, skill-content changes, exclusions, model/endpoint identity,
@@ -1558,6 +1665,15 @@ strategies, and effective snoozes enter the appropriate request/decision
 fingerprints. Stale results cannot drive hook output.
 Cache hits report zero new requests and tokens; unanswered attempts retain an
 unknown-usage marker rather than being counted as free.
+
+Concurrent consumers can share an exact validated response while retaining
+separate decisions, eligibility checks, deadlines, and exposure records. Only
+the owner incurs each uniquely identified provider attempt; followers report
+zero new usage, with unavailable owner accounting marked unknown. Cross-process
+result sharing requires the response cache. `--no-cache` permits only in-process
+in-flight sharing; coordination state cannot hide response bodies. Shared
+allowances/cooldowns remain effective. `--no-persist` disables cross-process
+sharing entirely.
 
 Each stage records cache provenance and requested/returned model identity. With
 an unversioned alias, a cached wide answer is not combined with a fresh rerank;
