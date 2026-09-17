@@ -10,6 +10,10 @@
   declaration validation remains distinct from an execution receipt.
 
 ### Added
+- Optional local `context::signals` collection: bounded allowlisted filenames
+  and trusted executable presence, safe Git 2.36+ status with fsmonitor disabled,
+  private relative paths, omission counts, and a 250 ms stage budget. No tool
+  probing, network calls, or provider/CLI integration is added.
 - Pure `context::parse_normalized_context` decoding with a 1 MiB input bound,
   depth-64 JSON validation, duplicate-key and definition rejection, and fixed
   diagnostics. Parsed identities and paths remain local declarations, not

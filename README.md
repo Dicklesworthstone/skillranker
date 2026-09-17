@@ -709,6 +709,15 @@ branch names remain local by default. Git inspection disables filesystem-monitor
 hooks, optional index locks, and submodule traversal; an unsupported safe invocation
 omits the optional signal instead of executing project helpers.
 
+The library boundary `context::signals::collect` implements these optional local
+signals with an explicit authorized workspace and trusted executable roots. Its
+250 ms stage intersects the invocation budget; status output is capped at 64 KiB
+and 100 paths. Non-UTF-8/unsafe paths and partial inventories are reported rather
+than treated as complete absence. Results are not serializable provider payloads:
+callers must still redact them. CLI/ranking integration remains separate.
+Synchronous filesystem/spawn calls retain the subprocess boundary's documented
+uninterruptible-kernel-I/O limitation.
+
 ### 2. Resolve what is loadable
 
 An explicit `--roster FILE` replaces discovery. Otherwise, a harness inventory
