@@ -2,10 +2,6 @@
 
 # SkillRanker
 
-**Status: design stage.** This repository currently contains the plan and
-documentation. The commands below describe intended interfaces; the Rust
-implementation and installable binary are not yet present.
-
 **The right skill for the next step, powered by Jev from TypeSafe.ai.**
 
 A standalone Rust CLI that puts **[TypeSafe.ai's Jev](https://typesafe.ai)** at the
@@ -300,7 +296,8 @@ Incompatible identity or visibility semantics disable advice.
 
 Bare `sr` is equivalent to `sr rank`: a table on a TTY, JSON otherwise. It does
 not start a TUI. Source flags are mutually exclusive, and piped stdin is consumed
-only by an explicit input mode.
+only by an explicit input mode. `sr capabilities --json` lists the commands,
+schemas, and optional features available in the installed build.
 
 ### Ranking and inspection
 
@@ -501,6 +498,9 @@ This illustrative result has two eligible candidates. The score arithmetic uses
 | `abstain` | Valid input and policy produced no advisory recommendation |
 | `unavailable` | An operational, input, privacy, or coverage problem prevented a decision |
 
+Demo and replay use separately versioned, non-actionable envelopes around their
+synthetic or historical decisions. They do not reuse the live hook output channel.
+
 `choice_confidence` describes the rerank distribution. `fits` is a model estimate
 of suitability. `rank_score` is a relative local score over eligible candidates.
 They are different quantities. Top-K truncation preserves the original eligible
@@ -676,12 +676,14 @@ target. Any changed candidate invalidates the result; a runner-up cannot replace
 an answer conditioned on stale alternatives. A supplied roster replaces discovery
 but does not grant filesystem access or bypass invocation restrictions.
 
-`sr roster --snapshot FILE` explicitly exports an owner-only manifest that can
-contain private skill names. `sr roster --diff FILE` compares that snapshot with fresh
-authorized discovery, showing additions/removals, content and restriction changes,
-shadowing, and invocation-name changes. Incomplete source coverage remains unknown
-rather than becoming a confirmed deletion. Saved paths grant no new read access
-and cannot restore a removed skill.
+`sr roster --snapshot FILE` explicitly exports an owner-only manifest, bounded
+to 32 MiB and 10,000 records, without implicitly overwriting an existing file.
+Manifests can contain private skill names. `sr roster --diff FILE` compares the
+snapshot with fresh authorized discovery in the same workspace, adapter, and
+source namespace. It reports additions/removals, content and restriction changes,
+shadowing, and invocation-name changes. Incompatible manifests are identified;
+incomplete source coverage remains unknown rather than becoming a confirmed
+deletion. Saved paths grant no new read access and cannot restore a removed skill.
 
 ### 3. Retrieve, then compare
 
@@ -855,13 +857,18 @@ supported local ranking schema, without executable code or credential/routing
 settings. A changed score is not evidence of better task outcomes. Ordinary
 metadata-only history cannot reconstruct a case.
 
-Capture is opt-in because redacted prose can remain confidential. Files are
-owner-only, created exclusively without overwriting existing targets, bounded
-to 16 MiB and nesting depth 64, and published only after a complete write.
-Per-field limits still apply. Capture consumes the invocation deadline; a failed
-requested write reports a storage or timeout failure. `--save-case` conflicts
-with `--dry-run`, `--no-persist`, and hook mode. Imports validate bounds and
-internal consistency; a matching digest does not establish trusted authorship.
+Capture is opt-in because redacted prose can remain confidential. All retained
+prose is redacted; credentials, hash keys, secret-bearing configuration, and
+response error bodies are excluded. Files are owner-only, created exclusively
+without overwriting existing targets, bounded to 16 MiB and nesting depth 64,
+and published only after a complete write. Per-field limits still apply.
+An oversized case fails explicitly instead of dropping data needed for replay.
+
+Capture consumes the invocation deadline; a failed requested write reports a
+storage or timeout failure. `--save-case` conflicts with `--dry-run`, `--no-persist`,
+and hook mode. Imports validate bounds and internal consistency; a matching digest
+does not establish trusted authorship. Imported labels and responses remain
+untrusted evaluation data.
 
 ## Local Feedback And Calibration
 
@@ -890,8 +897,8 @@ SkillRanker keeps observations and judgments separate.
 Cost per judged-useful suggestion uses only that cohort's matched attempts and
 labels. With no useful labels, the ratio is not estimable. Unknown usage or
 missing/inapplicable pricing also prevents an exact monetary ratio; report known
-attempt and token counts instead. Unlabeled traffic does
-not inherit measured usefulness, adoption is not task success, and token savings
+attempt and token counts instead. Unlabeled traffic does not inherit measured
+usefulness, adoption is not task success, and token savings
 are not estimated labor savings. Reports contain no raw examples by default and
 do not enable adaptation or advisory mode.
 
@@ -1452,20 +1459,30 @@ with a hint to choose a supported local source. `--offline` conflicts with
 | Control | Effect |
 |---|---|
 | `--dry-run` | Preview exact redacted wide-request bytes for a stateless run; no network or persistent state access |
-| `--context-profile minimal` | Keep the request, indispensable task anchor, explicit constraints, and candidate descriptions; omit optional history, tool bodies, and dirty paths |
+| `--context-profile minimal` | Keep the request, indispensable task anchor, explicit constraints, and candidate material required by each ranking stage; omit optional history, tool bodies, and dirty paths |
 | `--no-tools` | Remove tool arguments and results from provider context |
 | `--no-cache` | Disable cache reads and writes |
 | `--no-ledger` | Disable all ledger and ingestion-cursor reads/writes; use transient evidence |
 | `--no-persist` | Also disable persistent cache, cursors, locks, and other local state |
 | `--offline` | Disallow all network activity |
 
-The default context profile is `standard`. Dry-run and explain include a
-disclosure receipt showing source categories, included/omitted counts, truncation,
-and redaction counts without matched secret fragments. Minimal context returns
-unavailable if an omitted tool result or attachment is essential. Local load
-observations remain separate; the chosen profile enters request provenance.
-Workspace settings cannot widen a trusted disclosure profile.
-Smaller disclosure alone does not establish equivalent recommendation quality.
+The default context profile is `standard`. Choose a profile through trusted user
+configuration or the CLI. The minimal profile still includes the candidate
+descriptions and bounded skill-body excerpts needed by the respective Jev passes;
+it reduces session disclosure without stripping the material used to compare
+skills. `--no-tools` further restricts either profile, and workspace settings
+cannot widen a trusted minimal profile.
+
+```bash
+sr rank --context scratch/context.json --context-profile minimal --dry-run
+```
+
+Dry-run and explain include a disclosure receipt showing source categories,
+included/omitted counts, truncation, and redaction counts without matched secret
+fragments. Minimal context returns unavailable if an omitted tool result or
+attachment is essential. Local load observations remain separate; the chosen
+profile and receipt schema enter request provenance. Smaller disclosure alone
+does not establish equivalent recommendation quality.
 
 A second-stage dry run requires explicit shortlist IDs or a validated recorded
 wide answer. It cannot know a model's shortlist without that evidence. The preview
