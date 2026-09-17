@@ -22,6 +22,11 @@ rustc-ice-*.txt
 *.pem
 credentials.json
 
+# Public synthetic loopback TLS fixtures, never production credentials.
+!tests/fixtures/jev-tls/ca.pem
+!tests/fixtures/jev-tls/server.pem
+!tests/fixtures/jev-tls/server.key
+
 # SkillRanker private state. Keep .sr/config.toml trackable.
 /.sr/cache/
 /.sr/transcripts/
