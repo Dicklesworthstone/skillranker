@@ -292,7 +292,7 @@ Independent questions share the same state but cannot read one another's answers
 
 Bound the complete serialized request, not just conversation characters: initial application cap 96 KiB, lowered if the verified provider contract requires it. Track a conservative token estimate and record exact returned usage. No byte-to-token conversion is exact without the provider tokenizer. Verify model context, criteria length, question count, and response limits in the transport spike; do not infer them from the 255-option limit.
 
-On budget pressure, trim older context and excerpts using a fixed order while retaining all required candidates and sentinel descriptions. If a valid request still cannot fit, abstain operationally with `request-too-large`; do not silently drop explicitly requested skills. `--dry-run` reports the final serialized size and every truncation.
+On budget pressure, trim older context and excerpts using a fixed order while retaining all admitted candidates and sentinel descriptions. If a valid request still cannot fit, return `unavailable / request-too-large`; do not misclassify a size failure as relevance abstention. Explicit references are resolved locally before this stage. `--dry-run` reports the final serialized size and every truncation.
 
 ### Call 1: wide selection
 
@@ -315,7 +315,7 @@ Start with `gate = 0.30` as an experimental setting, not a learned optimum. Belo
 
 If the gate passes, retain the best `M` real candidates from the wide distribution, ignoring the sentinel for shortlist size. Keep the wide sentinel probability as evidence. Do not early-exit solely because the short-description sentinel wins: the detailed pass can rescue a lookalike or poorly described skill.
 
-Default `M = 8`; clamp to available candidates. Validate `1 ≤ K ≤ M ≤ 32` for the initial implementation, with `K = 5`. Fewer than five eligible skills is normal.
+Default configured `M = 8`, `K = 5`; validate `1 ≤ K ≤ M ≤ 32` **before** adapting to roster size. Then use `M_effective = min(M, eligible_count)` and `K_effective = min(K, M_effective)`. A singleton roster is not a configuration error, and its Choice contains that skill plus the sentinel. Fewer than five eligible skills is normal.
 
 ### Call 2: detailed rerank
 
@@ -344,15 +344,17 @@ Keep raw wide/rerank probabilities and fit answers unchanged in diagnostics. The
 
 First decide whether any advisory output is eligible:
 
-1. Reject candidates that became unavailable, were explicitly excluded, or are known loaded in the current context epoch with unchanged content.
+1. Apply invocation restrictions, explicit exclusions, and the reusable-reference loaded-state rule below. A changed shortlist snapshot invalidates the result before scoring.
 2. Remove candidates with `fits < FITS_THRESHOLD` (initially 0.30).
 3. If none remain, use `abstain / low-fit` when fit filtering removed the last candidates. Use `abstain / already-loaded` or `abstain / excluded` for known policy exclusions, and `unavailable / roster-changed` for candidates that disappeared or changed during the request.
-4. Compare `__none__` with the **survivors**: if its rerank probability is at least the maximum of theirs, emit `abstain / no-shortlist-match` (ties favor abstention).
+4. Remove **each** surviving candidate whose raw rerank probability is less than or equal to `p(__none__)`. If none remain, emit `abstain / no-shortlist-match`. Ties favor abstention; priors, phase, or fit blending cannot re-admit a removed candidate.
 5. Otherwise rank eligible candidates and return up to `K`; the hook takes the first one.
 
 Apply known local exclusions before the wide call as well. If a valid roster has no candidates left because all are loaded/excluded, return the corresponding abstention without a provider request. An initially empty or unreadable roster is an operational roster failure.
 
 For example, rerank probabilities A=0.70, B=0.10, none=0.20 with fits A=0.10 and B=0.80 must abstain: removing A leaves none ahead of B. Checking the sentinel only before fit filtering would incorrectly suggest B.
+
+A second case catches a subtler error: keep the same probabilities but set fits A=0.31 and B=0.999. A global “some skill beats none” check passes, yet the fit blend gives B about 99.69% of the local score. B must still be excluded because its own Choice probability is below none; A is the only eligible suggestion. This per-candidate condition applies to every returned recommendation, not just the hook winner.
 
 This does not establish that the entire unsearched roster lacks a match. Low-fit candidates remain available under `--explain`, not in the actionable list. Priors cannot turn a sentinel winner or a failed fit threshold into a suggestion.
 
@@ -376,7 +378,11 @@ Normalization is over **all eligible shortlist candidates before top-K truncatio
 
 Defaults: `w_fit = 1.0`, `w_prior = 0.0`, `w_phase = 0.0`. Fit and Choice estimates may double-count related evidence, so compare this blend against Choice-only and fit-only baselines. Experimental phase matching is the sum of the phase distribution over a skill's declared phases, not a hard argmax bonus. Validate thresholds in `[0,1]` and weights as finite with `0 ≤ w_fit ≤ 4`, `0 ≤ w_prior ≤ 0.5`, and `0 ≤ w_phase ≤ 1`.
 
-Loaded-state filtering uses proven content/version and context-epoch evidence. After compaction or uncertain observation, loaded-state becomes unknown and cannot suppress a skill indefinitely. “Not loaded” is not an explicit dismissal. Do not demote a skill merely because the agent ignored a prior suggestion.
+Loaded-state filtering suppresses only a **reusable reference** whose complete relevant content is proven available in the current context epoch, with a matching version. Workflows and unknown usage kinds remain eligible: prior loading does not prove that a new invocation is unnecessary. Arguments, dynamic content, forked execution, and turn-scoped behavior invalidate that inference. Treat usage kind as unknown unless a verified adapter or explicit metadata supports the reference classification.
+
+Claude's documented lifecycle distinguishes retained skill content from turn-scoped permissions and re-renders content when invocation inputs change. Therefore source-file equality alone is not a rendered-invocation fingerprint. Record source version, invocation arguments fingerprint, and rendered-content evidence separately when available; do not calculate a historical version by hashing whatever file exists on the next turn. [Skill lifecycle](https://code.claude.com/docs/en/skills#skill-content-lifecycle)
+
+After compaction or uncertain observation, content availability becomes unknown unless the adapter proves the relevant content survived completely. “Not loaded” is not an explicit dismissal. Do not demote a skill merely because the agent ignored a prior suggestion, and never infer that a permission grant survived from content presence.
 
 [TypeSafe confidence](https://docs.typesafe.ai/confidence) describes distribution concentration. Label it `choice_confidence`, attach it to the rerank distribution, and never describe it as the confidence of the final blended winner. Fit values are model estimates of suitability, not validated per-skill certainty.
 
@@ -387,9 +393,15 @@ Use two distinct notions:
 - **Request fingerprint:** a keyed BLAKE3 hash of canonical serialized redacted state, ordered candidate IDs/content hashes/excerpts, questions, endpoint identity, requested model, prompt version, adapter version, and privacy policy version.
 - **Decision fingerprint:** request fingerprint plus workspace/session/agent branch, current loaded/exclusion state, ranking policy/configuration, prior snapshot, and output-relevant visibility metadata.
 
+Both fingerprints live inside a workspace/session/agent-branch **cache namespace**, not a global response table. Include context epoch, selected adapter/schema, harness visibility policy, and key-generation identity. Re-enumerate/retrieve from the current full roster before lookup; a new prefilter winner must change the actual request. Different sessions must not share a response solely because their redacted text happens to match.
+
 A local random key makes stored context hashes less useful for guessing low-entropy prompts. Hashes remain linkable local metadata and receive the same access protections as the ledger.
 
 Cache validated provider responses separately from rendered output so local thresholds can be reapplied without an API request. Key stage 2 by its actual shortlist and state, not just stage 1's hash. Hook response reuse requires the same session and exact effective input. The default maximum TTL is 10 minutes, shortened or invalidated by model-policy changes. An unversioned model alias prevents stronger freshness claims.
+
+Track cache provenance per stage. A cached wide answer with no matching rerank answer is a partial hit, not a complete offline result. Lowering a gate can require a previously unexecuted rerank; changing M can require a new shortlist request. If networking is disabled, report `unavailable / cache-miss` rather than reusing a different stage-2 candidate set. With an unversioned model alias, do not combine a cached wide stage with a fresh rerank: refresh the pair when allowed, or remain unavailable. A wholly cached pair retains its original provenance and freshness ceiling.
+
+TTL starts when the provider response was received, never when an entry is read or copied. Reject negative ages and unreasonable future timestamps after wall-clock rollback; monotonic time governs live deadlines. Evict corrupt/version-incompatible entries as cache misses without silently repairing the ledger. A key rotation invalidates its namespace.
 
 Ingest newly observed transcript events and resolve eligibility **before** looking up the final decision. An unchanged latest request does not prove unchanged context: failures, skill loads, branch changes, compaction, user constraints, and roster changes can invalidate the answer.
 
@@ -399,9 +411,19 @@ Only exact, unexpired, revalidated entries may drive hook output. A previous tas
 
 Duplicate hook delivery uses a separate event key. When the harness supplies no unique delivery ID, derive a best-effort key from session/branch, event type, transcript generation/cursor, and current prompt fingerprint; expose ambiguity. Identical prompt text alone is never sufficient. If two deliveries cannot be distinguished reliably, mark attribution ambiguous and exclude them from exposure-based training; do not permanently suppress a potentially new user turn.
 
-Use short-lived per-session single-flight coordination for duplicate work. A follower waits only within its remaining deadline, then returns quiet fallback. Locks include owner/generation/expiry and are recoverable after crashes. Do not use a long SQLite write lock for the whole request.
+Use single-flight coordination keyed by namespace **and request fingerprint**, so different turns cannot consume one another's results. A follower waits only within its remaining deadline, then returns quiet fallback. Lease ownership uses a unique owner token and fencing generation; an expired owner cannot publish after a successor acquires the lease. Compare the active request/branch generation before emission in both hooks and watch mode; a superseded result is quiet fallback. Do not use a long SQLite write lock for the whole request.
 
-`--no-cache` disables cache reads/writes only. `--no-ledger` disables observations, labels, and personalization only. `--no-persist` disables both plus persistent cursors/locks, using ephemeral state; capabilities and privacy docs must distinguish them.
+Persistence controls have explicit independent effects:
+
+| Mode | Response cache | Ledger and transcript/observation cursors | Coordination/key state |
+| --- | --- | --- | --- |
+| Default | Read/write | Read/write when initialized | Bounded local leases/cooldowns and owner-only hash key |
+| `--no-cache` | Disabled | Unchanged | Unchanged; coordination stores no response bodies |
+| `--no-ledger` | Unchanged | All reads/writes disabled; reconstruct bounded transient evidence | Unchanged |
+| `--no-persist` | No disk reads/writes | No disk reads/writes | Memory only; no persistent key/lease/cooldown access |
+| `--dry-run` | No disk reads/writes | No disk reads/writes | Stateless preview; implies `--no-persist` |
+
+Flags combine by taking the more restrictive behavior. Offline mode controls network access independently; it does not imply no persistence. Missing persistence removes historical evidence rather than fabricating empty negative observations. A stateless preview is the exact payload for the corresponding `rank --no-persist` invocation; print that effective mode so it is not mistaken for a preview of hidden learned/session state.
 
 ## Local ledger and feedback
 
