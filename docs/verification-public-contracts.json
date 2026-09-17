@@ -1,0 +1,208 @@
+{
+  "schema_version": "skillranker.public_contract_verification.v1",
+  "date": "2026-09-17",
+  "bead": "sr-roadmap-l1i.1.10",
+  "scope": "Public documentation reconciliation and capability declaration validation. Combined pure Rust contracts and help/version CLI only; no P0 acceptance, product ranking, live Jev, native-harness, latency, quality or release claim.",
+  "base_commit": "b71747d7c3fc502f3d8c9fbb094816991faa5cdf",
+  "verification_copy": "/data/projects/skillranker-public-proof-rvzyo2_9",
+  "artifact_directory": "/data/tmp/skillranker-public-proof-rvzyo2_9",
+  "platform": "Linux x86_64",
+  "toolchain": "nightly-2026-08-31",
+  "build_and_test_inputs_sha256": {
+    "AGENTS.md": "01241779c9ca75a4549d76acce511076466718e6c67021ba870fbafd93882514",
+    "CHANGELOG.md": "38c2d3d496bd7d2f6f791a14f0772ba39a8aa7bad51750f14a5a3b97e4b5b299",
+    "COMPREHENSIVE_PLAN_TO_DESIGN_SKILLRANKER.md": "d9ce129a5892a615f3072e404a8e5bbf55c968c43299bbd7af2420fbfe8e86ca",
+    "Cargo.lock": "6e563c4d037a81e85324dcba2243ae809e66954128282c3d54d9d3d700ce3f81",
+    "Cargo.toml": "e2787e42dc7bcd45363dc0a2716681e96853add4191d4f04c6c605ef1a2a0bc1",
+    "README.md": "899a912d986cbbbf8dcf9fab4c9b6217446e7906f869180e40df4ad0504eeb63",
+    "rust-toolchain.toml": "5a13f4f286294e6f7b4dcc76ebca9ddebc0cfcbe53e37f9123bdd17f21096985",
+    "scripts/validate_public_contracts.py": "2561d4703b9aabf6beaeda6d037529a1dedc6164149a003865e33ae3ca884801",
+    "src/adapter.rs": "b9ebb96a9d4689179e3e90b29231f386e5f8a1bc0bffcf5a480fbb79dbd2067d",
+    "src/config.rs": "90b5ab56fdb381f3cb06f2c69b20bddc5f34021cac2557df0fc907d9da1d611c",
+    "src/identity.rs": "33a01c23a604646c673e5881511b5c6d15dd0cf4208b8b101c44361214569e84",
+    "src/lib.rs": "6bf07d2f99e5b7ef92ec01df35e235d89e7d87c51d05bb5196705293ac05ab15",
+    "src/limits.rs": "1a988c44c00531cf2ee5d84a9204af4cdfe8e77658531f9f4dfc2b5a739d0c29",
+    "src/main.rs": "7a4a7076084abe59f93ee9bcdb40828e84231ec2217f0e2e69dc24905efbf701",
+    "tests/adapter_contract.rs": "f598386e6c40941137fa1b2e6f8314eb1c79032a326e858a470a872250a2a601",
+    "tests/bootstrap_cli.rs": "c2505e7c666db2d7e9835ac21094487c17ca5d6fc175ed9682c10c5c773d235b",
+    "tests/config_contract.rs": "e14ee00436db3ac69c722de6f5402000cda354fcda21a31de930face118a13d5",
+    "tests/identity_contract.rs": "831f213a4ae01d55a8aeaf3c5e057146c051c8f1360f8d2fbc5f3354c6233ae0",
+    "tests/limits_contract.rs": "8bf799044a9d8389e3d615e9fcfa6e1a0b834e02ac6af86efd2af7f72cb8581e",
+    "tests/output_contract.rs": "0b19d81cc35585b4c9e8c7ac96cf1a1900d0e451b701e4f8beca8d260d26eebf",
+    "tests/fixtures/adapter-cass-producer.v1.json": "a57e290b379bbc29678008bc49ae04ece1484a4564e9bbf0b97b8d94dc9a5d7a",
+    "tests/fixtures/adapter-claude-user-prompt-submit.v1.json": "58e189f39692e32dc9eb7172ca072d785f8efeaee71f436d2ae60d97d69374af",
+    "tests/fixtures/capabilities.v1.json": "953a04cfb3708e9082740ec5ab382bcf6d7ccff4729d5132b24ffaa8caa63c24",
+    "tests/fixtures/normalized-context.v1.json": "7a809b03731546429c673c17a7e521d87bf9484b4587e8c64199da9ad0c46592",
+    "tests/fixtures/output-abstain.v1.json": "7f6737083777e5e122c53e0982c06e2d06221736aef14c0451657353eaffb64f",
+    "tests/fixtures/output-demo.v1.json": "3e5028367ee3bebf039d61203a11ecf09eb1b9468f8160ec805a31565521a1a6",
+    "tests/fixtures/output-explicit.v1.json": "ff2ff0d3f5fa489670b863c5db51731cb7d05513eb501098536d62f2eed65f96",
+    "tests/fixtures/output-ranked.v1.json": "bd7863ea60710489fd733693f4803267f0421577d867265f06c3fb1a2d6b6b47",
+    "tests/fixtures/output-replay.v1.json": "eebbb2ec8183e59154d21d31792e520584686f945ecbadf2bcd76e6e88f6368e",
+    "tests/fixtures/output-report.v1.json": "8f92c4d4f784e5cd5c18342c33afe2227db451cab2d6974513716235e07e36e8",
+    "tests/fixtures/output-unavailable.v1.json": "4747a4d3195ddb319a511c706445db72a1e24af1967cf7cf87954db71b5e31e1",
+    "src/context/mod.rs": "bea16c86b8364d1c38c2121b353f318475453a24254accf6ba29c9e2db32d462",
+    "src/output/mod.rs": "489c4a74a0e899737e775aba6359d5c439f41851e4c63051693913240b438816",
+    "src/privacy/mod.rs": "c48f7c8cfff762e92627423a7d6cd27856024c1fb41f4a0a248bcbf1cfd3113d",
+    "src/roster/mod.rs": "d72df001efeda6791f4ff1e1590fd23c62f7d5000e52c7dc1f7d52fb8fb51fbf"
+  },
+  "remote_checks": [
+    {
+      "command": "RCH_REQUIRE_REMOTE=1 rch exec --source-content-receipt -- cargo test --locked -j 4",
+      "result": "passed",
+      "worker": "ovh-a",
+      "build_id": "30024414133223674",
+      "receipt_root": "7be1b1b336b66e04fa05b85db2319f600a2618baf55900d5b9523355ff0bbcb6",
+      "command_sha256": "75d20e122f32aacfed9cff50bfb0b203cdc9e91c2fefa88eda112ee8aad1932f",
+      "log_sha256": "1e4cac7501704df91d5dcd06dfdeb1960f6ecacd71955c1f4d7489336c3f71ea",
+      "input_hashes_match": true
+    },
+    {
+      "command": "RCH_REQUIRE_REMOTE=1 rch exec --source-content-receipt -- cargo check --locked --all-targets -j 4",
+      "result": "passed",
+      "worker": "vmi1152480",
+      "build_id": "30024414133223673",
+      "receipt_root": "87b486708b5ed041993daa30d4ce03c531d0b8f39860ecda67180c4114edf037",
+      "command_sha256": "f5b34b3ec490a13318eb8f03549e2ba61c1b94b1a2a29ed49e91c279ceb5f13d",
+      "log_sha256": "bad310afcd5f55b5b85d1decd32a68b8e015d481ccd59014e2d8f1ebe60d4d8f",
+      "input_hashes_match": true
+    },
+    {
+      "command": "RCH_REQUIRE_REMOTE=1 rch exec --source-content-receipt -- cargo clippy --locked --all-targets --all-features -j 4 -- -D warnings",
+      "result": "passed",
+      "worker": "ovh-a",
+      "build_id": "30024414133223679",
+      "receipt_root": "a8ba426af50dd008b64a26b60b09cf9279abd779cdb95d1a3ce351c30f3a5742",
+      "command_sha256": "cdee3301eb4f7765ef780101709b446215fc92b774371ed6e375ec3a506c2101",
+      "log_sha256": "ce5ed3e59fea700695f0c301c38e8350281ed22d8766c9c7c910b1903b98d453",
+      "input_hashes_match": true
+    }
+  ],
+  "rust_tests_passed": 87,
+  "rust_test_groups": {
+    "adapter": 18,
+    "bootstrap": 3,
+    "configuration": 18,
+    "identity": 15,
+    "limits": 14,
+    "output": 19
+  },
+  "documentation": {
+    "schema_version": 1,
+    "scope": "documentation_consistency_only",
+    "network_used": false,
+    "examples_executed": false,
+    "status": "passed",
+    "checks": {
+      "json_examples": 5,
+      "toml_examples": 1,
+      "shell_examples": 20,
+      "local_links": 48,
+      "compared_examples": 2,
+      "capability_phases": 19
+    },
+    "sha256": {
+      "README.md": "899a912d986cbbbf8dcf9fab4c9b6217446e7906f869180e40df4ad0504eeb63",
+      "AGENTS.md": "01241779c9ca75a4549d76acce511076466718e6c67021ba870fbafd93882514",
+      "COMPREHENSIVE_PLAN_TO_DESIGN_SKILLRANKER.md": "d9ce129a5892a615f3072e404a8e5bbf55c968c43299bbd7af2420fbfe8e86ca",
+      "CHANGELOG.md": "38c2d3d496bd7d2f6f791a14f0772ba39a8aa7bad51750f14a5a3b97e4b5b299",
+      "tests/fixtures/capabilities.v1.json": "953a04cfb3708e9082740ec5ab382bcf6d7ccff4729d5132b24ffaa8caa63c24",
+      "LICENSE": "32a82e0a5754e72e51fae44b65a936c831c07376f21c90f5fb9e76897fcc3509",
+      "scripts/validate_public_contracts.py": "2561d4703b9aabf6beaeda6d037529a1dedc6164149a003865e33ae3ca884801"
+    }
+  },
+  "documentation_adversarial_checks": [
+    {
+      "case": "unchanged",
+      "exit": 0,
+      "classification": "passed"
+    },
+    {
+      "case": "duplicate-json",
+      "exit": 1,
+      "classification": "expected_refusal"
+    },
+    {
+      "case": "nonfinite-json",
+      "exit": 1,
+      "classification": "expected_refusal"
+    },
+    {
+      "case": "invalid-toml",
+      "exit": 1,
+      "classification": "expected_refusal"
+    },
+    {
+      "case": "invalid-shell",
+      "exit": 1,
+      "classification": "expected_refusal"
+    },
+    {
+      "case": "missing-link",
+      "exit": 1,
+      "classification": "expected_refusal"
+    },
+    {
+      "case": "missing-anchor",
+      "exit": 1,
+      "classification": "expected_refusal"
+    },
+    {
+      "case": "missing-command",
+      "exit": 1,
+      "classification": "expected_refusal"
+    },
+    {
+      "case": "wrong-phase",
+      "exit": 1,
+      "classification": "expected_refusal"
+    },
+    {
+      "case": "duplicate-command",
+      "exit": 1,
+      "classification": "expected_refusal"
+    },
+    {
+      "case": "shell-must-not-execute",
+      "exit": 0,
+      "classification": "passed"
+    }
+  ],
+  "documentation_adversarial_driver_sha256": "6f17a9321b6ad4facff680ed60b95ea187d46165d7d925d638b30b272e442a1d",
+  "local_checks": {
+    "cargo_fmt_check": "passed",
+    "git_diff_check": "passed",
+    "license_unchanged": true,
+    "contribution_policy_unchanged": true,
+    "ubs": {
+      "command": "UBS_SKIP_RUST_BUILD=1 ubs --staged --ci --no-color --format=json",
+      "result": "completed",
+      "totals": {
+        "critical": 0,
+        "warning": 102,
+        "info": 50,
+        "files": 3
+      },
+      "triage": "Rust test unwraps/assertions, bounded fixture indexing and cloning; Python JSON errors are caught by validate/main. Shell syntax runs a fixed argv with -n and a minimal environment; snippets and inherited BASH_ENV do not execute. No suppressions added; Rust compilation is supplied by RCH."
+    }
+  },
+  "earlier_attempts": [
+    {
+      "command": "first Clippy",
+      "result": "SSH source verification connection reset before compiler execution; exit 103; retained clippy.log"
+    },
+    {
+      "command": "second Clippy",
+      "result": "Dependency fetch made no progress for over six minutes; cancelled only owned build 30024414133223675 through RCH, exit 143 and slots released. Retained clippy-retry.log; final retry pinned ovh-a."
+    },
+    {
+      "command": "first documentation mutation driver",
+      "result": "TOML plant accidentally changed prose outside its fence; corrected the targeted mutation and reran all eleven cases. No checker assertion was weakened."
+    }
+  ],
+  "limits": [
+    "External HTTP link availability was not checked.",
+    "The documentation checker parses shell syntax without executing examples.",
+    "Synthetic capability fixtures do not establish real installed-harness conformance.",
+    "The frozen source precedes concurrent runner and matrix edits; these results do not certify those newer files."
+  ]
+}

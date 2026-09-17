@@ -66,6 +66,64 @@ fn foundation_capabilities_match_the_checked_in_fixture_and_do_not_advertise_com
 }
 
 #[test]
+fn capability_command_definitions_are_unique_disjoint_and_bounded() {
+    let original = foundation_capabilities().unwrap();
+    let decoded = |document: &CapabilitiesDocument| {
+        CapabilitiesDocument::from_json(&serde_json::to_vec(document).unwrap())
+    };
+    assert_eq!(decoded(&original).unwrap(), original);
+
+    let mut duplicate_implemented = original.clone();
+    duplicate_implemented.implemented_cli.push("help".into());
+    assert_eq!(
+        decoded(&duplicate_implemented),
+        Err(AdapterError::InvalidField)
+    );
+
+    let mut duplicate_planned = original.clone();
+    let mut conflicting_phase = duplicate_planned.planned_cli[0].clone();
+    conflicting_phase.earliest_phase = PhaseGate::P9;
+    duplicate_planned.planned_cli.push(conflicting_phase);
+    assert_eq!(decoded(&duplicate_planned), Err(AdapterError::InvalidField));
+
+    for invalid in [
+        String::new(),
+        "Rank".into(),
+        "rank now".into(),
+        "rank\n".into(),
+        "--rank".into(),
+        "rank-".into(),
+        "rank--now".into(),
+        "1rank".into(),
+        "rànk".into(),
+        "x".repeat(65),
+        "help".into(),
+        "version".into(),
+    ] {
+        let mut document = original.clone();
+        document.planned_cli.push(PlannedCommand {
+            name: invalid,
+            earliest_phase: PhaseGate::P9,
+        });
+        assert_eq!(decoded(&document), Err(AdapterError::InvalidField));
+    }
+
+    // A valid new planned name is accepted without becoming a runtime command.
+    let mut future = original;
+    future.planned_cli.push(PlannedCommand {
+        name: "inspect-v2".into(),
+        earliest_phase: PhaseGate::P9,
+    });
+    future.planned_cli.push(PlannedCommand {
+        name: "x".repeat(64),
+        earliest_phase: PhaseGate::P9,
+    });
+    let future = decoded(&future).unwrap();
+    assert_eq!(future.implemented_cli, ["help", "version"]);
+    assert_eq!(future.planned_cli.last().unwrap().name.len(), 64);
+}
+
+#[test]
 fn foundation_claude_observation_is_not_native_advice() {
     let claude = foundation_capabilities()
         .unwrap()
