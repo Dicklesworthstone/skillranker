@@ -1,12 +1,13 @@
 # P0 contract acceptance
 
-Acceptance remains open while the reference/evidence-role repairs and Rust
-adapter strictness/privacy corrections receive current-source verification.
-The successful snapshots below do not certify the newer adapter regressions.
+The P0 foundation contracts are accepted for implementation commit `cb3cafe`.
+The combined verification below covers the repaired matrix, adapter,
+configuration diagnostics, and live-batch duration boundaries.
 
 Tracking gate: `sr-roadmap-l1i.1.11`. This review evaluates the foundation
 contracts required before P1 transport, P2 roster/privacy, and P3 context work.
-Those tracks remain blocked until the owned Beads gate closes.
+Closing this gate admits those implementation tracks; their own acceptance
+gates still apply.
 It does not certify a ranking command, live Jev request, native harness,
 storage implementation, product latency, quality promotion, or release target.
 The bootstrap binary still exposes only help and version; the capability
@@ -35,7 +36,7 @@ their required notices. The project license is unchanged.
 ## Coverage and evidence boundaries
 
 [The matrix](../tests/contract_matrix.toml) has 77 boundaries and explicitly
-accounts for all 179 non-epic roadmap members in this accepted snapshot.
+accounts for all 179 non-epic roadmap members in this reviewed snapshot.
 [The authority inventory](../tests/contract_authority.toml) binds each boundary's
 owner, title, phase, member list, platforms, features, suite, cases, and assertions.
 Future aggregates are planned coverage obligations; they must be expanded into
@@ -77,25 +78,33 @@ in a self-updating matrix status field that would invalidate its own source hash
 
 ## Combined verification
 
-See [the machine-readable record](verification-p0-acceptance.json) for exact
-commands, input hashes, worker receipts, logs, and retained failure attempts.
-The first frozen checkout is `/data/projects/skillranker-p0-proof-d372lxco`, based on
-`82a508236b51441bb5ddd13ee83821b017a918b0` plus the four reviewed matrix files.
-Its 54 build/test source inputs match the first combined implementation at
-`0daebc1`. Subsequent changes affect only the two matrix and two evaluation
-Python scripts. A final frozen Python/mechanics run covers those changes; the
-final checkout is `/data/projects/skillranker-p0-final-rrg_f1ya` at
-`3391b6b27ff956cc508f5862c15d9962003f5c6a`. The original Rust receipts still
-match every Rust/build input and every embedded
-fixture, including README and the comprehensive plan. Documentation
-and operational Beads exports have separately recorded hashes; they are outside
-the runner source digest. The proof is Linux x86-64 only. `tui` is an empty
-reserved feature boundary, and an all-feature build does not establish a TUI.
+The accepted source is implementation commit `cb3cafe`, including the matrix,
+adapter, configuration, and duration repairs below. All 56 build, runtime, test,
+and embedded-document inputs match both frozen verification checkouts exactly.
+The commands ran on base `92553e3` plus the two configuration-file overlays later
+committed in `cb3cafe`; the machine-readable record distinguishes that executed
+base and overlay from the equivalent published implementation.
+
+Python/mechanics artifacts are retained at
+`/data/tmp/skillranker-p0-accepted-w7u373pr`. Remote Rust commands, outputs, worker
+hashes, and failed attempts are retained at
+`/data/tmp/skillranker-adapter-review-orgyof57`. See
+[the machine-readable record](verification-p0-acceptance.json) for hashes and
+exact commands. It records the current combined results separately from the
+retained historical attempts.
+
+The remote Rust runs use an isolated Git base plus two explicit overlay paths.
+RCH reports their common overlay fingerprint. Independent samples of all 77
+selected source files match the frozen manifest for all four accepted runs. These
+samples were taken during the builds; they are not post-command source-content
+receipts. Earlier attempts with post-command receipts failed at the SSH barrier
+and are excluded from successful verification. No local fallback is accepted as
+remote proof.
 
 | Check | Result |
 | --- | --- |
-| Rust contract and real bootstrap CLI tests | 88 passed; zero failed, ignored, or filtered integration tests |
-| Matrix declaration and real receipt regressions | 17 passed |
+| Rust contract and real bootstrap CLI tests | 97 passed; zero failed, ignored, or filtered integration tests |
+| Matrix declaration and real receipt regressions | 20 passed |
 | Runner engine and fresh-eyes boundary regressions | 25 passed |
 | Process cleanup regressions | 2 passed |
 | Independent certificate regressions | 15 passed |
@@ -103,27 +112,44 @@ reserved feature boundary, and an all-feature build does not establish a TUI.
 | Synthetic evaluation fixtures | 12 cases validated; no benchmark claim |
 | Complete smoke and independent outer certificate | 3/3 and 54/54, then revalidated through the matrix gate |
 | Documentation, dependency graph, formatting, and Python lint | Passed |
-| Remote default check and default/all-feature Clippy | Passed, with exact source-content receipts |
+| Remote default all-target check | Passed |
+| Remote default all-target Clippy | Passed |
+| Remote all-feature all-target Clippy | Passed |
 
-The independent commit review also repeated all 16 matrix tests on a frozen
-snapshot. Its staged UBS scan had zero critical findings and 31 reviewed warnings
-about strict scalar typing, exception handling across functions, and descriptor
-ownership. This is separate from earlier runner scans with documented heuristic
-critical findings; no clean whole-repository scanner claim is made.
+Every required Rust matrix reference has an actual passing test line and an
+invoked integration binary. The complete suites contain no skipped tests. The
+proof is Linux x86-64 only. `tui` is an empty reserved feature boundary; an
+all-feature build does not establish a TUI.
 
-The first combined remote check failed during SSH preflight and did not compile
-locally. The original evaluation-test invocation used Python `-I`, which prevented
-its local sibling import; the ordinary script invocation with user-site and
-`PYTHONPATH` disabled passed. Both failed attempts remain in the artifact record.
-No source assertion was weakened to obtain the passing runs.
+The current matrix UBS scan reports zero critical findings and 31 reviewed
+warnings concerning strict scalar typing, caller-handled JSON errors, and file
+descriptor ownership. This is a scoped scan, not a clean whole-repository claim.
+Earlier source snapshots and their successful or failed commands remain in the
+artifact directories and the versioned verification record. Their results do
+not certify later source changes. No consequential assertion was weakened to
+obtain the passing runs.
 
-A subsequent review (`sr-eval-audit-dwew`) reproduced invalid policy changes
-that the evaluation checker had accepted, plus private unknown arguments in
-usage errors. The policy repair enforces the frozen tie-break, baseline set,
-cohort separation, interval methods, and loaded-reference/workflow preconditions.
-The same argument-echo defect was independently reproduced and fixed in the
-matrix CLI. Both changes have real refusal tests with successful counterparts;
-the final refresh passed all 102 Python tests and complete matching mechanics reports.
+## Repairs included in acceptance
+
+The subsequent matrix review tightened source reference resolution: ignored or
+conditional Rust tests, Cargo-undiscovered nested files, Python helpers outside
+`unittest.TestCase`, and overwritten test methods cannot stand in for test
+evidence. Pure contract rows now explicitly mark a separate e2e suite as
+not applicable; they still require their own executed contract checks.
+
+The adapter repair rejects malformed optional hook fields and contradictory
+version declarations, removes private extension keys and commit text from Debug
+output, and rechecks native-advice support before transferring qualification.
+Cass session provenance cannot grant native hook advice. Version qualification
+requires a usable commit identity or a binary digest. These changes preserve
+valid additive fields and properly qualified support records.
+
+The configuration repair discards unknown key text from diagnostic state while
+retaining the layer and error category. Unknown keys can themselves contain
+private data; bounding their length or restricting them to ASCII is insufficient.
+The batch-limit repair rejects zero runtime even when duration arithmetic,
+rather than the positive-duration constructor, produced that value. Both repairs
+retain valid-input counterparts in their regression tests.
 
 ## Unresolved facts and their owners
 

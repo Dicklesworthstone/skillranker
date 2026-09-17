@@ -1,14 +1,14 @@
 {
   "schema_version": "skillranker.p0_acceptance.v1",
-  "status": "pending_current_matrix_and_adapter_repairs",
-  "scope": "P0 foundation contract review; P1/P2/P3 admission remains blocked until sr-roadmap-l1i.1.11 closes",
-  "date": "2026-09-17",
-  "source_commit": "3391b6b27ff956cc508f5862c15d9962003f5c6a",
-  "frozen_checkout": "/data/projects/skillranker-p0-proof-d372lxco",
-  "frozen_base_commit": "82a508236b51441bb5ddd13ee83821b017a918b0",
+  "status": "accepted",
+  "scope": "P0 foundation contracts only; closing sr-roadmap-l1i.1.11 admits P1/P2/P3 implementation under their own gates",
+  "accepted_at_utc": "2026-09-17T15:07:43.714804+00:00",
+  "source_commit": "cb3cafeb9bbb66b0ae36afb23e29de2a2f669bab",
   "source_inputs_sha256": {
+    "COMPREHENSIVE_PLAN_TO_DESIGN_SKILLRANKER.md": "d9ce129a5892a615f3072e404a8e5bbf55c968c43299bbd7af2420fbfe8e86ca",
     "Cargo.lock": "6e563c4d037a81e85324dcba2243ae809e66954128282c3d54d9d3d700ce3f81",
     "Cargo.toml": "e2787e42dc7bcd45363dc0a2716681e96853add4191d4f04c6c605ef1a2a0bc1",
+    "README.md": "899a912d986cbbbf8dcf9fab4c9b6217446e7906f869180e40df4ad0504eeb63",
     "rust-toolchain.toml": "5a13f4f286294e6f7b4dcc76ebca9ddebc0cfcbe53e37f9123bdd17f21096985",
     "scripts/check_dependency_graph.py": "e0a1d1362662b7561f1dbe4277afcf30e951ca4e31f45a7e154dce391edb9d90",
     "scripts/e2e/evidence.py": "4b57eb89559adae4a5efc5ac08dd0b38e110234df375bc78ddce9806aea53452",
@@ -22,26 +22,26 @@
     "scripts/e2e/test_runner.py": "a7e9613f23f2854a120a93970e7f12cd653104129a4c86b186b09da0b36a9a23",
     "scripts/e2e/test_runner_cleanup.py": "6113b15c331a5c9057039e3cc8a01c3959343b5ccaf832a0dbd8e736f9491fd7",
     "scripts/e2e/test_runner_contract.py": "35a6a641a650501db6de2e48cece258fc74766f4fe3278c015163f90f4f4fb29",
-    "scripts/test_contract_matrix.py": "1a36488f699bfd34df65efde48a7aa2520f4bbfddc956578b5df8b194ccd667d",
+    "scripts/test_contract_matrix.py": "9ba35d05394ef30bbbcd039bac4e212d39b4f14cd1dd895ea23ab54057a983bb",
     "scripts/test_eval_policy.py": "afd71de4b7bbfb3a9b15658a95bf9146ac1b221a472c1b72ca4af6fb4c399ef2",
-    "scripts/validate_contract_matrix.py": "db1a099d4efcaa452e45e3e98838c975df2a8362c5b59d9228d01fb27e0762b0",
+    "scripts/validate_contract_matrix.py": "34ee23b691810fe8c5c63c466e467661e3cc234214a32c7a0b3ebfc4719951ae",
     "scripts/validate_eval_policy.py": "bea574beb8f51081b64f69b6a11c02d4a3070763f7cbcfedec4a4947d3f2114e",
     "scripts/validate_public_contracts.py": "2561d4703b9aabf6beaeda6d037529a1dedc6164149a003865e33ae3ca884801",
-    "src/adapter.rs": "b9ebb96a9d4689179e3e90b29231f386e5f8a1bc0bffcf5a480fbb79dbd2067d",
-    "src/config.rs": "37e44034751e65204d1efb5eebc75e9db89ceb44fd7004e5ad517c5e845b17a0",
+    "src/adapter.rs": "7eb67dac02e598e435cb70f16b63114af3b1b08eaae919335e1d1aa77f89c793",
+    "src/config.rs": "1baa56dd8fb3509808eba4e287a9fd30db64dcf8563f52472354b276a1a4695b",
     "src/context/mod.rs": "bea16c86b8364d1c38c2121b353f318475453a24254accf6ba29c9e2db32d462",
     "src/identity.rs": "33a01c23a604646c673e5881511b5c6d15dd0cf4208b8b101c44361214569e84",
     "src/lib.rs": "6bf07d2f99e5b7ef92ec01df35e235d89e7d87c51d05bb5196705293ac05ab15",
-    "src/limits.rs": "1a988c44c00531cf2ee5d84a9204af4cdfe8e77658531f9f4dfc2b5a739d0c29",
+    "src/limits.rs": "befd799bf103129d9392303d2980002f5ab306f19035d94d41efa974f6067309",
     "src/main.rs": "7a4a7076084abe59f93ee9bcdb40828e84231ec2217f0e2e69dc24905efbf701",
     "src/output/mod.rs": "489c4a74a0e899737e775aba6359d5c439f41851e4c63051693913240b438816",
     "src/privacy/mod.rs": "fa3641fc0e3d2fb318c9e9929406221aa1b6af5367110115deebeb29ff818e1c",
     "src/roster/mod.rs": "d72df001efeda6791f4ff1e1590fd23c62f7d5000e52c7dc1f7d52fb8fb51fbf",
-    "tests/adapter_contract.rs": "f598386e6c40941137fa1b2e6f8314eb1c79032a326e858a470a872250a2a601",
+    "tests/adapter_contract.rs": "e7044175495146e622374f5a47494902e7d8ce8612d7bb1fc7d5559111957b6c",
     "tests/bootstrap_cli.rs": "c2505e7c666db2d7e9835ac21094487c17ca5d6fc175ed9682c10c5c773d235b",
-    "tests/config_contract.rs": "84ba53e35fd84cd3ffa93e15085e6184d0fca6b5cca6559ccae7989d6dd08a44",
-    "tests/contract_authority.toml": "e1b42690ad491e73e95f1c17c1878eab56e50d780c2fd6a53f388c5f687c9d5e",
-    "tests/contract_matrix.toml": "f2f7adf24e2db99bf0651fa74dd65f3724235f9c846d40ca423d73227eeb1ebf",
+    "tests/config_contract.rs": "2e0817edd016071a17db95592de0333c0769dd7a8018aae8363faa7454898b7e",
+    "tests/contract_authority.toml": "6fe0d4ee321a38923b1d84acb71277df4d869f39db08ff0e1cd819094e36b3fc",
+    "tests/contract_matrix.toml": "2018a9e672695953738285bd98d83041bac21b18201a76fd6385c66ec94701c7",
     "tests/eval/README.md": "0236775fe98ad10395956e06d6effa4cbb7e189ed3385ed804fc11cc467d6e65",
     "tests/eval/evaluation_policy.v1.json": "b0f35abdc436c6cd91358d290850d22cd2572979067821e06e3b30cf6ffed5da",
     "tests/eval/expected_values.v1.json": "a05aa971a0c99f1587c5ffcefcbc3842f0055fdbfb817b7fd694150a3ea5dda6",
@@ -59,138 +59,519 @@
     "tests/fixtures/output-report.v1.json": "8f92c4d4f784e5cd5c18342c33afe2227db451cab2d6974513716235e07e36e8",
     "tests/fixtures/output-unavailable.v1.json": "4747a4d3195ddb319a511c706445db72a1e24af1967cf7cf87954db71b5e31e1",
     "tests/identity_contract.rs": "831f213a4ae01d55a8aeaf3c5e057146c051c8f1360f8d2fbc5f3354c6233ae0",
-    "tests/limits_contract.rs": "8bf799044a9d8389e3d615e9fcfa6e1a0b834e02ac6af86efd2af7f72cb8581e",
+    "tests/limits_contract.rs": "b26d052d17ed38f508a2866b83ddb751d2a44b74fdf300ff6ed475f616cf5468",
     "tests/output_contract.rs": "0b19d81cc35585b4c9e8c7ac96cf1a1900d0e451b701e4f8beca8d260d26eebf"
   },
+  "source_composition": {
+    "implementation_commit": "cb3cafeb9bbb66b0ae36afb23e29de2a2f669bab",
+    "rust_frozen": "/data/projects/skillranker-final-review-thci55vz/skillranker",
+    "python_frozen": "/data/projects/skillranker-p0-aggregate-_5anzjz7/skillranker",
+    "base_commit": "92553e3e14b7ce0c8d7184fd917e15bab4efecf5",
+    "rust_overlay_sha256": {
+      "src/config.rs": "1baa56dd8fb3509808eba4e287a9fd30db64dcf8563f52472354b276a1a4695b",
+      "tests/config_contract.rs": "2e0817edd016071a17db95592de0333c0769dd7a8018aae8363faa7454898b7e"
+    },
+    "all_other_differences": [
+      ".beads/issues.jsonl",
+      "docs/p0-acceptance.md",
+      "docs/verification-p0-acceptance.json"
+    ]
+  },
+  "source_identity_method": "RCH isolated Git base and two explicit hash-checked overlays, terminal clean-overlay fingerprints, independently matched during-build worker source samples; no post-command full source-content receipt claimed",
   "platform": "linux",
   "architecture": "x86_64",
-  "rust_tests": 88,
-  "python_tests": 102,
-  "remote_checks": [
-    {
-      "command": "cargo test --locked -j 4",
-      "required_remote": true,
+  "rust_tests": 97,
+  "python_tests": 105,
+  "remote_checks": {
+    "aggregate-test": {
+      "command": [
+        "rch",
+        "--json",
+        "exec",
+        "--base",
+        "92553e3e14b7ce0c8d7184fd917e15bab4efecf5",
+        "--clean-overlay",
+        "--overlay-path",
+        "src/config.rs",
+        "--overlay-path",
+        "tests/config_contract.rs",
+        "--",
+        "cargo",
+        "test",
+        "--locked",
+        "-j",
+        "4"
+      ],
+      "logs": {
+        "stdout": {
+          "path": "/data/tmp/skillranker-adapter-review-orgyof57/aggregate-test.stdout",
+          "sha256": "891f5f379167cb4d5febff369f9d09b8b17b5e16d8bb8ff2ef4c93740965ef47"
+        },
+        "stderr": {
+          "path": "/data/tmp/skillranker-adapter-review-orgyof57/aggregate-test.stderr",
+          "sha256": "ec5e19e8d6b3c1d30901bbcf5da635617b10c5bd1a0dc96124a4284b4d845537"
+        }
+      },
+      "worker_source_sample": {
+        "path": "/data/tmp/skillranker-adapter-review-orgyof57/aggregate-test.worker-hashes.json",
+        "matched_file_count": 77,
+        "scope": "during-build selected source hashes, not a post-command receipt",
+        "sha256": "f6db992eccdb61687a1d0a67e288946c94cc7ec6229749608d7ab63b3b5c5dfe",
+        "captured_utc": "2026-09-17T14:51:07.808750+00:00",
+        "platform": "Linux-7.0.0-31-generic-x86_64-with-glibc2.43"
+      },
+      "envelope": {
+        "api_version": "1.0",
+        "command": "cargo test --locked -j 4",
+        "outcome": "completed",
+        "location": "remote",
+        "worker_id": "ovh-b",
+        "remote_exit_code": 0,
+        "duration_ms": 427814,
+        "timing": {
+          "classify": null,
+          "select": null,
+          "sync_up": 11046,
+          "exec": 409950,
+          "sync_down": 2011,
+          "cleanup": null,
+          "total": null
+        },
+        "result_dirs": []
+      },
       "status": "passed",
-      "exit_code": 0,
+      "clean_overlay_receipt": {
+        "base": "92553e3e14b7ce0c8d7184fd917e15bab4efecf5",
+        "overlay_fingerprint": "5cadbd388d59d555d9d8e24cfec9d7441dfa0b6e0c0d457dcdb07e6e4480038f"
+      },
+      "test_totals": {
+        "passed": 97,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0
+      },
+      "build_id": "30024414133223747",
       "features": [],
-      "worker": "ovh-a",
-      "build_id": "30024414133223691",
-      "receipt_root": "20e48bcececb9a54aec66853a930e2f82f8c3d29067d7e8ccdfb294e0e44ae64",
-      "command_sha256": "75d20e122f32aacfed9cff50bfb0b203cdc9e91c2fefa88eda112ee8aad1932f",
-      "log_sha256": "b053f0275beb84482ebc187a5208334616c2f8ddea8bee2543dde5174a7289a2",
-      "log": "/data/tmp/skillranker-p0-logs-e8b8jrja/cargo-test.log",
-      "all_54_source_inputs_match": true,
-      "source_snapshot": "remote_source_inputs_sha256",
-      "rust_build_and_embedded_fixture_inputs_match_final": true
+      "required_remote": true
     },
-    {
-      "command": "cargo check --locked --all-targets -j 4",
-      "required_remote": true,
+    "aggregate-clippy": {
+      "command": [
+        "rch",
+        "--json",
+        "exec",
+        "--base",
+        "92553e3e14b7ce0c8d7184fd917e15bab4efecf5",
+        "--clean-overlay",
+        "--overlay-path",
+        "src/config.rs",
+        "--overlay-path",
+        "tests/config_contract.rs",
+        "--",
+        "cargo",
+        "clippy",
+        "--locked",
+        "--all-targets",
+        "-j",
+        "4",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "logs": {
+        "stdout": {
+          "path": "/data/tmp/skillranker-adapter-review-orgyof57/aggregate-clippy.stdout",
+          "sha256": "f6d842f443eaa2a3eb7ac39bc3b35928781f57d2571c088bb1edce2de829a31e"
+        },
+        "stderr": {
+          "path": "/data/tmp/skillranker-adapter-review-orgyof57/aggregate-clippy.stderr",
+          "sha256": "797476028e8ad56c1f8d34e7c83dbf49c829f74ee9e694ef57f9a139c31a87a8"
+        }
+      },
+      "worker_source_sample": {
+        "path": "/data/tmp/skillranker-adapter-review-orgyof57/aggregate-clippy.worker-hashes.json",
+        "matched_file_count": 77,
+        "scope": "during-build selected source hashes, not a post-command receipt",
+        "sha256": "7ab63d428e8ca1d62fc8742947cdedd098c75ff31745fcf174913bd7e6516e5e",
+        "captured_utc": "2026-09-17T14:51:09.419685+00:00",
+        "platform": "Linux-7.0.0-31-generic-x86_64-with-glibc2.43"
+      },
       "status": "passed",
-      "exit_code": 0,
+      "envelope": {
+        "api_version": "1.0",
+        "command": "cargo clippy --locked --all-targets -j 4 -- -D warnings",
+        "outcome": "completed",
+        "location": "remote",
+        "worker_id": "vmi1153651",
+        "remote_exit_code": 0,
+        "duration_ms": 1074162,
+        "timing": {
+          "classify": null,
+          "select": null,
+          "sync_up": 11572,
+          "exec": 1046190,
+          "sync_down": 3892,
+          "cleanup": null,
+          "total": null
+        },
+        "result_dirs": []
+      },
+      "clean_overlay_receipt": {
+        "base": "92553e3e14b7ce0c8d7184fd917e15bab4efecf5",
+        "overlay_fingerprint": "5cadbd388d59d555d9d8e24cfec9d7441dfa0b6e0c0d457dcdb07e6e4480038f"
+      },
+      "build_id": "30024414133223748",
       "features": [],
-      "worker": "hz4",
-      "build_id": "30024414133223694",
-      "receipt_root": "5c651925e25c532d2f1e25ff04745d672d6a72cd4aedd6bba70cf3a6207a7ad7",
-      "command_sha256": "f5b34b3ec490a13318eb8f03549e2ba61c1b94b1a2a29ed49e91c279ceb5f13d",
-      "log_sha256": "ed6fd2d29d6b669b78840af668c5d3d7d26a4cedbce6419c7d240babe564385c",
-      "log": "/data/tmp/skillranker-p0-logs-e8b8jrja/cargo-check-retry.log",
-      "all_54_source_inputs_match": true,
-      "source_snapshot": "remote_source_inputs_sha256",
-      "rust_build_and_embedded_fixture_inputs_match_final": true
+      "required_remote": true
     },
-    {
-      "command": "cargo clippy --locked --all-targets -j 4 -- -D warnings",
-      "required_remote": true,
+    "aggregate-clippy-all-features": {
+      "command": [
+        "rch",
+        "--json",
+        "exec",
+        "--base",
+        "92553e3e14b7ce0c8d7184fd917e15bab4efecf5",
+        "--clean-overlay",
+        "--overlay-path",
+        "src/config.rs",
+        "--overlay-path",
+        "tests/config_contract.rs",
+        "--",
+        "cargo",
+        "clippy",
+        "--locked",
+        "--all-targets",
+        "--all-features",
+        "-j",
+        "2",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "logs": {
+        "stdout": {
+          "path": "/data/tmp/skillranker-adapter-review-orgyof57/aggregate-clippy-all-features.stdout",
+          "sha256": "7f21cf27d750700f25a36ad89277791fadb873a71fa46d99685446f2eae746b3"
+        },
+        "stderr": {
+          "path": "/data/tmp/skillranker-adapter-review-orgyof57/aggregate-clippy-all-features.stderr",
+          "sha256": "b52abc2610b34fe2b4cd4f8fbc1b567131aae9aa161953c19f0e0dbda0ceabd4"
+        }
+      },
+      "worker_source_sample": {
+        "path": "/data/tmp/skillranker-adapter-review-orgyof57/aggregate-clippy-all-features.worker-hashes.json",
+        "matched_file_count": 77,
+        "scope": "during-build selected source hashes, not a post-command receipt",
+        "sha256": "40dee35d7f74dc409d308b4340ac9616789bac357f9b61015ace20a40b2f732f",
+        "captured_utc": "2026-09-17T14:51:11.344195+00:00",
+        "platform": "Linux-7.0.0-30-generic-x86_64-with-glibc2.43"
+      },
+      "envelope": {
+        "api_version": "1.0",
+        "command": "cargo clippy --locked --all-targets --all-features -j 2 -- -D warnings",
+        "outcome": "completed",
+        "location": "remote",
+        "worker_id": "hz4",
+        "remote_exit_code": 0,
+        "duration_ms": 408758,
+        "timing": {
+          "classify": null,
+          "select": null,
+          "sync_up": 5922,
+          "exec": 378693,
+          "sync_down": 1905,
+          "cleanup": null,
+          "total": null
+        },
+        "result_dirs": []
+      },
       "status": "passed",
-      "exit_code": 0,
-      "features": [],
-      "worker": "ovh-a",
-      "build_id": "30024414133223697",
-      "receipt_root": "be1739cc8931e61867a77c5fecbe3d2354274929790fb4ae62994b1874c7995e",
-      "command_sha256": "3b27ffd470fb5f184428eb7c7b3e9c25d104b7be24f3ee4082a518a9413c7898",
-      "log_sha256": "1e9923510a567b0e8f4bc9ccd84ad82526abaa71273c9d91c945ab5042d4ea50",
-      "log": "/data/tmp/skillranker-p0-logs-e8b8jrja/cargo-clippy-default.log",
-      "all_54_source_inputs_match": true,
-      "source_snapshot": "remote_source_inputs_sha256",
-      "rust_build_and_embedded_fixture_inputs_match_final": true
-    },
-    {
-      "command": "cargo clippy --locked --all-targets --all-features -j 4 -- -D warnings",
-      "required_remote": true,
-      "status": "passed",
-      "exit_code": 0,
+      "clean_overlay_receipt": {
+        "base": "92553e3e14b7ce0c8d7184fd917e15bab4efecf5",
+        "overlay_fingerprint": "5cadbd388d59d555d9d8e24cfec9d7441dfa0b6e0c0d457dcdb07e6e4480038f"
+      },
+      "build_id": "30024414133223746",
       "features": [
         "tui"
       ],
-      "worker": "ovh-b",
-      "build_id": "30024414133223693",
-      "receipt_root": "8d12ebb68807d0d00ecafa11d646206e42998266ed3a4f514eae5b9076e0ddd3",
-      "command_sha256": "cdee3301eb4f7765ef780101709b446215fc92b774371ed6e375ec3a506c2101",
-      "log_sha256": "bdd05212407559ce0c9579da2e484f14b35095fdc9f03f07992dbfce975344fa",
-      "log": "/data/tmp/skillranker-p0-logs-e8b8jrja/cargo-clippy.log",
-      "all_54_source_inputs_match": true,
-      "source_snapshot": "remote_source_inputs_sha256",
-      "rust_build_and_embedded_fixture_inputs_match_final": true
+      "required_remote": true
+    },
+    "aggregate-check-hz4": {
+      "status": "passed",
+      "command": [
+        "rch",
+        "--json",
+        "exec",
+        "--base",
+        "92553e3e14b7ce0c8d7184fd917e15bab4efecf5",
+        "--clean-overlay",
+        "--overlay-path",
+        "src/config.rs",
+        "--overlay-path",
+        "tests/config_contract.rs",
+        "--",
+        "cargo",
+        "check",
+        "--locked",
+        "--all-targets",
+        "-j",
+        "2"
+      ],
+      "worker_source_sample": {
+        "path": "/data/tmp/skillranker-adapter-review-orgyof57/aggregate-check-hz4.worker-hashes.json",
+        "matched_file_count": 77,
+        "scope": "during-build selected source hashes, not a post-command receipt",
+        "sha256": "0e4482cc2e9307f1ab609f042f60d3617a161814685c074c3d35d4c4c6fc3b42",
+        "captured_utc": "2026-09-17T15:02:44.758630+00:00",
+        "platform": "Linux-7.0.0-30-generic-x86_64-with-glibc2.43"
+      },
+      "envelope": {
+        "api_version": "1.0",
+        "command": "cargo check --locked --all-targets -j 2",
+        "outcome": "completed",
+        "location": "remote",
+        "worker_id": "hz4",
+        "remote_exit_code": 0,
+        "duration_ms": 310453,
+        "timing": {
+          "classify": null,
+          "select": null,
+          "sync_up": 5896,
+          "exec": 297459,
+          "sync_down": 1887,
+          "cleanup": null,
+          "total": null
+        },
+        "result_dirs": []
+      },
+      "clean_overlay_receipt": {
+        "base": "92553e3e14b7ce0c8d7184fd917e15bab4efecf5",
+        "overlay_fingerprint": "5cadbd388d59d555d9d8e24cfec9d7441dfa0b6e0c0d457dcdb07e6e4480038f"
+      },
+      "logs": {
+        "stdout": {
+          "path": "/data/tmp/skillranker-adapter-review-orgyof57/aggregate-check-hz4.stdout",
+          "sha256": "fe3752f1ec15e93b144d25c2fa1680f88c59c2b87307223d468a11ac2e0d09dc"
+        },
+        "stderr": {
+          "path": "/data/tmp/skillranker-adapter-review-orgyof57/aggregate-check-hz4.stderr",
+          "sha256": "ff0f0f99b6aac60ef094b6c9ce7b3f910a5afd070e43a31c0706f9c2b0131764"
+        }
+      },
+      "build_id": "30024414133223757",
+      "features": [],
+      "required_remote": true
     }
-  ],
+  },
   "python_checks": [
     {
-      "command": "python3 -I -B scripts/test_contract_matrix.py",
-      "status": "passed",
+      "name": "matrix-tests",
+      "command": [
+        "python3",
+        "-I",
+        "-B",
+        "scripts/test_contract_matrix.py"
+      ],
       "exit_code": 0,
-      "count": 17,
-      "log": "/data/tmp/skillranker-p0-final-w7lv4c11/matrix-tests.log",
-      "log_sha256": "4d7c9132d13e0085dca555791a667d5b27305f631a8b3ada1c9e8743815cde9b"
+      "log": "/data/tmp/skillranker-p0-accepted-w7u373pr/matrix-tests.log",
+      "log_sha256": "e3ad79cddd424f4f3ee2d8812ff9afa5bad7b0303b00e02ad54e42fde32ec746",
+      "elapsed_seconds": 18.984,
+      "tests": 20,
+      "complete_without_skips": true
     },
     {
-      "command": "python3 -I -B scripts/e2e/test_runner.py",
-      "status": "passed",
+      "name": "runner-tests",
+      "command": [
+        "python3",
+        "-I",
+        "-B",
+        "scripts/e2e/test_runner.py"
+      ],
       "exit_code": 0,
-      "count": 25,
-      "log": "/data/tmp/skillranker-p0-final-w7lv4c11/runner-tests.log",
-      "log_sha256": "3022f56037092811b771a7bba93acf2d0dd9dcf2b4ae38f085d48807bdba8c78"
+      "log": "/data/tmp/skillranker-p0-accepted-w7u373pr/runner-tests.log",
+      "log_sha256": "59dc0896d9926705342bf6325f3e8a34412250e1b6e48328563952f2c3d61b43",
+      "elapsed_seconds": 16.427,
+      "tests": 25,
+      "complete_without_skips": true
     },
     {
-      "command": "python3 -I -B scripts/e2e/test_runner_cleanup.py",
-      "status": "passed",
+      "name": "cleanup-tests",
+      "command": [
+        "python3",
+        "-I",
+        "-B",
+        "scripts/e2e/test_runner_cleanup.py"
+      ],
       "exit_code": 0,
-      "count": 2,
-      "log": "/data/tmp/skillranker-p0-final-w7lv4c11/cleanup-tests.log",
-      "log_sha256": "bc6920887ce678cec4504e7e541a618edc4e201cd54746992dde63bec2327584"
+      "log": "/data/tmp/skillranker-p0-accepted-w7u373pr/cleanup-tests.log",
+      "log_sha256": "b745deef82e117a3376783a98c315d00b2e327b99406b28c971f565142571d1e",
+      "elapsed_seconds": 0.269,
+      "tests": 2,
+      "complete_without_skips": true
     },
     {
-      "command": "python3 -I -B scripts/e2e/test_runner_contract.py",
-      "status": "passed",
+      "name": "certificate-tests",
+      "command": [
+        "python3",
+        "-I",
+        "-B",
+        "scripts/e2e/test_runner_contract.py"
+      ],
       "exit_code": 0,
-      "count": 15,
-      "log": "/data/tmp/skillranker-p0-final-w7lv4c11/certificate-tests.log",
-      "log_sha256": "7a0fc53418dcbad613f4bbe92a40fda4ba5f561aad43be73ee7051b41b53d9a4"
+      "log": "/data/tmp/skillranker-p0-accepted-w7u373pr/certificate-tests.log",
+      "log_sha256": "66241e101c805e851886d14ea6c16c81c16180715ba5f0e7927e8bae5b7392a1",
+      "elapsed_seconds": 15.472,
+      "tests": 15,
+      "complete_without_skips": true
     },
     {
-      "command": "PYTHONNOUSERSITE=1 PYTHONPATH='' python3 -B scripts/test_eval_policy.py",
-      "status": "passed",
+      "name": "eval-tests",
+      "command": [
+        "python3",
+        "-B",
+        "scripts/test_eval_policy.py"
+      ],
       "exit_code": 0,
-      "count": 43,
-      "log": "/data/tmp/skillranker-p0-final-w7lv4c11/eval-tests.log",
-      "log_sha256": "fe9b4f42c63073df1fe03b880c2de9ecd4f4c7d7441fb7606ef138a05632bcb9"
+      "log": "/data/tmp/skillranker-p0-accepted-w7u373pr/eval-tests.log",
+      "log_sha256": "ea98e8a5389067fd7cd8240d04bd00bc8ba7491a2ac841d29ceb654610352198",
+      "elapsed_seconds": 1.372,
+      "tests": 43,
+      "complete_without_skips": true
+    }
+  ],
+  "other_checks": [
+    {
+      "name": "eval-validation",
+      "command": [
+        "python3",
+        "-I",
+        "-B",
+        "scripts/validate_eval_policy.py"
+      ],
+      "exit_code": 0,
+      "log": "/data/tmp/skillranker-p0-accepted-w7u373pr/eval-validation.log",
+      "log_sha256": "3bebe521e739ebc5b77ec04194acb736361b455365486c802f3255ecd3b6c5e8",
+      "elapsed_seconds": 0.066
+    },
+    {
+      "name": "public-contracts",
+      "command": [
+        "python3",
+        "-I",
+        "-B",
+        "scripts/validate_public_contracts.py"
+      ],
+      "exit_code": 0,
+      "log": "/data/tmp/skillranker-p0-accepted-w7u373pr/public-contracts.log",
+      "log_sha256": "38f0e2f5bc825544385b6beb9ac1735768152e7b07a47bd82ac8d004a67a54df",
+      "elapsed_seconds": 0.318
+    },
+    {
+      "name": "dependency-graph",
+      "command": [
+        "python3",
+        "-I",
+        "-B",
+        "scripts/check_dependency_graph.py"
+      ],
+      "exit_code": 0,
+      "log": "/data/tmp/skillranker-p0-accepted-w7u373pr/dependency-graph.log",
+      "log_sha256": "9ad624074cef84bb2012932c387d8db83d701b8a5cc9c0d741a5caf060830735",
+      "elapsed_seconds": 0.769
+    },
+    {
+      "name": "format",
+      "command": [
+        "cargo",
+        "fmt",
+        "--check"
+      ],
+      "exit_code": 0,
+      "log": "/data/tmp/skillranker-p0-accepted-w7u373pr/format.log",
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "elapsed_seconds": 0.367
+    },
+    {
+      "name": "python-lint",
+      "command": [
+        "ruff",
+        "check",
+        "--no-cache",
+        "--select",
+        "E4,E7,E9,F,B",
+        "scripts/test_contract_matrix.py",
+        "scripts/validate_contract_matrix.py",
+        "scripts/test_eval_policy.py",
+        "scripts/validate_eval_policy.py"
+      ],
+      "exit_code": 0,
+      "log": "/data/tmp/skillranker-p0-accepted-w7u373pr/python-lint.log",
+      "log_sha256": "82b3e6a6c090a57601d22943bd23fca9218d1031dbe5a7b754092f9a156b4f18",
+      "elapsed_seconds": 0.116
+    },
+    {
+      "name": "runner-smoke",
+      "command": [
+        "/data/projects/skillranker-p0-aggregate-_5anzjz7/skillranker/scripts/e2e/run.sh",
+        "--suite",
+        "runner-smoke",
+        "--artifacts",
+        "/data/tmp/skillranker-p0-accepted-w7u373pr/mechanics"
+      ],
+      "exit_code": 0,
+      "log": "/data/tmp/skillranker-p0-accepted-w7u373pr/runner-smoke.log",
+      "log_sha256": "9526fd96371040ea6e795948447d921fe354ddeb63c63842568d20479ffb4e74",
+      "elapsed_seconds": 0.569
+    },
+    {
+      "name": "runner-contract",
+      "command": [
+        "/data/projects/skillranker-p0-aggregate-_5anzjz7/skillranker/scripts/e2e/run.sh",
+        "--suite",
+        "runner-contract",
+        "--artifacts",
+        "/data/tmp/skillranker-p0-accepted-w7u373pr/mechanics"
+      ],
+      "exit_code": 0,
+      "log": "/data/tmp/skillranker-p0-accepted-w7u373pr/runner-contract.log",
+      "log_sha256": "d4dcb75aabd7da56b4e36d019f4fe62a9a0b72caa9345b8f870b6eacd6fa1e57",
+      "elapsed_seconds": 15.374
+    },
+    {
+      "name": "matrix-mechanics",
+      "command": [
+        "python3",
+        "-I",
+        "-B",
+        "scripts/validate_contract_matrix.py",
+        "--require-mechanics",
+        "--smoke-receipt",
+        "/data/tmp/skillranker-p0-accepted-w7u373pr/mechanics/sr-e2e-em2ylp7l",
+        "--certificate-receipt",
+        "/data/tmp/skillranker-p0-accepted-w7u373pr/mechanics/sr-contract-1bx4sud7"
+      ],
+      "exit_code": 0,
+      "log": "/data/tmp/skillranker-p0-accepted-w7u373pr/matrix-mechanics.log",
+      "log_sha256": "454cfe99463eaedd2d5ede83b39d69f9bc5e10b812bafc489d02b68f43080705",
+      "elapsed_seconds": 0.819
     }
   ],
   "mechanics": [
     {
-      "directory": "/data/tmp/sr-matrix-receipts-uco6t7pl/sr-e2e-can2vf0_",
+      "suite": "runner-smoke",
+      "directory": "/data/tmp/skillranker-p0-accepted-w7u373pr/mechanics/sr-e2e-em2ylp7l",
       "identity": {
         "architecture": "x86_64",
         "binary_role": "fixture-interpreter",
         "binary_sha256": "52e0a13e60a981d8c4b6478be2ba5176f69da07948a056bf49cf6f077e30cb41",
         "features": [],
         "fixture_sha256": "5e0551772f0d75fcc40908aaed50b815bdb55ce0697831daf140f7173d2cf707",
-        "git_commit": "3391b6b27ff956cc508f5862c15d9962003f5c6a",
+        "git_commit": "92553e3e14b7ce0c8d7184fd917e15bab4efecf5",
         "lock_sha256": "6e563c4d037a81e85324dcba2243ae809e66954128282c3d54d9d3d700ce3f81",
         "platform": "linux",
         "python": "3.14.4",
         "runner_sha256": "d54cecb2f548aa69885dd36313b34fc5c2aecfaf4c2700b7f7aa245b6387a5e5",
-        "source_sha256": "56da4f701efa995c569700f8228bbe0ad124efd3adfdaf1c92c01023ee7e56fc",
+        "source_sha256": "3bfdb3a68448bea5d54844ad39db643d23cf98697b736917992948a94a41a9d5",
         "toolchain_sha256": "5a13f4f286294e6f7b4dcc76ebca9ddebc0cfcbe53e37f9123bdd17f21096985"
       },
       "summary": {
@@ -204,30 +585,32 @@
           "skipped": 0,
           "started": 3
         },
-        "events_sha256": "5a2899c7a6b26db43e3732964264bfd6f8efb25fc58f57f9b0684abbc627f1e7",
+        "events_sha256": "a059f4c70e32505e91f602ca4e4592f9dbf0fe6b862742610b8653445fdbcddf",
         "identity_stable": true,
         "product_gate": "not-applicable",
-        "run_id": "run-cc61e70f0b5347e780144634366c461e",
+        "run_id": "run-f04b7632d04446618f4954809c4a1266",
         "runner_status": "passed",
         "schema_version": 2,
         "suite": "runner-smoke"
       },
-      "summary_sha256": "355c4320d73227d7743d093e2aef5326805e51568752e2c1914f3432c3d2539a"
+      "events_sha256": "a059f4c70e32505e91f602ca4e4592f9dbf0fe6b862742610b8653445fdbcddf",
+      "summary_sha256": "3b8f64f61744a626295117f1dc535e220de85caf446aefb321288a194c95949f"
     },
     {
-      "directory": "/data/tmp/sr-matrix-receipts-uco6t7pl/sr-contract-8j1u14pz",
+      "suite": "runner-contract",
+      "directory": "/data/tmp/skillranker-p0-accepted-w7u373pr/mechanics/sr-contract-1bx4sud7",
       "identity": {
         "architecture": "x86_64",
         "binary_role": "fixture-interpreter",
         "binary_sha256": "52e0a13e60a981d8c4b6478be2ba5176f69da07948a056bf49cf6f077e30cb41",
         "features": [],
         "fixture_sha256": "7ef2d9bf0db9b940f2c74788c961bd76849efeb36567d2d86a3bf6674619e054",
-        "git_commit": "3391b6b27ff956cc508f5862c15d9962003f5c6a",
+        "git_commit": "92553e3e14b7ce0c8d7184fd917e15bab4efecf5",
         "lock_sha256": "6e563c4d037a81e85324dcba2243ae809e66954128282c3d54d9d3d700ce3f81",
         "platform": "linux",
         "python": "3.14.4",
         "runner_sha256": "d54cecb2f548aa69885dd36313b34fc5c2aecfaf4c2700b7f7aa245b6387a5e5",
-        "source_sha256": "56da4f701efa995c569700f8228bbe0ad124efd3adfdaf1c92c01023ee7e56fc",
+        "source_sha256": "3bfdb3a68448bea5d54844ad39db643d23cf98697b736917992948a94a41a9d5",
         "toolchain_sha256": "5a13f4f286294e6f7b4dcc76ebca9ddebc0cfcbe53e37f9123bdd17f21096985"
       },
       "summary": {
@@ -237,54 +620,196 @@
           "passed": 54,
           "planned": 54
         },
-        "events_sha256": "5bf63257a19a89f76b8816595ee2ca2f23466d7991587f62b620a7bd803d87f7",
+        "events_sha256": "6d263cfd445b632d9244de8b7d7b867732c422dc92c502dd23175336b7c780d3",
         "identity_stable": true,
         "product_gate": "not-applicable",
-        "run_id": "contract-dbe198378b08482991c77515d6c9c0a4",
+        "run_id": "contract-7879ed1ab5f9401bac6c4f8be736e990",
         "runner_status": "passed",
         "schema_version": 1,
         "suite": "runner-contract"
       },
-      "summary_sha256": "55b0cf727e8c8e398e4bc3d8d9031c3cc20e3c3d54215ba5b8f00ea6a35f5a1e"
+      "events_sha256": "6d263cfd445b632d9244de8b7d7b867732c422dc92c502dd23175336b7c780d3",
+      "summary_sha256": "8245b2356429f3c628d12a1f7049578836a5644d6904cf0b7c8948c4c8f8c45d"
     }
   ],
-  "rust_artifacts": [
+  "rust_artifacts": {
+    "captured_utc": "2026-09-17T14:57:40.220823+00:00",
+    "platform": "Linux-7.0.0-31-generic-x86_64-with-glibc2.43",
+    "artifacts": [
+      {
+        "artifact": "sr",
+        "path": "/data/tmp/rch/skillranker/.rch-target-ovh-b-pool-b19cc3adf64425ef129f853116065bdf/debug/sr",
+        "sha256": "694bb298ab8681c92bc0fd3856ff832a33f38a153336396c52621c176693ad62",
+        "bytes": 4664096
+      },
+      {
+        "artifact": "adapter_contract.rs",
+        "path": "/data/tmp/rch/skillranker/.rch-target-ovh-b-pool-b19cc3adf64425ef129f853116065bdf/debug/build/skillranker/6e05fe0e73b39231/out/adapter_contract-6e05fe0e73b39231",
+        "sha256": "5a5b41329635bf03a8267b96f609a799fee532ccb7b408bfffadf62b9b15fd22",
+        "bytes": 20603784
+      },
+      {
+        "artifact": "bootstrap_cli.rs",
+        "path": "/data/tmp/rch/skillranker/.rch-target-ovh-b-pool-b19cc3adf64425ef129f853116065bdf/debug/build/skillranker/6a703536bac43939/out/bootstrap_cli-6a703536bac43939",
+        "sha256": "2d3078ea0153a78e3e2fdf9c9c6fb8c6f7b67199a772c1dc56dd54b357b930c1",
+        "bytes": 7721888
+      },
+      {
+        "artifact": "config_contract.rs",
+        "path": "/data/tmp/rch/skillranker/.rch-target-ovh-b-pool-b19cc3adf64425ef129f853116065bdf/debug/build/skillranker/5f67bbfde32ab7bd/out/config_contract-5f67bbfde32ab7bd",
+        "sha256": "a29a397275d72f9c8145ff8a0f1e5d45ba3d242bb9920837fbb783fbb350c6d5",
+        "bytes": 22379240
+      },
+      {
+        "artifact": "identity_contract.rs",
+        "path": "/data/tmp/rch/skillranker/.rch-target-ovh-b-pool-b19cc3adf64425ef129f853116065bdf/debug/build/skillranker/c6e319723ff0d506/out/identity_contract-c6e319723ff0d506",
+        "sha256": "fefb5d8c93128568f76f42ddb76a7eaa3356d46de6ce27ef1fcc319e49760115",
+        "bytes": 22267952
+      },
+      {
+        "artifact": "limits_contract.rs",
+        "path": "/data/tmp/rch/skillranker/.rch-target-ovh-b-pool-b19cc3adf64425ef129f853116065bdf/debug/build/skillranker/f3d0911fd8346781/out/limits_contract-f3d0911fd8346781",
+        "sha256": "774e6f7787103d4355986e1261f94f38a0b69d97ceed0f8db742491d90749be0",
+        "bytes": 17975248
+      },
+      {
+        "artifact": "output_contract.rs",
+        "path": "/data/tmp/rch/skillranker/.rch-target-ovh-b-pool-b19cc3adf64425ef129f853116065bdf/debug/build/skillranker/74f164c1a83d3d58/out/output_contract-74f164c1a83d3d58",
+        "sha256": "8f66efe34e29a8b8e37e90308ac98a917065cc5ab36a885110438abd1e3d37bd",
+        "bytes": 20002600
+      }
+    ],
+    "worker": "ovh-b",
+    "build_id": "30024414133223747",
+    "scope": "post-test read of exact compiled executable paths reported by Cargo"
+  },
+  "rust_reference_review": {
+    "passed": 97,
+    "test_result_groups": [
+      [
+        "0",
+        "0",
+        "0",
+        "0",
+        "0"
+      ],
+      [
+        "0",
+        "0",
+        "0",
+        "0",
+        "0"
+      ],
+      [
+        "25",
+        "0",
+        "0",
+        "0",
+        "0"
+      ],
+      [
+        "3",
+        "0",
+        "0",
+        "0",
+        "0"
+      ],
+      [
+        "20",
+        "0",
+        "0",
+        "0",
+        "0"
+      ],
+      [
+        "15",
+        "0",
+        "0",
+        "0",
+        "0"
+      ],
+      [
+        "15",
+        "0",
+        "0",
+        "0",
+        "0"
+      ],
+      [
+        "19",
+        "0",
+        "0",
+        "0",
+        "0"
+      ],
+      [
+        "0",
+        "0",
+        "0",
+        "0",
+        "0"
+      ]
+    ],
+    "required_references": [
+      "tests/bootstrap_cli.rs::help_and_version_describe_only_implemented_commands",
+      "tests/identity_contract.rs::documented_incomplete_context_round_trips_without_durable_authority",
+      "tests/output_contract.rs::documented_rank_examples_are_valid_contracts",
+      "tests/limits_contract.rs::default_limits_are_positive_and_cap_plus_one_checked",
+      "tests/config_contract.rs::registry_is_complete_ordered_and_internally_consistent",
+      "tests/adapter_contract.rs::foundation_capabilities_match_the_checked_in_fixture_and_do_not_advertise_commands",
+      "tests/identity_contract.rs::documented_incomplete_context_round_trips_without_durable_authority",
+      "tests/limits_contract.rs::default_limits_are_positive_and_cap_plus_one_checked",
+      "tests/adapter_contract.rs::foundation_capabilities_match_the_checked_in_fixture_and_do_not_advertise_commands"
+    ],
+    "all_references_passed": true,
+    "mapping": "Cargo stdout and stderr interleave; require each binary invocation, exactly one passing line per named test, and unique source declaration across integration binaries.",
+    "discarded_check": "Initial parser incorrectly assumed merged output retained ordering between Running diagnostics and test stdout; replaced with source uniqueness plus executed binary and passing name checks."
+  },
+  "worker_source_review": [
     {
-      "artifact": "sr",
-      "sha256": "52cfb7dee5ad96390b6f0f0db34afa30feaef236eb68c33ab083d46d3e724a67",
-      "bytes": 4670872
+      "gate": "aggregate-test",
+      "path": "/data/tmp/skillranker-adapter-review-orgyof57/aggregate-test.worker-hashes.json",
+      "matched_file_count": 77,
+      "scope": "during-build selected source hashes, not a post-command receipt",
+      "sha256": "f6db992eccdb61687a1d0a67e288946c94cc7ec6229749608d7ab63b3b5c5dfe",
+      "captured_utc": "2026-09-17T14:51:07.808750+00:00",
+      "platform": "Linux-7.0.0-31-generic-x86_64-with-glibc2.43"
     },
     {
-      "artifact": "build/skillranker/6e05fe0e73b39231/out/adapter_contract-6e05fe0e73b39231",
-      "sha256": "0ab5bf9abd243e5b322e15a6d96d5808fa3746feee056104dac4d1322c437045",
-      "bytes": 19849672
+      "gate": "aggregate-clippy",
+      "path": "/data/tmp/skillranker-adapter-review-orgyof57/aggregate-clippy.worker-hashes.json",
+      "matched_file_count": 77,
+      "scope": "during-build selected source hashes, not a post-command receipt",
+      "sha256": "7ab63d428e8ca1d62fc8742947cdedd098c75ff31745fcf174913bd7e6516e5e",
+      "captured_utc": "2026-09-17T14:51:09.419685+00:00",
+      "platform": "Linux-7.0.0-31-generic-x86_64-with-glibc2.43"
     },
     {
-      "artifact": "build/skillranker/6a703536bac43939/out/bootstrap_cli-6a703536bac43939",
-      "sha256": "5ce4f7a9ffe8b35120836478d4c974450f23501fe38ff729b57c236f6d1d25c2",
-      "bytes": 7742624
+      "gate": "aggregate-clippy-all-features",
+      "path": "/data/tmp/skillranker-adapter-review-orgyof57/aggregate-clippy-all-features.worker-hashes.json",
+      "matched_file_count": 77,
+      "scope": "during-build selected source hashes, not a post-command receipt",
+      "sha256": "40dee35d7f74dc409d308b4340ac9616789bac357f9b61015ace20a40b2f732f",
+      "captured_utc": "2026-09-17T14:51:11.344195+00:00",
+      "platform": "Linux-7.0.0-30-generic-x86_64-with-glibc2.43"
     },
     {
-      "artifact": "build/skillranker/5f67bbfde32ab7bd/out/config_contract-5f67bbfde32ab7bd",
-      "sha256": "028329b59c988fecb8296f04ac1a4f63ac2a87461d5899c5f34a5d3acd5e719b",
-      "bytes": 22033456
-    },
-    {
-      "artifact": "build/skillranker/c6e319723ff0d506/out/identity_contract-c6e319723ff0d506",
-      "sha256": "0594c1e61e7a04d111a727c2fbbc8b972dbe458b11369d3883b43809600b11fc",
-      "bytes": 21918392
-    },
-    {
-      "artifact": "build/skillranker/f3d0911fd8346781/out/limits_contract-f3d0911fd8346781",
-      "sha256": "33f155401f62f64684117dc1e96a8d06527090230ddd4536a0ca64a44e7da3dd",
-      "bytes": 17596016
-    },
-    {
-      "artifact": "build/skillranker/74f164c1a83d3d58/out/output_contract-74f164c1a83d3d58",
-      "sha256": "ddd45adec5574aa8e2da2a3f26b7445c62f3b2cd8a4f257cb2368ecaa406b42a",
-      "bytes": 19642104
+      "gate": "aggregate-check-hz4",
+      "path": "/data/tmp/skillranker-adapter-review-orgyof57/aggregate-check-hz4.worker-hashes.json",
+      "matched_file_count": 77,
+      "scope": "during-build selected source hashes, not a post-command receipt",
+      "sha256": "0e4482cc2e9307f1ab609f042f60d3617a161814685c074c3d35d4c4c6fc3b42",
+      "captured_utc": "2026-09-17T15:02:44.758630+00:00",
+      "platform": "Linux-7.0.0-30-generic-x86_64-with-glibc2.43"
     }
   ],
+  "coverage": {
+    "boundaries": 77,
+    "non_epic_roadmap_members": 179,
+    "rust_reference_occurrences": 9,
+    "future_aggregates": "planned; split into executable boundaries before claiming execution",
+    "pure_contract_e2e_role": "not-applicable; separate executed unit/check evidence required"
+  },
   "public_contracts": {
     "checks": {
       "capability_phases": 19,
@@ -308,7 +833,37 @@
     },
     "status": "passed"
   },
-  "artifact_directory": "/data/tmp/skillranker-p0-logs-e8b8jrja",
+  "published_document_sha256": {
+    "docs/p0-acceptance.md": "f1b202dcb26ac46c6ba2f1cb119c5166509e8a83da10d53b6fba84043aa32475",
+    "docs/config-contract.md": "4fbcdac5c3ea72f6a442d17edb6be8555d9357932943f1e91ef13c7d77b6156a"
+  },
+  "artifact_directory": "/data/tmp/skillranker-p0-accepted-w7u373pr",
+  "rust_artifact_directory": "/data/tmp/skillranker-adapter-review-orgyof57",
+  "static_analysis": {
+    "matrix_ubs": {
+      "exit_code": 0,
+      "critical": 0,
+      "warnings": 31,
+      "log": "/data/tmp/skillranker-p0-accepted-w7u373pr/ubs-matrix.json",
+      "sha256": "5a60e81adbe54399a460bc45e91e3837c7d2e4940d15527fca3b8cafd6237a47",
+      "review": "Exact scalar types reject bool-as-int; fdopen owns the descriptor; validate catches JSON errors. Scoped scan only."
+    },
+    "ruff": "E4,E7,E9,F,B passed for matrix and evaluation validator/tests; see other_checks"
+  },
+  "repaired_blockers": [
+    "sr-roadmap-l1i.1.16",
+    "sr-eval-audit-dwew",
+    "sr-adapter-audit-3djt",
+    "sr-7dvc",
+    "sr-8d2m"
+  ],
+  "historical_evidence": {
+    "repository_revision": "cb3cafeb9bbb66b0ae36afb23e29de2a2f669bab",
+    "repository_path": "docs/verification-p0-acceptance.json",
+    "local_snapshot": "/data/tmp/skillranker-p0-accepted-w7u373pr/historical-acceptance.json",
+    "local_snapshot_sha256": "f075837c932afa7f79243efc000fee5cbaad61c24328731297a190247ff7bc04",
+    "classification": "Historical88-Rust/102-Python source snapshots are not current-source proof"
+  },
   "retained_nonpassing_attempts": [
     {
       "log": "/data/tmp/skillranker-p0-logs-e8b8jrja/cargo-check.log",
@@ -319,134 +874,101 @@
       "log": "/data/tmp/skillranker-p0-logs-e8b8jrja/eval-tests.log",
       "exit_code": 1,
       "classification": "isolated Python invocation prevented sibling import"
+    },
+    {
+      "name": "before-rch",
+      "exit_code": 101,
+      "stderr": "/data/tmp/skillranker-adapter-review-orgyof57/before-rch.stderr",
+      "stdout": "/data/tmp/skillranker-adapter-review-orgyof57/before-rch.stdout",
+      "classification": "expected pre-repair regression"
+    },
+    {
+      "name": "test",
+      "exit_code": 103,
+      "stderr": "/data/tmp/skillranker-adapter-review-orgyof57/test.stderr",
+      "stdout": "/data/tmp/skillranker-adapter-review-orgyof57/test.stdout",
+      "classification": "excluded earlier attempt; not acceptance proof"
+    },
+    {
+      "name": "check",
+      "exit_code": 103,
+      "stderr": "/data/tmp/skillranker-adapter-review-orgyof57/check.stderr",
+      "stdout": "/data/tmp/skillranker-adapter-review-orgyof57/check.stdout",
+      "classification": "excluded earlier attempt; not acceptance proof"
+    },
+    {
+      "name": "check-retry",
+      "exit_code": 103,
+      "stderr": "/data/tmp/skillranker-adapter-review-orgyof57/check-retry.stderr",
+      "stdout": "/data/tmp/skillranker-adapter-review-orgyof57/check-retry.stdout",
+      "classification": "excluded earlier attempt; not acceptance proof"
+    },
+    {
+      "name": "clippy",
+      "exit_code": 103,
+      "stderr": "/data/tmp/skillranker-adapter-review-orgyof57/clippy.stderr",
+      "stdout": "/data/tmp/skillranker-adapter-review-orgyof57/clippy.stdout",
+      "classification": "excluded earlier attempt; not acceptance proof"
+    },
+    {
+      "name": "clippy-retry",
+      "exit_code": 103,
+      "stderr": "/data/tmp/skillranker-adapter-review-orgyof57/clippy-retry.stderr",
+      "stdout": "/data/tmp/skillranker-adapter-review-orgyof57/clippy-retry.stdout",
+      "classification": "excluded earlier attempt; not acceptance proof"
+    },
+    {
+      "name": "clippy-all-features",
+      "exit_code": 103,
+      "stderr": "/data/tmp/skillranker-adapter-review-orgyof57/clippy-all-features.stderr",
+      "stdout": "/data/tmp/skillranker-adapter-review-orgyof57/clippy-all-features.stdout",
+      "classification": "excluded earlier attempt; not acceptance proof"
     }
   ],
-  "remote_source_inputs_sha256": {
-    "Cargo.lock": "6e563c4d037a81e85324dcba2243ae809e66954128282c3d54d9d3d700ce3f81",
-    "Cargo.toml": "e2787e42dc7bcd45363dc0a2716681e96853add4191d4f04c6c605ef1a2a0bc1",
-    "rust-toolchain.toml": "5a13f4f286294e6f7b4dcc76ebca9ddebc0cfcbe53e37f9123bdd17f21096985",
-    "scripts/check_dependency_graph.py": "e0a1d1362662b7561f1dbe4277afcf30e951ca4e31f45a7e154dce391edb9d90",
-    "scripts/e2e/evidence.py": "4b57eb89559adae4a5efc5ac08dd0b38e110234df375bc78ddce9806aea53452",
-    "scripts/e2e/fixtures/contract_child.py": "7ef2d9bf0db9b940f2c74788c961bd76849efeb36567d2d86a3bf6674619e054",
-    "scripts/e2e/fixtures/runner_child.py": "5e0551772f0d75fcc40908aaed50b815bdb55ce0697831daf140f7173d2cf707",
-    "scripts/e2e/run.sh": "0bad3197ec97fc1655201162964d0c887b43131a9bbe7e43363783c644ec0e67",
-    "scripts/e2e/runner.py": "c0c37dfbb20c4f04cf7fcb6f7e6f93faec1b677927059a87b96d085e70b8931e",
-    "scripts/e2e/runner_contract.py": "35c30d9e14895a3beadd30cc077737bfe50c575bd01d561b7a97fe2ea58c8ef8",
-    "scripts/e2e/suites/runner-contract.json": "4a1d5159dc255a9859a41bf0197b962c9a5d5fe471bfe209690158d9c2c1364e",
-    "scripts/e2e/suites/runner-smoke.json": "d4ff77af5251cb28456aad8bdd5dda1d7a31449e25655aae6bf3e18be2d0d15a",
-    "scripts/e2e/test_runner.py": "a7e9613f23f2854a120a93970e7f12cd653104129a4c86b186b09da0b36a9a23",
-    "scripts/e2e/test_runner_cleanup.py": "6113b15c331a5c9057039e3cc8a01c3959343b5ccaf832a0dbd8e736f9491fd7",
-    "scripts/e2e/test_runner_contract.py": "35a6a641a650501db6de2e48cece258fc74766f4fe3278c015163f90f4f4fb29",
-    "scripts/test_contract_matrix.py": "ce216efd18ebc966d08c10f4c0e2111b60fa7ed56a4a9b9f539a44d56f3c4af4",
-    "scripts/test_eval_policy.py": "de700bd0e7bb0b96b4c0f7018e2a5d4e65115d48133290e857e249c289e782d6",
-    "scripts/validate_contract_matrix.py": "6656693bc8d400cc7dd68b884d0754f8ce64559266b89bbd4131abef538b16f3",
-    "scripts/validate_eval_policy.py": "f10fd75ca48887b8db443748ec4109cc42548a729595a69fc1c694fd89609451",
-    "scripts/validate_public_contracts.py": "2561d4703b9aabf6beaeda6d037529a1dedc6164149a003865e33ae3ca884801",
-    "src/adapter.rs": "b9ebb96a9d4689179e3e90b29231f386e5f8a1bc0bffcf5a480fbb79dbd2067d",
-    "src/config.rs": "37e44034751e65204d1efb5eebc75e9db89ceb44fd7004e5ad517c5e845b17a0",
-    "src/context/mod.rs": "bea16c86b8364d1c38c2121b353f318475453a24254accf6ba29c9e2db32d462",
-    "src/identity.rs": "33a01c23a604646c673e5881511b5c6d15dd0cf4208b8b101c44361214569e84",
-    "src/lib.rs": "6bf07d2f99e5b7ef92ec01df35e235d89e7d87c51d05bb5196705293ac05ab15",
-    "src/limits.rs": "1a988c44c00531cf2ee5d84a9204af4cdfe8e77658531f9f4dfc2b5a739d0c29",
-    "src/main.rs": "7a4a7076084abe59f93ee9bcdb40828e84231ec2217f0e2e69dc24905efbf701",
-    "src/output/mod.rs": "489c4a74a0e899737e775aba6359d5c439f41851e4c63051693913240b438816",
-    "src/privacy/mod.rs": "fa3641fc0e3d2fb318c9e9929406221aa1b6af5367110115deebeb29ff818e1c",
-    "src/roster/mod.rs": "d72df001efeda6791f4ff1e1590fd23c62f7d5000e52c7dc1f7d52fb8fb51fbf",
-    "tests/adapter_contract.rs": "f598386e6c40941137fa1b2e6f8314eb1c79032a326e858a470a872250a2a601",
-    "tests/bootstrap_cli.rs": "c2505e7c666db2d7e9835ac21094487c17ca5d6fc175ed9682c10c5c773d235b",
-    "tests/config_contract.rs": "84ba53e35fd84cd3ffa93e15085e6184d0fca6b5cca6559ccae7989d6dd08a44",
-    "tests/contract_authority.toml": "e1b42690ad491e73e95f1c17c1878eab56e50d780c2fd6a53f388c5f687c9d5e",
-    "tests/contract_matrix.toml": "f2f7adf24e2db99bf0651fa74dd65f3724235f9c846d40ca423d73227eeb1ebf",
-    "tests/eval/README.md": "0236775fe98ad10395956e06d6effa4cbb7e189ed3385ed804fc11cc467d6e65",
-    "tests/eval/evaluation_policy.v1.json": "b0f35abdc436c6cd91358d290850d22cd2572979067821e06e3b30cf6ffed5da",
-    "tests/eval/expected_values.v1.json": "a05aa971a0c99f1587c5ffcefcbc3842f0055fdbfb817b7fd694150a3ea5dda6",
-    "tests/eval/synthetic_cases.v1.jsonl": "50ffd624fb6d065f8a79e672daf8d5bd305c47d8f40358ba9d7543c149085f98",
-    "tests/evidence/README.md": "a06fd96c30e7ecfbd80ea8179eaaccae2b66ad9348e4bd1428b21e3a946657ee",
-    "tests/fixtures/adapter-cass-producer.v1.json": "a57e290b379bbc29678008bc49ae04ece1484a4564e9bbf0b97b8d94dc9a5d7a",
-    "tests/fixtures/adapter-claude-user-prompt-submit.v1.json": "58e189f39692e32dc9eb7172ca072d785f8efeaee71f436d2ae60d97d69374af",
-    "tests/fixtures/capabilities.v1.json": "953a04cfb3708e9082740ec5ab382bcf6d7ccff4729d5132b24ffaa8caa63c24",
-    "tests/fixtures/normalized-context.v1.json": "7a809b03731546429c673c17a7e521d87bf9484b4587e8c64199da9ad0c46592",
-    "tests/fixtures/output-abstain.v1.json": "7f6737083777e5e122c53e0982c06e2d06221736aef14c0451657353eaffb64f",
-    "tests/fixtures/output-demo.v1.json": "3e5028367ee3bebf039d61203a11ecf09eb1b9468f8160ec805a31565521a1a6",
-    "tests/fixtures/output-explicit.v1.json": "ff2ff0d3f5fa489670b863c5db51731cb7d05513eb501098536d62f2eed65f96",
-    "tests/fixtures/output-ranked.v1.json": "bd7863ea60710489fd733693f4803267f0421577d867265f06c3fb1a2d6b6b47",
-    "tests/fixtures/output-replay.v1.json": "eebbb2ec8183e59154d21d31792e520584686f945ecbadf2bcd76e6e88f6368e",
-    "tests/fixtures/output-report.v1.json": "8f92c4d4f784e5cd5c18342c33afe2227db451cab2d6974513716235e07e36e8",
-    "tests/fixtures/output-unavailable.v1.json": "4747a4d3195ddb319a511c706445db72a1e24af1967cf7cf87954db71b5e31e1",
-    "tests/identity_contract.rs": "831f213a4ae01d55a8aeaf3c5e057146c051c8f1360f8d2fbc5f3354c6233ae0",
-    "tests/limits_contract.rs": "8bf799044a9d8389e3d615e9fcfa6e1a0b834e02ac6af86efd2af7f72cb8581e",
-    "tests/output_contract.rs": "0b19d81cc35585b4c9e8c7ac96cf1a1900d0e451b701e4f8beca8d260d26eebf"
-  },
-  "final_frozen_checkout": "/data/projects/skillranker-p0-final-rrg_f1ya",
-  "final_artifact_directory": "/data/tmp/skillranker-p0-final-w7lv4c11",
-  "rust_proof_composition": {
-    "receipt_file_count": 75,
-    "differences": [
-      "scripts/test_contract_matrix.py",
-      "scripts/test_eval_policy.py",
-      "scripts/validate_contract_matrix.py",
-      "scripts/validate_eval_policy.py"
-    ],
-    "unchanged_rust_inputs": true,
-    "include_str_review": [
-      "README.md",
-      "COMPREHENSIVE_PLAN_TO_DESIGN_SKILLRANKER.md",
-      "tests/fixtures/*.json"
-    ],
-    "no_rust_or_build_code_invokes_changed_python": true
-  },
-  "rust_worker_platform": "Linux x86_64",
-  "matrix_receipt_validation": {
-    "command": "python3 -I -B scripts/validate_contract_matrix.py --require-mechanics --smoke-receipt /data/tmp/sr-matrix-receipts-uco6t7pl/sr-e2e-can2vf0_ --certificate-receipt /data/tmp/sr-matrix-receipts-uco6t7pl/sr-contract-8j1u14pz",
-    "status": "passed",
-    "log": "/data/tmp/skillranker-p0-final-w7lv4c11/matrix-mechanics.log",
-    "log_sha256": "454cfe99463eaedd2d5ede83b39d69f9bc5e10b812bafc489d02b68f43080705",
-    "coverage_boundaries": 77,
-    "roadmap_members": 179,
-    "product_gate": "not-applicable"
-  },
-  "other_checks": [
-    {
-      "name": "eval-validation.log",
-      "status": "passed",
-      "log": "/data/tmp/skillranker-p0-final-w7lv4c11/eval-validation.log",
-      "sha256": "3bebe521e739ebc5b77ec04194acb736361b455365486c802f3255ecd3b6c5e8"
+  "excluded_aggregate_attempts": {
+    "aggregate-check": {
+      "command": [
+        "rch",
+        "--json",
+        "exec",
+        "--base",
+        "92553e3e14b7ce0c8d7184fd917e15bab4efecf5",
+        "--clean-overlay",
+        "--overlay-path",
+        "src/config.rs",
+        "--overlay-path",
+        "tests/config_contract.rs",
+        "--",
+        "cargo",
+        "check",
+        "--locked",
+        "--all-targets",
+        "-j",
+        "4"
+      ],
+      "logs": {
+        "stdout": {
+          "path": "/data/tmp/skillranker-adapter-review-orgyof57/aggregate-check.stdout",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "stderr": {
+          "path": "/data/tmp/skillranker-adapter-review-orgyof57/aggregate-check.stderr",
+          "sha256": "a9c2847cbcbaebb33e9c30de82b35ccf7ef02736695da4dd5be056d210fa9043"
+        }
+      },
+      "worker_source_sample": {
+        "path": "/data/tmp/skillranker-adapter-review-orgyof57/aggregate-check.worker-hashes.json",
+        "matched_file_count": 77,
+        "scope": "during-build selected source hashes, not a post-command receipt"
+      },
+      "status": "cancelled",
+      "process_exit": -15
     },
-    {
-      "name": "dependency-graph.log",
-      "status": "passed",
-      "log": "/data/tmp/skillranker-p0-final-w7lv4c11/dependency-graph.log",
-      "sha256": "9ad624074cef84bb2012932c387d8db83d701b8a5cc9c0d741a5caf060830735"
-    },
-    {
-      "name": "format.log",
-      "status": "passed",
-      "log": "/data/tmp/skillranker-p0-final-w7lv4c11/format.log",
-      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    "aggregate-check-retry": {
+      "status": "refused",
+      "exit": 103,
+      "reason": "hz4 capacity3, request4; no local fallback"
     }
-  ],
-  "static_analysis": {
-    "matrix_ubs": {
-      "exit_code": 0,
-      "critical": 0,
-      "warnings": 31,
-      "log": "/data/tmp/skillranker-p0-logs-e8b8jrja/ubs-matrix-cli.log",
-      "review": "Strict types reject bool-as-int; fdopen owns descriptor; caller handles JSON errors."
-    },
-    "evaluation_ubs": {
-      "exit_code": 1,
-      "critical": 0,
-      "warnings": 19,
-      "evidence": "/data/tmp/skillranker-eval-review-7xxzj52x/verification.json",
-      "review": "Existing strict scalar typing and descriptor ownership warnings; not a clean scanner claim."
-    },
-    "ruff": "E4,E7,E9,F,B passed for four changed Python files"
-  },
-  "additional_repaired_blocker": {
-    "bead": "sr-eval-audit-dwew",
-    "source_commit": "3391b6b27ff956cc508f5862c15d9962003f5c6a",
-    "before_failures": 29,
-    "after_tests": 43
   },
   "not_claimed": [
     "P1 live Jev or HTTPS readiness",
@@ -460,17 +982,9 @@
     "P9 native harnesses or TUI",
     "non-Linux targets"
   ],
-  "pending_repairs": [
-    {
-      "owner": "CopperWren",
-      "scope": "matrix references and evidence-role semantics",
-      "requires": "fresh frozen Python/mechanics proof for repaired validator, tests, matrix and authority"
-    },
-    {
-      "owner": "SilentFinch",
-      "scope": "Rust adapter strictness, privacy and support provenance",
-      "requires": "reproduce and repair confirmed public-path regressions; fresh required-remote Rust verification",
-      "bead": "sr-adapter-audit-3djt"
-    }
-  ]
+  "matrix_before_reproduction": {
+    "file": "/data/tmp/skillranker-matrix-reproduction-zxgp1cck/before.json",
+    "sha256": "61e103294240b4ea85ed9be847b9f1edc88514afd3e8d00a38723d86506968a7",
+    "classification": "seven invalid original matrix mutations returned success before repair"
+  }
 }
