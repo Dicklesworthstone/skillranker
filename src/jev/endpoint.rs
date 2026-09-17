@@ -4,7 +4,7 @@
 //! # Embedded Invariants
 //! - `TYPESAFE_ENDPOINT` is a trusted **base origin**, not a full path.
 //! - Scheme must be HTTPS, with a test-only loopback HTTP exception.
-//! - Equivalent spellings (trailing slash, default ports, case, IDN) normalize to
+//! - Equivalent spellings (trailing slash, default ports, case, IDN punycode) normalize to
 //!   the exact same canonical origin identity string for cache and budget sharing.
 //! - Userinfo, query strings, fragments, and non-root paths are rejected.
 //! - Append `/v1/systemone` exactly once to form the target URL.
@@ -13,7 +13,8 @@
 //!   mismatched origins refuse to emit the `Authorization` header.
 //! - No redirects: 3xx responses are hard failures; redirects are never followed.
 //! - Ambient proxy variables (`HTTP_PROXY`, etc.) are not implicitly trusted,
-//!   and proxy diagnostics scrub credentials.
+//!   and proxy diagnostics scrub credentials, query strings, and fragments.
+//! - Untrusted inputs (paths, ports, hosts, query tokens) are never echoed in error diagnostics.
 
 use crate::output::ErrorKind;
 use crate::privacy::ApiCredential;
@@ -32,6 +33,9 @@ pub const SKILLRANKER_USER_AGENT: &str = concat!("skillranker/", env!("CARGO_PKG
 
 /// Maximum allowed bytes for raw endpoint input.
 pub const MAX_ENDPOINT_INPUT_BYTES: usize = 2048;
+
+/// Maximum characters for sanitized diagnostic URLs before truncation.
+pub const MAX_DIAGNOSTIC_URL_CHARS: usize = 256;
 
 /// Known ambient proxy environment variable names to inspect and scrub.
 pub const AMBIENT_PROXY_VARS: &[&str] = &[
@@ -96,26 +100,6 @@ impl CanonicalOrigin {
             return Err(EndpointError::InputTooLong(input.len()));
         }
 
-        // Check for disallowed URL features before parsing
-        // Userinfo check (@ before / or end)
-        if let Some(at_idx) = input.find('@') {
-            let scheme_end = input.find("://").map(|i| i + 3).unwrap_or(0);
-            let slash_idx = input[scheme_end..].find('/').map(|i| i + scheme_end);
-            if slash_idx.is_none() || at_idx < slash_idx.unwrap() {
-                return Err(EndpointError::UserinfoForbidden);
-            }
-        }
-
-        // Query string check
-        if input.contains('?') {
-            return Err(EndpointError::QueryForbidden);
-        }
-
-        // Fragment check
-        if input.contains('#') {
-            return Err(EndpointError::FragmentForbidden);
-        }
-
         // Scheme extraction
         let (scheme, rest) = if let Some(colon_slash) = input.find("://") {
             let scheme_raw = &input[..colon_slash];
@@ -125,41 +109,51 @@ impl CanonicalOrigin {
             } else if scheme_raw.eq_ignore_ascii_case("http") {
                 (Scheme::Http, after_scheme)
             } else {
-                return Err(EndpointError::UnsupportedScheme(
-                    scheme_raw.to_ascii_lowercase(),
-                ));
+                return Err(EndpointError::UnsupportedScheme);
             }
         } else {
             return Err(EndpointError::MissingScheme);
         };
 
-        // Split authority (host + optional port) and path
-        let (authority, path) = match rest.find('/') {
-            Some(idx) => (&rest[..idx], &rest[idx..]),
-            None => (rest, ""),
-        };
+        // Authority ends at the FIRST of '/', '?', or '#'
+        let auth_end = rest
+            .find(|c| c == '/' || c == '?' || c == '#')
+            .unwrap_or(rest.len());
+        let authority = &rest[..auth_end];
+        let after_auth = &rest[auth_end..];
+
+        // Userinfo check (@ in authority)
+        if authority.contains('@') {
+            return Err(EndpointError::UserinfoForbidden);
+        }
+
+        // Query string check
+        if after_auth.contains('?') {
+            return Err(EndpointError::QueryForbidden);
+        }
+
+        // Fragment check
+        if after_auth.contains('#') {
+            return Err(EndpointError::FragmentForbidden);
+        }
 
         // Validate path: must be empty or "/"
-        if !path.is_empty() && path != "/" {
-            if path == "/v1/systemone"
-                || path == "/v1/systemone/"
-                || path == "/v1"
-                || path == "/v1/"
+        if !after_auth.is_empty() && after_auth != "/" {
+            if after_auth == "/v1/systemone"
+                || after_auth == "/v1/systemone/"
+                || after_auth == "/v1"
+                || after_auth == "/v1/"
             {
-                return Err(EndpointError::DuplicatePathJoin {
-                    path: path.to_owned(),
-                });
+                return Err(EndpointError::DuplicatePathJoin);
             }
-            return Err(EndpointError::NonRootPathForbidden {
-                path: path.to_owned(),
-            });
+            return Err(EndpointError::NonRootPathForbidden);
         }
 
         if authority.is_empty() {
             return Err(EndpointError::EmptyHost);
         }
 
-        // Parse host and port
+        // Parse authority into host and optional port
         let (raw_host, explicit_port) = parse_authority(authority)?;
 
         // Canonicalize host
@@ -167,10 +161,7 @@ impl CanonicalOrigin {
 
         // Scheme check: HTTP is permitted ONLY for loopback hosts
         if scheme == Scheme::Http && !is_loopback {
-            return Err(EndpointError::InsecureScheme {
-                scheme: "http".to_owned(),
-                host: canonical_host,
-            });
+            return Err(EndpointError::InsecureScheme);
         }
 
         // Canonicalize port: omit default port
@@ -235,6 +226,16 @@ impl CanonicalOrigin {
     /// Whether this origin points to a loopback interface.
     pub fn is_loopback(&self) -> bool {
         is_loopback_host(&self.host)
+    }
+
+    /// Check if credentials can be routed to this origin.
+    ///
+    /// Refuses unencrypted HTTP origins to prevent cleartext credential leakage.
+    pub fn allow_credential(
+        &self,
+        credential: &ApiCredential,
+    ) -> Result<OriginScopedCredential, CredentialRoutingError> {
+        OriginScopedCredential::bind(credential.clone(), self)
     }
 
     /// Append `/v1/systemone` exactly once to form the target URL.
@@ -350,9 +351,7 @@ impl OriginScopedCredential {
         origin: &CanonicalOrigin,
     ) -> Result<Self, CredentialRoutingError> {
         if !origin.is_secure() {
-            return Err(CredentialRoutingError::InsecureHttpForbidden {
-                origin: origin.to_string(),
-            });
+            return Err(CredentialRoutingError::InsecureHttpForbidden);
         }
         Ok(Self {
             origin: origin.clone(),
@@ -373,10 +372,7 @@ impl OriginScopedCredential {
         target_origin: &CanonicalOrigin,
     ) -> Result<String, CredentialRoutingError> {
         if target_origin != &self.origin {
-            return Err(CredentialRoutingError::OriginMismatch {
-                expected: self.origin.to_string(),
-                actual: target_origin.to_string(),
-            });
+            return Err(CredentialRoutingError::OriginMismatch);
         }
         Ok(format!(
             "Bearer {}",
@@ -402,19 +398,21 @@ impl fmt::Display for OriginScopedCredential {
 }
 
 /// Errors occurring during credential binding and routing.
-#[derive(Clone, Debug, Eq, PartialEq)]
+///
+/// Contains no untrusted input strings or token data.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CredentialRoutingError {
     /// Credentials cannot be sent over unencrypted HTTP.
-    InsecureHttpForbidden { origin: String },
+    InsecureHttpForbidden,
     /// Attempted to route credentials to an origin differing from the bound origin.
-    OriginMismatch { expected: String, actual: String },
+    OriginMismatch,
 }
 
 impl CredentialRoutingError {
     pub const fn kind(&self) -> ErrorKind {
         match self {
-            Self::InsecureHttpForbidden { .. } => ErrorKind::InvalidConfiguration,
-            Self::OriginMismatch { .. } => ErrorKind::Authentication,
+            Self::InsecureHttpForbidden => ErrorKind::InvalidConfiguration,
+            Self::OriginMismatch => ErrorKind::Authentication,
         }
     }
 }
@@ -422,14 +420,12 @@ impl CredentialRoutingError {
 impl fmt::Display for CredentialRoutingError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::InsecureHttpForbidden { origin } => write!(
-                f,
-                "refusing to bind credentials to unencrypted HTTP origin '{origin}'; loopback HTTP is credential-free"
-            ),
-            Self::OriginMismatch { expected, actual } => write!(
-                f,
-                "credential origin mismatch: credential is bound to '{expected}' but request target is '{actual}'"
-            ),
+            Self::InsecureHttpForbidden => {
+                f.write_str("refusing to bind credentials to unencrypted HTTP origin; loopback HTTP is credential-free")
+            }
+            Self::OriginMismatch => {
+                f.write_str("credential origin mismatch: request target does not match bound credential origin")
+            }
         }
     }
 }
@@ -547,52 +543,102 @@ impl ProxyPolicy {
     }
 }
 
-/// Remove userinfo credentials and query strings from URLs before logging in diagnostics.
+/// Remove userinfo credentials, query strings, and fragments from URLs before logging in diagnostics.
+///
+/// Also strips control characters (preventing terminal escape injection) and bounds output length.
 pub fn sanitize_url_for_diagnostics(url: &str) -> String {
-    let (prefix, rest) = if let Some(colon_slash) = url.find("://") {
-        let scheme_end = colon_slash + 3;
-        (&url[..scheme_end], &url[scheme_end..])
+    // 1. Separate scheme prefix if present
+    let (scheme_prefix, after_scheme) = if let Some(colon_slash) = url.find("://") {
+        let end = colon_slash + 3;
+        (&url[..end], &url[end..])
     } else {
         ("", url)
     };
 
-    let (authority, remainder) = match rest.find('/') {
-        Some(slash) => (&rest[..slash], &rest[slash..]),
-        None => (rest, ""),
-    };
+    // 2. Identify the end of authority (ends at first '/', '?', or '#')
+    let auth_end = after_scheme
+        .find(|c| c == '/' || c == '?' || c == '#')
+        .unwrap_or(after_scheme.len());
+    let authority = &after_scheme[..auth_end];
+    let after_auth = &after_scheme[auth_end..];
 
-    let sanitized_authority = if let Some(at_idx) = authority.find('@') {
-        format!("[REDACTED]@{}", &authority[at_idx + 1..])
+    // 3. Userinfo in authority: use LAST '@' to prevent password '@' leakage
+    let sanitized_auth = if let Some(at_idx) = authority.rfind('@') {
+        let host_port = &authority[at_idx + 1..];
+        format!("[REDACTED]@{host_port}")
     } else {
         authority.to_owned()
     };
 
-    let sanitized_remainder = if let Some(q_idx) = remainder.find('?') {
-        format!("{}[QUERY-REDACTED]", &remainder[..q_idx])
-    } else {
-        remainder.to_owned()
+    // 4. In after_auth, separate path, query, and fragment
+    let (path, query_and_frag) = match after_auth.find(|c| c == '?' || c == '#') {
+        Some(idx) => (&after_auth[..idx], &after_auth[idx..]),
+        None => (after_auth, ""),
     };
 
-    format!("{prefix}{sanitized_authority}{sanitized_remainder}")
+    let (query, fragment) = if let Some(frag_idx) = query_and_frag.find('#') {
+        (&query_and_frag[..frag_idx], &query_and_frag[frag_idx..])
+    } else {
+        (query_and_frag, "")
+    };
+
+    let sanitized_query = if !query.is_empty() {
+        "?[QUERY-REDACTED]"
+    } else {
+        ""
+    };
+
+    let sanitized_fragment = if !fragment.is_empty() {
+        "#[FRAGMENT-REDACTED]"
+    } else {
+        ""
+    };
+
+    let combined =
+        format!("{scheme_prefix}{sanitized_auth}{path}{sanitized_query}{sanitized_fragment}");
+
+    // 5. Replace control characters with '?' to prevent terminal injection
+    let mut safe = String::with_capacity(combined.len());
+    for c in combined.chars() {
+        if c.is_control() {
+            safe.push('?');
+        } else {
+            safe.push(c);
+        }
+    }
+
+    // 6. Bound length to prevent diagnostic log floods
+    if safe.chars().count() > MAX_DIAGNOSTIC_URL_CHARS {
+        let mut truncated: String = safe.chars().take(MAX_DIAGNOSTIC_URL_CHARS).collect();
+        truncated.push_str("...[TRUNCATED]");
+        truncated
+    } else {
+        safe
+    }
 }
 
 /// Errors encountered while validating and canonicalizing endpoints.
-#[derive(Clone, Debug, Eq, PartialEq)]
+///
+/// Contains NO raw untrusted user input strings (paths, ports, hosts, tokens)
+/// to ensure diagnostic logging and Display never leak secrets.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum EndpointError {
     EmptyInput,
     InputTooLong(usize),
     MissingScheme,
-    UnsupportedScheme(String),
-    InsecureScheme { scheme: String, host: String },
+    UnsupportedScheme,
+    InsecureScheme,
     UserinfoForbidden,
     QueryForbidden,
     FragmentForbidden,
-    NonRootPathForbidden { path: String },
-    DuplicatePathJoin { path: String },
+    NonRootPathForbidden,
+    DuplicatePathJoin,
     EmptyHost,
-    InvalidHost(String),
-    InvalidPort(String),
-    PunycodeEncodingError(String),
+    InvalidHost,
+    InvalidPort,
+    NonAsciiHostForbidden,
+    UnbracketedIpv6Forbidden,
+    NumericIpv4AliasForbidden,
 }
 
 impl EndpointError {
@@ -606,33 +652,47 @@ impl fmt::Display for EndpointError {
         match self {
             Self::EmptyInput => f.write_str("endpoint base origin cannot be empty"),
             Self::InputTooLong(len) => {
-                write!(f, "endpoint base origin length ({len} bytes) exceeds limit ({MAX_ENDPOINT_INPUT_BYTES})")
+                write!(
+                    f,
+                    "endpoint base origin length ({len} bytes) exceeds limit ({MAX_ENDPOINT_INPUT_BYTES})"
+                )
             }
-            Self::MissingScheme => f.write_str("endpoint base origin must include scheme (e.g. 'https://')"),
-            Self::UnsupportedScheme(scheme) => {
-                write!(f, "unsupported scheme '{scheme}'; only HTTPS (and loopback HTTP) is permitted")
+            Self::MissingScheme => {
+                f.write_str("endpoint base origin must include scheme (e.g. 'https://')")
             }
-            Self::InsecureScheme { scheme, host } => {
-                write!(f, "insecure scheme '{scheme}://' for non-loopback host '{host}'; HTTPS is required")
+            Self::UnsupportedScheme => {
+                f.write_str("unsupported scheme in base origin; only HTTPS (and loopback HTTP) is permitted")
+            }
+            Self::InsecureScheme => {
+                f.write_str("insecure HTTP scheme is forbidden for non-loopback host; HTTPS is required")
             }
             Self::UserinfoForbidden => {
                 f.write_str("userinfo in endpoint URL is forbidden; credentials must be provided via TYPESAFE_API_KEY")
             }
             Self::QueryForbidden => f.write_str("query string in base origin is forbidden"),
             Self::FragmentForbidden => f.write_str("fragment in base origin is forbidden"),
-            Self::NonRootPathForbidden { path } => {
-                write!(f, "base origin must have root path, found '{path}'; TYPESAFE_ENDPOINT is an origin only")
+            Self::NonRootPathForbidden => {
+                f.write_str("base origin must have root path ('/'); non-root paths are forbidden in TYPESAFE_ENDPOINT")
             }
-            Self::DuplicatePathJoin { path } => {
-                write!(
-                    f,
-                    "endpoint base origin already contains '{path}'; TYPESAFE_ENDPOINT must be an origin without /v1/systemone"
-                )
+            Self::DuplicatePathJoin => {
+                f.write_str("endpoint base origin already contains '/v1/systemone'; TYPESAFE_ENDPOINT must be an origin without API path")
             }
             Self::EmptyHost => f.write_str("endpoint host cannot be empty"),
-            Self::InvalidHost(reason) => write!(f, "invalid host in base origin: {reason}"),
-            Self::InvalidPort(port_str) => write!(f, "invalid port '{port_str}' in base origin"),
-            Self::PunycodeEncodingError(reason) => write!(f, "IDN punycode encoding error: {reason}"),
+            Self::InvalidHost => {
+                f.write_str("invalid host in base origin; host must be a valid DNS hostname or canonical IP")
+            }
+            Self::InvalidPort => {
+                f.write_str("invalid port in base origin; port must be an integer between 1 and 65535 without leading plus or zero")
+            }
+            Self::NonAsciiHostForbidden => {
+                f.write_str("raw non-ASCII hostnames are forbidden; IDN origins must be specified in ASCII punycode (RFC 3490/3492 xn--...)")
+            }
+            Self::UnbracketedIpv6Forbidden => {
+                f.write_str("unbracketed IPv6 address is forbidden; IPv6 addresses must be enclosed in brackets (e.g. '[::1]')")
+            }
+            Self::NumericIpv4AliasForbidden => {
+                f.write_str("numeric IPv4 aliases and hex/octal IP formats are forbidden; only canonical dotted-decimal IPv4 is permitted")
+            }
         }
     }
 }
@@ -644,45 +704,51 @@ impl std::error::Error for EndpointError {}
 fn parse_authority(authority: &str) -> Result<(&str, Option<u16>), EndpointError> {
     if let Some(stripped) = authority.strip_prefix('[') {
         // IPv6 authority: [addr]:port or [addr]
-        let close_bracket = stripped.find(']').ok_or_else(|| {
-            EndpointError::InvalidHost("unclosed IPv6 bracket in authority".to_owned())
-        })?;
-        let ipv6_str = &stripped[..close_bracket];
+        let close_bracket = stripped.find(']').ok_or(EndpointError::InvalidHost)?;
+        let ipv6_host = &authority[..close_bracket + 2];
         let after_bracket = &stripped[close_bracket + 1..];
         let port = if let Some(colon_port) = after_bracket.strip_prefix(':') {
-            let p = u16::from_str(colon_port)
-                .map_err(|_| EndpointError::InvalidPort(colon_port.to_owned()))?;
-            if p == 0 {
-                return Err(EndpointError::InvalidPort("0".to_owned()));
-            }
-            Some(p)
+            Some(parse_strict_port(colon_port)?)
         } else if after_bracket.is_empty() {
             None
         } else {
-            return Err(EndpointError::InvalidHost(format!(
-                "unexpected trailing data after IPv6: '{after_bracket}'"
-            )));
+            return Err(EndpointError::InvalidHost);
         };
-        Ok((ipv6_str, port))
-    } else if Ipv6Addr::from_str(authority).is_ok() {
-        // Unbracketed IPv6 address without port
-        Ok((authority, None))
+        Ok((ipv6_host, port))
     } else {
-        // Standard hostname or IPv4
-        match authority.rfind(':') {
-            Some(colon_idx) => {
-                let host = &authority[..colon_idx];
-                let port_str = &authority[colon_idx + 1..];
-                let port = u16::from_str(port_str)
-                    .map_err(|_| EndpointError::InvalidPort(port_str.to_owned()))?;
-                if port == 0 {
-                    return Err(EndpointError::InvalidPort("0".to_owned()));
-                }
-                Ok((host, Some(port)))
-            }
-            None => Ok((authority, None)),
+        // Not bracketed IPv6. Check for colons.
+        let colon_count = authority.chars().filter(|&c| c == ':').count();
+        if colon_count > 1 {
+            // Multiple colons without brackets: unbracketed IPv6 literal
+            return Err(EndpointError::UnbracketedIpv6Forbidden);
+        } else if colon_count == 1 {
+            let colon_idx = authority.find(':').unwrap();
+            let host = &authority[..colon_idx];
+            let port_str = &authority[colon_idx + 1..];
+            let port = parse_strict_port(port_str)?;
+            Ok((host, Some(port)))
+        } else {
+            Ok((authority, None))
         }
     }
+}
+
+fn parse_strict_port(port_str: &str) -> Result<u16, EndpointError> {
+    if port_str.is_empty() {
+        return Err(EndpointError::InvalidPort);
+    }
+    // Reject leading '+' or '0' (prevents +443, 0443, 0)
+    if port_str.starts_with('+') || port_str.starts_with('0') {
+        return Err(EndpointError::InvalidPort);
+    }
+    if !port_str.chars().all(|c| c.is_ascii_digit()) {
+        return Err(EndpointError::InvalidPort);
+    }
+    let port = u16::from_str(port_str).map_err(|_| EndpointError::InvalidPort)?;
+    if port == 0 {
+        return Err(EndpointError::InvalidPort);
+    }
+    Ok(port)
 }
 
 fn canonicalize_host(raw_host: &str) -> Result<(String, bool), EndpointError> {
@@ -690,27 +756,36 @@ fn canonicalize_host(raw_host: &str) -> Result<(String, bool), EndpointError> {
         return Err(EndpointError::EmptyHost);
     }
 
-    // Try parsing as IPv4
-    if let Ok(ipv4) = Ipv4Addr::from_str(raw_host) {
-        let is_loopback = ipv4.is_loopback();
-        return Ok((ipv4.to_string(), is_loopback));
+    // Strict ASCII requirement: reject raw non-ASCII unicode
+    if !raw_host.is_ascii() {
+        return Err(EndpointError::NonAsciiHostForbidden);
     }
 
-    // Try parsing as IPv6 (bracketed or unbracketed)
-    let inner_ipv6 = raw_host
-        .strip_prefix('[')
-        .and_then(|s| s.strip_suffix(']'))
-        .unwrap_or(raw_host);
-    if let Ok(ipv6) = Ipv6Addr::from_str(inner_ipv6) {
-        let is_loopback = ipv6.is_loopback();
-        // Canonical IPv6 in brackets
-        return Ok((format!("[{ipv6}]"), is_loopback));
+    // Try parsing as bracketed IPv6
+    if raw_host.starts_with('[') && raw_host.ends_with(']') {
+        let inner = &raw_host[1..raw_host.len() - 1];
+        if let Ok(ipv6) = Ipv6Addr::from_str(inner) {
+            let is_loopback = ipv6.is_loopback();
+            return Ok((format!("[{ipv6}]"), is_loopback));
+        } else {
+            return Err(EndpointError::InvalidHost);
+        }
+    }
+
+    // If host contains brackets elsewhere, reject
+    if raw_host.contains('[') || raw_host.contains(']') {
+        return Err(EndpointError::InvalidHost);
+    }
+
+    // Check if host is IPv4 dotted-decimal or numeric alias
+    if looks_like_numeric_or_ip(raw_host) {
+        return canonicalize_ipv4(raw_host);
     }
 
     // Hostname canonicalization
     let is_loopback = raw_host.eq_ignore_ascii_case("localhost");
 
-    // Strip trailing dot if present (DNS root zone notation, e.g. api.typesafe.ai. -> api.typesafe.ai)
+    // Strip single trailing dot if present (DNS root zone, e.g. api.typesafe.ai. -> api.typesafe.ai)
     let host_to_split =
         if raw_host.ends_with('.') && raw_host.len() > 1 && !raw_host.ends_with("..") {
             &raw_host[..raw_host.len() - 1]
@@ -718,49 +793,92 @@ fn canonicalize_host(raw_host: &str) -> Result<(String, bool), EndpointError> {
             raw_host
         };
 
-    let mut canonical_labels = Vec::new();
-    for label in host_to_split.split('.') {
-        if label.is_empty() {
-            return Err(EndpointError::InvalidHost(
-                "empty label in hostname".to_owned(),
-            ));
-        }
+    let labels: Vec<&str> = host_to_split.split('.').collect();
+    if labels.is_empty() {
+        return Err(EndpointError::EmptyHost);
+    }
 
-        // Check if label contains non-ASCII characters
-        if label.is_ascii() {
-            let lower = label.to_ascii_lowercase();
-            validate_ascii_label(&lower)?;
-            canonical_labels.push(lower);
-        } else {
-            // IDN Punycode encoding
-            let puny =
-                encode_punycode_label(label).map_err(EndpointError::PunycodeEncodingError)?;
-            let idn_label = format!("xn--{puny}");
-            validate_ascii_label(&idn_label)?;
-            canonical_labels.push(idn_label);
+    // Single-label host must be "localhost"
+    if labels.len() == 1 && !is_loopback {
+        return Err(EndpointError::InvalidHost);
+    }
+
+    // Top-level domain (last label) cannot be all numeric
+    if let Some(tld) = labels.last() {
+        if tld.chars().all(|c| c.is_ascii_digit()) {
+            return Err(EndpointError::NumericIpv4AliasForbidden);
         }
+    }
+
+    let mut canonical_labels = Vec::with_capacity(labels.len());
+    for label in labels {
+        if label.is_empty() {
+            return Err(EndpointError::InvalidHost);
+        }
+        let lower = label.to_ascii_lowercase();
+        validate_ascii_label(&lower)?;
+        canonical_labels.push(lower);
     }
 
     let canonical_hostname = canonical_labels.join(".");
     Ok((canonical_hostname, is_loopback))
 }
 
+fn looks_like_numeric_or_ip(host: &str) -> bool {
+    // If it starts with 0x/0X, or has all numeric labels, or contains only digits and dots
+    if host.starts_with("0x") || host.starts_with("0X") {
+        return true;
+    }
+    let parts: Vec<&str> = host.split('.').collect();
+    // If every label is all digits or starts with 0x
+    parts.iter().all(|p| {
+        !p.is_empty()
+            && (p.chars().all(|c| c.is_ascii_digit()) || p.starts_with("0x") || p.starts_with("0X"))
+    })
+}
+
+fn canonicalize_ipv4(host: &str) -> Result<(String, bool), EndpointError> {
+    // Hex, octal, or non-4-part numeric IP representations are forbidden
+    if host.contains("0x") || host.contains("0X") {
+        return Err(EndpointError::NumericIpv4AliasForbidden);
+    }
+
+    let parts: Vec<&str> = host.split('.').collect();
+    if parts.len() != 4 {
+        return Err(EndpointError::NumericIpv4AliasForbidden);
+    }
+
+    let mut octets = [0u8; 4];
+    for (i, part) in parts.iter().enumerate() {
+        if part.is_empty() || part.len() > 3 || !part.chars().all(|c| c.is_ascii_digit()) {
+            return Err(EndpointError::NumericIpv4AliasForbidden);
+        }
+        // Disallow leading zeros (octal ambiguity, e.g. 01, 0177, 00)
+        if part.len() > 1 && part.starts_with('0') {
+            return Err(EndpointError::NumericIpv4AliasForbidden);
+        }
+        let val = u32::from_str(part).map_err(|_| EndpointError::NumericIpv4AliasForbidden)?;
+        if val > 255 {
+            return Err(EndpointError::InvalidHost);
+        }
+        octets[i] = val as u8;
+    }
+
+    let ipv4 = Ipv4Addr::new(octets[0], octets[1], octets[2], octets[3]);
+    let is_loopback = ipv4.is_loopback();
+    Ok((ipv4.to_string(), is_loopback))
+}
+
 fn validate_ascii_label(label: &str) -> Result<(), EndpointError> {
-    if label.len() > 63 {
-        return Err(EndpointError::InvalidHost(format!(
-            "label '{label}' exceeds 63 characters"
-        )));
+    if label.is_empty() || label.len() > 63 {
+        return Err(EndpointError::InvalidHost);
     }
     if label.starts_with('-') || label.ends_with('-') {
-        return Err(EndpointError::InvalidHost(format!(
-            "label '{label}' cannot start or end with hyphen"
-        )));
+        return Err(EndpointError::InvalidHost);
     }
     for c in label.chars() {
         if !c.is_ascii_alphanumeric() && c != '-' {
-            return Err(EndpointError::InvalidHost(format!(
-                "invalid character '{c}' in hostname label"
-            )));
+            return Err(EndpointError::InvalidHost);
         }
     }
     Ok(())
@@ -781,114 +899,4 @@ fn is_loopback_host(host: &str) -> bool {
         return ipv6.is_loopback();
     }
     false
-}
-
-// RFC 3492 Punycode encoder for IDN domain labels
-const BASE: u32 = 36;
-const TMIN: u32 = 1;
-const TMAX: u32 = 26;
-const SKEW: u32 = 38;
-const DAMP: u32 = 700;
-const INITIAL_BIAS: u32 = 72;
-const INITIAL_N: u32 = 128;
-
-fn adapt_punycode(mut delta: u32, numpoints: u32, firsttime: bool) -> u32 {
-    if firsttime {
-        delta /= DAMP;
-    } else {
-        delta /= 2;
-    }
-    delta += delta / numpoints;
-    let mut k = 0;
-    while delta > ((BASE - TMIN) * TMAX) / 2 {
-        delta /= BASE - TMIN;
-        k += BASE;
-    }
-    k + (((BASE - TMIN + 1) * delta) / (delta + SKEW))
-}
-
-fn encode_digit(d: u32) -> char {
-    match d {
-        0..=25 => (b'a' + (d as u8)) as char,
-        26..=35 => (b'0' + ((d - 26) as u8)) as char,
-        _ => '0',
-    }
-}
-
-pub fn encode_punycode_label(s: &str) -> Result<String, String> {
-    let mut output = String::new();
-    let mut basic_count = 0;
-    for c in s.chars() {
-        if c.is_ascii() {
-            output.push(c.to_ascii_lowercase());
-            basic_count += 1;
-        }
-    }
-
-    let b = basic_count;
-    let mut h = basic_count;
-    if b > 0 {
-        output.push('-');
-    }
-
-    let mut n = INITIAL_N;
-    let mut delta: u32 = 0;
-    let mut bias = INITIAL_BIAS;
-    let total_chars = s.chars().count();
-
-    while h < total_chars {
-        let mut m = u32::MAX;
-        for c in s.chars() {
-            let cp = c as u32;
-            if cp >= n && cp < m {
-                m = cp;
-            }
-        }
-
-        delta = delta
-            .checked_add(
-                (m - n)
-                    .checked_mul((h as u32) + 1)
-                    .ok_or_else(|| "punycode delta overflow".to_owned())?,
-            )
-            .ok_or_else(|| "punycode delta overflow".to_owned())?;
-        n = m;
-
-        for c in s.chars() {
-            let cp = c as u32;
-            if cp < n {
-                delta = delta
-                    .checked_add(1)
-                    .ok_or_else(|| "punycode delta overflow".to_owned())?;
-            }
-            if cp == n {
-                let mut q = delta;
-                let mut k = BASE;
-                loop {
-                    let t = if k <= bias + TMIN {
-                        TMIN
-                    } else if k >= bias + TMAX {
-                        TMAX
-                    } else {
-                        k - bias
-                    };
-                    if q < t {
-                        break;
-                    }
-                    let digit = t + ((q - t) % (BASE - t));
-                    output.push(encode_digit(digit));
-                    q = (q - t) / (BASE - t);
-                    k += BASE;
-                }
-                output.push(encode_digit(q));
-                bias = adapt_punycode(delta, (h as u32) + 1, h == b);
-                delta = 0;
-                h += 1;
-            }
-        }
-        delta += 1;
-        n += 1;
-    }
-
-    Ok(output)
 }

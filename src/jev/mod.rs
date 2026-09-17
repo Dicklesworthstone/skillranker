@@ -19,4 +19,5 @@ pub use endpoint::{
     AMBIENT_PROXY_VARS, CanonicalOrigin, CredentialRoutingError, DEFAULT_TYPESAFE_ENDPOINT,
     EndpointConfig, EndpointError, OriginScopedCredential, ProxyPolicy, RedirectError,
     RedirectPolicy, SKILLRANKER_USER_AGENT, SYSTEMONE_PATH, Scheme, TargetUrl,
+    sanitize_url_for_diagnostics,
 };

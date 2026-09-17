@@ -8,7 +8,7 @@ use skillranker::config::{ConfigSources, ResolvedConfig};
 use skillranker::jev::{
     AMBIENT_PROXY_VARS, CanonicalOrigin, CredentialRoutingError, DEFAULT_TYPESAFE_ENDPOINT,
     EndpointConfig, EndpointError, OriginScopedCredential, ProxyPolicy, RedirectError,
-    RedirectPolicy, SKILLRANKER_USER_AGENT, SYSTEMONE_PATH, Scheme,
+    RedirectPolicy, SKILLRANKER_USER_AGENT, SYSTEMONE_PATH, Scheme, sanitize_url_for_diagnostics,
 };
 use skillranker::privacy::ApiCredential;
 use std::ffi::OsString;
@@ -91,10 +91,26 @@ fn endpoint_canonicalization() {
     assert_eq!(with_port.port(), Some(8443));
     assert_ne!(with_port, prod);
 
-    // IDN Punycode normalization
-    let idn = CanonicalOrigin::parse("https://bücher.example.com/").unwrap();
-    assert_eq!(idn.as_str(), "https://xn--bcher-kva.example.com");
-    assert_eq!(idn.host(), "xn--bcher-kva.example.com");
+    // IDN in ASCII punycode succeeds and canonicalizes
+    let idn_puny = CanonicalOrigin::parse("https://xn--bcher-kva.example.com/").unwrap();
+    assert_eq!(idn_puny.as_str(), "https://xn--bcher-kva.example.com");
+    assert_eq!(idn_puny.host(), "xn--bcher-kva.example.com");
+
+    // Raw non-ASCII hostnames are rejected to prevent DNS-splitting / normalization attacks
+    let raw_idn_variants = [
+        "https://bücher.example.com/",
+        "https://BÜCHER.example.com/",
+        "https://bu\u{0308}cher.example.com/",
+        "https://exämple.com/",
+    ];
+    for raw in &raw_idn_variants {
+        let err = CanonicalOrigin::parse(raw).unwrap_err();
+        assert_eq!(
+            err,
+            EndpointError::NonAsciiHostForbidden,
+            "expected NonAsciiHostForbidden for '{raw}', got: {err:?}"
+        );
+    }
 
     // Loopback IPv4
     let loopback_ipv4 = CanonicalOrigin::parse("http://127.0.0.1:8080/").unwrap();
@@ -114,10 +130,15 @@ fn endpoint_canonicalization() {
     assert_eq!(loopback_ipv6.as_str(), "http://[::1]:8000");
     assert!(loopback_ipv6.is_loopback());
 
-    // Loopback IPv6 (unbracketed without port)
-    let loopback_unbracketed = CanonicalOrigin::parse("http://::1/").unwrap();
-    assert_eq!(loopback_unbracketed.as_str(), "http://[::1]");
-    assert!(loopback_unbracketed.is_loopback());
+    // Unbracketed IPv6 is strictly forbidden (RFC 3986 section 3.2.2)
+    assert_eq!(
+        CanonicalOrigin::parse("http://::1/"),
+        Err(EndpointError::UnbracketedIpv6Forbidden)
+    );
+    assert_eq!(
+        CanonicalOrigin::parse("https://::1:8080/"),
+        Err(EndpointError::UnbracketedIpv6Forbidden)
+    );
 
     // Loopback localhost
     let localhost = CanonicalOrigin::parse("http://localhost:3000/").unwrap();
@@ -129,7 +150,7 @@ fn endpoint_canonicalization() {
 }
 
 // -----------------------------------------------------------------------------
-// 2. Target URL and Path Joining
+// 2. Target URL and Path Joining (No input echo in diagnostics)
 // -----------------------------------------------------------------------------
 
 #[test]
@@ -146,7 +167,7 @@ fn target_url_and_path_joining() {
     assert_eq!(cfg.origin(), &origin);
     assert_eq!(cfg.target_url(), &target);
 
-    // Duplicate path joins rejected
+    // Duplicate path joins rejected without echoing the path
     let duplicate_paths = [
         "https://api.typesafe.ai/v1/systemone",
         "https://api.typesafe.ai/v1/systemone/",
@@ -155,25 +176,15 @@ fn target_url_and_path_joining() {
     ];
     for dup in &duplicate_paths {
         let err = CanonicalOrigin::parse(dup).unwrap_err();
-        assert!(
-            matches!(err, EndpointError::DuplicatePathJoin { .. }),
-            "expected DuplicatePathJoin for '{dup}', got: {err:?}"
-        );
+        assert_eq!(err, EndpointError::DuplicatePathJoin);
     }
 
-    // Non-root paths rejected
-    let non_root = [
-        "https://api.typesafe.ai/api",
-        "https://api.typesafe.ai/custom/path",
-        "https://api.typesafe.ai/eval",
-    ];
-    for nr in &non_root {
-        let err = CanonicalOrigin::parse(nr).unwrap_err();
-        assert!(
-            matches!(err, EndpointError::NonRootPathForbidden { .. }),
-            "expected NonRootPathForbidden for '{nr}', got: {err:?}"
-        );
-    }
+    // Non-root paths rejected without echoing secret path text
+    let secret_path = format!("https://api.typesafe.ai/api/v1/{}", CANARY);
+    let err = CanonicalOrigin::parse(&secret_path).unwrap_err();
+    assert_eq!(err, EndpointError::NonRootPathForbidden);
+    assert_canary_not_leaked(&format!("{err}"));
+    assert_canary_not_leaked(&format!("{err:?}"));
 }
 
 // -----------------------------------------------------------------------------
@@ -220,10 +231,11 @@ fn userinfo_query_and_fragment_rejection_without_token_leak() {
 fn scheme_enforcement_and_loopback_restriction() {
     // Insecure HTTP to non-loopback host is forbidden
     let err = CanonicalOrigin::parse("http://api.typesafe.ai").unwrap_err();
-    assert!(
-        matches!(err, EndpointError::InsecureScheme { .. }),
-        "expected InsecureScheme, got: {err:?}"
-    );
+    assert_eq!(err, EndpointError::InsecureScheme);
+
+    // Insecure HTTP to non-loopback IP is forbidden
+    let err_ip = CanonicalOrigin::parse("http://192.168.1.5:8080").unwrap_err();
+    assert_eq!(err_ip, EndpointError::InsecureScheme);
 
     // Unsupported schemes
     let bad_schemes = [
@@ -234,10 +246,7 @@ fn scheme_enforcement_and_loopback_restriction() {
     ];
     for bs in &bad_schemes {
         let err = CanonicalOrigin::parse(bs).unwrap_err();
-        assert!(
-            matches!(err, EndpointError::UnsupportedScheme(_)),
-            "expected UnsupportedScheme for '{bs}', got: {err:?}"
-        );
+        assert_eq!(err, EndpointError::UnsupportedScheme);
     }
 
     // Missing scheme
@@ -246,7 +255,95 @@ fn scheme_enforcement_and_loopback_restriction() {
 }
 
 // -----------------------------------------------------------------------------
-// 5. Origin-Scoped Credential Routing and Isolation
+// 5. Strict Port Parsing and Ambiguous Representation Rejection
+// -----------------------------------------------------------------------------
+
+#[test]
+fn strict_port_parsing_rejects_ambiguity_and_never_echoes_input() {
+    // Leading plus rejected
+    assert_eq!(
+        CanonicalOrigin::parse("https://api.typesafe.ai:+443"),
+        Err(EndpointError::InvalidPort)
+    );
+    // Leading zero rejected (octal ambiguity)
+    assert_eq!(
+        CanonicalOrigin::parse("https://api.typesafe.ai:0443"),
+        Err(EndpointError::InvalidPort)
+    );
+    // Port 0 rejected
+    assert_eq!(
+        CanonicalOrigin::parse("https://api.typesafe.ai:0"),
+        Err(EndpointError::InvalidPort)
+    );
+    // Port > 65535 rejected
+    assert_eq!(
+        CanonicalOrigin::parse("https://api.typesafe.ai:65536"),
+        Err(EndpointError::InvalidPort)
+    );
+    // Non-numeric port rejected
+    assert_eq!(
+        CanonicalOrigin::parse("https://api.typesafe.ai:1a"),
+        Err(EndpointError::InvalidPort)
+    );
+    // Empty port rejected
+    assert_eq!(
+        CanonicalOrigin::parse("https://api.typesafe.ai:"),
+        Err(EndpointError::InvalidPort)
+    );
+
+    // Secret in port position must never be echoed
+    let secret_port = format!("https://api.typesafe.ai:{}", CANARY);
+    let err = CanonicalOrigin::parse(&secret_port).unwrap_err();
+    assert_eq!(err, EndpointError::InvalidPort);
+    assert_canary_not_leaked(&format!("{err}"));
+    assert_canary_not_leaked(&format!("{err:?}"));
+}
+
+// -----------------------------------------------------------------------------
+// 6. Numeric IPv4 Aliases and Ambiguous IP Formats Rejected
+// -----------------------------------------------------------------------------
+
+#[test]
+fn numeric_ipv4_aliases_and_ambiguous_formats_rejected() {
+    // Single integer IP aliases (libc resolves, but forbidden as non-canonical)
+    assert_eq!(
+        CanonicalOrigin::parse("https://2130706433"),
+        Err(EndpointError::NumericIpv4AliasForbidden)
+    );
+    // Hex IPv4 representation forbidden
+    assert_eq!(
+        CanonicalOrigin::parse("https://0x7f.0.0.1"),
+        Err(EndpointError::NumericIpv4AliasForbidden)
+    );
+    // Octal IPv4 representation (leading zero) forbidden
+    assert_eq!(
+        CanonicalOrigin::parse("https://0177.0.0.1"),
+        Err(EndpointError::NumericIpv4AliasForbidden)
+    );
+    // Leading zero in octet forbidden
+    assert_eq!(
+        CanonicalOrigin::parse("https://127.0.0.01"),
+        Err(EndpointError::NumericIpv4AliasForbidden)
+    );
+    // 2-part IP representation forbidden
+    assert_eq!(
+        CanonicalOrigin::parse("https://127.1"),
+        Err(EndpointError::NumericIpv4AliasForbidden)
+    );
+    // 3-part IP representation forbidden
+    assert_eq!(
+        CanonicalOrigin::parse("https://127.0.1"),
+        Err(EndpointError::NumericIpv4AliasForbidden)
+    );
+    // Dotted numeric out of range
+    assert_eq!(
+        CanonicalOrigin::parse("https://999.1.1.1"),
+        Err(EndpointError::InvalidHost)
+    );
+}
+
+// -----------------------------------------------------------------------------
+// 7. Origin-Scoped Credential Routing and Isolation
 // -----------------------------------------------------------------------------
 
 #[test]
@@ -254,44 +351,53 @@ fn origin_scoped_credential_routing_and_isolation() {
     let credential = canary_credential();
     let prod_origin = CanonicalOrigin::production();
     let loopback_origin = CanonicalOrigin::parse("http://127.0.0.1:8080").unwrap();
+    let localhost_origin = CanonicalOrigin::parse("http://localhost:3000").unwrap();
     let other_origin = CanonicalOrigin::parse("https://other.typesafe.ai").unwrap();
 
-    // 1. Binding credentials to unencrypted HTTP is strictly forbidden
+    // 1. Binding credentials to unencrypted HTTP is strictly forbidden for ALL loopback
     let insecure_err = OriginScopedCredential::bind(credential.clone(), &loopback_origin)
         .err()
         .expect("insecure HTTP binding must fail");
-    assert!(
-        matches!(
-            insecure_err,
-            CredentialRoutingError::InsecureHttpForbidden { .. }
-        ),
-        "expected InsecureHttpForbidden, got: {insecure_err:?}"
-    );
+    assert_eq!(insecure_err, CredentialRoutingError::InsecureHttpForbidden);
     assert_canary_not_leaked(&format!("{insecure_err}"));
 
-    // 2. Binding to canonical HTTPS origin succeeds
-    let bound = OriginScopedCredential::bind(credential, &prod_origin)
+    let insecure_lh = OriginScopedCredential::bind(credential.clone(), &localhost_origin)
+        .err()
+        .expect("insecure localhost binding must fail");
+    assert_eq!(insecure_lh, CredentialRoutingError::InsecureHttpForbidden);
+
+    // 2. CanonicalOrigin::allow_credential also rejects unencrypted HTTP
+    assert_eq!(
+        loopback_origin.allow_credential(&credential).unwrap_err(),
+        CredentialRoutingError::InsecureHttpForbidden
+    );
+
+    // 3. Binding to canonical HTTPS origin succeeds
+    let bound = OriginScopedCredential::bind(credential.clone(), &prod_origin)
         .expect("HTTPS origin binding must succeed");
     assert_eq!(bound.origin(), &prod_origin);
 
-    // 3. Emitting header for the matching origin succeeds
+    // allow_credential on HTTPS origin succeeds
+    let bound2 = prod_origin
+        .allow_credential(&credential)
+        .expect("allow_credential on HTTPS must succeed");
+    assert_eq!(bound2.origin(), &prod_origin);
+
+    // 4. Emitting header for the matching origin succeeds
     let auth_header = bound
         .authorization_header_for(&prod_origin)
         .expect("authorization header emission for exact origin must succeed");
     assert_eq!(auth_header, format!("Bearer {CANARY}"));
 
-    // 4. Request to another origin is strictly refused (OriginMismatch)
+    // 5. Request to another origin is strictly refused (OriginMismatch)
     let mismatch_err = bound
         .authorization_header_for(&other_origin)
         .err()
         .expect("mismatched origin must fail");
-    assert!(
-        matches!(mismatch_err, CredentialRoutingError::OriginMismatch { .. }),
-        "expected OriginMismatch, got: {mismatch_err:?}"
-    );
+    assert_eq!(mismatch_err, CredentialRoutingError::OriginMismatch);
     assert_canary_not_leaked(&format!("{mismatch_err}"));
 
-    // 5. Debug and Display of OriginScopedCredential redact credentials
+    // 6. Debug and Display of OriginScopedCredential redact credentials
     let debug_str = format!("{bound:?}");
     let display_str = format!("{bound}");
     assert_canary_not_leaked(&debug_str);
@@ -301,7 +407,7 @@ fn origin_scoped_credential_routing_and_isolation() {
 }
 
 // -----------------------------------------------------------------------------
-// 6. Strict Redirect Prohibition and Attacker Redirection
+// 8. Strict Redirect Prohibition and Attacker Redirection
 // -----------------------------------------------------------------------------
 
 #[test]
@@ -331,6 +437,20 @@ fn redirect_policy_prohibits_all_3xx_and_sanitizes_destinations() {
     assert!(err_str.contains("[REDACTED]@attacker.evil.com"));
     assert!(err_str.contains("[QUERY-REDACTED]"));
 
+    // Attacker redirect with terminal injection characters (\x1b, \x07)
+    let injection_loc = "https://attacker.evil.com/steal\x1b]50;set_title\x07?leak=yes";
+    let inj_err = RedirectPolicy::validate_response_status(302, Some(injection_loc)).unwrap_err();
+    let inj_str = format!("{inj_err}");
+    // Must not contain ESC or BEL
+    assert!(
+        !inj_str.contains('\x1b'),
+        "must not contain ESC escape character"
+    );
+    assert!(
+        !inj_str.contains('\x07'),
+        "must not contain BEL control character"
+    );
+
     // Successful non-redirect status codes
     assert!(RedirectPolicy::validate_response_status(200, None).is_ok());
     assert!(RedirectPolicy::validate_response_status(400, None).is_ok());
@@ -340,7 +460,46 @@ fn redirect_policy_prohibits_all_3xx_and_sanitizes_destinations() {
 }
 
 // -----------------------------------------------------------------------------
-// 7. Ambient Proxy Variables Inspection and Scrubbing
+// 9. Diagnostic URL Sanitization (Plugging Leaks)
+// -----------------------------------------------------------------------------
+
+#[test]
+fn diagnostic_url_sanitization_plugs_all_known_leaks() {
+    // 1. Password containing '@' sign (must split on last '@')
+    let pw_with_at = format!("http://user:p@ss-{}@proxy:8080", CANARY);
+    let sanitized1 = sanitize_url_for_diagnostics(&pw_with_at);
+    assert_canary_not_leaked(&sanitized1);
+    assert_eq!(sanitized1, "http://[REDACTED]@proxy:8080");
+
+    // 2. Query string without preceding '/' in URL
+    let query_no_slash = format!("http://user:pw-{}@host?token={}", CANARY, CANARY);
+    let sanitized2 = sanitize_url_for_diagnostics(&query_no_slash);
+    assert_canary_not_leaked(&sanitized2);
+    assert_eq!(sanitized2, "http://[REDACTED]@host?[QUERY-REDACTED]");
+
+    // 3. Fragment with secret token
+    let frag_token = format!("http://host#access_token={}", CANARY);
+    let sanitized3 = sanitize_url_for_diagnostics(&frag_token);
+    assert_canary_not_leaked(&sanitized3);
+    assert_eq!(sanitized3, "http://host#[FRAGMENT-REDACTED]");
+
+    // 4. Control characters replaced
+    let ctrl_url = "http://host/path\x1b\x07\r\n";
+    let sanitized4 = sanitize_url_for_diagnostics(ctrl_url);
+    assert!(!sanitized4.contains('\x1b'));
+    assert!(!sanitized4.contains('\x07'));
+    assert!(!sanitized4.contains('\r'));
+    assert!(!sanitized4.contains('\n'));
+
+    // 5. Oversize URL bounded
+    let huge_url = format!("http://host/{}", "a".repeat(500));
+    let sanitized5 = sanitize_url_for_diagnostics(&huge_url);
+    assert!(sanitized5.ends_with("...[TRUNCATED]"));
+    assert!(sanitized5.len() <= 300);
+}
+
+// -----------------------------------------------------------------------------
+// 10. Ambient Proxy Variables Inspection and Scrubbing
 // -----------------------------------------------------------------------------
 
 #[test]
@@ -389,7 +548,7 @@ fn ambient_proxy_variables_detected_and_sanitized() {
 }
 
 // -----------------------------------------------------------------------------
-// 8. Configuration Override Integration
+// 11. Configuration Override Integration
 // -----------------------------------------------------------------------------
 
 #[test]
