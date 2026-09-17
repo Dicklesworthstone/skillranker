@@ -66,6 +66,11 @@ credentials.json
 /.agent-mail.yaml
 /.claude/settings.local.json
 /.claude/worktrees/
+# Preserve project skills even on hosts that globally ignore .codex/.
+!/.codex/
+/.codex/*
+!/.codex/skills/
+!/.codex/skills/**
 /.codex/sessions/
 /.codex/history.jsonl
 /.codex/auth.json

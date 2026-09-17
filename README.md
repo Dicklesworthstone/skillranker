@@ -2,15 +2,20 @@
 
 # SkillRanker
 
-**The right skill for the next step.**
+**The right skill for the next step, powered by Jev from TypeSafe.ai.**
 
-A standalone Rust CLI that matches your agent's live conversation to the skills
-it can actually load, with structured rankings, explicit abstention, and local
-feedback you can inspect.
+A standalone Rust CLI that puts **[TypeSafe.ai's Jev](https://typesafe.ai)** at the
+center of skill selection: Jev evaluates your agent's live context, compares the
+available skills, and estimates which ones fit the next step. SkillRanker supplies
+the session integration, local safeguards, and inspectable feedback around it.
+
+**A TypeSafe API key is required to use SkillRanker's ranking system.
+Get your key from the [TypeSafe console](https://console.typesafe.ai).**
 
 [![License](https://img.shields.io/badge/license-MIT%20%2B%20OpenAI%2FAnthropic%20rider-blue)](LICENSE)
 ![Rust](https://img.shields.io/badge/language-Rust%202024-dea584)
 ![CLI](https://img.shields.io/badge/CLI-sr-222222)
+![Powered by Jev](https://img.shields.io/badge/powered_by-TypeSafe.ai%20Jev-00897b)
 ![Runtime](https://img.shields.io/badge/runtime-Asupersync-654ff0)
 ![Output](https://img.shields.io/badge/output-JSON%20%7C%20hooks%20%7C%20TUI-00897b)
 
@@ -57,15 +62,22 @@ can redirect otherwise sensible work.
 
 **The solution.** SkillRanker (`sr`) combines the recent conversation, current
 request, workspace signals, and the selected harness's visible skill inventory.
-TypeSafe's Jev first compares the candidates broadly, then reads richer excerpts
-from a shortlist and evaluates whether each one fits. Both comparisons include a
+**Jev from TypeSafe.ai is the key enabler of the system.** It first compares the
+candidates broadly, then reads richer excerpts from a shortlist and evaluates
+whether each one fits. Both comparisons include a
 real “none of these” option. The result is advisory: the agent follows the user's
 instructions and decides what to consult.
+
+SkillRanker does not include a local model or a substitute inference provider.
+The ranking workflow requires your own TypeSafe account and API key. Local
+retrieval prepares the candidates; **Jev supplies the evaluations that make the
+recommendations possible**.
 
 ### Why `sr`?
 
 | Need | What SkillRanker provides |
 |---|---|
+| Evaluate meaning and task fit | Jev's typed Choice and Noul evaluations from TypeSafe.ai power both ranking passes |
 | Choose for the current step | Exact session identity, the newest prompt, recent tool evidence, and project signals |
 | Suggest something the agent can load | Harness-aware visibility, override resolution, stable skill identities, and content revalidation |
 | Respect an explicit request | Locally resolve a requested skill before probabilistic retrieval or ranking |
@@ -169,6 +181,10 @@ cargo build --locked --release --bin sr
 
 ### Runtime setup
 
+**Start by obtaining a [TypeSafe API key](https://console.typesafe.ai).
+It is a required prerequisite, not an optional integration.** Jev is the
+evaluation engine for the entire ranking workflow.
+
 Set `TYPESAFE_API_KEY` through your shell or secret manager. The
 [environment example](.env.example) lists the service settings. A local `.env`
 is ignored by Git; export its values into the process environment before running
@@ -188,9 +204,11 @@ The primary local platform scope is Linux and macOS. Consult
 
 ## Quick Start
 
-1. **Check the environment.** Run `sr doctor --json` and inspect the supported
-   interfaces with `sr capabilities --json`. Neither needs a network key.
-2. **Check the roster.** Run `sr roster --json` in the agent's workspace.
+1. **Configure your TypeSafe API key.** Obtain it from the
+   [TypeSafe console](https://console.typesafe.ai) and export `TYPESAFE_API_KEY`.
+   SkillRanker relies on Jev for its ranking evaluations.
+2. **Check the environment and roster.** Run `sr doctor --json`,
+   `sr capabilities --json`, and `sr roster --json` in the agent's workspace.
    Confirm that candidates are loadable, not merely present somewhere on disk.
 3. **Choose the session.** Supply `--context FILE`,
    `--transcript FILE --harness claude_code`, or `--session PATH` for cass.
@@ -235,6 +253,8 @@ only by an explicit input mode.
 | `sr calibrate` | Report a candidate threshold configuration | `sr calibrate --evaluation scratch/report.json` |
 | `sr doctor --descriptions` | Check description quality locally | `sr doctor --descriptions` |
 | `sr gaps` | Report suspected coverage gaps | `sr gaps` |
+| `sr ledger init` | Initialize local history explicitly | `sr ledger init` |
+| `sr ledger migrate` | Preview a supported schema upgrade | `sr ledger migrate --apply` |
 | `sr ledger prune` | Preview retention cleanup | `sr ledger prune --before 2026-09-01` |
 | `sr ledger clear` | Preview clearing local history | `sr ledger clear` |
 
@@ -259,7 +279,7 @@ only with an explicit online request and network authorization.
 | `--latest` | Off | Explicitly choose the newest discovered session |
 | `--no-tools` | Off | Remove tool arguments and results from outgoing context |
 | `--no-cache` | Off | Disable response-cache reads and writes |
-| `--no-ledger` | Off | Disable observations, labels, and personalization |
+| `--no-ledger` | Off | Disable all ledger and ingestion-cursor access; use transient evidence |
 | `--no-persist` | Off | Disable all persistent state, including cache, cursors, and locks |
 | `--offline` | Off | Guarantee zero network calls |
 | `--allow-network` | Off | Authorize network evaluation for this invocation |
@@ -368,6 +388,7 @@ normalization and reports omitted mass. Fields from an unexecuted stage are
 | `8` | Network transmission disallowed |
 | `9` | Required storage or administrative mutation failed |
 | `10` | Invalid structured provider response |
+| `11` | No complete valid result under offline/cache-only constraints |
 
 JSON errors include `schema_version`, `decision: "unavailable"`, and an `error`
 object with `code`, kebab-case `kind`, `message`, `hint`, and `retryable`.
@@ -438,6 +459,11 @@ The latest request gets budget priority, with explicit head/tail truncation for
 oversized input. Redaction runs on complete bounded fields before truncation,
 then on the assembled provider payload.
 
+Explicit directives are resolved from the full bounded local request before
+redaction or truncation. The normalized input envelope carries local identity
+and events; it is validated and reduced to a separate provider schema, never
+sent wholesale to Jev.
+
 Project signals use language/framework filenames, allowlisted tools on a trusted
 PATH, and bounded repository-relative dirty paths. Absolute workspace paths and
 branch names remain local by default.
@@ -500,10 +526,14 @@ validating every requested option before scoring.
 
 ### 4. Apply eligibility and rank survivors
 
-A candidate is removed if it is excluded, unavailable, known loaded with unchanged
-content in the current context epoch, or below the fit threshold. If the none
-option then ties or exceeds the best surviving rerank probability, `sr` abstains.
-Local priors cannot reverse that decision.
+A candidate is removed if it is excluded, below the fit threshold, or a reusable
+reference whose relevant content is proven present in the current context epoch.
+Workflows and unknown usage kinds remain eligible for repeat invocation. A changed
+shortlist invalidates the in-flight result.
+
+Every remaining candidate must individually beat the none option's raw rerank
+probability. Ties are excluded. If no candidates survive, `sr` abstains; local
+priors and fit blending cannot re-admit a candidate that failed this check.
 
 For each eligible candidate:
 
@@ -667,6 +697,11 @@ One Rust package contains `sr` and reusable pure pipeline components. Asupersync
 owns task lifetimes, deadlines, HTTP/TLS, and deterministic lab replay. SQLite
 persistence uses `rusqlite` with bundled SQLite. FrankenTUI is optional.
 
+**The inference engine is TypeSafe.ai's Jev.** The surrounding Rust code gathers
+and protects context, constructs typed questions, validates Jev's answers, and
+turns them into useful agent recommendations. BM25, caching, and the ledger
+support that engine; they do not replace it.
+
 Selected parsing and redaction code can be adapted from
 [meta_skill](https://github.com/Dicklesworthstone/meta_skill) with source provenance
 and license notices. SkillRanker does not invoke its CLI, link its application,
@@ -694,8 +729,9 @@ wide answer. It cannot know a model's shortlist without that evidence.
 Local data uses platform directories, including `$XDG_DATA_HOME/sr` on Linux
 with `~/.local/share/sr` as the fallback. Database and cache files are owner-only.
 Raw transcripts and request bodies are not retained by default. Event metadata
-has a default 30-day retention policy; response-cache entries expire after at
-most ten minutes. Retention cleanup is an explicit ledger operation outside the hook.
+has a default 30-day logical retention policy; response-cache entries expire after
+at most ten minutes. Expiry excludes data from ordinary use; physical cleanup is
+an explicit ledger operation outside the hook. It is not a secure-erasure guarantee.
 
 Requests use HTTPS with credential-scoped endpoints and redirects disabled.
 Redaction covers outgoing roster excerpts as well as conversation fields, but
@@ -762,6 +798,12 @@ unknown-usage marker rather than being counted as free.
 
 ## FAQ
 
+**Do I need a TypeSafe API key?**
+Yes. TypeSafe.ai's Jev powers SkillRanker's ranking system, and you must provide
+your own key as `TYPESAFE_API_KEY`. There is no bundled key, local replacement
+model, or alternative inference provider. Get a key from the
+[TypeSafe console](https://console.typesafe.ai).
+
 **Does SkillRanker execute a skill?**
 No. It recommends or returns a locally resolved target. The agent remains in
 control of loading and execution under the user's instructions.
@@ -813,6 +855,7 @@ unmodified MIT. License identifier: `LicenseRef-MIT-OpenAI-Anthropic-Rider`.
 - [Comprehensive plan](COMPREHENSIVE_PLAN_TO_DESIGN_SKILLRANKER.md): design, contracts, and acceptance criteria.
 - [AGENTS.md](AGENTS.md): engineering rules and verification obligations.
 - [CHANGELOG.md](CHANGELOG.md): repository history.
+- [TypeSafe.ai](https://typesafe.ai), [API documentation](https://docs.typesafe.ai/api), and [API-key console](https://console.typesafe.ai): Jev, the engine that powers SkillRanker.
 - [Asupersync](https://github.com/Dicklesworthstone/asupersync): structured concurrency and deterministic runtime testing.
 - [FrankenTUI](https://github.com/Dicklesworthstone/frankentui): terminal presentation.
 - [cass](https://github.com/Dicklesworthstone/coding_agent_session_search): session archive access.
