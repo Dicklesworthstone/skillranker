@@ -92,16 +92,59 @@ status = "{status}"
     def test_real_source_declarations_accepted(self):
         sources = {
             "scripts/check.py": '''raise RuntimeError("must never import this module")
-def check_contract(): pass
-class Contract:
+import unittest
+class Contract(unittest.TestCase):
     def test_behavior(self): pass
 ''',
-            "tests/contract.rs": "#[test]\nfn real_contract() {}\n",
+            "scripts/imported.py": "from unittest import TestCase\nclass Contract(TestCase):\n    def test_behavior(self): pass\n",
+            "scripts/check_dependency_graph.py": "def helper(): pass\ndef main(): pass\n",
+            "tests/contract.rs": """#![forbid(unsafe_code)]
+use std::fmt;
+#[derive(Debug)]
+struct Fixture([u8; 2]);
+fn helper() {}
+#[test]
+fn real_contract() {}
+/// Documentation comments are not attributes.
+#[test]
+fn documented_contract() {}
+""",
         }
-        for reference in ("scripts/check.py::check_contract", "scripts/check.py::Contract",
-                          "scripts/check.py::Contract::test_behavior", "tests/contract.rs::real_contract"):
+        for reference in ("scripts/check.py::Contract", "scripts/check.py::Contract::test_behavior",
+                          "scripts/imported.py::Contract", "scripts/check_dependency_graph.py::main",
+                          "tests/contract.rs::real_contract", "tests/contract.rs::documented_contract"):
             with self.subTest(reference=reference):
                 self.assertEqual(self.validate_fixture(reference, files=sources), 0)
+
+    def test_tests_that_never_run_and_non_tests_rejected(self):
+        not_test_case = "    def test_real(self): pass\n"
+        cases = [
+            # A leading attribute can ignore the test or compile it out entirely.
+            ("tests/check.rs::fake", "#[ignore]\n#[test]\nfn fake() {}\n"),
+            ("tests/check.rs::fake", "#[cfg(any())]\n#[test]\nfn fake() {}\n"),
+            ("tests/check.rs::fake", '#[cfg(target_os = "windows")]\n#[test]\nfn fake() {}\n'),
+            ("tests/check.rs::fake", "#[test]\n#[ignore]\nfn fake() {}\n"),
+            # Cargo does not compile nested files as integration test targets.
+            ("tests/sub/check.rs::fake", "#[test]\nfn fake() {}\n"),
+            # Python evidence must be a real unittest.TestCase or a trusted check entrypoint.
+            ("scripts/check.py::fake", "def fake(): pass\n"),
+            ("scripts/check.py::main", "def main(): pass\n"),
+            ("scripts/check_dependency_graph.py::helper", "def helper(): pass\ndef main(): pass\n"),
+            ("scripts/check_dependency_graph.py::main", "async def main(): pass\n"),
+            ("scripts/check.py::Contract", "class Contract:\n" + not_test_case),
+            ("scripts/check.py::Contract::test_real", "class Contract:\n" + not_test_case),
+            ("scripts/check.py::Contract", "import unittest\nclass Base(unittest.TestCase): pass\n"
+                                           "class Contract(Base):\n" + not_test_case),
+            ("scripts/check.py::Contract", "import unittest as ut\nclass Contract(ut.TestCase):\n" + not_test_case),
+            ("scripts/check.py::Contract", "import unittest\nunittest = object\n"
+                                           "class Contract(unittest.TestCase):\n" + not_test_case),
+            ("scripts/check.py::Contract", "class unittest:\n    TestCase = object\n"
+                                           "class Contract(unittest.TestCase):\n" + not_test_case),
+            ("scripts/check.py::Contract", "from fake import TestCase\nclass Contract(TestCase):\n" + not_test_case),
+        ]
+        for reference, source in cases:
+            with self.subTest(reference=reference, source=source):
+                self.assertEqual(self.validate_fixture(reference, files={reference.split("::")[0]: source}), 1)
 
     def test_missing_executed_references_rejected(self):
         sources = {"scripts/check.py": "def real(): pass\n", "tests/contract.rs": "#[test]\nfn real() {}\n"}
@@ -205,6 +248,10 @@ class Contract:
             ("duplicate-row", lambda d: d["boundaries"].append(copy.deepcopy(d["boundaries"][0])), "duplicate-boundary"),
             ("missing-field", lambda d: d["boundaries"][0].pop("features"), "boundary-fields"),
             ("private-extra", lambda d: d["boundaries"][0].update(private="SYNTHETIC_PRIVATE_VALUE"), "boundary-fields"),
+            ("title-drift", lambda d: d["boundaries"][0].update(title="Drifted fixture"), "authority-title"),
+            ("control-title", lambda d: d["boundaries"][0].update(title="Reviewed\x1b[2Jfixture"), "boundary-title"),
+            ("not-applicable-borrowed-case", lambda d: d["boundaries"][0].update(e2e_suite="not-applicable"),
+             "not-applicable-selection"),
         ]
         for name, mutate, expected in cases:
             with self.subTest(case=name):
@@ -237,6 +284,36 @@ class Contract:
                             document["created_for_phase"] = "P1"
                         else:
                             row["owner_bead"] = "sr-roadmap-l1i.1.3"
+                with self.assertRaisesRegex(vcm.InvalidMatrix, "^" + expected + "$"):
+                    vcm.validate_documents(data, authority, beads, catalogs)
+
+    def test_not_applicable_e2e_is_empty_p0_only_and_still_needs_unit_evidence(self):
+        def not_applicable(document):
+            document["boundaries"][0].update(e2e_suite=vcm.NOT_APPLICABLE_SUITE, e2e_cases=[], assertion_ids=[])
+
+        data, authority, beads, catalogs = declaration_fixture()
+        for document in (data, authority):
+            not_applicable(document)
+        with patch.object(vcm, "ROOT", ROOT):
+            self.assertEqual(set(vcm.validate_documents(data, authority, beads, catalogs)), {"fixture"})
+
+        cases = [
+            ("borrowed-assertion", lambda row: row.update(assertion_ids=["behavior"]), "not-applicable-selection"),
+            ("borrowed-case", lambda row: row.update(e2e_cases=["success"]), "not-applicable-selection"),
+            ("future-phase", lambda row: row.update(phase="P1", owner_bead="sr-roadmap-l1i.2.1",
+                                                    member_beads=["sr-roadmap-l1i.2.1"]), "not-applicable-phase"),
+            ("unresolved-unit", lambda row: row.update(unit_property_tests=["tests/missing.rs::real"]),
+             "unresolved-test-reference"),
+        ]
+        for name, mutate, expected in cases:
+            with self.subTest(case=name):
+                data, authority, beads, catalogs = declaration_fixture()
+                for document in (data, authority):
+                    not_applicable(document)
+                    if name != "unresolved-unit":
+                        mutate(document["boundaries"][0])
+                if name == "unresolved-unit":
+                    mutate(data["boundaries"][0])
                 with self.assertRaisesRegex(vcm.InvalidMatrix, "^" + expected + "$"):
                     vcm.validate_documents(data, authority, beads, catalogs)
 
@@ -351,6 +428,12 @@ class Contract:
             mismatched["fixture"][field] = value
             with self.assertRaisesRegex(vcm.InvalidMatrix, "^incompatible-boundary-receipt$"):
                 vcm.validate_mechanics_receipts(mismatched, receipts)
+        # Mechanics receipts are never evidence for a not-applicable contract row,
+        # so even a row whose platform and features match no receipt is skipped.
+        pure = copy.deepcopy(rows)
+        pure["pure_contract"] = dict(rows["fixture"], id="pure_contract", e2e_suite=vcm.NOT_APPLICABLE_SUITE,
+                                     e2e_cases=[], assertion_ids=[], platforms=["darwin"], features=["tui"])
+        vcm.validate_mechanics_receipts(pure, receipts)
         vcm.validate_mechanics_receipts(rows, receipts)
 
 
