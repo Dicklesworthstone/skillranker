@@ -239,10 +239,7 @@ fn security_sensitive_keys_follow_an_independent_layer_matrix() {
                     let (issue_key, problem) = match expect {
                         Expect::Forbidden => (known(key), ConfigProblem::ForbiddenInLayer),
                         Expect::Reserved => (known(key), ConfigProblem::ReservedSetting),
-                        _ => (
-                            IssueKey::Unknown(Some((*env_name).to_owned())),
-                            ConfigProblem::UnknownKey,
-                        ),
+                        _ => (IssueKey::Unknown, ConfigProblem::UnknownKey),
                     };
                     assert!(err.contains(layer, &issue_key, problem), "{case}: {err}");
                     assert_private(&format!("{err} {err:?}"), &[CANARY, "proxy.example"]);
@@ -676,11 +673,7 @@ fn duplicate_unknown_nonfinite_and_out_of_range_values_fail_together() {
         (User, known(K::RankingFits), P::NonFinite),
         (User, known(K::RankingTop), P::OutOfRange),
         (User, known(K::RankingTop), P::DuplicateKey),
-        (
-            User,
-            IssueKey::Unknown(Some("ranking.gaet".into())),
-            P::UnknownKey,
-        ),
+        (User, IssueKey::Unknown, P::UnknownKey),
         (User, known(K::RankingWPrior), P::OutOfRange),
         (User, known(K::RankingShortlist), P::WrongType),
         (User, known(K::HookMode), P::InvalidValue),
@@ -689,11 +682,7 @@ fn duplicate_unknown_nonfinite_and_out_of_range_values_fail_together() {
         (Project, known(K::NetworkEnabled), P::DuplicateKey),
         (Env, known(K::RankingGate), P::NonFinite),
         (Env, known(K::RankingFits), P::NonFinite),
-        (
-            Env,
-            IssueKey::Unknown(Some("SR_ALLOW_NETWORK".into())),
-            P::UnknownKey,
-        ),
+        (Env, IssueKey::Unknown, P::UnknownKey),
         (Env, known(K::RankingTop), P::WrongType),
         (Env, known(K::RankingShortlist), P::WrongType),
         (Cli, known(K::RankingExcludeSkills), P::ForbiddenInLayer),
@@ -793,8 +782,8 @@ fn list_layer_and_diagnostic_bounds_are_enforced() {
 
     let unprintable =
         resolve(user(vec![entry("bad\u{1b}[31mkey", RawValue::Bool(true))])).unwrap_err();
-    assert_eq!(unprintable.issues()[0].key, IssueKey::Unknown(None));
-    assert!(unprintable.to_string().contains("<unprintable name>"));
+    assert_eq!(unprintable.issues()[0].key, IssueKey::Unknown);
+    assert!(unprintable.to_string().contains("<unknown key>"));
     assert!(!unprintable.to_string().contains('\u{1b}'));
 }
 
@@ -813,7 +802,7 @@ fn non_utf8_environment_is_rejected_only_in_the_strict_namespace() {
     .unwrap_err();
     assert!(err.contains(
         ConfigLayer::Environment,
-        &IssueKey::Unknown(None),
+        &IssueKey::Unknown,
         ConfigProblem::NonUtf8
     ));
     assert!(err.contains(
@@ -1223,7 +1212,7 @@ fn managed_mutations_touch_only_ranking_policy_fields() {
     ));
     assert!(err.contains(
         ConfigLayer::TrustedUser,
-        &IssueKey::Unknown(Some("ranking.gates".into())),
+        &IssueKey::Unknown,
         ConfigProblem::UnknownKey
     ));
 }
@@ -1268,6 +1257,32 @@ fn raw_inputs_and_overrides_have_private_debug_output() {
     ] {
         assert_private(&refusal.to_string(), &[CANARY]);
     }
+}
+
+#[test]
+fn unknown_configuration_keys_never_echo_private_input() {
+    let err = resolve(ConfigSources {
+        trusted_user: vec![entry(CANARY, s("unused"))],
+        project: vec![entry(CANARY, RawValue::Bool(true))],
+        environment: vec![var(&format!("SR_{CANARY}"), "unused")],
+        cli: vec![entry(CANARY, RawValue::Integer(1))],
+    })
+    .unwrap_err();
+    for layer in [
+        ConfigLayer::TrustedUser,
+        ConfigLayer::Project,
+        ConfigLayer::Environment,
+        ConfigLayer::Cli,
+    ] {
+        assert!(
+            err.issues().iter().any(|issue| {
+                issue.layer == layer && issue.problem == ConfigProblem::UnknownKey
+            })
+        );
+    }
+    assert_private(&format!("{err} {err:?} {:?}", err.issues()), &[CANARY]);
+    let valid = resolve(user(vec![entry("ranking.gate", RawValue::Float(0.4))])).unwrap();
+    assert_eq!(valid.effective().gate(), 0.4);
 }
 
 #[test]

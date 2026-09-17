@@ -441,17 +441,10 @@ impl fmt::Display for ConfigProblem {
 pub enum IssueKey {
     Layer,
     Known(SettingKey),
-    /// Printable only when short and ASCII-graphic; values are never included.
-    Unknown(Option<String>),
+    /// Input text is deliberately absent: unknown keys may be secrets, so
+    /// diagnostics name the layer and problem without echoing the name.
+    Unknown,
 }
-
-impl IssueKey {
-    fn unknown(name: &str) -> Self {
-        let printable = name.len() <= 64 && name.bytes().all(|b| b.is_ascii_graphic());
-        Self::Unknown(printable.then(|| name.to_owned()))
-    }
-}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ConfigIssue {
     pub layer: ConfigLayer,
@@ -465,8 +458,7 @@ impl fmt::Display for ConfigIssue {
         match &self.key {
             IssueKey::Layer => {}
             IssueKey::Known(key) => write!(f, "{}: ", key.path())?,
-            IssueKey::Unknown(Some(name)) => write!(f, "{name}: ")?,
-            IssueKey::Unknown(None) => f.write_str("<unprintable name>: ")?,
+            IssueKey::Unknown => f.write_str("<unknown key>: ")?,
         }
         write!(f, "{}", self.problem)
     }
@@ -732,7 +724,7 @@ fn validate_entries(
             .flatten();
         match key {
             Some(key) => builder.insert(key, Ok(raw), sink),
-            None => sink.push(layer, IssueKey::unknown(&name), ConfigProblem::UnknownKey),
+            None => sink.push(layer, IssueKey::Unknown, ConfigProblem::UnknownKey),
         }
     }
     builder.validated
@@ -802,13 +794,13 @@ fn validate_environment(
         let strict_namespace = name.as_encoded_bytes().starts_with(b"SR_");
         let Some(name) = name.to_str() else {
             if strict_namespace {
-                sink.push(layer, IssueKey::Unknown(None), ConfigProblem::NonUtf8);
+                sink.push(layer, IssueKey::Unknown, ConfigProblem::NonUtf8);
             }
             continue;
         };
         let Some(key) = SettingKey::from_environment_name(name) else {
             if strict_namespace {
-                sink.push(layer, IssueKey::unknown(name), ConfigProblem::UnknownKey);
+                sink.push(layer, IssueKey::Unknown, ConfigProblem::UnknownKey);
             }
             continue;
         };
@@ -1360,7 +1352,7 @@ impl ManagedPolicyMutation {
                 Some(key) => {
                     sink.push(layer, IssueKey::Known(key), ConfigProblem::NotManagedPolicy)
                 }
-                None => sink.push(layer, IssueKey::unknown(&name), ConfigProblem::UnknownKey),
+                None => sink.push(layer, IssueKey::Unknown, ConfigProblem::UnknownKey),
             }
         }
         sink.finish(Self {
