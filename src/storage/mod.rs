@@ -4,7 +4,13 @@
 //! cancellation and busy limits bound cooperative work; they cannot interrupt
 //! an uninterruptible kernel filesystem wait. Late results are not published.
 
+pub mod export;
 mod filesystem;
+
+pub use export::{
+    DEFAULT_MAX_CASE_BYTES, DEFAULT_MAX_SNAPSHOT_BYTES, ExportConfig, ExportError,
+    export_private_atomic,
+};
 
 use crate::blocking::{BlockingLeafKind, remaining_busy_wait, run_blocking_leaf};
 use crate::runtime::{EntryClock, ProcessInvocation, RuntimeError};

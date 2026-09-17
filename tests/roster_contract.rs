@@ -274,3 +274,150 @@ fn wide_and_body_excerpt_scalar_truncation() {
     assert_eq!(parsed.description_short.as_str().chars().count(), 160);
     assert_eq!(parsed.body_excerpt.as_str().chars().count(), 700);
 }
+
+// -----------------------------------------------------------------------------
+// 2. Boundary: p2_atomic_export
+// Unit Property Test: tests/roster_contract.rs::atomic_private_exports
+// -----------------------------------------------------------------------------
+
+#[test]
+fn atomic_private_exports() {
+    use skillranker::storage::export::{ExportConfig, ExportError, export_private_atomic};
+    use std::fs::{self, DirBuilder};
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+
+    let test_dir = std::env::temp_dir().join(format!(
+        "sr-export-test-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    DirBuilder::new().mode(0o700).create(&test_dir).unwrap();
+
+    let target_file = test_dir.join("roster_snapshot.json");
+    let content = b"{\"skills\": [\"test-skill\"]}";
+
+    // 1. Successful atomic export with 0600 permissions
+    let config = ExportConfig::for_snapshot();
+    export_private_atomic(&target_file, content, config)
+        .expect("export to new target must succeed");
+
+    // Verify content
+    let read_back = fs::read(&target_file).expect("read exported file");
+    assert_eq!(read_back, content);
+
+    // Verify owner-only permissions (0600)
+    let meta = fs::metadata(&target_file).expect("metadata");
+    assert_eq!(
+        meta.mode() & 0o777,
+        0o600,
+        "exported file must have strict owner-only 0600 permissions"
+    );
+
+    // 2. No-clobber: target already exists -> must fail with TargetAlreadyExists
+    let second_content = b"{\"skills\": [\"second-snapshot\"]}";
+    let err_clobber = export_private_atomic(&target_file, second_content, config).unwrap_err();
+    assert!(
+        matches!(err_clobber, ExportError::TargetAlreadyExists(_)),
+        "expected TargetAlreadyExists, got {err_clobber:?}"
+    );
+
+    // Verify original content was NOT clobbered or modified
+    let read_after = fs::read(&target_file).expect("read after clobber attempt");
+    assert_eq!(read_after, content);
+
+    // 3. Symlink rejection: destination is a symlink -> must be rejected
+    let symlink_target = test_dir.join("symlink_target.json");
+    fs::write(&symlink_target, b"original-target").unwrap();
+    let symlink_dest = test_dir.join("export_symlink.json");
+    std::os::unix::fs::symlink(&symlink_target, &symlink_dest).unwrap();
+
+    let err_symlink =
+        export_private_atomic(&symlink_dest, b"malicious-overwrite", config).unwrap_err();
+    assert!(matches!(err_symlink, ExportError::TargetAlreadyExists(_)));
+    // Target pointed to by symlink was untouched
+    assert_eq!(fs::read(&symlink_target).unwrap(), b"original-target");
+
+    // Broken symlink rejection
+    let broken_dest = test_dir.join("broken_symlink.json");
+    std::os::unix::fs::symlink(test_dir.join("nonexistent.json"), &broken_dest).unwrap();
+    let err_broken = export_private_atomic(&broken_dest, b"test-data", config).unwrap_err();
+    assert!(matches!(err_broken, ExportError::TargetAlreadyExists(_)));
+
+    // 4. Oversized payload rejected before write
+    let tiny_config = ExportConfig { max_bytes: 10 };
+    let large_target = test_dir.join("large.json");
+    let err_oversized =
+        export_private_atomic(&large_target, b"this-is-longer-than-ten-bytes", tiny_config)
+            .unwrap_err();
+    assert!(matches!(err_oversized, ExportError::Oversized { .. }));
+    assert!(!large_target.exists());
+
+    // 5. Cleanup of partial files: no dangling .sr-partial-* files in directory
+    let entries: Vec<_> = fs::read_dir(&test_dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
+        .filter(|name| name.contains("sr-partial"))
+        .collect();
+    assert!(
+        entries.is_empty(),
+        "no partial files should remain in directory: {entries:?}"
+    );
+
+    // 6. Safe directory validation: non-existent directory rejected
+    let bad_dir_target = test_dir.join("nonexistent_subfolder").join("file.json");
+    let err_bad_dir = export_private_atomic(&bad_dir_target, b"data", config).unwrap_err();
+    assert!(matches!(err_bad_dir, ExportError::InvalidDirectory(_)));
+}
+
+#[test]
+fn concurrent_export_race_prevents_clobber() {
+    use skillranker::storage::export::{ExportConfig, ExportError, export_private_atomic};
+    use std::fs::DirBuilder;
+    use std::os::unix::fs::DirBuilderExt;
+    use std::sync::Arc;
+    use std::thread;
+
+    let test_dir = std::env::temp_dir().join(format!(
+        "sr-race-test-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    DirBuilder::new().mode(0o700).create(&test_dir).unwrap();
+
+    let target_file = Arc::new(test_dir.join("contended_export.json"));
+    let mut handles = Vec::new();
+
+    // Spawn 8 concurrent threads all attempting to export to the exact same target
+    for i in 0..8 {
+        let target = Arc::clone(&target_file);
+        handles.push(thread::spawn(move || {
+            let content = format!("thread-{i}-content").into_bytes();
+            let config = ExportConfig::for_snapshot();
+            export_private_atomic(&target, &content, config)
+        }));
+    }
+
+    let mut successes = 0;
+    let mut collision_errors = 0;
+
+    for handle in handles {
+        match handle.join().unwrap() {
+            Ok(()) => successes += 1,
+            Err(ExportError::TargetAlreadyExists(_)) => collision_errors += 1,
+            Err(other) => panic!("unexpected error in race test: {other:?}"),
+        }
+    }
+
+    // Exactly ONE writer must succeed, and all others must get TargetAlreadyExists
+    assert_eq!(successes, 1, "exactly one writer must win the race");
+    assert_eq!(
+        collision_errors, 7,
+        "all other writers must detect target collision"
+    );
+}
