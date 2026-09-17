@@ -2,6 +2,8 @@
 //! payload. Decoding, byte/depth limits and native adapter conformance live at
 //! the input boundary; serializing this entire envelope to a provider is invalid.
 
+pub mod source;
+
 use crate::identity::{
     AgentId, BranchId, ContentHash, ContextEpoch, EventId, HarnessId, ProducerId, SessionId,
     SessionIdentity, SkillId, SourceProvenance, ToolCallId, TurnId, WorkspaceId,
