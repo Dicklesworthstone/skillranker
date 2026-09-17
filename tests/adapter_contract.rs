@@ -560,6 +560,8 @@ fn cass_provenance_requires_an_actual_commit_id_or_binary_digest() {
         "a".repeat(41),
         "z".repeat(40),
         "a".repeat(65),
+        "unknown-dirty".into(),
+        format!("{}-dirty-dirty", "a".repeat(12)),
     ] {
         let mut record = original.clone();
         record.build_commit = Some(invalid);
@@ -578,7 +580,12 @@ fn cass_provenance_requires_an_actual_commit_id_or_binary_digest() {
         parsed.validate_support_claim().unwrap();
     }
     // These are real cass producer labels, but do not identify exact build bytes.
-    for commit in ["unknown".to_string(), format!("{}-dirty", "a".repeat(12))] {
+    for commit in [
+        "unknown".to_string(),
+        format!("{}-dirty", "a".repeat(12)),
+        format!("{}-dirty", "a".repeat(40)),
+        format!("{}-dirty", "a".repeat(64)),
+    ] {
         let mut record = original.clone();
         record.build_commit = Some(commit);
         let mut parsed = CassProducer::from_json(&serde_json::to_vec(&record).unwrap()).unwrap();
@@ -611,10 +618,18 @@ fn cass_cannot_enable_native_advice_by_claiming_default_hook_membership() {
             record.advice(CompatibilityQuestion::EmitNativeAdvice, Some(&installed)),
             AdviceDisposition::Disabled(AdviceBlockReason::CassNotOnDefaultHookPath)
         );
+        assert_eq!(
+            transfer_tested_support(&record, &record.adapter_id, &installed),
+            Err(AdapterError::SupportInheritanceForbidden)
+        );
         if on_default_hook_path {
             let mut document = foundation_capabilities().unwrap();
             document.adapters = vec![record];
             assert_eq!(document.validate(), Err(AdapterError::InvalidField));
+            assert_eq!(
+                CapabilitiesDocument::from_json(&serde_json::to_vec(&document).unwrap()),
+                Err(AdapterError::InvalidField)
+            );
         }
     }
 }
@@ -626,7 +641,10 @@ fn capability_version_definitions_must_be_unique_and_disjoint() {
         let mut record = tested_claude("2.1.274");
         match mutation {
             0 => record.tested_versions.push(installed.clone()),
-            1 => record.unverified_versions = vec![installed.clone(), installed.clone()],
+            1 => {
+                let unverified = AdapterVersion::new("2.1.275").unwrap();
+                record.unverified_versions = vec![unverified.clone(), unverified];
+            }
             2 => record.unverified_versions.push(installed.clone()),
             _ => unreachable!(),
         }
