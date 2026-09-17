@@ -614,7 +614,9 @@ The Claude Code integration uses `UserPromptSubmit` and the dedicated
 The normal hook names at most one locally validated skill. Multiple explicitly
 requested skills remain user requests, not adaptive top-three suggestions.
 A valid abstention may offer a short no-additional-skill message. Operational
-failures and incomplete coverage produce no injected text.
+failures or unresolved target visibility produce no injected text. A partial
+roster can support a scoped positive recommendation when the target and its
+restrictions are verified; it cannot support a global no-match message.
 
 **The hook never blocks the agent on a recommendation failure.** It emits no
 blocking decision fields and translates errors into empty stdout, a sanitized
@@ -678,6 +680,7 @@ flowchart TD
     X --> O
     N --> O
     O --> L[(Bounded local metadata)]
+    U --> L
     L --> F[Observe loads and record explicit judgments]
     F --> E[Held-out evaluation and optional calibration]
 ```
@@ -716,15 +719,17 @@ can use local explicit resolution or an exact valid cache entry.
 
 | Control | Effect |
 |---|---|
-| `--dry-run` | Preview exact redacted wide-request bytes; no network or persistence changes |
+| `--dry-run` | Preview exact redacted wide-request bytes for a stateless run; no network or persistent state access |
 | `--no-tools` | Remove tool arguments and results from provider context |
 | `--no-cache` | Disable cache reads and writes |
-| `--no-ledger` | Disable observations, judgments, and personalization |
+| `--no-ledger` | Disable all ledger and ingestion-cursor reads/writes; use transient evidence |
 | `--no-persist` | Also disable persistent cache, cursors, locks, and other local state |
 | `--offline` | Disallow all network activity |
 
 A second-stage dry run requires explicit shortlist IDs or a validated recorded
-wide answer. It cannot know a model's shortlist without that evidence.
+wide answer. It cannot know a model's shortlist without that evidence. The preview
+corresponds to `--no-persist`; a persistent run can include additional historical
+evidence and therefore produce a different payload.
 
 Local data uses platform directories, including `$XDG_DATA_HOME/sr` on Linux
 with `~/.local/share/sr` as the fallback. Database and cache files are owner-only.
@@ -829,8 +834,9 @@ Cass is optional for session archive access. Meta_skill is a source of selected
 reusable code, not a runtime dependency or feedback service.
 
 **Does `--no-ledger` make the run stateless?**
-No. It disables observations, labels, and personalization. Use `--no-persist` to
-also disable persistent cache, cursors, and coordination state.
+No. It disables ledger and ingestion-cursor access, observations, labels, and
+personalization. Use `--no-persist` to also disable persistent cache, key, and
+coordination state.
 
 **Can the hook stop my agent if TypeSafe is unavailable?**
 No. The dedicated hook produces a quiet non-blocking fallback. The ordinary CLI
