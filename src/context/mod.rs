@@ -167,6 +167,10 @@ pub struct NormalizedContext {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ContextError {
+    InvalidJson,
+    InvalidField,
+    DuplicateKey,
+    LimitExceeded,
     UnsupportedSchema,
     DuplicateEvent,
     DuplicateLoadDefinition,
@@ -175,6 +179,10 @@ pub enum ContextError {
 impl fmt::Display for ContextError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
+            Self::InvalidJson => "invalid normalized context JSON",
+            Self::InvalidField => "invalid normalized context field",
+            Self::DuplicateKey => "duplicate normalized context key",
+            Self::LimitExceeded => "normalized context limit exceeded",
             Self::UnsupportedSchema => "unsupported normalized context schema",
             Self::DuplicateEvent => "duplicate normalized event definition",
             Self::DuplicateLoadDefinition => "duplicate supplied load definition",
@@ -183,6 +191,23 @@ impl fmt::Display for ContextError {
 }
 
 impl std::error::Error for ContextError {}
+
+/// Decode bounded local input, rejecting duplicate keys before deserialization.
+/// Paths and identities remain declarations, never filesystem or network authority.
+pub fn parse_normalized_context(bytes: &[u8]) -> Result<NormalizedContext, ContextError> {
+    use crate::adapter::AdapterError;
+    let value =
+        crate::adapter::decode_json(bytes, crate::limits::NORMALIZED_CONTEXT_JSON_BYTES.max())
+            .map_err(|error| match error {
+                AdapterError::DuplicateKey => ContextError::DuplicateKey,
+                AdapterError::LimitExceeded => ContextError::LimitExceeded,
+                _ => ContextError::InvalidJson,
+            })?;
+    let context: NormalizedContext =
+        serde_json::from_value(value).map_err(|_| ContextError::InvalidField)?;
+    context.validate_definitions()?;
+    Ok(context)
+}
 
 impl NormalizedContext {
     pub fn validate_definitions(&self) -> Result<(), ContextError> {

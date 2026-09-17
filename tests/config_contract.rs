@@ -1,5 +1,5 @@
 use skillranker::config::*;
-use skillranker::context::NormalizedContext;
+use skillranker::context::parse_normalized_context;
 use skillranker::identity::ContentHash;
 use skillranker::output::{CliExit, ErrorKind};
 use skillranker::privacy::*;
@@ -615,7 +615,7 @@ fn an_api_key_alone_grants_no_network_consent() {
 fn normalized_input_cannot_carry_configuration_authority() {
     let fixture: serde_json::Value =
         serde_json::from_str(include_str!("fixtures/normalized-context.v1.json")).unwrap();
-    serde_json::from_value::<NormalizedContext>(fixture.clone()).unwrap();
+    parse_normalized_context(&serde_json::to_vec(&fixture).unwrap()).unwrap();
     for (field, value) in [
         ("allow_network", serde_json::json!(true)),
         ("network", serde_json::json!({"enabled": true})),
@@ -629,7 +629,7 @@ fn normalized_input_cannot_carry_configuration_authority() {
         let mut forged = fixture.clone();
         forged[field] = value;
         assert!(
-            serde_json::from_value::<NormalizedContext>(forged).is_err(),
+            parse_normalized_context(&serde_json::to_vec(&forged).unwrap()).is_err(),
             "normalized input accepted authority field {field}"
         );
     }

@@ -10,6 +10,16 @@
   declaration validation remains distinct from an execution receipt.
 
 ### Added
+- Pure `context::parse_normalized_context` decoding with a 1 MiB input bound,
+  depth-64 JSON validation, duplicate-key and definition rejection, and fixed
+  diagnostics. Parsed identities and paths remain local declarations, not
+  filesystem, network, or native-observation authority.
+- Owned bounded subprocess execution under `subprocess`: trusted-resolved
+  argv executables with canonical-path authority grants, empty-by-default
+  environments that reject provider/proxy/loader variables, independently
+  bounded pipes, deadline cancellation with Unix process-group kill and
+  reaping, and no shell interpolation or detached workers. Requires `nix`
+  signal/process support on Linux/macOS; other platforms refuse before spawn.
 - Pure TypeSafe Jev Choice/Noul codecs with bounded JSON, duplicate-key
   rejection, exact question/option matching, validated usage and distributions,
   and separate raw versus rounding-normalized probabilities. Synthetic codec

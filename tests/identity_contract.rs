@@ -1,6 +1,6 @@
 use skillranker::context::{
     ContextError, CurrentRequest, EventKind, EvidenceOrigin, NormalizedContext, NormalizedEvent,
-    PrivateText, Role, SuppliedLoadClaim,
+    PrivateText, Role, SuppliedLoadClaim, parse_normalized_context,
 };
 use skillranker::identity::*;
 use skillranker::roster::*;
@@ -60,10 +60,9 @@ fn context() -> NormalizedContext {
 #[test]
 fn documented_incomplete_context_round_trips_without_durable_authority() {
     let fixture = include_str!("fixtures/normalized-context.v1.json");
-    let input: NormalizedContext = serde_json::from_str(fixture).unwrap();
+    let input = parse_normalized_context(fixture.as_bytes()).unwrap();
     assert_eq!(input.validate_definitions(), Ok(()));
-    let decoded: NormalizedContext =
-        serde_json::from_slice(&serde_json::to_vec(&input).unwrap()).unwrap();
+    let decoded = parse_normalized_context(&serde_json::to_vec(&input).unwrap()).unwrap();
     assert_eq!(decoded, input);
     assert!(
         input
@@ -193,7 +192,7 @@ fn explicit_null_unknowns_round_trip_and_private_debug_stays_private() {
     let json = serde_json::to_value(&input).unwrap();
     assert!(json["agent_id"].is_null());
     assert!(json["branch_id"].is_null());
-    let decoded: NormalizedContext = serde_json::from_value(json).unwrap();
+    let decoded = parse_normalized_context(&serde_json::to_vec(&json).unwrap()).unwrap();
     assert_eq!(decoded, input);
     let debug = format!("{input:?}");
     assert!(!debug.contains("CANARY-PRIVATE-CONTENT"));
@@ -214,7 +213,7 @@ fn supplied_success_and_rendered_hash_never_become_observed_evidence() {
     assert!(serde_json::from_value::<SuppliedLoadClaim>(forged).is_err());
     let mut input = serde_json::to_value(context()).unwrap();
     input["network"] = serde_json::json!({"enabled": true});
-    assert!(serde_json::from_value::<NormalizedContext>(input).is_err());
+    assert!(parse_normalized_context(&serde_json::to_vec(&input).unwrap()).is_err());
 }
 
 #[test]
@@ -224,9 +223,17 @@ fn duplicate_definitions_differ_from_valid_references_and_identical_turn_text() 
     // Current prompt references the already-present event. Equal text is not dedup evidence.
     assert_eq!(input.validate_definitions(), Ok(()));
     assert_eq!(input.events.len(), 2);
+    assert_eq!(
+        parse_normalized_context(&serde_json::to_vec(&input).unwrap()).unwrap(),
+        input
+    );
     input.events.push(event("event-current"));
     assert_eq!(
         input.validate_definitions(),
+        Err(ContextError::DuplicateEvent)
+    );
+    assert_eq!(
+        parse_normalized_context(&serde_json::to_vec(&input).unwrap()),
         Err(ContextError::DuplicateEvent)
     );
 
@@ -250,8 +257,7 @@ fn anonymous_events_are_context_but_not_durable_event_evidence() {
     input.events.push(input.events[0].clone());
     input.current_request.event_id = None;
     assert_eq!(input.validate_definitions(), Ok(()));
-    let round_trip: NormalizedContext =
-        serde_json::from_str(&serde_json::to_string(&input).unwrap()).unwrap();
+    let round_trip = parse_normalized_context(&serde_json::to_vec(&input).unwrap()).unwrap();
     assert_eq!(round_trip, input);
     assert_eq!(
         identity().event_key(input.current_request.event_id.as_ref()),
@@ -281,9 +287,16 @@ fn duplicate_json_keys_and_unsupported_schema_are_not_silently_accepted() {
         "\"schema_version\":1,\"schema_version\":2",
         1,
     );
-    assert!(serde_json::from_str::<NormalizedContext>(&duplicate).is_err());
+    assert_eq!(
+        parse_normalized_context(duplicate.as_bytes()),
+        Err(ContextError::DuplicateKey)
+    );
     let mut future = context();
     future.schema_version = 2;
+    assert_eq!(
+        parse_normalized_context(&serde_json::to_vec(&future).unwrap()),
+        Err(ContextError::UnsupportedSchema)
+    );
     assert_eq!(
         future.validate_definitions(),
         Err(ContextError::UnsupportedSchema)
@@ -308,7 +321,7 @@ fn duplicate_fields_are_rejected_inside_every_normalized_record_type() {
         rendered_content: None,
     });
     let raw = serde_json::to_string(&input).unwrap();
-    assert!(serde_json::from_str::<NormalizedContext>(&raw).is_ok());
+    assert!(parse_normalized_context(raw.as_bytes()).is_ok());
     for (field, value) in [
         ("event_id", "null"),
         ("attachments_omitted", "false"),
@@ -321,10 +334,70 @@ fn duplicate_fields_are_rejected_inside_every_normalized_record_type() {
         let prefix = format!("\"{field}\":");
         let corrupt = raw.replacen(&prefix, &format!("{prefix}{value},{prefix}"), 1);
         assert!(
-            serde_json::from_str::<NormalizedContext>(&corrupt).is_err(),
+            parse_normalized_context(corrupt.as_bytes()).is_err(),
             "{field}"
         );
     }
+}
+
+#[test]
+fn normalized_wire_bounds_reject_before_schema_conversion() {
+    use skillranker::limits::NORMALIZED_CONTEXT_JSON_BYTES;
+    let mut bytes = serde_json::to_vec(&context()).unwrap();
+    bytes.resize(NORMALIZED_CONTEXT_JSON_BYTES.max(), b' ');
+    assert_eq!(parse_normalized_context(&bytes).unwrap(), context());
+    bytes.push(b' ');
+    assert_eq!(
+        parse_normalized_context(&bytes),
+        Err(ContextError::LimitExceeded)
+    );
+
+    // Root depth is zero. Unknown fields still undergo the depth check before
+    // schema rejection, so a hostile ignored subtree cannot bypass the bound.
+    let at_limit = format!("{}0{}", "[".repeat(64), "]".repeat(64));
+    assert_eq!(
+        parse_normalized_context(at_limit.as_bytes()),
+        Err(ContextError::InvalidField)
+    );
+    let too_deep = format!("[{at_limit}]");
+    assert_eq!(
+        parse_normalized_context(too_deep.as_bytes()),
+        Err(ContextError::LimitExceeded)
+    );
+    assert_eq!(
+        parse_normalized_context(b"{} {}"),
+        Err(ContextError::InvalidJson)
+    );
+    assert_eq!(
+        parse_normalized_context(b"\xff"),
+        Err(ContextError::InvalidJson)
+    );
+}
+
+#[test]
+fn normalized_load_definitions_do_not_deduplicate_skill_references() {
+    let mut input = context();
+    let skill = SkillId::new("skill-a").unwrap();
+    input.explicit_skill_references = vec![skill.clone(), skill.clone()];
+    input.supplied_loads.push(SuppliedLoadClaim {
+        skill_id: skill,
+        source_content: None,
+        rendered_content: None,
+    });
+    let decoded = parse_normalized_context(&serde_json::to_vec(&input).unwrap()).unwrap();
+    assert_eq!(
+        decoded.explicit_skill_references,
+        input.explicit_skill_references
+    );
+    assert_eq!(
+        decoded.supplied_loads[0].evidence_origin(),
+        EvidenceOrigin::Supplied
+    );
+    input.supplied_loads.push(input.supplied_loads[0].clone());
+    assert_eq!(
+        parse_normalized_context(&serde_json::to_vec(&input).unwrap()),
+        Err(ContextError::DuplicateLoadDefinition)
+    );
 }
 
 #[test]

@@ -197,7 +197,7 @@ fn non_tty_and_json_shape_do_not_select_stdin() {
         let mut bytes = Vec::new();
         stdin.read_to_end(&mut bytes).unwrap();
         // The chosen normalized parser rejects hook-shaped data; no sniff/fallback.
-        serde_json::from_slice::<skillranker::context::NormalizedContext>(&bytes)
+        skillranker::context::parse_normalized_context(&bytes)
             .map(|_| ())
             .map_err(|_| SourceError::InvalidInventory)
     });

@@ -100,7 +100,13 @@ contents are selection evidence, not native-parser or live-harness evidence.
 
 The P3 `context` end-to-end suite remains planned in the phase matrix. Concrete
 Rust test references replace the earlier prospective `context_contract.rs` name;
-executed checks are recorded on bead `sr-roadmap-l1i.4.1`. Native snapshot parsing,
-normalized decoding, cass capability/subprocess integration and CLI delivery
-remain their respective downstream tasks. No live Jev request is needed to test
-this local boundary.
+executed checks are recorded on bead `sr-roadmap-l1i.4.1`. Pure normalized byte
+decoding is now provided by `skillranker::context::parse_normalized_context`:
+it enforces the 1 MiB byte limit and JSON depth 64, rejects duplicate keys, and
+validates schema and definitions with fixed `ContextError` diagnostics. See the
+[identity contract](identity-contract.md) for its local-input guarantees. This
+does not implement normalized filesystem/stdin reading, context windowing or
+provider serialization, and does not turn normalized identity into native
+authority. Native snapshot parsing, cass capability/subprocess integration and
+CLI delivery remain their respective downstream tasks. No live Jev request is
+needed to test this local boundary.

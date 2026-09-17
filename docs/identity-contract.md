@@ -23,18 +23,29 @@ context is serializable for explicit local input interchange, **not** for provid
 payloads or routine logs. Text and local paths also have private Debug output.
 Option IDs, invocation names and display names hide their values in Debug too;
 terminal sanitization alone does not remove private content. Explicit local
-serialization remains lossless. Serde decoding errors can contain input text;
-input boundaries must map them to fixed public error kinds rather than log them.
+serialization remains lossless. Raw Serde decoding errors can contain input text;
+the production normalized parser maps them to fixed public diagnostics instead.
 
 Opaque identifiers are nonempty and at most 512 UTF-8 bytes. They reject
 whitespace, controls and bidi controls. This bound does not replace outer reader
 byte, nesting or record limits. Derived struct deserializers reject repeated and
 unknown named fields. `validate_definitions` separately rejects repeated event
 IDs and repeated supplied-load definitions. A current request may reference an
-existing event; equal text in two different events remains two turns. Decode
-normalized input directly from bounded raw bytes into these structs, not
-first into a generic JSON map that has already discarded duplicate keys. Unknown
-event IDs remain null and cannot prove a causal association or load observation.
+existing event; equal text in two different events remains two turns. Use
+`skillranker::context::parse_normalized_context(&[u8]) -> Result<NormalizedContext, ContextError>`
+for production input decoding. It checks the 1 MiB (1,048,576-byte) limit before
+decoding, enforces JSON depth 64, and rejects duplicate keys at every object level
+before they can be discarded by a generic JSON map. It rejects malformed JSON,
+trailing input, unknown fields and invalid field values, then validates schema
+version 1 and event/supplied-load definitions before returning the context.
+`ContextError` exposes fixed diagnostics without rejected input text.
+
+The parser is a pure, bounded local-byte boundary, not a filesystem or stdin
+reader. It does not perform source selection, filesystem authorization, context
+windowing, native ingestion or provider serialization. Parsed paths and identities
+remain declarations; normalized identity grants no native authority.
+
+Unknown event IDs remain null and cannot prove a causal association or load observation.
 `SessionIdentity::event_key` requires both complete session attribution and a
 concrete event ID before constructing a `DurableEventKey`; it confers no observed
 load status. Adapters still have to establish that the event belongs to that

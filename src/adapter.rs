@@ -916,7 +916,7 @@ pub fn select_source(request: SourceRequest) -> Result<SelectedSource, AdapterEr
     })
 }
 
-fn decode_json(bytes: &[u8], max_bytes: usize) -> Result<Value, AdapterError> {
+pub(crate) fn decode_json(bytes: &[u8], max_bytes: usize) -> Result<Value, AdapterError> {
     if bytes.len() > max_bytes {
         return Err(AdapterError::LimitExceeded);
     }
