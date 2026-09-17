@@ -57,6 +57,54 @@ ignored-suggestion penalty, transparent `ureq` fallback, or HTTP-only deadline.
 Resolve contradictions at the affected boundary and update the relevant docs.
 Current source and executed checks establish behavior; prose alone is not proof.
 
+## Maintainer Credentials — Local Environment And Vault
+
+**Live Jev evaluations require `TYPESAFE_API_KEY`.** The maintainer credential is
+available in these locations; retrieve it without printing it:
+
+| Location | Lookup |
+|---|---|
+| This checkout on `threadripperje` | `/data/projects/skillranker/.env` (also `/dp/skillranker/.env`), variable `TYPESAFE_API_KEY` |
+| HashiCorp Vault on `threadripperje` | KV v2 mount `secret`, path `skillranker`, field `TYPESAFE_API_KEY` |
+| HashiCorp Vault on `ts1` (`thinkstation1`) | The same mount, path, and field in that machine's local Vault |
+
+The local `.env` is Git-ignored, untracked, and owner-readable/writable only
+(`0600`). Export its values before launching `sr` or the agent process whose hooks
+need the key; do not assume `.env` is loaded automatically:
+
+```bash
+cd /data/projects/skillranker
+set +x
+set -a
+. ./.env
+set +a
+```
+
+For recovery or use on either maintainer machine, run the following **on that
+machine** (connect with `ssh ts1` first for `ts1`). Existing Vault authentication
+is required. Each machine has a copy of its local Vault's public CA certificate
+at `~/.config/vault/skillranker-ca.pem`:
+
+```bash
+set +x
+TYPESAFE_API_KEY="$(
+  VAULT_ADDR=https://127.0.0.1:8200 \
+  VAULT_CACERT="$HOME/.config/vault/skillranker-ca.pem" \
+  VAULT_SKIP_VERIFY=false \
+  vault kv get -mount=secret -field=TYPESAFE_API_KEY skillranker
+)" && export TYPESAFE_API_KEY
+```
+
+Keep shell tracing off while handling credentials. Never print the key, paste it
+into a tool argument, commit it, or include it in logs, fixtures, or documentation.
+Keep `.env.example` credential-free. When rotating the key, update the local
+`.env` and both Vault copies, preserving unrelated fields. A loaded credential
+does not authorize sending session content: network opt-in still applies.
+
+These are private maintainer stores. Outside users must sign up at the
+[TypeSafe console](https://console.typesafe.ai) and obtain **their own API key**;
+the README must direct them there.
+
 ## Architecture Doctrine
 
 - Start with one Rust package, binary `sr`, and a library exposing pure context

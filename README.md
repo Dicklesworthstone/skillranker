@@ -10,7 +10,7 @@ available skills, and estimates which ones fit the next step. SkillRanker suppli
 the session integration, local safeguards, and inspectable feedback around it.
 
 **A TypeSafe API key is required to use SkillRanker's ranking system.
-Get your key from the [TypeSafe console](https://console.typesafe.ai).**
+Sign up at the [TypeSafe console](https://console.typesafe.ai) to get your own key.**
 
 [![License](https://img.shields.io/badge/license-MIT%20%2B%20OpenAI%2FAnthropic%20rider-blue)](LICENSE)
 ![Rust](https://img.shields.io/badge/language-Rust%202024-dea584)
@@ -181,14 +181,30 @@ cargo build --locked --release --bin sr
 
 ### Runtime setup
 
-**Start by obtaining a [TypeSafe API key](https://console.typesafe.ai).
-It is a required prerequisite, not an optional integration.** Jev is the
-evaluation engine for the entire ranking workflow.
+**Sign up for [TypeSafe.ai](https://console.typesafe.ai), then create your own API
+key in the console. A TypeSafe API key is required to use SkillRanker's ranking
+system.** Jev is the evaluation engine for the entire ranking workflow.
+Every user supplies their own credential; SkillRanker does not distribute a
+shared key.
 
 Set `TYPESAFE_API_KEY` through your shell or secret manager. The
-[environment example](.env.example) lists the service settings. A local `.env`
-is ignored by Git; export its values into the process environment before running
-`sr`. Credentials alone do not enable remote transmission.
+[environment example](.env.example) lists the service settings. For a local
+checkout, copy it to `.env` if that file does not already exist, fill in
+`TYPESAFE_API_KEY` with your own key, and restrict access with `chmod 600 .env`.
+The `.env` file is ignored by Git. Export its values into the process environment
+before running `sr` or starting an agent whose hooks need the key:
+
+```bash
+# Run from your checkout, after filling in your own trusted .env file.
+set +x
+set -a
+. ./.env
+set +a
+```
+
+Treat `.env` as a local shell configuration file and source only content you
+trust. Keep the key out of shell history, logs, and tracked files. Credentials
+alone do not enable remote transmission.
 
 | Component | Role |
 |---|---|
@@ -204,8 +220,9 @@ The primary local platform scope is Linux and macOS. Consult
 
 ## Quick Start
 
-1. **Configure your TypeSafe API key.** Obtain it from the
-   [TypeSafe console](https://console.typesafe.ai) and export `TYPESAFE_API_KEY`.
+1. **Sign up and configure your own TypeSafe API key.** Create an account and key
+   in the [TypeSafe console](https://console.typesafe.ai), then export
+   `TYPESAFE_API_KEY` using the [runtime setup](#runtime-setup) instructions.
    SkillRanker relies on Jev for its ranking evaluations.
 2. **Check the environment and roster.** Run `sr doctor --json`,
    `sr capabilities --json`, and `sr roster --json` in the agent's workspace.
@@ -806,8 +823,8 @@ unknown-usage marker rather than being counted as free.
 **Do I need a TypeSafe API key?**
 Yes. TypeSafe.ai's Jev powers SkillRanker's ranking system, and you must provide
 your own key as `TYPESAFE_API_KEY`. There is no bundled key, local replacement
-model, or alternative inference provider. Get a key from the
-[TypeSafe console](https://console.typesafe.ai).
+model, or alternative inference provider. Sign up at the
+[TypeSafe console](https://console.typesafe.ai) and create your own API key.
 
 **Does SkillRanker execute a skill?**
 No. It recommends or returns a locally resolved target. The agent remains in
