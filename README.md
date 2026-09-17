@@ -4,9 +4,9 @@
 
 **The right skill for the next step.**
 
-A Rust CLI that ranks the skills your coding agent should load next, using the
-live conversation, the workspace, and a local history of what actually helped
-the agent choose.
+A standalone Rust CLI that matches your agent's live conversation to the skills
+it can actually load, with structured rankings, explicit abstention, and local
+feedback you can inspect.
 
 [![License](https://img.shields.io/badge/license-MIT%20%2B%20OpenAI%2FAnthropic%20rider-blue)](LICENSE)
 ![Rust](https://img.shields.io/badge/language-Rust%202024-dea584)
@@ -15,9 +15,9 @@ the agent choose.
 ![Output](https://img.shields.io/badge/output-JSON%20%7C%20hooks%20%7C%20TUI-00897b)
 
 ```bash
-sr                       # Rank skills for the current session
-sr --hook --format hook  # Feed a short recommendation into an agent hook
-sr tui                   # Inspect the ranking in an inline terminal UI
+sr rank --allow-network   # Rank skills for the selected session
+sr hook claude           # Run the Claude Code prompt-hook integration
+sr tui                   # Inspect rankings in an inline terminal display
 ```
 
 </div>
@@ -33,7 +33,7 @@ sr tui                   # Inspect the ranking in an inline terminal UI
 - [Command Reference](#command-reference)
 - [Configuration](#configuration)
 - [How Ranking Works](#how-ranking-works)
-- [Learning From Each Turn](#learning-from-each-turn)
+- [Local Feedback And Calibration](#local-feedback-and-calibration)
 - [Agent Hooks](#agent-hooks)
 - [Inline TUI](#inline-tui)
 - [Architecture](#architecture)
@@ -50,84 +50,85 @@ sr tui                   # Inspect the ranking in an inline terminal UI
 ## TL;DR
 
 **The problem.** A large skill library gives an agent plenty of procedures to
-choose from, but choosing is itself a task. Short descriptions can hide the
-difference between two similar skills. A skill that was useful at the start of
-a conversation can be irrelevant three turns later. Loading the wrong one costs
-context and can steer otherwise sensible work off course.
+choose from, but choosing is itself a task. Similar descriptions obscure useful
+distinctions. A skill that helped at the start of a conversation can be irrelevant
+three turns later. Loading a plausible but unsuitable skill consumes context and
+can redirect otherwise sensible work.
 
-**The solution.** SkillRanker (`sr`) reads the recent conversation, discovers the
-skills visible from the workspace, and asks TypeSafe's Jev to evaluate the next
-step. A wide pass finds candidates; a second pass reads richer descriptions and
-checks whether each candidate actually fits. A local ledger records suggestions
-and subsequent skill loads, refining the priors and exposing gaps in the roster.
+**The solution.** SkillRanker (`sr`) combines the recent conversation, current
+request, workspace signals, and the selected harness's visible skill inventory.
+TypeSafe's Jev first compares the candidates broadly, then reads richer excerpts
+from a shortlist and evaluates whether each one fits. Both comparisons include a
+real “none of these” option. The result is advisory: the agent follows the user's
+instructions and decides what to consult.
 
 ### Why `sr`?
 
 | Need | What SkillRanker provides |
 |---|---|
-| Choose for the current step | Recent messages, tool summaries, project signals, and session history contribute to the ranking |
-| Search a large skill library | Up to 255 skills per wide pass; lexical prefiltering or parallel chunks handle larger rosters |
-| Separate similar skills | The rerank uses full descriptions and the opening text of each shortlisted `SKILL.md` |
-| Recognize when no skill applies | Independent relevance gates and per-skill fit estimates can suppress a recommendation |
-| Avoid repeated suggestions | Loaded skills and repeatedly ignored suggestions receive session-specific demotions |
-| Understand the result | Raw probabilities, fit estimates, blended scores, and distribution confidence remain separate |
-| Integrate with an agent | Hook output is short; JSON is structured; stdout stays free of diagnostics |
-| Improve the roster | Confusion reports identify indistinct descriptions; coverage reports identify missing procedures |
-| Keep learning local | Calibration and usage history live in a local SQLite ledger; there is no cross-user telemetry |
+| Choose for the current step | Exact session identity, the newest prompt, recent tool evidence, and project signals |
+| Suggest something the agent can load | Harness-aware visibility, override resolution, stable skill identities, and content revalidation |
+| Respect an explicit request | Locally resolve a requested skill before probabilistic retrieval or ranking |
+| Search a large library | Local BM25 prefiltering, admitting up to 254 skills plus a none option to each Choice |
+| Separate similar skills | Detailed reranking with bounded descriptions and body excerpts |
+| Recognize when no skill fits | Relevance gates, per-candidate fit checks, and sentinel-based abstention |
+| Understand the result | Raw probabilities, local rank scores, confidence, eligibility, and provenance stay distinct |
+| Keep the agent moving | A failed hook recommendation produces a quiet, non-blocking fallback |
+| Review what happens | Local observation statistics, explicit usefulness judgments, and held-out evaluation |
+| Control disclosure | Network opt-in, redacted payload preview, an offline mode, and separate persistence controls |
 
-SkillRanker builds on the [TypeSafe skill-suggestion recipe](https://docs.typesafe.ai/cookbooks/skill_suggestion).
-Its additions are session context, a persistent feedback loop, and an optional
-bridge to [meta_skill](https://github.com/Dicklesworthstone/meta_skill).
-The [comprehensive plan](COMPREHENSIVE_PLAN_TO_DESIGN_SKILLRANKER.md) contains the
-full question design and engineering rationale.
+The approach builds on the [TypeSafe skill-suggestion recipe](https://docs.typesafe.ai/cookbooks/skill_suggestion).
+SkillRanker adds session identity, harness visibility, bounded execution, and a
+local evaluation loop. The [comprehensive plan](COMPREHENSIVE_PLAN_TO_DESIGN_SKILLRANKER.md)
+explains the full design and acceptance criteria.
 
 ## Quick Example
 
 ```bash
-# Inspect everything this workspace makes available.
+# Inspect local configuration and the available adapters.
+sr doctor --json
+sr capabilities --json
+
+# Inspect visible, shadowed, and excluded skill records.
 sr roster --json
 
-# Inspect the redacted request without making an API call.
-sr rank --dry-run
+# Preview the redacted wide-pass request without network or persistence effects.
+sr rank --context scratch/context.json --dry-run
 
-# Rank for the next step of your current agent session.
-sr rank --json
+# Evaluate an explicitly selected conversation.
+sr rank --context scratch/context.json --allow-network --json
 
-# Use a particular transcript instead of automatic session discovery.
-sr rank --transcript ./scratch/session.jsonl --messages 12 --top 5 --json
+# Inspect raw distributions, discarded candidates, and score contributions.
+sr rank --context scratch/context.json --allow-network --explain --json
 
-# Inspect gates, the wide distribution, and each score contribution.
-sr rank --explain --json
-
-# Connect the ranker to Claude Code's prompt hook.
+# Preview the Claude hook settings change, then apply it.
 sr install-hook claude
+sr install-hook claude --apply
 
-# See which suggestions the agent actually followed.
+# Review observations without treating adoption as proof of usefulness.
 sr stats --since 7d --by-skill
 
-# Find confusing descriptions and missing skills.
+# Inspect description quality and suspected coverage gaps locally.
 sr doctor --descriptions
 sr gaps
 ```
 
 ## Design Philosophy
 
-1. **Choose for the next action.** The latest request matters, but so do the
-   tool failure just above it, the project language, and the skills already in
-   context. Rank against that combined state.
-2. **Separate preference from applicability.** A forced choice always has a
-   winner. Independent fit questions tell us whether that winner belongs in
-   the conversation at all.
-3. **Keep the evidence visible.** Preserve Jev's probabilities and confidence
-   alongside the local score. `--explain` exposes the arithmetic and gates;
-   it does not invent a prose explanation from the model.
-4. **Learn from observable behavior.** Use subsequent skill loads as feedback,
-   while keeping the distinction between a load and a successful outcome.
-5. **Make a hook cheap to run.** Compact context, bounded requests, caching,
-   and structured cancellation keep the work contained within a turn.
-6. **Reuse the ecosystem's strengths.** `cass` handles session access,
-   Asupersync handles concurrency, FrankenTUI handles the terminal, and
-   meta_skill can supply the roster and consume outcomes.
+1. **Choose for the next action.** The current request matters, as do the recent
+   failure, the task context, and the instructions already loaded.
+2. **Resolve authority locally.** The user decides what is required or excluded.
+   The harness determines what can be loaded. A model answer cannot change either.
+3. **Separate preference from applicability.** Winning a comparison is not enough.
+   A recommendation must survive fit, visibility, loaded-state, and none-option checks.
+4. **Keep evidence inspectable.** Preserve provider estimates and local arithmetic.
+   `--explain` exposes computations without inventing model-generated reasons.
+5. **Separate adoption from usefulness.** Observing a load is useful telemetry.
+   Learning a better policy requires independently judged examples and a holdout.
+6. **Bound the whole invocation.** Input, discovery, subprocesses, networking,
+   retries, persistence, and cleanup all consume one deadline.
+7. **Stay standalone.** Discovery, parsing, redaction, retrieval, and feedback live
+   in `sr`. No skill-manager service or private database is required.
 
 ## How It Compares
 
@@ -135,13 +136,13 @@ These are workflow choices, not benchmark rankings.
 
 | Approach | Input to selection | Strength | Tradeoff |
 |---|---|---|---|
-| Manual selection | Your knowledge of the task and library | Direct control with no ranking service | Requires remembering what each skill covers |
-| Keyword search | A query over skill names and descriptions | Cheap, local candidate discovery | Synonyms and closely related procedures can be difficult to separate |
-| Load the whole library | Every skill's full instructions | Makes all procedures available immediately | Consumes context even when most procedures are irrelevant |
-| SkillRanker | Live session, workspace, roster, and local feedback | Ranks candidates and separately tests whether they fit | Fresh Jev evaluations require a network call and API credentials |
+| Manual selection | Your knowledge of the task and library | Direct control without a ranking service | Requires remembering each skill's coverage |
+| Keyword search | A query over names and descriptions | Cheap local discovery | Synonyms and adjacent procedures can be hard to distinguish |
+| Load every skill | The full library's instructions | Makes every procedure available immediately | Consumes context regardless of relevance |
+| SkillRanker | Exact session, visible roster, and explicit constraints | Evaluates candidates and can abstain | Fresh Jev evaluations require authorized network access |
 
-`sr` complements a skill manager. It chooses what to consult; the agent remains
-responsible for reading the chosen skill and following the user's instructions.
+SkillRanker recommends procedures. It does not execute skills, grant permissions,
+or override the agent's governing instructions.
 
 ## Installation
 
@@ -153,7 +154,7 @@ cd skillranker
 cargo install --locked --path . --bin sr
 ```
 
-Include the inline TUI with the `tui` feature:
+Include the inline TUI with its optional feature:
 
 ```bash
 cargo install --locked --path . --bin sr --features tui
@@ -168,362 +169,442 @@ cargo build --locked --release --bin sr
 
 ### Runtime setup
 
-Set `TYPESAFE_API_KEY` through your shell or secret manager. SkillRanker reads it
-from the environment; keep it out of project configuration and Git.
+Set `TYPESAFE_API_KEY` through your shell or secret manager. The
+[environment example](.env.example) lists the service settings. A local `.env`
+is ignored by Git; export its values into the process environment before running
+`sr`. Credentials alone do not enable remote transmission.
 
 | Component | Role |
 |---|---|
 | TypeSafe API key | Authenticates fresh Jev evaluations |
-| Local `SKILL.md` files | Supply the procedures available to the agent |
-| [cass](https://github.com/Dicklesworthstone/coding_agent_session_search) | Discovers and exports sessions across agent harnesses; optional with explicit transcript input |
-| [meta_skill](https://github.com/Dicklesworthstone/meta_skill) (`ms`) | Optional indexed roster, search, and feedback integration |
+| Network opt-in | `--allow-network` for a run, or `network.enabled` in trusted user configuration |
+| Visible skill inventory | Harness-resolved skills or an explicit roster file |
+| Session input | Claude hook, normalized context, supported native transcript, or optional cass export |
+| [cass](https://github.com/Dicklesworthstone/coding_agent_session_search) | Optional archive discovery and access across coding-agent formats |
 
-There is no embedding model or local inference server to download for ranking.
+`sr` does not require `ms`, a local inference server, or an embedding model.
+The primary local platform scope is Linux and macOS. Consult
+`sr capabilities --json` for the adapters, events, and optional features in a build.
 
 ## Quick Start
 
-1. **Check the environment.** Run `sr doctor` to inspect credentials and the
-   available session and roster integrations.
-2. **Inspect the roster.** Run `sr roster --json` from the project where your
-   agent is working. Confirm that names, descriptions, and paths are useful.
-3. **Inspect the payload.** Run `sr --dry-run` to review the redacted context and
-   wide-pass questions before sending anything.
-4. **Get a ranking.** Run `sr --json`, or use `--transcript PATH` to choose an
-   exact conversation.
-5. **Wire the hook.** Run `sr install-hook claude`, `sr install-hook codex`, or
-   `sr install-hook omp` for the corresponding harness integration.
-6. **Review behavior.** Use `sr stats --since 7d --by-skill` before changing
-   thresholds. Use `sr calibrate` once enough labeled turns have accumulated.
+1. **Check the environment.** Run `sr doctor --json` and inspect the supported
+   interfaces with `sr capabilities --json`. Neither needs a network key.
+2. **Check the roster.** Run `sr roster --json` in the agent's workspace.
+   Confirm that candidates are loadable, not merely present somewhere on disk.
+3. **Choose the session.** Supply `--context FILE`,
+   `--transcript FILE --harness claude_code`, or `--session PATH` for cass.
+   Automatic discovery must resolve one unambiguous session.
+4. **Preview and rank.** Use `--dry-run` to inspect the redacted wide payload,
+   then `--allow-network --json` for a fresh evaluation.
+5. **Try the hook in shadow mode.** Preview and apply `sr install-hook claude`.
+   Shadow mode records observations without adding suggestions to agent context.
+6. **Enable advisory output deliberately.** Set `hook.mode = "advisory"` in
+   trusted user configuration after reviewing the integration and its behavior.
 
 ## Command Reference
 
-Bare `sr` is equivalent to `sr rank`. On a TTY, it prints a compact table;
-otherwise, JSON is the default. The interactive TUI requires `sr tui` or `--tui`.
+Bare `sr` is equivalent to `sr rank`: a table on a TTY, JSON otherwise. It does
+not start a TUI. Source flags are mutually exclusive, and piped stdin is consumed
+only by an explicit input mode.
+
+### Ranking and inspection
 
 | Command | Purpose | Example |
 |---|---|---|
-| `sr rank` | Rank for the next step | `sr rank --json` |
-| `sr --hook --format hook` | Read a harness hook payload from stdin and emit recommendation context | `sr --hook --format hook < scratch/hook.json` |
-| `sr tui` | Open the inline ranking display | `sr tui --messages 12` |
-| `sr roster` | Inspect the discovered skill records | `sr roster --json` |
-| `sr stats` | Report suggestion and observed-load metrics | `sr stats --since 7d --by-skill` |
-| `sr calibrate` | Fit gate and fit thresholds from labeled history | `sr calibrate` |
-| `sr doctor` | Inspect environment and integrations | `sr doctor` |
-| `sr doctor --descriptions` | Analyze confused skill pairs and description quality | `sr doctor --descriptions` |
-| `sr gaps` | Group requests for which no skill fit | `sr gaps` |
-| `sr install-hook <harness>` | Install the harness integration | `sr install-hook claude` |
-| `sr capabilities --json` | Print the machine-readable command contract | `sr capabilities --json` |
+| `sr rank` | Rank the next step | `sr rank --allow-network --json` |
+| `sr rank --context FILE` | Read normalized context; `-` means stdin | `sr rank --context scratch/context.json --dry-run` |
+| `sr rank --transcript FILE --harness NAME` | Read a supported native transcript | `sr rank --transcript scratch/session.jsonl --harness claude_code --offline` |
+| `sr rank --session PATH` | Export an exact session through cass | `sr rank --session scratch/session.jsonl --allow-network` |
+| `sr hook claude` | Handle the Claude prompt-hook protocol | `sr hook claude --shadow` |
+| `sr roster --json` | Inspect visibility, overrides, records, and exclusions | `sr roster --json` |
+| `sr doctor --json` | Inspect local configuration and readiness | `sr doctor --json` |
+| `sr capabilities --json` | Describe commands, schemas, features, limits, and exits | `sr capabilities --json` |
+| `sr tui` | Open the inline viewer | `sr tui` |
+
+### Hooks, feedback, and analysis
+
+| Command | Purpose | Example |
+|---|---|---|
+| `sr install-hook claude` | Preview a managed hook settings change | `sr install-hook claude --apply` |
+| `sr uninstall-hook claude` | Preview removal of the managed entry | `sr uninstall-hook claude --apply` |
+| `sr stats` | Report observation and operational metrics | `sr stats --since 7d --by-skill` |
+| `sr observe` | Reconcile structured load events | `sr observe --session scratch/session.jsonl` |
+| `sr feedback` | Record an explicit usefulness judgment | `sr feedback EVENT_ID --skill SKILL_ID --verdict useful` |
+| `sr eval` | Evaluate a labeled dataset | `sr eval --dataset scratch/evaluation.json` |
+| `sr calibrate` | Report a candidate threshold configuration | `sr calibrate --evaluation scratch/report.json` |
+| `sr doctor --descriptions` | Check description quality locally | `sr doctor --descriptions` |
+| `sr gaps` | Report suspected coverage gaps | `sr gaps` |
+| `sr ledger prune` | Preview retention cleanup | `sr ledger prune --before 2026-09-01` |
+| `sr ledger clear` | Preview clearing local history | `sr ledger clear` |
+
+`--apply` performs a previewed hook, calibration, or ledger mutation. Calibration
+consumes a labeled evaluation artifact; it does not silently change project
+settings after a number of observed loads. Description audits use the network
+only with an explicit online request and network authorization.
 
 ### Ranking controls
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--messages N` | `12` | Number of recent messages to consider |
-| `--budget CHARS` | `12000` | Context compaction budget; the latest request is preserved |
-| `--top K` | `5` | Maximum number of ranked skills to return |
-| `--shortlist M` | `8` | Candidates carried from the wide pass to the rerank |
-| `--gate F` | `0.30` | Minimum overall need for a skill before reranking |
-| `--fits F` | `0.30` | Minimum fit before a candidate is marked weak |
-| `--overflow prefilter\|chunk` | `prefilter` | Strategy for rosters larger than 255 entries |
-| `--timeout MS` | `3000` | Jev-stage deadline, including retries |
-| `--hook-top N` | `1` | Hook recommendation count; the adaptive policy can name three when the leading scores are close |
-| `--transcript PATH` | Automatic | Read a specific transcript |
-| `--roster PATH` | Discovered sources | Supply a roster JSON file |
-| `--json` | Automatic off-TTY | Emit structured JSON |
-| `--format hook` | Off | Emit the short recommendation block |
-| `--tui` | Off | Use the inline terminal display |
-| `--no-cache` | Off | Bypass ranking reuse |
-| `--no-ledger` | Off | Disable ledger participation for this invocation |
-| `--no-tools` | Off | Omit tool results from the outgoing context |
-| `--explain` | Off | Include gates, distributions, and score contributions |
-| `--dry-run` | Off | Inspect redacted request payloads without sending them |
+| `--messages N` | `12` | Recent logical messages |
+| `--budget-chars N` | `12000` | Rendered context budget, including the latest request |
+| `--top K` | `5` | Maximum eligible suggestions returned |
+| `--shortlist M` | `8` | Real candidates admitted to the rerank |
+| `--gate F` | `0.30` | Overall need threshold |
+| `--fits F` | `0.30` | Minimum candidate fit |
+| `--timeout-ms N` | `3000` | Whole-invocation deadline |
+| `--roster FILE` | Harness discovery | Replace discovery with an explicit inventory |
+| `--require-skill ID` | None | Resolve an explicit required skill; repeatable |
+| `--latest` | Off | Explicitly choose the newest discovered session |
+| `--no-tools` | Off | Remove tool arguments and results from outgoing context |
+| `--no-cache` | Off | Disable response-cache reads and writes |
+| `--no-ledger` | Off | Disable observations, labels, and personalization |
+| `--no-persist` | Off | Disable all persistent state, including cache, cursors, and locks |
+| `--offline` | Off | Guarantee zero network calls |
+| `--allow-network` | Off | Authorize network evaluation for this invocation |
+| `--explain` | Off | Include distributions, exclusions, truncation, and score contributions |
+| `--dry-run` | Off | Preview the redacted request without network or persistence effects |
 
-An explicit `--hook-top 1` keeps hook output to one skill. Without an explicit
-override, the adaptive policy can expand to three when the top two scores are
-within `0.10`. Ranking output still defaults to five candidates.
+Sizes satisfy `1 ≤ K ≤ M ≤ 32`; fewer available candidates is normal. Parsing
+is strict, with documented aliases only. Invalid or conflicting privacy flags
+produce an error rather than being silently corrected.
 
-Common argument variations, such as `--top_k` for `--top`, are normalized with a
-note on stderr. Machine output stays parseable.
+An explicit chunk-overflow experiment uses bounded groups and reduction rounds.
+It has separate request limits and availability in the capabilities contract;
+the normal overflow policy uses local prefiltering.
 
 ### JSON output
 
-Illustrative result for a roster with two shortlisted skills:
+This illustrative result has two eligible candidates. The score arithmetic uses
+`w_fit = 1`, with priors and phase weighting disabled; timing and usage are examples.
 
 ```json
 {
+  "schema_version": 1,
+  "event_id": "example-event-001",
+  "decision": "ranked",
+  "reason": "eligible-candidates",
   "harness": "claude_code",
-  "workspace": "/work/example",
+  "context_quality": "complete",
+  "roster": {
+    "total": 2,
+    "eligible": 2,
+    "wide_candidates": 2,
+    "shortlist": 2,
+    "partial": false,
+    "retrieval": "full"
+  },
   "needs_skill": 0.74,
-  "confidence": 0.81,
+  "choice_confidence": 0.81,
+  "none_probability": 0.10,
   "phase": "debugging",
-  "stuck": 0.62,
   "skills": [
     {
       "rank": 1,
+      "skill_id": "s_01",
       "name": "rust-test-triage",
-      "score": 0.76,
-      "probability": 0.72,
-      "wide_probability": 0.65,
-      "fits": 0.83,
-      "weak": false,
-      "path": ".claude/skills/rust-test-triage/SKILL.md"
+      "invocation_name": "rust-test-triage",
+      "rank_score": 0.888889,
+      "rerank_probability": 0.60,
+      "wide_probability": 0.55,
+      "fits": 0.80,
+      "path": ".claude/skills/rust-test-triage/SKILL.md",
+      "content_hash": "example-content-digest-01"
     },
     {
       "rank": 2,
+      "skill_id": "s_02",
       "name": "rust-code-review",
-      "score": 0.24,
-      "probability": 0.28,
+      "invocation_name": "rust-code-review",
+      "rank_score": 0.111111,
+      "rerank_probability": 0.30,
       "wide_probability": 0.35,
-      "fits": 0.54,
-      "weak": false,
-      "path": ".claude/skills/rust-code-review/SKILL.md"
+      "fits": 0.50,
+      "path": ".claude/skills/rust-code-review/SKILL.md",
+      "content_hash": "example-content-digest-02"
     }
   ],
-  "cache_hit": false,
-  "usage": { "input_tokens": 2891, "output_tokens": 71 },
-  "elapsed_ms": 412
+  "omitted_rank_mass": 0.0,
+  "cache": { "hit": false, "age_ms": null, "stale": false },
+  "model": { "requested": "jev-latest", "returned": "example-model-revision" },
+  "usage": {
+    "requests": 2,
+    "http_attempts": 2,
+    "input_tokens": 6400,
+    "output_tokens": 480,
+    "unknown_usage_attempts": 0
+  },
+  "persistence": "recorded",
+  "warnings": [],
+  "elapsed_ms": 720
 }
 ```
 
-The numbers above demonstrate the output shape; they are not a benchmark.
-
-| Field | Interpretation |
+| Decision | Meaning |
 |---|---|
-| `wide_probability` | Probability assigned by the broad roster comparison |
-| `probability` | Probability assigned by the rerank Choice |
-| `fits` | Independent estimate that this skill matches the next step |
-| `score` | Local softmax score after fit, priors, phase, and session adjustments |
-| `confidence` | One confidence value for the rerank distribution |
-| `needs_skill` | Combined gate value for whether a procedure would help |
-| `weak` | The candidate falls below the configured fit threshold |
+| `ranked` | Up to K eligible suggestions from a successful evaluation |
+| `explicit` | Locally resolved user requests, with no invented model certainty |
+| `abstain` | Valid input and policy produced no advisory recommendation |
+| `unavailable` | An operational, input, privacy, or coverage problem prevented a decision |
 
-Scores normalize over the shortlist. Returning only its top five does not
-renormalize that slice. A high relative probability can coexist with a low
-absolute fit, and neither a blended score nor distribution confidence is a
-guarantee of task success.
+`choice_confidence` describes the rerank distribution. `fits` is a model estimate
+of suitability. `rank_score` is a relative local score over eligible candidates.
+They are different quantities. Top-K truncation preserves the original eligible
+normalization and reports omitted mass. Fields from an unexecuted stage are
+`null`, not fabricated zeros.
 
 ### Exit codes
 
 | Code | Meaning |
 |---|---|
-| `0` | Success, including a valid determination that no skill applies |
-| `2` | Usage or configuration error |
-| `3` | No session found |
-| `4` | API or network failure after the retry policy |
-| `5` | Empty skill roster |
-| `6` | Deadline exceeded without a reusable cached ranking |
+| `0` | Ranked, explicit, valid abstention, or successful inspection |
+| `2` | Invalid usage or configuration |
+| `3` | Missing or ambiguous session |
+| `4` | Provider, authentication, or network failure |
+| `5` | Empty, unusable, or unresolved requested roster |
+| `6` | Overall deadline exhausted |
+| `7` | Malformed, oversized, or unsupported input |
+| `8` | Network transmission disallowed |
+| `9` | Required storage or administrative mutation failed |
+| `10` | Invalid structured provider response |
 
-Errors use an envelope with `code`, `kind`, `message`, `hint`, and `retryable`.
-For example:
+JSON errors include `schema_version`, `decision: "unavailable"`, and an `error`
+object with `code`, kebab-case `kind`, `message`, `hint`, and `retryable`.
+Ordinary ranking can succeed with a storage warning; an explicit feedback write
+cannot claim success when its required write failed.
 
-```json
-{
-  "error": {
-    "code": 3,
-    "kind": "no-session",
-    "message": "No agent session was found for this workspace.",
-    "hint": "Pass --transcript PATH or invoke sr from a harness hook.",
-    "retryable": false
-  }
-}
-```
+The dedicated hook maps recommendation failures to quiet exit-zero behavior so
+it never blocks the agent. CLI failures retain their meaningful exit codes.
 
 ## Configuration
 
-Configuration resolves from lowest to highest priority:
+Ordinary settings resolve from lowest to highest priority:
 
 ```text
 built-in defaults
-  -> ~/.config/sr/config.toml
-  -> .sr/config.toml
-  -> SR_* environment variables
+  -> trusted user configuration
+  -> allowlisted workspace configuration
+  -> recognized SR_* environment variables
   -> command-line flags
 ```
 
-The principal defaults are 12 messages, a 12,000-character context budget, a
-five-result output, an eight-candidate shortlist, `0.30` gate and fit thresholds,
-and a three-second Jev budget. Flags are the most direct way to override a
-single run:
+On Linux, user configuration falls back to `~/.config/sr/config.toml`; project
+configuration is `.sr/config.toml` at the workspace root. Other platforms use
+native configuration directories.
 
-```bash
-sr --messages 8 --budget 8000 --top 3 --gate 0.45 --json
-sr --overflow chunk --shortlist 12 --timeout 5000 --json
-sr --no-cache --no-ledger --transcript scratch/session.jsonl --json
+Trusted user settings for an advisory hook include:
+
+```toml
+[network]
+enabled = true
+
+[hook]
+mode = "advisory"
 ```
 
-| Environment variable | Purpose |
-|---|---|
-| `TYPESAFE_API_KEY` | Bearer credential for TypeSafe |
-| `TYPESAFE_ENDPOINT` | Override the TypeSafe API base URL |
-| `SR_MODEL` | Model selection; default `jev-latest` |
-| `SR_*` | Environment overrides for ranking configuration |
+Without those choices, remote transmission is disabled and the hook runs in
+shadow mode. `--allow-network` can authorize a single CLI evaluation.
 
-`sr calibrate` writes project-specific threshold choices to `.sr/config.toml`.
-That file can be versioned when its settings should be shared. The API key,
-transcripts, local cache, and ledger must remain private.
+| Variable | Purpose |
+|---|---|
+| `TYPESAFE_API_KEY` | TypeSafe bearer credential; never serialized or stored in project config |
+| `TYPESAFE_ENDPOINT` | Trusted HTTPS endpoint override with origin-scoped credentials |
+| `SR_MODEL` | Requested model; default `jev-latest` |
+| Recognized `SR_*` settings | Ordinary configuration overrides described by capabilities |
+
+Workspace configuration may tune bounded ranking values and exclusions. It
+cannot authorize networking, change endpoints/proxies, supply credentials,
+expand transcript access, disable redaction, or enable raw retention. Unknown
+keys and invalid values are reported before I/O.
 
 ## How Ranking Works
 
-### 1. Capture the current state
+### 1. Establish the exact context
 
-Context arrives through a hook payload, `cass`, or an explicit transcript file.
-`cass` supplies session discovery and normalized exports; direct adapters cover
-Claude Code, Codex, the pi/omp family, and Grok transcript formats.
+The Claude hook uses the incoming prompt as the current request, even when the
+transcript has not yet recorded it. Context, cursors, and feedback belong to a
+specific workspace, session, and agent branch. An explicit source that fails does
+not silently fall through to another conversation.
 
-The context window drops thinking blocks, summarizes tool calls, caps tool-result
-heads at 200 characters, and merges consecutive tool calls from one assistant
-turn. The latest user request is kept intact and also supplied as a dedicated
-field. Secret redaction runs before the payload leaves the machine.
+Native JSONL reads process complete records within a bounded tail. Replacement,
+truncation, compaction, and incomplete final lines are handled explicitly. An
+empty first transcript can still yield prompt-only context; malformed existing
+history is a different condition.
 
-Local signals add language and framework markers, relevant tools on `PATH`,
-changed files, and the current branch. Session signals identify loaded skills,
-ignored suggestions, and task boundaries.
+Windowing drops reasoning blocks, binary/media payloads, and prior `sr` advice.
+Tool summaries preserve invocation/result association and useful failure lines.
+The latest request gets budget priority, with explicit head/tail truncation for
+oversized input. Redaction runs on complete bounded fields before truncation,
+then on the assembled provider payload.
 
-### 2. Discover the available skills
+Project signals use language/framework filenames, allowlisted tools on a trusted
+PATH, and bounded repository-relative dirty paths. Absolute workspace paths and
+branch names remain local by default.
 
-| Priority | Source |
-|---|---|
-| 1 | Project `.claude/skills`, `.codex/skills`, `.agents/skills`, and `skills`, walking from the working directory to the Git root |
-| 2 | The indexed roster from `ms list --robot`, when available |
-| 3 | User `~/.claude/skills`, `~/.codex/skills`, and `~/.agents/skills` |
-| 4 | Sandbox `/mnt/skills/public`, `/mnt/skills/user`, and `/mnt/skills/examples` |
-| 5 | An explicit roster file supplied with `--roster` |
+### 2. Resolve what is loadable
 
-Each record retains its name, source, path, short and full descriptions, body
-excerpt, and optional tags and phases. YAML frontmatter takes precedence over
-the title and first-paragraph fallback. Short descriptions are capped at 160
-characters; rerank body excerpts are capped at 700.
+An explicit `--roster FILE` replaces discovery. Otherwise, a harness inventory
+or its visibility adapter determines roots, overrides, plugins, and load targets.
+The presence of a directory does not mean the selected harness loads its skills.
+Generic file mode uses explicitly configured roots and exposes uncertain visibility.
 
-Discovery removes duplicate records and preserves distinct same-name skills
-under source-qualified keys. Stable source-priority/name ordering makes payloads
-diffable. Content hashing invalidates cached rankings when the roster changes.
+Each skill has an opaque stable ID, its actual invocation name, display name,
+source, content hash, load target, metadata, and visibility. Same-name skills
+remain distinct where the harness permits; shadowed or ambiguously invocable
+entries are excluded from hook suggestions.
 
-For more than 255 entries, `prefilter` selects candidates using BM25 over the
-request and project signals. `chunk` evaluates bounded groups in parallel and
-carries each group's leading candidates into the rerank, avoiding lexical
-exclusion at the cost of additional requests.
+| Resource | Default bound |
+|---|---:|
+| Hook stdin | 1 MiB |
+| Transcript tail | 2 MiB / 2,000 records |
+| One transcript record | 256 KiB |
+| cass stdout | 8 MiB |
+| Skill file / frontmatter | 256 KiB / 16 KiB |
+| Discovery | 10,000 files / 32 MiB parsed bytes |
+| Wide description | 160 characters |
+| Rerank description / body excerpt | 1,000 / 700 characters |
+| Serialized provider request / response | 96 KiB / 2 MiB |
 
-### 3. Ask broadly, then check closely
+Source snapshots supply both hashes and excerpts. Candidates are checked again
+before emission so a file changed during inference cannot remain an actionable
+stale recommendation.
 
-The wide request contains a Choice over the roster, three relevance gates, a
-phase Choice, and signals for a stuck agent or a new task. The combined gate is:
+### 3. Retrieve, then compare
+
+Explicit requirements are resolved from the complete visible roster first.
+They bypass probabilistic retrieval and cannot be vetoed by a low gate.
+
+For advisory ranking, in-memory BM25 narrows larger rosters to **254 real skills**.
+The 255th Choice entry is `__none__`. Retrieval uses the latest request plus
+bounded task and error context; a terse “continue” retains useful prior evidence.
+
+The wide pass combines a Choice, phase distribution, and three oriented gates:
 
 ```text
 needs_skill = mean(
-    acts_on_system,
-    documented_procedure,
-    1 - prose_suffices
+    specialized_method,
+    material_help,
+    1 - context_suffices
 )
 ```
 
-Below the gate threshold, `sr` reports that no skill applies and skips the second
-request. Otherwise, the top eight candidates proceed to a richer comparison,
-alongside one independent fit question per candidate.
+`needs_skill` is a heuristic score. Below the default `0.30` threshold, `sr`
+abstains without a rerank. The wording includes planning, analysis, writing, and
+explanation skills; acting on files is not a prerequisite for needing a method.
 
-These are typed evaluations through the [TypeSafe HTTP API](https://docs.typesafe.ai/api):
-Choice supplies a distribution over options; Noul supplies a yes/no probability.
-The client preserves the returned fields rather than parsing generated prose.
+When the gate passes, up to eight real candidates proceed to a detailed Choice
+with another none option and one fit Noul per candidate. The client uses the
+[TypeSafe HTTP API](https://docs.typesafe.ai/api), preserving typed answers and
+validating every requested option before scoring.
 
-### 4. Blend the evidence
+### 4. Apply eligibility and rank survivors
+
+A candidate is removed if it is excluded, unavailable, known loaded with unchanged
+content in the current context epoch, or below the fit threshold. If the none
+option then ties or exceeds the best surviving rerank probability, `sr` abstains.
+Local priors cannot reverse that decision.
+
+For each eligible candidate:
 
 ```text
-logit_i = log(p_rerank_i)
-        + w_fit     * logit(fits_i)
-        + w_prior   * log_prior_i
-        + w_phase   * phase_match_i
-        - w_loaded  * already_loaded_i
-        - w_ignored * ignore_count_i
+eps = 1e-6
+clip(x) = min(1 - eps, max(eps, x))
+log_odds(x) = ln(clip(x) / (1 - clip(x)))
 
-score_i = softmax(logit)_i
+utility_i = ln(clip(p_rerank_i))
+          + w_fit   * log_odds(fits_i)
+          + w_prior * prior_delta_i
+          + w_phase * phase_match_i
+
+rank_score_i = softmax(utility)_i
 ```
 
-| Coefficient | Default |
-|---|---:|
-| `w_fit` | `1.0` |
-| `w_prior` | `0.5` |
-| `w_phase` | `0.3` |
-| `w_loaded` | `3.0` |
-| `w_ignored` | `0.7` |
+Defaults are `w_fit = 1.0`, `w_prior = 0.0`, and `w_phase = 0.0`.
+Priors and phase weighting are optional evaluated policy choices. A skill is
+not penalized just because a previous suggestion went unobserved. After
+compaction, uncertain loaded-state evidence cannot suppress a skill indefinitely.
 
-The arithmetic uses bounded probabilities and a stable softmax. Already-loaded
-skills receive a strong demotion; repeated ignores accumulate a smaller one.
-Candidates below the fit threshold remain visible as `weak` in JSON. When all
-returned candidates are weak, hook output says that no skill applies.
+## Local Feedback And Calibration
 
-## Learning From Each Turn
+SkillRanker keeps observations and judgments separate.
 
-The local ledger lives at `~/.local/share/sr/ledger.db`. It records rankings,
-gates, phase, context and roster identities, and the skill loads observed after
-each suggestion.
-
-| Mechanism | Result |
+| Record | What it establishes |
 |---|---|
-| Transcript feedback | Match a suggestion to subsequent skill-loading tool events |
-| Usage statistics | Hit@1, hit@5, suggestion-without-load rate, and Brier score against observed loads |
-| Threshold calibration | After at least 200 labeled turns, sweep gate/fit thresholds against the configured loss |
-| Per-skill priors | Smooth sparse observations with a Beta(1, 4) prior; specialize by phase after at least 10 observations in a cell |
-| meta_skill bridge | Share observed outcomes and reuse its arm weights instead of maintaining two competing models |
-| Confusion mining | Compare wide-pass and rerank winners to find descriptions that do not distinguish neighboring skills |
-| Coverage gaps | Group requests with strong overall need and uniformly weak candidate fits |
+| Generated ranking | The selector produced a result |
+| Successful stdout write | An emission occurred; harness consumption is still separate |
+| Load attempt | A structured tool tried to load a resolved skill |
+| Observed successful load | The adapter saw a successful load of that skill version |
+| Not observed / unobservable / censored | The available record cannot establish an outcome |
+| Explicit usefulness judgment | An assessor labeled a particular event and skill version |
+
+`sr stats` reports adoption, observation coverage, censoring, latency, errors,
+abstentions, cache reuse, and actual provider usage, with denominators. Those
+operational metrics are not labeled task success or recommendation precision.
 
 ```bash
-sr stats
+sr observe --session scratch/session.jsonl
 sr stats --since 7d --by-skill
-sr calibrate
-sr doctor --descriptions
-sr gaps
+sr feedback EVENT_ID --skill SKILL_ID --verdict useful
+sr eval --dataset scratch/labeled-cases.json
+sr calibrate --evaluation scratch/evaluation-report.json
+sr calibrate --evaluation scratch/evaluation-report.json --apply
 ```
 
-An observed load is a behavioral signal. It does not prove that the loaded skill
-was correct or caused a better outcome. In particular, claims about fixed or
-broken turns require outcome evidence beyond the load event. Missing or
-incomplete transcript observations must remain distinguishable from a confirmed
-decision not to load a skill.
+Calibration uses independently judged positive, no-match, and near-miss cases,
+with session/task-family separation and held-out evaluation. The objective
+penalizes wrong suggestions, needless suggestions, and missed useful suggestions;
+always staying silent is not a successful policy.
 
-Description reports show confused pairs and the short window a harness index
-displays. They help the maintainer improve the descriptions; ranking does not
-silently rewrite skill files.
+Experimental priors use centered, shrunk Beta(1, 4) estimates from judged
+usefulness. They are disabled by default and can only reorder eligible candidates.
+A fixed observation count alone never enables learning.
+
+Description diagnostics flag missing metadata, duplicate visible prefixes, and
+rerank disagreements. Gap reports identify **suspected** missing coverage while
+showing retrieval and context quality. Text clustering requires separately enabled
+retention of redacted excerpts; metadata cannot reconstruct a private request.
+Neither command edits skills or invokes a skill manager.
 
 ## Agent Hooks
 
-The hook contract is a short block of context:
-
-```text
-<skill_relevance>
-Relevant to the current request: rust-test-triage. Ignore this if it does not fit what the user actually asked for.
-</skill_relevance>
-```
-
-When no candidate qualifies, the block explicitly says no skill applies. A
-successful abstention is different from a network error, an empty roster, or a
-missing session.
-
-For Claude Code, the integration adds a `UserPromptSubmit` command in
-`.claude/settings.json`:
+The Claude Code integration uses `UserPromptSubmit` and the dedicated
+`sr hook claude` protocol boundary. Advisory output uses the harness's
+`hookSpecificOutput` envelope:
 
 ```json
 {
-  "hooks": {
-    "UserPromptSubmit": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "sr --hook --format hook"
-          }
-        ]
-      }
-    ]
+  "hookSpecificOutput": {
+    "hookEventName": "UserPromptSubmit",
+    "additionalContext": "Suggested skill for the next step: rust-test-triage. Use it only if it fits the user's request and current instructions."
   }
 }
 ```
 
-`sr install-hook claude` merges this entry with existing settings. The Codex and
-omp integrations use their harness-specific entry points. Hook installation
-preserves unrelated settings and avoids duplicate entries on repeated runs.
+The normal hook names at most one locally validated skill. Multiple explicitly
+requested skills remain user requests, not adaptive top-three suggestions.
+A valid abstention may offer a short no-additional-skill message. Operational
+failures and incomplete coverage produce no injected text.
 
-The agent treats the recommendation as advice. Explicit user requests and the
-actual contents of a skill remain authoritative.
+**The hook never blocks the agent on a recommendation failure.** It emits no
+blocking decision fields and translates errors into empty stdout, a sanitized
+stderr diagnostic, and exit zero. Shadow mode suppresses both suggestions and
+abstention text while retaining permitted local observations.
+
+```bash
+sr install-hook claude                  # Preview the exact settings change
+sr install-hook claude --apply          # Merge the managed entry with a backup
+sr hook claude --shadow                 # Explicitly keep the hook observational
+sr uninstall-hook claude --apply        # Remove only the managed entry
+```
+
+Installation uses a trusted absolute executable path, escaped arguments, and a
+harness timeout above the ranker's deadline. Repeated installation is idempotent;
+unrelated settings are preserved, and concurrent or malformed edits are reported.
+
+Other harnesses can supply versioned normalized context through
+`sr rank --context FILE`. Native integration support is enumerated by capabilities;
+a post-turn notification is not interchangeable with a pre-turn recommendation hook.
 
 ## Inline TUI
 
@@ -531,167 +612,191 @@ actual contents of a skill remain authoritative.
 sr tui
 ```
 
-The FrankenTUI display occupies nine terminal rows and preserves scrollback.
-Five candidate rows show rank, name, probability, fit, and source. The footer
-shows overall need, phase, and whether the agent appears stuck.
+The optional FrankenTUI display uses an inline layout of roughly nine rows in a
+dedicated pane or terminal. It shows relative rank score, fit, source, freshness,
+and decision status. Small terminals use fewer rows and readable text.
 
 | Key | Action |
 |---|---|
-| `1`–`5` | Select a skill and emit its path or the corresponding `ms load` command |
-| `r` | Re-rank immediately |
-| `w` | Toggle transcript watch mode, debounced by 1.5 seconds |
-| `e` | Expand or collapse the full distribution |
-| `q` | Quit |
+| `1`–`5` | Select a locally resolved skill target |
+| `r` | Request a refresh |
+| `w` | Toggle bounded transcript watch |
+| `e` | Show distributions and supporting evidence |
+| `q` | Exit and restore terminal state |
 
-The TUI presents the same ranking as JSON and hook output. Rendering does not
-introduce a separate scoring policy.
+Selection never invokes a loader or shell command. Machine-readable selection
+output stays separate from terminal rendering. Watch mode permits one active
+ranking per session, coalesces changes, and enforces a minimum five-second interval.
+A superseded result cannot replace a newer generation's display.
 
 ## Architecture
 
 ```mermaid
 flowchart TD
-    A[Hook, cass, or transcript] --> D[Compact and redact state]
-    B[Discover and hash roster] --> E[Assemble request]
-    C[(Local ledger)] --> E
-    D --> E
-    E --> K{Valid cache entry?}
-    K -->|yes| O[Emit JSON, hook, table, or TUI]
-    K -->|no| W[Wide Choice and relevance gates]
-    W --> G{Skill needed?}
-    G -->|no| N[Emit no-skill result]
-    G -->|yes| R[Rerank shortlist and evaluate fits]
-    R --> S[Blend priors and session signals]
-    S --> O
-    O --> C
-    N --> C
-    C --> F[Observe subsequent skill loads]
-    F --> C
+    A[Exact session and trusted configuration] --> B[Capture context and visible roster]
+    B --> C[Normalize, redact, budget, resolve requirements]
+    C -->|explicit request| X[Locally resolved explicit result]
+    C -->|advisory| K{Exact valid cache?}
+    K -->|hit| P[Apply current eligibility and policy]
+    K -->|miss| W[Wide Choice with none and gates]
+    W -->|low need| N[Abstain]
+    W -->|continue| R[Detailed rerank with none and fits]
+    R --> P
+    P --> O[JSON, table, hook, or TUI]
+    W -->|failure| U[Unavailable or quiet hook fallback]
+    R -->|failure| U
+    X --> O
+    N --> O
+    O --> L[(Bounded local metadata)]
+    L --> F[Observe loads and record explicit judgments]
+    F --> E[Held-out evaluation and optional calibration]
 ```
 
-| Module | Responsibility |
+| Component | Responsibility |
 |---|---|
-| `context/` | Hook, cass, and direct transcript adapters; windowing, redaction, and project signals |
-| `roster/` | Discovery, frontmatter, meta_skill integration, and overflow handling |
-| `jev/` | Typed HTTP requests and responses, question builders, retry policy, and ranking math |
-| `ledger/` | Durable observations, priors, calibration, confusions, and gap analysis |
-| `output/` | JSON, table, hook, and optional TUI presentation |
-| `cache.rs` | Context and roster identity, freshness, and ranking reuse |
+| `context/` | Exact source selection, Claude and normalized adapters, optional cass, windowing, and project signals |
+| `privacy/` | Local redaction and trusted network, root, field, and persistence policy |
+| `roster/` | Harness visibility, bounded parsing, stable identities, and local BM25 |
+| `jev/` | Asupersync HTTPS, typed protocol validation, question builders, eligibility, and scores |
+| `ledger/` | SQLite transactions, observations, judgments, evaluation provenance, and optional priors |
+| `output/` | Versioned JSON, human table, Claude protocol, and optional TUI |
+| `cache.rs` | Separate request and decision fingerprints, TTL, and revalidation |
+| `hook_install.rs` | Managed configuration preview, apply, backup, and rollback |
 
-Asupersync owns concurrent context capture, roster discovery, and prior reads.
-The wide call and rerank are sequential because the second depends on the first.
-Chunked wide calls have bounded concurrency. Cancellation drains work before the
-run ends, and ledger writes commit atomically.
+One Rust package contains `sr` and reusable pure pipeline components. Asupersync
+owns task lifetimes, deadlines, HTTP/TLS, and deterministic lab replay. SQLite
+persistence uses `rusqlite` with bundled SQLite. FrankenTUI is optional.
 
-The default HTTP transport uses Asupersync. The `transport-ureq` feature provides
-a blocking transport alternative; it must respect the same deadline and response
-contract. FrankenTUI is isolated behind `tui`. No Tantivy index or embedding
-model is required for the in-memory overflow prefilter.
+Selected parsing and redaction code can be adapted from
+[meta_skill](https://github.com/Dicklesworthstone/meta_skill) with source provenance
+and license notices. SkillRanker does not invoke its CLI, link its application,
+read its private database, or write outcomes back to it.
 
 ## Privacy And Local State
 
-**Fresh ranking sends redacted session context and skill descriptions to
-TypeSafe.** The pipeline also includes workspace signals and session-level
-selection history. Redaction reduces accidental disclosure; it cannot promise
-to identify every piece of confidential text.
+**Fresh Jev evaluations send redacted context and skill excerpts to TypeSafe.**
+Networking requires a trusted setup choice. Project files cannot enable it just
+because an API key is present. `--offline` guarantees zero network requests and
+can use local explicit resolution or an exact valid cache entry.
 
-- `--dry-run` shows the outgoing redacted state and wide-pass questions without
-  sending a request. A rerank payload requires a known shortlist from a prior or
-  replayed wide response.
-- `--no-tools` omits tool results from the outgoing context.
-- `--no-ledger` disables local ledger participation for the run.
-- `--no-cache` forces a fresh evaluation; it is not an offline flag.
-- Credentials stay in the environment. The ledger and cache stay local.
+| Control | Effect |
+|---|---|
+| `--dry-run` | Preview exact redacted wide-request bytes; no network or persistence changes |
+| `--no-tools` | Remove tool arguments and results from provider context |
+| `--no-cache` | Disable cache reads and writes |
+| `--no-ledger` | Disable observations, judgments, and personalization |
+| `--no-persist` | Also disable persistent cache, cursors, locks, and other local state |
+| `--offline` | Disallow all network activity |
 
-Local learning creates no cross-user telemetry stream. Optional meta_skill
-outcomes are a separate, explicit integration. Diagnostic payloads and coverage
-examples can still contain private information even after redaction; review
-them before including them in a public issue.
+A second-stage dry run requires explicit shortlist IDs or a validated recorded
+wide answer. It cannot know a model's shortlist without that evidence.
+
+Local data uses platform directories, including `$XDG_DATA_HOME/sr` on Linux
+with `~/.local/share/sr` as the fallback. Database and cache files are owner-only.
+Raw transcripts and request bodies are not retained by default. Event metadata
+has a default 30-day retention policy; response-cache entries expire after at
+most ten minutes. Retention cleanup is an explicit ledger operation outside the hook.
+
+Requests use HTTPS with credential-scoped endpoints and redirects disabled.
+Redaction covers outgoing roster excerpts as well as conversation fields, but
+it cannot identify every piece of confidential prose. Review dry-run output
+before sharing it. There is no cross-user telemetry or remote feedback sink.
 
 ## Performance
 
-The hook latency budget is **400–600 ms for a normal uncached turn**, with a
-default **three-second deadline for the Jev stage**. These are engineering
-targets, not a promise about a remote service or a cold session archive.
+The principal performance contract is a **three-second whole-invocation
+budget**, beginning at process entry and reserving the final 200 ms for output
+and cleanup. The Claude harness timeout is initially four seconds.
 
-The main cost controls are structural:
+| Path | Engineering target |
+|---|---|
+| Exact cache hit | p95 at or below 100 ms |
+| Warm hook requiring the network | p50 at or below 600 ms; p95 at or below 1,500 ms |
+| Cold CLI or cass discovery | The same configurable deadline, with stage timings |
 
-- Compact descriptions in the wide pass; richer text only for the shortlist.
-- Concurrent independent input work; sequential dependent inference calls.
-- Skip the rerank when the overall gate says no skill is needed.
-- Reuse a valid ranking for unchanged effective state, with a ten-minute cache
-  lifetime and roster-content invalidation.
-- Retry `429` and `529` responses with bounded backoff inside the existing
-  deadline, rather than starting a new timeout for each retry.
+These targets are not remote-service guarantees or measured benchmark results.
+Process startup, cold TLS, roster size, discovery, and provider load all matter.
 
-Cold `cass` discovery, a large chunked roster, rate limiting, and changed session
-state can all increase latency. Cache reuse requires equivalent effective
-ranking inputs; an unchanged user message alone is not sufficient. Measurements
-must distinguish hook input from cold discovery and cache hits from fresh calls.
+Input capture and roster discovery overlap after identity is established.
+The two inference stages remain sequential. Low-need decisions skip the rerank.
+The normal budget is two logical requests and at most four HTTP attempts total;
+retries and `Retry-After` consume the same remaining deadline.
+
+Cache keys cover exact request inputs and current decision policy. New tool
+evidence, compaction, skill-content changes, exclusions, model/endpoint identity,
+and session changes can invalidate reuse. Stale results cannot drive hook output.
+Cache hits report zero new requests and tokens; unanswered attempts retain an
+unknown-usage marker rather than being counted as free.
 
 ## Troubleshooting
 
 | Symptom | Next step |
 |---|---|
-| No session found, exit `3` | Run from the agent's workspace, use the hook, or pass `--transcript PATH` |
-| Empty roster, exit `5` | Inspect the project and user skill directories with `sr roster --json`; check the explicit roster path if supplied |
-| Authentication or API error, exit `4` | Check `TYPESAFE_API_KEY` and `TYPESAFE_ENDPOINT` with `sr doctor`; inspect the structured error without printing credentials |
-| Deadline exceeded, exit `6` | Check network reachability and roster size; prefer hook context, use `prefilter`, or explicitly raise `--timeout` |
-| The wrong similarly named skill wins | Run `sr --explain --json` and `sr doctor --descriptions`; compare both descriptions and fit values |
-| Too many recommendations | Review `sr stats`, raise `--gate` or `--fits`, and pin `--hook-top 1` |
-| A useful skill never appears | Inspect `sr roster --json`; try `--overflow chunk` to check for lexical prefilter misses |
-| Terminal interface unavailable | Build with `--features tui`, or use the normal table/JSON output |
+| Missing or ambiguous session, exit `3` | Select `--context`, `--transcript` with its harness, or an exact `--session`; use `--latest` only when that is your intent |
+| Empty or unusable roster, exit `5` | Inspect `sr roster --json` for visibility, shadowing, malformed metadata, and source failures |
+| Provider/authentication error, exit `4` | Inspect `sr doctor --json` and the sanitized error; check credentials without printing them |
+| Overall timeout, exit `6` | Inspect stage timings; prefer direct hook/context input or deliberately adjust `--timeout-ms` |
+| Unsupported input, exit `7` | Check `sr capabilities --json` and supply a supported adapter or normalized context |
+| Networking denied, exit `8` | Use `--offline`, or explicitly choose `--allow-network` or trusted user network configuration |
+| No visible hook suggestions | Check whether the hook is in shadow mode, networking is disabled, or the decision is unavailable/abstain |
+| A similar but wrong skill wins | Inspect `--explain`, provide a usefulness judgment, and review description and retrieval quality |
+| A known skill is missing | Check the selected harness's visibility and overrides; an explicit roster replaces discovery |
+| TUI unavailable | Build with `--features tui`, or use table/JSON output |
 
 ## Limitations
 
-- A fresh evaluation depends on TypeSafe. Cache reuse and local inspection do
-  not turn `sr` into an offline inference engine.
-- The candidate set bounds what can be recommended. A high-ranked near miss
-  cannot substitute for a missing skill.
-- Observed-load feedback measures agent behavior; proving task improvement
-  requires independently evaluated outcomes.
-- Lexical prefiltering can miss relevant skills. Chunking reduces that risk but
-  adds requests and still requires candidate selection before the final rerank.
-- Harness transcript formats and hook surfaces can change. Each adapter needs
-  fixtures tied to the format it actually consumes.
-- Redaction is fallible, and the latest request can exceed the nominal context
-  budget. Sensitive or unusually large inputs require deliberate handling.
-- Model aliases and calibrated priors can change rankings over time. Replay
-  tests use fixed responses and fixed local state for reproducibility.
+- Fresh inference depends on TypeSafe. Local inspection and response caching do
+  not make SkillRanker an offline model.
+- A roster's visibility and retrieval quality bound what can be recommended.
+  Low shortlist fit alone cannot prove that the full library lacks a useful skill.
+- Load observations are incomplete and affected by the suggestion itself.
+  Controlled, independently judged outcomes are needed for task-improvement claims.
+- Lexical retrieval can miss paraphrases and multilingual matches. Chunked
+  comparisons add cost and can still discard a correct candidate.
+- Native harness support requires its own verified event, visibility, prompt,
+  and delivery contract. Normalized-context input is the portable integration boundary.
+- Provider aliases can change, so cached responses and evaluations identify both
+  the requested model and returned identity/time range.
+- Redaction is fallible. Large or incomplete context carries truncation and
+  quality metadata rather than a claim that nothing important was omitted.
 
 ## FAQ
 
-**Does SkillRanker automatically execute the selected skill?**
-No. It recommends a skill or emits a path/load command. The agent decides
-whether to read it, subject to the user's instructions.
+**Does SkillRanker execute a skill?**
+No. It recommends or returns a locally resolved target. The agent remains in
+control of loading and execution under the user's instructions.
 
-**Why use two passes?**
-The wide pass compares the roster cheaply. The shortlist pass spends more text
-on the difficult distinctions and asks independent fit questions.
+**Can it veto a skill I explicitly asked for?**
+No. Explicit requests are resolved locally before probabilistic ranking. Missing
+or ambiguous requests are reported rather than replaced with a similar skill.
 
-**Why keep both `probability` and `fits`?**
-The first describes preference among candidates. The second tests applicability.
-A candidate can win a comparison even when none of the choices is appropriate.
+**Why include both a none option and fit questions?**
+The none option competes in the same distribution as the candidates. Fit questions
+independently estimate suitability. Both participate in the final eligibility policy.
 
-**Is `confidence` a per-skill probability?**
-No. It belongs to the entire rerank Choice distribution. Each skill keeps its
-own fit estimate and raw probability separately.
+**Is `rank_score` a probability of success?**
+No. It is a normalized relative score among eligible shortlist candidates. A lone
+survivor scores one without becoming certainly useful.
 
-**Do I need `cass` or meta_skill?**
-Both are optional when you provide transcript input and local skills. `cass`
-adds session discovery; meta_skill adds an indexed roster and shared feedback.
+**Does a popular skill automatically get recommended more?**
+No. Priors are disabled by default and use judged usefulness when enabled.
+Unobserved loads do not become automatic negative labels or ignore penalties.
 
-**Will it suggest a skill already loaded?**
-Loaded skills receive a strong score penalty. The evidence remains visible in
-`--explain`; the penalty is distinct from removing a skill from the roster.
+**Do I need cass or meta_skill?**
+Cass is optional for session archive access. Meta_skill is a source of selected
+reusable code, not a runtime dependency or feedback service.
 
-**Does it edit my skills to fix confusing descriptions?**
-No. `sr doctor --descriptions` reports the ambiguity so you can revise the
-descriptions deliberately.
+**Does `--no-ledger` make the run stateless?**
+No. It disables observations, labels, and personalization. Use `--no-persist` to
+also disable persistent cache, cursors, and coordination state.
 
-**Can it explain why Jev chose a skill?**
-`--explain` exposes numerical evidence and local score contributions. Jev's
-structured answers do not contain free-text reasoning, so `sr` does not invent
-such reasoning.
+**Can the hook stop my agent if TypeSafe is unavailable?**
+No. The dedicated hook produces a quiet non-blocking fallback. The ordinary CLI
+still reports the failure with a structured error and meaningful exit code.
+
+**Can it explain the model's reasoning?**
+`--explain` exposes returned distributions, exclusions, and score contributions.
+It does not invent free-text reasoning absent from the provider response.
 
 ## About Contributions
 
@@ -705,10 +810,10 @@ unmodified MIT. License identifier: `LicenseRef-MIT-OpenAI-Anthropic-Rider`.
 
 ## See Also
 
-- [Comprehensive plan](COMPREHENSIVE_PLAN_TO_DESIGN_SKILLRANKER.md): question design, ranking math, and build order.
-- [AGENTS.md](AGENTS.md): repository rules and engineering contracts.
+- [Comprehensive plan](COMPREHENSIVE_PLAN_TO_DESIGN_SKILLRANKER.md): design, contracts, and acceptance criteria.
+- [AGENTS.md](AGENTS.md): engineering rules and verification obligations.
 - [CHANGELOG.md](CHANGELOG.md): repository history.
 - [Asupersync](https://github.com/Dicklesworthstone/asupersync): structured concurrency and deterministic runtime testing.
 - [FrankenTUI](https://github.com/Dicklesworthstone/frankentui): terminal presentation.
-- [cass](https://github.com/Dicklesworthstone/coding_agent_session_search): session access across coding agents.
-- [meta_skill](https://github.com/Dicklesworthstone/meta_skill): skill management and feedback.
+- [cass](https://github.com/Dicklesworthstone/coding_agent_session_search): session archive access.
+- [meta_skill](https://github.com/Dicklesworthstone/meta_skill): source prior art for selected standalone components.
