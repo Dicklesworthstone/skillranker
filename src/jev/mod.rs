@@ -11,5 +11,6 @@ pub mod codec;
 pub use endpoint::{
     CanonicalOrigin, CredentialRoutingError, EndpointConfig, EndpointError,
     OriginScopedCredential, ProxyPolicy, RedirectError, RedirectPolicy, Scheme,
-    TargetUrl, DEFAULT_TYPESAFE_ENDPOINT, SKILLRANKER_USER_AGENT, SYSTEMONE_PATH,
+    TargetUrl, AMBIENT_PROXY_VARS, DEFAULT_TYPESAFE_ENDPOINT, SKILLRANKER_USER_AGENT,
+    SYSTEMONE_PATH,
 };
