@@ -1,7 +1,7 @@
 {
   "schema_version": "skillranker.p0_acceptance.v1",
-  "status": "pending_reference_and_evidence_role_repairs",
-  "scope": "P0 foundation contract acceptance only; P1/P2/P3 implementation may begin",
+  "status": "pending_current_matrix_and_adapter_repairs",
+  "scope": "P0 foundation contract review; P1/P2/P3 admission remains blocked until sr-roadmap-l1i.1.11 closes",
   "date": "2026-09-17",
   "source_commit": "3391b6b27ff956cc508f5862c15d9962003f5c6a",
   "frozen_checkout": "/data/projects/skillranker-p0-proof-d372lxco",
@@ -459,5 +459,17 @@
     "P8 learned policy",
     "P9 native harnesses or TUI",
     "non-Linux targets"
+  ],
+  "pending_repairs": [
+    {
+      "owner": "CopperWren",
+      "scope": "matrix references and evidence-role semantics",
+      "requires": "fresh frozen Python/mechanics proof for repaired validator, tests, matrix and authority"
+    },
+    {
+      "owner": "SilentFinch",
+      "scope": "Rust adapter strictness, privacy and support provenance",
+      "requires": "reproduce and repair confirmed public-path regressions; fresh required-remote Rust verification"
+    }
   ]
 }

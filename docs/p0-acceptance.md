@@ -1,10 +1,12 @@
 # P0 contract acceptance
 
-Acceptance remains open while the reviewed reference and evidence-role repairs
-receive their final combined verification.
+Acceptance remains open while the reference/evidence-role repairs and Rust
+adapter strictness/privacy corrections receive current-source verification.
+The successful snapshots below do not certify the newer adapter regressions.
 
-Tracking gate: `sr-roadmap-l1i.1.11`. This review accepts the foundation
-contracts needed to begin P1 transport, P2 roster/privacy, and P3 context work.
+Tracking gate: `sr-roadmap-l1i.1.11`. This review evaluates the foundation
+contracts required before P1 transport, P2 roster/privacy, and P3 context work.
+Those tracks remain blocked until the owned Beads gate closes.
 It does not certify a ranking command, live Jev request, native harness,
 storage implementation, product latency, quality promotion, or release target.
 The bootstrap binary still exposes only help and version; the capability
