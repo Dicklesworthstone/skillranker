@@ -21,8 +21,18 @@ MATRIX_FILE = ROOT / "tests/contract_matrix.toml"
 ISSUES_FILE = ROOT / ".beads/issues.jsonl"
 AUTHORITY_FILE = ROOT / "tests/contract_authority.toml"
 MAX_DOCUMENT = 4 * 1024 * 1024
-BOUND_FIELDS = ("owner_bead", "phase", "member_beads", "platforms", "features",
+BOUND_FIELDS = ("owner_bead", "phase", "title", "member_beads", "platforms", "features",
                 "e2e_suite", "e2e_cases", "assertion_ids")
+# A pure library or check-script contract has no end-to-end suite of its own;
+# borrowing unrelated mechanics cases would misstate its coverage.
+NOT_APPLICABLE_SUITE = "not-applicable"
+# Reviewed check-script entrypoints whose execution is the check itself. Any
+# other plain function is a helper, not test evidence.
+TRUSTED_CHECK_ENTRYPOINTS = frozenset({
+    "scripts/check_dependency_graph.py::main",
+    "scripts/validate_public_contracts.py::main",
+    "scripts/validate_contract_matrix.py::main",
+})
 
 VALID_PHASES = {"P0", "P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8", "P9"}
 VALID_STATUSES = {"planned", "executed", "passed", "failed"}
@@ -87,7 +97,7 @@ def indexed_boundaries(document, *, authority=False):
     rows = document["boundaries"]
     require(type(rows) is list and 0 < len(rows) <= 1024, "empty-boundary-inventory")
     result = {}
-    fields = {"id", *BOUND_FIELDS} | (set() if authority else {"title", "unit_property_tests", "status"})
+    fields = {"id", *BOUND_FIELDS} | (set() if authority else {"unit_property_tests", "status"})
     for row in rows:
         require(type(row) is dict and set(row) == fields, "boundary-fields")
         require(type(row["id"]) is str and re.fullmatch(r"[a-z][a-z0-9_]{0,95}", row["id"]), "boundary-id")
@@ -95,11 +105,17 @@ def indexed_boundaries(document, *, authority=False):
         require(type(row["phase"]) is str and row["phase"] in VALID_PHASES, "boundary-phase")
         require(type(row["owner_bead"]) is str and bool(row["owner_bead"]), "boundary-owner")
         require(type(row["e2e_suite"]) is str and re.fullmatch(r"[a-z][a-z0-9-]{0,63}", row["e2e_suite"]), "boundary-suite")
+        require(type(row["title"]) is str and 0 < len(row["title"]) <= 512
+                and row["title"].isprintable(), "boundary-title")
+        not_applicable = row["e2e_suite"] == NOT_APPLICABLE_SUITE
         for field in ("member_beads", "platforms", "features", "e2e_cases", "assertion_ids"):
-            strings(row[field], empty=field == "features")
+            strings(row[field], empty=field == "features"
+                    or (not_applicable and field in ("e2e_cases", "assertion_ids")))
+        if not_applicable:
+            require(row["phase"] == "P0", "not-applicable-phase")
+            require(row["e2e_cases"] == [] and row["assertion_ids"] == [], "not-applicable-selection")
         if not authority:
             strings(row["unit_property_tests"])
-            require(type(row["title"]) is str and 0 < len(row["title"]) <= 512, "boundary-title")
             require(type(row["status"]) is str and row["status"] in VALID_STATUSES, "boundary-status")
         result[row["id"]] = row
     return result
@@ -116,6 +132,41 @@ def mechanics_catalogs():
         "runner-smoke": {case["id"]: set(case["assertions"]) for case in smoke["cases"]},
         "runner-contract": {name: {"satisfied"} for name in runner_contract.CHECKS},
     }
+
+
+def is_unittest_case(node, module_nodes):
+    """Accept only a direct unittest.TestCase base bound by an unaliased import.
+
+    Source-only and deliberately conservative: aliases, indirect bases and
+    rebinding are rejected rather than resolved.
+    """
+    bindings = {}
+    for statement in module_nodes:
+        names = []
+        if isinstance(statement, ast.Import):
+            names = [(alias.asname or alias.name.split(".")[0],
+                      "module:unittest" if alias.name == "unittest" and alias.asname is None else "other")
+                     for alias in statement.names]
+        elif isinstance(statement, ast.ImportFrom):
+            names = [(alias.asname or alias.name,
+                      "class:TestCase" if statement.module == "unittest" and statement.level == 0
+                      and alias.name == "TestCase" and alias.asname is None else "other")
+                     for alias in statement.names]
+        elif isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names = [(statement.name, "other")]
+        elif isinstance(statement, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+            targets = statement.targets if isinstance(statement, ast.Assign) else [statement.target]
+            names = [(name.id, "other") for target in targets for name in ast.walk(target)
+                     if isinstance(name, ast.Name)]
+        for name, origin in names:
+            bindings.setdefault(name, []).append(origin)
+    for base in node.bases:
+        if (isinstance(base, ast.Attribute) and base.attr == "TestCase"
+                and isinstance(base.value, ast.Name) and bindings.get(base.value.id) == ["module:unittest"]):
+            return True
+        if isinstance(base, ast.Name) and base.id == "TestCase" and bindings.get("TestCase") == ["class:TestCase"]:
+            return True
+    return False
 
 
 def reference_exists(reference):
@@ -146,12 +197,17 @@ def reference_exists(reference):
                 return False
             node = matches[0]
             if isinstance(node, ast.ClassDef):
+                if not is_unittest_case(node, nodes):
+                    return False
                 methods = [child.name for child in node.body
                            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))
                            and child.name.startswith("test_")]
                 return bool(methods) if len(parts) == 2 else methods.count(parts[2]) == 1
-            return len(parts) == 2
-        if relative.parts[0] != "tests" or path.suffix != ".rs" or len(parts) != 2:
+            return (len(parts) == 2 and isinstance(node, ast.FunctionDef)
+                    and reference in TRUSTED_CHECK_ENTRYPOINTS)
+        # Cargo discovers integration tests only as direct children of tests/.
+        if (relative.parts[0] != "tests" or len(relative.parts) != 2
+                or path.suffix != ".rs" or len(parts) != 2):
             return False
         # Conservative source-only Rust subset: top-level #[test] functions.
         # Strip literals and comments before matching; never execute source.
@@ -200,8 +256,12 @@ def reference_exists(reference):
                 offset += 1
         stack = []
         found = False
+        # What ended the previous top-level construct: an item boundary, an
+        # inner attribute, an outer attribute, or something else.
+        previous = "start"
         for index, token in enumerate(tokens):
-            if not stack and tokens[index:index + 4] == ["#", "[", "test", "]"]:
+            if not stack and tokens[index:index + 4] == ["#", "[", "test", "]"] \
+                    and previous in ("start", "item", "inner-attribute"):
                 start = index + 4
                 if tokens[start:start + 1] == ["pub"]:
                     start += 1
@@ -213,10 +273,25 @@ def reference_exists(reference):
                 if tokens[start:start + 5] == ["fn", parts[1], "(", ")", "{"]:
                     found = True
             if token in ("(", "[", "{"):
-                stack.append(token)
+                kind = None
+                if token == "[" and not stack and index >= 1 and tokens[index - 1] == "#":
+                    kind = "outer-attribute"
+                elif token == "[" and not stack and tokens[max(index - 2, 0):index] == ["#", "!"]:
+                    kind = "inner-attribute"
+                stack.append((token, kind))
             elif token in (")", "]", "}"):
-                if not stack or stack.pop() != {")": "(", "]": "[", "}": "{"}[token]:
+                if not stack:
                     return False
+                opener, kind = stack.pop()
+                if opener != {")": "(", "]": "[", "}": "{"}[token]:
+                    return False
+                if not stack:
+                    previous = kind or ("item" if token == "}" else "other")
+            elif not stack:
+                if token == ";":
+                    previous = "item"
+                elif token not in ("#", "!"):
+                    previous = "other"
         return found and not stack
     except (OSError, ValueError, SyntaxError, UnicodeError, RuntimeError):
         return False
@@ -247,7 +322,8 @@ def validate_documents(data, authority, beads, catalogs):
                 "expand-product-aggregate-before-execution")
         if row["status"] != "planned":
             require(all(reference_exists(ref) for ref in row["unit_property_tests"]), "unresolved-test-reference")
-            require(row["e2e_suite"] in catalogs, "unregistered-executed-suite")
+            require(row["e2e_suite"] in catalogs or row["e2e_suite"] == NOT_APPLICABLE_SUITE,
+                    "unregistered-executed-suite")
         if row["e2e_suite"] in catalogs:
             catalog = catalogs[row["e2e_suite"]]
             for case in row["e2e_cases"]:
@@ -285,7 +361,7 @@ def validate_mechanics_receipts(rows, receipts, *, required_tier="runner-mechani
         require(result["runner_status"] == "passed" and result["product_gate"] == "not-applicable",
                 "incomplete-suite-receipt")
     for row in rows.values():
-        if row["phase"] == "P0":
+        if row["phase"] == "P0" and row["e2e_suite"] != NOT_APPLICABLE_SUITE:
             require(row["e2e_suite"] in results and row["platforms"] == [expected["platform"]]
                     and row["features"] == expected["features"], "incompatible-boundary-receipt")
     require(expected == runner.identity(binary)
