@@ -880,7 +880,7 @@ fn encode(value: &Value) -> Result<Vec<u8>, ContractError> {
 
 // Unlike deserializing into Value directly, this rejects duplicate known AND
 // additive keys before they can disappear. Errors are sanitized at the boundary.
-struct JsonSeed(usize);
+pub(crate) struct JsonSeed(pub(crate) usize);
 impl<'de> DeserializeSeed<'de> for JsonSeed {
     type Value = Value;
     fn deserialize<D: serde::Deserializer<'de>>(self, deserializer: D) -> Result<Value, D::Error> {
