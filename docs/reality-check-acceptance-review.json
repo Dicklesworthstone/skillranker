@@ -1,0 +1,695 @@
+{
+  "schema_version": 1,
+  "scope": "Snapshot acceptance review, not runtime or product acceptance",
+  "snapshot_export_sha256": "e3b81e5fbf87868ea4c22af4231a575fd3f5c7e3edb10defbd97955080dc7d6",
+  "record_count": 195,
+  "record_render_sha256": {
+    "sr-7dvc": "daeb399f5f15de5524b628e00381197bb0fdc4f6fb25fb7ea811e5bfe61cb10f",
+    "sr-8d2m": "5480655489f72a84aeca9b03d3dc7ca7e3f967930c351819260a16b210279181",
+    "sr-adapter-audit-3djt": "2a4ebaa9731777b19ecb81281cf673a22523396b459f9283efed8314fff4bb73",
+    "sr-adapter-followup-s3n0": "4fb2c33385c183cc768ebc2e29bece40766a285df39c15262aafd3b8b799b0bf",
+    "sr-eval-audit-dwew": "6817f359a2bc1d4691d198f6e4b8730b5f508acca332b02107e2ac1dbaaace88",
+    "sr-roadmap-l1i": "96681de918151fbf10ae2129c79ba3652a6ec206a2253ffd033002598d6bc4b9",
+    "sr-roadmap-l1i.1": "8cb28de5cb7387719fc9eacce19d136b121f77776cbb5116a72a64301522b908",
+    "sr-roadmap-l1i.1.1": "ad7147906180094de79666baa5769aa8f25bc23ebab8e533ad58b305ff99c31d",
+    "sr-roadmap-l1i.1.10": "1493e1d85a512b6a125e29c16fe4a29dd0031ed755d38a673b852fa53bb058b2",
+    "sr-roadmap-l1i.1.11": "51b16726bd76923d9430415b295cd7b575918cc6e1f99381c0ecdd94e25fa3f3",
+    "sr-roadmap-l1i.1.12": "c2cb937d17208edf992b5ec106afe172f120dfb07c27c7896fc71826770c9f62",
+    "sr-roadmap-l1i.1.13": "3b32e3fd9559a7ec874accb9bf2e37ddf9d47dff4b77d31331cb0dd1b0d84652",
+    "sr-roadmap-l1i.1.14": "56992b5de63cd48af3a38b097ba95dbf9380075ee2cdffa75fc4a75e9c579391",
+    "sr-roadmap-l1i.1.15": "1e6bf8d3a9214d318b9114cee6214fafc50f00a19805bc7af18501c996033d37",
+    "sr-roadmap-l1i.1.16": "0a5210e2b69e33cd0804c92f9cec8900cb91308753c9961bf4380fa58e71ba4e",
+    "sr-roadmap-l1i.1.2": "d3ec42f3815ff5226a6231d03210efe72142cd5a6abf2f2fce3df5e72e5f18bc",
+    "sr-roadmap-l1i.1.3": "afbee7429ee0a3b891a62c52711e876ea650afb374156bd3d759b4b8fbfb5d63",
+    "sr-roadmap-l1i.1.4": "20eea61f033ac2a9f1e0f39057c5a6642957b7a943a65678e969553f8ff79a3d",
+    "sr-roadmap-l1i.1.5": "8e45d06a7b289233c5122d6e1e8a184520927286155dd2a4ca9de283c7697fe3",
+    "sr-roadmap-l1i.1.6": "b0fe941dcc84088a605459d8f4391ccb435f8bf4094a0b29f34ae7d442b4220f",
+    "sr-roadmap-l1i.1.7": "42a4b068f58adbef2c729dabc507ce5284d436d17beb65ee463ab307855e4cea",
+    "sr-roadmap-l1i.1.8": "b1660081f36d55d9528f06c2fe29df4d757ebd9ed0e4f5ec621e428f6aa95a5f",
+    "sr-roadmap-l1i.1.9": "9f75971720ba00668e67046bb2b993d57e10b14d00a3cd983570c804a896c85a",
+    "sr-roadmap-l1i.10": "239f8593399aae4812ab2e70aa51210c08bd6f92ca848e5f33d11d85e657a3b6",
+    "sr-roadmap-l1i.10.1": "a587667fa126dbe6df20250b8befcbbc389394b6cea1cce371851471348cef4d",
+    "sr-roadmap-l1i.10.1.1": "fa8f83258dc239638954467a589e9445c3b17b46300ea3285e63afb875ecbaa7",
+    "sr-roadmap-l1i.10.10": "b7b4fa014a86e762aa283ea1d7b6adcb6487de6609da7ed3511a6dc965d36d3c",
+    "sr-roadmap-l1i.10.11": "4d8dff5a7c330b83f81d3d980c30b4fd9d523196c188d5a54d84a6d0264d45e7",
+    "sr-roadmap-l1i.10.12": "12545c3a3788f8c7fee89e9ecda72c6e026cd6b53d0c0079ef2dac0be87e72c3",
+    "sr-roadmap-l1i.10.13": "85e39c8a3953b99445bade489a530c9a8b06947519c2c2d3b5730d9f72f7693f",
+    "sr-roadmap-l1i.10.14": "1da6ccfa213e36c189391579642ac4e58e954cc26bfe7efe410f76e1f4bd4228",
+    "sr-roadmap-l1i.10.15": "b12c0eda07cded3c91589ef53f4f61315c395c2f681f44f3f72f4333d4043d87",
+    "sr-roadmap-l1i.10.16": "8b9a3f0278ebc6980368ee42196c84af627b7979fdd8cc19a61241db53c03d1d",
+    "sr-roadmap-l1i.10.17": "781d238caf0ee3b85ece9160a3bc9713cc3b8958abda1ad29a73dbed5896ca53",
+    "sr-roadmap-l1i.10.18": "884c53ee34bf589590ce65d19bd6b61a34b9df9038b613d686f6da06cf5a89da",
+    "sr-roadmap-l1i.10.19": "d6a8d27056b66c933909cd0424cb7c6d5c55459244bd90814b72981c8dd3b334",
+    "sr-roadmap-l1i.10.2": "5fee7b361a7315d4d15b01815be78aae2fbf1a50a97226423bcb975772584eaf",
+    "sr-roadmap-l1i.10.20": "b38bb1f9eae0c01413f0a75305f74973d2c3f3697f18d5e34787a1d36ab31c5b",
+    "sr-roadmap-l1i.10.21": "9329e5df4906f4baef76bb447eab960cd1d5f406c8d8b7fd968e709772c5af09",
+    "sr-roadmap-l1i.10.22": "b55e2353743ff096373a0eba80ad879c7b7717bf7edb356a9cd0701c3f547a5d",
+    "sr-roadmap-l1i.10.23": "e6fdba68c6971e2a2409166de016cd3103eedaf1d46ff5b7eaa11ac0bb189d9e",
+    "sr-roadmap-l1i.10.24": "4b624a450317cfe3afb52e487f47ab2c227ad19b5bd490f35c9ee8d64ffeca50",
+    "sr-roadmap-l1i.10.25": "decf9e4dbd737d03b23da2124621b067f692edc70135f4d4273ea80c22c465cd",
+    "sr-roadmap-l1i.10.26": "732ea91e47a7da6a5274fb27ff0a8466e566c8e4fcf814651cb31a8d2af466bd",
+    "sr-roadmap-l1i.10.27": "215bd23d4249e4c3d51829cfe0d81f2febd5e494c3a508e01bc3cb02c5bada20",
+    "sr-roadmap-l1i.10.28": "2255157455399494699fe76bfd2c250ab75047428b483aee7abff58df7156ed4",
+    "sr-roadmap-l1i.10.29": "f3fbfd90adbb1dea2b3b25700a8e15b532bc32482e47d27afc4f44809f509726",
+    "sr-roadmap-l1i.10.3": "c3005fadb1df6e2608e90c55e9ea11232f0aee39789ba35a5d6e823f326f26ea",
+    "sr-roadmap-l1i.10.30": "5d76150204a32ed4fc8003ecddfdf7f44fb5b5f68747b833fcb6d5912a2795a8",
+    "sr-roadmap-l1i.10.31": "082abc62a38eaceee466556407dc2d9249f9bc368a5641695ef9cdb0bf5117d9",
+    "sr-roadmap-l1i.10.32": "d72610a6b7e4e2dd1d877b49d29d8e3be46a3b8a81a88f579e2cc86303da3023",
+    "sr-roadmap-l1i.10.4": "a1e885e5091a696c459bd660862851350d083655ec6006ef879e4fc08f60f4d9",
+    "sr-roadmap-l1i.10.5": "a84f8e330415fb16105316245c640774ff7436934c1dd2b42226be20517489d6",
+    "sr-roadmap-l1i.10.6": "f0564f6b3782dddd9e4a799d44661e211a987d23ee4854ff654eba4ed3f17471",
+    "sr-roadmap-l1i.10.7": "619209e146336d1061e5f04dcdc4f2a9ec6928143c927c64261af8c4ed577f9f",
+    "sr-roadmap-l1i.10.8": "ef9ba379b2570a216890529b5b5089d3721e067fda87a5b1737dc00fd45d55fa",
+    "sr-roadmap-l1i.10.8.1": "53afda0b3d3d7a2cfeea377753f25b6ff9258b4d7870cac92dbbf0054e42fe8d",
+    "sr-roadmap-l1i.10.8.2": "77f04e987a2c860d803562dbbdc07d5efcf52b0f490ae3ac26b67d25b1ce1f20",
+    "sr-roadmap-l1i.10.8.3": "b80c93d32c6f83e08626b10618f7acfd319c6d1567e075a1d4707dead41a4642",
+    "sr-roadmap-l1i.10.9": "7e2f587a8dfd1c3c1205dc92eb43e2a10c9d1616dc654d8ad87c6f50d78071cd",
+    "sr-roadmap-l1i.2": "71a0dad6996cc5f2ccc639705ed205b7f5ae35b0d37b4088f67426bfe8e5b1b2",
+    "sr-roadmap-l1i.2.1": "52a0d9aa634eeb947877d9f009e0ef9b4a2fd2c8e91f3dfb2df1f85ae9430ad4",
+    "sr-roadmap-l1i.2.10": "138d4427a348d24fe573847264e714fe3dd6f383d6bb5642cdbfba3a91dc9caa",
+    "sr-roadmap-l1i.2.11": "cd1c10557089e0f1365fc503a1ec789f41115a34b3b803def234a4de7bc2bf05",
+    "sr-roadmap-l1i.2.12": "1c27d1ed961a4a4d6f44da19f8fc96c013c7221c0f2025b5ae36cdc82fb97a71",
+    "sr-roadmap-l1i.2.2": "93f678c9091e3f046c6a8c3c944d1f740fc811f209bd1196cfed5cb2f970909e",
+    "sr-roadmap-l1i.2.3": "7bf2ecf3a8a53e3fafe7f1871570e677d85fcfba4f1fe9224bd2338c12a56041",
+    "sr-roadmap-l1i.2.4": "14548a13832b8d1a76fee8f1af86cc4be0b17cf25015bc6c0b8053a135e44e1b",
+    "sr-roadmap-l1i.2.5": "6b67a1716b4432183bd4abe1cd38ae8bb802a3115a9937b220517528a45790db",
+    "sr-roadmap-l1i.2.6": "35e39549d297e673f1fbbf7bcb01a8f8d460ee98eebe588978f383b739588c22",
+    "sr-roadmap-l1i.2.7": "d10d9fd6c49711007d8308ff9cfa2d28e3634141281b1cc373c8d5ca682d12d6",
+    "sr-roadmap-l1i.2.8": "17887f661fdfd115684575c3161a7fa0036eabe633a8e0aee8361112fc917f09",
+    "sr-roadmap-l1i.2.9": "c82dfc1047494022ecb04c6a5502e89f24b528ece7399269e833d42126b18afb",
+    "sr-roadmap-l1i.3": "f925ed40e3b2f11fc5c3acf66cca0a940d704f648724e05548995440b14c00f7",
+    "sr-roadmap-l1i.3.1": "1f6ccc25cb57afdafe6aec9128508e3a548efcb7ad5fd0ef2967af361f46184c",
+    "sr-roadmap-l1i.3.10": "554b9bbedd63151aae1cfbc074292eba8479b3eaca4ee74b639a0c1c2c917a66",
+    "sr-roadmap-l1i.3.11": "2e980ad66fc82215fbde97b326a727e8f62c43faf95bedbdb895de3be211c6e0",
+    "sr-roadmap-l1i.3.12": "c00b2f55d84e554a7b7b2b85d24889d4bbd8d79414b8053af9383f291105fce8",
+    "sr-roadmap-l1i.3.13": "b12a18b3cd5a2238258a59436ab2ce4c2735a530bdb3cc4e188f78553bfe701e",
+    "sr-roadmap-l1i.3.14": "022257ed2267ca1debfd2d18a288949478bd0838475f453100c388880798b110",
+    "sr-roadmap-l1i.3.15": "07d2a63e992e7f6c921e31121602d5f2ee8cf01e503b414a02aee8ba93b3168d",
+    "sr-roadmap-l1i.3.16": "eaf1dfc482d0453a2108c21ea79977639fb8b52850ea04ca0b095569c359e933",
+    "sr-roadmap-l1i.3.17": "2504aa2122a729249b84573814ded0057e83033809ba3a79becdff8a1b5a4471",
+    "sr-roadmap-l1i.3.18": "eee234aa1e478b0a8cf78410e5a04a900ab860abaadecb4117488e31d6826bd3",
+    "sr-roadmap-l1i.3.2": "c793326926886a76eb5a6927c7e323e8f77dbf4ca4c5b0a092833cd61d6277aa",
+    "sr-roadmap-l1i.3.3": "16057c3d2f1eceba518a7d7ef5ae91dfc7fdc83ab3fee85d063f38ec0f5dc313",
+    "sr-roadmap-l1i.3.4": "47bc1ebd4583e50c469d8436f4149a9477907d6a587cdf6e905930f98a56f941",
+    "sr-roadmap-l1i.3.5": "42d7232ceaf07c75f11dc7a3f03733ac111ba3ccf16ba43379c3cb3bc8002cf9",
+    "sr-roadmap-l1i.3.6": "e95e3fdf7014fd76ce9285b15c827a8d7ffbd5e326580562f721fcd855597f7f",
+    "sr-roadmap-l1i.3.7": "3b29a12ba99a832591650c71da27107e3339657349bb5204f8f19802c46b38e4",
+    "sr-roadmap-l1i.3.8": "1ffde68ddc257cc88dc51680a6a283aa75a1c7fea641f0ea8100f989a8cd6637",
+    "sr-roadmap-l1i.3.9": "9b04299446c5a13638e4dbdb40179d16b4769c122802428a86885cce49c43b32",
+    "sr-roadmap-l1i.4": "c678135d8061c605b14a5d9ff009d4ea3973e42f454247ee93711adc4962abeb",
+    "sr-roadmap-l1i.4.1": "49b1c5cc0e00a16b642d2e94ef573ef9eef361a2674c8570c7db756bcbc2627f",
+    "sr-roadmap-l1i.4.10": "1e5d0dd4414c141e7134acf2ed0ae5ba17bc00604a63a1871be3351b1fe6efd7",
+    "sr-roadmap-l1i.4.11": "b878525dd2fc2ccebe6749d61aaab8dad41bcb28b389f15f219f8066c0b64770",
+    "sr-roadmap-l1i.4.12": "ac80b05064ef1d1151008984175418ca52a996d9d9109d85cfdc0cef417c9183",
+    "sr-roadmap-l1i.4.13": "9e87865a951c1681af444eaef1c2b5fd2ba8274da208e97c2988dc152297e661",
+    "sr-roadmap-l1i.4.14": "65b6a63cd93620602cd1024a66266e62855409bde570345592a3895a629979a4",
+    "sr-roadmap-l1i.4.2": "bd20a3c63ae754f72e081b7645b94d70f0932f9b9dfbd9c43e21ae5437af5dda",
+    "sr-roadmap-l1i.4.3": "fdaa347a5fb7640614d695df95b64579277b245e7c7e42ffe31617bb8643991c",
+    "sr-roadmap-l1i.4.4": "a273ae92f96d1916e506be6016fd3a68c0f19203258d5cb67d1e96f979f4690c",
+    "sr-roadmap-l1i.4.5": "af7fc65ed4c2f6fd78ddbfed493f9b78d2231a3ae2d7bcc584007889baaef791",
+    "sr-roadmap-l1i.4.6": "acfcaed18482386e9e1acbf35909a5b03685e10fecdc879f7032612f49596d7f",
+    "sr-roadmap-l1i.4.7": "80f39cb8b22aa119b8607900f4386fc8b229ec68a0f28054c596c1d1521c3d78",
+    "sr-roadmap-l1i.4.8": "239bd22b25ff0ca8310889759e6f753683cfa1214eca8e7c871948eb10bf1d34",
+    "sr-roadmap-l1i.4.9": "a36b088c9ed67543b5ddaf36b1b0cf80e7fee98f862df99286b6dd1d2db6d64f",
+    "sr-roadmap-l1i.5": "e360610a0d61022e93b758275e9f4ed83d647f59c96cfe0b71153610df64812e",
+    "sr-roadmap-l1i.5.1": "6c71469fca0b82fcac61855b57af783d28f245351b15621df8ab2582482de29e",
+    "sr-roadmap-l1i.5.10": "6648715412ef29d8f06d2430fff8216415e732d510943ad443a47d96d18e0119",
+    "sr-roadmap-l1i.5.11": "a427b430e72435ad600ac2efe9b5b500fdef53072f10e01f14422cae80ca8856",
+    "sr-roadmap-l1i.5.12": "deeb537b710f316e9e821ec0f8866de7ea9b2a02204f0ed5e9e6b9f462802e83",
+    "sr-roadmap-l1i.5.13": "995d0d7ae011e5d65beb991fbafcbdad47e6fd5ef977396d25ab81c8edb7420c",
+    "sr-roadmap-l1i.5.14": "92ebf4dffd4f7a4e01d572be31fa519a0f57255626a74463eaa304ac1a9a0841",
+    "sr-roadmap-l1i.5.15": "0e6f98020e411f7a7375a2e7b5fda973c93001f7476c788c19b1da497907d6e1",
+    "sr-roadmap-l1i.5.16": "506f9f0e03d4ade7f8265a01679374952c477264be75092a2b8e69c3ec97d5ba",
+    "sr-roadmap-l1i.5.17": "259de7ba2114f1f96d9216d507f3576eb20785d909a68845d04a4f0368d90fbb",
+    "sr-roadmap-l1i.5.18": "ee17bd42ce08efc97e1d268f7cb5599be66f406ecd5eb811636872323334f7cf",
+    "sr-roadmap-l1i.5.19": "62603d448e9fdbcc3838aea980da2f724c3afbe05a91d436cd54e932dd6079f2",
+    "sr-roadmap-l1i.5.2": "52d9a09ea2dfe2ef17ac0e229a540ffdf15f612e64efee91ac5c474d10ab15e2",
+    "sr-roadmap-l1i.5.20": "4c65f3ce7e23c8b1efd14ea22019f63044794da37d335d769ef01a15936ae3f1",
+    "sr-roadmap-l1i.5.21": "9c0340592a65d8dafbd162cbb51c51e00dc7dd1fb31686c4b5649934c3cfd6a5",
+    "sr-roadmap-l1i.5.22": "85bb9afb74e7bd20f779d2ee56356e022a08bfa8d4765a29fbd54779904bd1f4",
+    "sr-roadmap-l1i.5.3": "c137c0f1034eb77afb6d1ef6d0186bd35a3e13550618c87b0d68891c23f4213a",
+    "sr-roadmap-l1i.5.4": "81ec2fbc34affc13204669f4173fa6d4d2d784f2a0e2647752e7d2a41a14a2e8",
+    "sr-roadmap-l1i.5.5": "a164f0435f44b8b5371888f2ad1d4d40c713453bafa91763bdb8a84177ec102d",
+    "sr-roadmap-l1i.5.6": "dd56db22271e244e6fb73a8200577ea0c9fd74a09c5ce602658346f2055e24a9",
+    "sr-roadmap-l1i.5.7": "91e54796a14e5eaaffac4ea6026b0cc88a0d72240b2136583abaf40b872e923b",
+    "sr-roadmap-l1i.5.8": "1cb8ff2d2bcdac9203a7ff4448d328662fcc4d50598c5201c5b705780f875ab1",
+    "sr-roadmap-l1i.5.9": "798246e32c47dda143b9e9830ec0d8d8600d6e2ac0c762891062146f3579640a",
+    "sr-roadmap-l1i.6": "2df2a71621f4651a0cca5e9999f7eb6cfad830b09f4ad65c9d933ec219e06a71",
+    "sr-roadmap-l1i.6.1": "86870cb9d3b12e10eb1dd9b48462558284472262a73fd21a689e1b3ba5738f1c",
+    "sr-roadmap-l1i.6.10": "c0dad50818e9c210a8d2421aa6190fe51abed9f38dddfc5ddffcbd58a6ded26b",
+    "sr-roadmap-l1i.6.11": "41536ccc7b7993dabcf4ea0079eca7d253209e156db863fd8a02264d56603e08",
+    "sr-roadmap-l1i.6.12": "f63064627d757aafb39bc6e520e47f1fdd4f9541f44ece201567a08df0b4c0ee",
+    "sr-roadmap-l1i.6.13": "7e6efebfe5b1d63fb4b995c9cba1a9f9480cb20ec1553c196b4e4bdf6445fe1f",
+    "sr-roadmap-l1i.6.14": "31cac3b6bce640815cbd12751dd0fb80599587d40c8fa4a53c32ce0008cde246",
+    "sr-roadmap-l1i.6.15": "9db556077cdcd934b37f209e77647b934faccb6a0203d72c7d0fa1f6c7396ea1",
+    "sr-roadmap-l1i.6.16": "5943c3973ab9e86f8f63edea646a96ba12602840ab11c64fc6dd6abb375afd8e",
+    "sr-roadmap-l1i.6.17": "031883326b1ad4447ec2d84dbcb33b9cd3c1a72eeb0effbd20d6ea3dd24e1798",
+    "sr-roadmap-l1i.6.18": "fddc95a0ca8e9bfe51a98389a1253e1f754080c6ef2fd626baad672f18f0ef0c",
+    "sr-roadmap-l1i.6.19": "866f6be6e5c3b9bdeed47754205b75f14e56db8762e7964339b67ac08a7a3caa",
+    "sr-roadmap-l1i.6.2": "32980656a06bd5e99fd3ea1d4507675748ea7e78b46ca7318c71293328290d42",
+    "sr-roadmap-l1i.6.20": "acfd4d3a315844e0a311028f17f53a5547a0d838f7eb35a3209421844f174e3c",
+    "sr-roadmap-l1i.6.21": "13f225362b10ac816a7dfab80c1eab1b058e1da30d2abb5c4426dca27b70cbbb",
+    "sr-roadmap-l1i.6.22": "948f548ab976916c449af14b7f2ea464ee84e05e3a8d7ec40f2b504420e474f0",
+    "sr-roadmap-l1i.6.23": "a7aa27acbe809b77c53e3b05cb7003a1fe129ca65f09a18a038129bdef93c944",
+    "sr-roadmap-l1i.6.24": "64ee31a259614668ecb4ca8f19e44f37b947cfbe3c9eb481d0c80167ea876dac",
+    "sr-roadmap-l1i.6.25": "9da9f56e264edf83258faeb67df4518a90f2168496055a484aa86bccbce9331c",
+    "sr-roadmap-l1i.6.26": "5247328b3f40c81d546ee88fca678c58e502237ef3b530f1a76f36726aa256d0",
+    "sr-roadmap-l1i.6.27": "08f3d5bbc14d6fa47526194cd4df4637f2942186aedb8b2e1c8139aaa9042ef1",
+    "sr-roadmap-l1i.6.28": "1226beba2af85631190309b1e6bc9aa89e5c8b2666fe5486cec766a47c3e62cd",
+    "sr-roadmap-l1i.6.29": "d1290b47af6c7b770d789c7f40abcfcc96478f23971e6604b7c97cd06aa991bf",
+    "sr-roadmap-l1i.6.3": "27121fdce7e91854fa396a8aa09c038c1fb7b2a080a81f53f6797746f80c75ba",
+    "sr-roadmap-l1i.6.4": "803c2c210f6e5719e204d3237a2b4aa4d1789f5ef927faa49eeded3dda09017a",
+    "sr-roadmap-l1i.6.5": "e6608330dbf0b77387220331af62f18bfaa5f743b6c70b2da350a4d755275a9d",
+    "sr-roadmap-l1i.6.6": "6583d1fa385462aad3a63346d4d856a6bf4ec7f50bbc306f4ac6f356dff5a106",
+    "sr-roadmap-l1i.6.7": "dfc992e5eaae8810845b46e699400e02d06509de91bf722e6f9f6e9b7366f96f",
+    "sr-roadmap-l1i.6.8": "434b41f96cf75a7111a1b80d0f79bbc844540b3bcdc5c1dc2f81ad26b389172b",
+    "sr-roadmap-l1i.6.9": "4a0cab43db57e0e501b31fa3aba12463d9fadd1bc25ea195839fee8aeb7dfa00",
+    "sr-roadmap-l1i.7": "d8b4a55eebda95e843d52fba229085f75a2ccacd56c68d5df66e3cb17dc4947c",
+    "sr-roadmap-l1i.7.1": "439ff336ad997328514d09bfa6ce26370a3d71025a403af0a7755a219075f722",
+    "sr-roadmap-l1i.7.10": "85940fad95c219b8f3439ec8845bd3ebf4bb927d5942de7c5bf72bfa11288170",
+    "sr-roadmap-l1i.7.11": "febbf05f839b92f0f09955cfaf6409a947945cf3f5d3c538fba22a02ca09049c",
+    "sr-roadmap-l1i.7.12": "8f882b1cb8353377464c6181bc37a78b15a290552e2b5cdd65957f5526b639a8",
+    "sr-roadmap-l1i.7.13": "80fc6dde07a94c28d61af6445b014b57f1f934f8c5f4a2567193b75aca7b3d5e",
+    "sr-roadmap-l1i.7.2": "8ae659e1d6aed19a4e1534800223f8e5061de824e0d78d60b3426baf8cb21989",
+    "sr-roadmap-l1i.7.3": "661d221fd86b5a9096b138a609b06af9c7de8f19c7582e84ed525b69e5b3c301",
+    "sr-roadmap-l1i.7.4": "f9c3a59a19019347258bb4ec3bc768f6ddcb9a8f7b404ead63495694b1a80bda",
+    "sr-roadmap-l1i.7.5": "088955935270e8c3a20fae7e44a3da9c3ddd06a27af89a9e6e35a285f99d0b52",
+    "sr-roadmap-l1i.7.6": "1cc69e672d0cb6c7c860f0451568c23b4bb64710ea7d9aa8231a157bc194f025",
+    "sr-roadmap-l1i.7.7": "bd20fa1398f8c3f73d4b521e14842b763070614d836a56fff398baae179e0f45",
+    "sr-roadmap-l1i.7.8": "f0389c30a72b31d9fc3672cba10103c5274a6a930f577a294782dc38280eb0f9",
+    "sr-roadmap-l1i.7.9": "527e6af7bb2a3363779ac3ccb7f0b0fcfd79bd1445ed2f83a66b640e5d4a25c7",
+    "sr-roadmap-l1i.8": "eb678e1bee6cc78fa0cc59f340b2c193f456840d6cce1160ce9156294d5f2c66",
+    "sr-roadmap-l1i.8.1": "a16248883d867bad8670fedd5542d8d2bb477512e400278eb3da5c2563e28b10",
+    "sr-roadmap-l1i.8.10": "74d0887a830e34a2382eba735de3d256b06a99e5bc807bdf510427fa2f358513",
+    "sr-roadmap-l1i.8.2": "e409c27dcd57c7da620f5378e08cf254fba4a471ec4f4d1fa1a362457fef235d",
+    "sr-roadmap-l1i.8.3": "96f2140924b9b680a2146c31be564b597d7092161aee8b5a6a542c12a4fc4ba1",
+    "sr-roadmap-l1i.8.4": "4a8b9f8c9b7c85b21246df2fd5fa3839a06fd454ae2e57c35b507469c57f9089",
+    "sr-roadmap-l1i.8.5": "7e4d02c0411538023edac68f5e8ac73641668fe8551d8f93fc07300709c4b727",
+    "sr-roadmap-l1i.8.6": "6531d6ee3abe171f945da64f2dd2e798cac227b391e76f2c297f7bfe6a44ae7c",
+    "sr-roadmap-l1i.8.7": "7330955419cb1bb4b3ab37b9e889294a5207060099c7eed119fa3c82c5964056",
+    "sr-roadmap-l1i.8.8": "92a3bf16af1966f05c24a78ba18283c1ec94e540a25ffd8867f14cabc28906c1",
+    "sr-roadmap-l1i.8.9": "1eccc0b234ce42e9a07e70b46bfc34731970482713c56eec851d22354f2b8ef7",
+    "sr-roadmap-l1i.9": "5faa796bfaf1a3d189d71e853978d4c49748051fa23998559fe43071b7822321",
+    "sr-roadmap-l1i.9.1": "0c9bb8dbcb46a06fec0acba5e198a41671f651610eb4b94c7172df2faa0975ff",
+    "sr-roadmap-l1i.9.2": "4242a44155fe409b9ca8f8f840be90646377a0957a96d0b3a395e57aecc3229e",
+    "sr-roadmap-l1i.9.3": "26ec5fb5f5cd870272489ceccb6c250e2d1be2d75677073b702b3217e31cbfdf",
+    "sr-roadmap-l1i.9.4": "32e9d2c25bb66a39e41f5a8ea27beb970e3d227a39a2adf0bea6db107802cb32",
+    "sr-roadmap-l1i.9.5": "1c05f1e6a68ba489a920f84548f740982ad6762e59f055888abe9b76d8aea00c",
+    "sr-roadmap-l1i.9.6": "90ee6aa8476a9ba776850f27968ed92f55ce51a418ad501e94f37bee7a9b00e6",
+    "sr-roadmap-l1i.9.7": "ed765fc2c87f48c4e8c1d49e5c07bdae37636a4a137555694f6a1fa2b72b6fe8",
+    "sr-roadmap-l1i.9.8": "688fb6b4258a720cdfb85897914505d37cb756b9756e803faba75aba83c6c579",
+    "sr-roadmap-l1i.9.9": "8636090ce972ca97a091917cec2efab692d68ec06c78d312d092af9c073a17a0"
+  },
+  "reviews": {
+    "ReviewB_P0P1": {
+      "summary": "Reviewed all 36 assigned records: P0 17/17, P1 13/13, Other 6/6. Verdicts: 20 OK, 2 CONTRADICTION, 1 STALE, 13 NEEDS-PROOF, 0 GAP. Preserve the disputed .1.9 closure; reconcile .1.5’s effective-policy receipt acceptance and the root epic’s unstarted-work wording. No commands, provider calls, source changes, or tracker mutations were performed in this resumed turn.",
+      "files": [
+        {
+          "path": "/data/tmp/sr-acceptance-review-v2/md/P0",
+          "description": "17 assigned Markdown records reviewed, including complete correction/dispute comment histories."
+        },
+        {
+          "path": "/data/tmp/sr-acceptance-review-v2/md/P1",
+          "description": "13 assigned Markdown records reviewed for endpoint, credential, deadline, accounting, and acceptance contracts."
+        },
+        {
+          "path": "/data/tmp/sr-acceptance-review-v2/md/Other",
+          "description": "Six assigned non-roadmap records reviewed through their Markdown renderings, including the root epic and four peer-added defect records."
+        }
+      ],
+      "architecture": "P0 freezes foundation contracts and separately certifies evidence machinery. P1 separates runtime, blocking leaves, subprocesses, origins, codecs, response validation, transport, admission, retries, live proof, integration, and readiness. Peer-added bugs repair existing foundation obligations rather than introduce new product tracks.",
+      "report": "## Coverage and verdict counts\n\n| Phase | files_read/files_total | OK | CONTRADICTION | STALE | NEEDS-PROOF | GAP |\n|---|---:|---:|---:|---:|---:|---:|\n| P0 | 17/17 | 14 | 2 | 0 | 1 | 0 |\n| P1 | 13/13 | 1 | 0 | 0 | 12 | 0 |\n| Other | 6/6 | 5 | 0 | 1 | 0 |\n| Total | 36/36 | 20 | 2 | 1 | 13 | 0 |\n\nCoverage includes the archived review and continuation reads. The six Other Markdown renderings, rather than the truncated other.json display, are the review material. Verdicts concern the assigned snapshot and its recorded evidence, not fresh execution or current source correctness. NEEDS-PROOF on open product records is expected, not a defect.\n\n## Full per-record review and ID enumeration\n\n### P0\n\n- sr-roadmap-l1i.1 — NEEDS-PROOF: In-progress phase epic requires executable phase acceptance and required-child evidence; its own ACs remain unchecked, and the assigned .1.9 dispute still needs explicit reconciliation.\n- sr-roadmap-l1i.1.1 — OK: Closed bootstrap scope has recorded 29 Rust tests, 19 evaluation-contract tests, source/remote receipts in docs/verification-p0.json, and explicit exclusion of ranking, provider, and release claims.\n- sr-roadmap-l1i.1.2 — OK: Closure records typed namespace/provenance isolation and 14 identity contract tests with the integrated foundation receipt; final completion text supersedes the older pending implementation checklist.\n- sr-roadmap-l1i.1.3 — OK: Pure output-schema closure binds to 869c22c066e9c379c3dc405df637edd3c03d0b72, 51 Rust tests including 19 new tests, and docs/verification-output-contract.json; live publication and combined integration are expressly separate.\n- sr-roadmap-l1i.1.4 — OK: Foundation budget/clock closure records bounded counters and contract evidence; later zero-runtime repair is separately owned and evidenced by sr-8d2m, so the historical receipt is not being silently extended.\n- sr-roadmap-l1i.1.5 — CONTRADICTION: Closed pure-config record still has an explicit unchecked AC to define effective-policy receipts and admission/publication revalidation, while its closure excludes effect enforcement and its implementation evidence does not reconcile this AC with the P4 handoff.\n- sr-roadmap-l1i.1.6 — OK: Closure is explicitly the pure adapter/capability contract, not native adapters or capabilities CLI; subsequent comments record consolidated tests and corrected canonical ownership, with newer adapter defects separately tracked.\n- sr-roadmap-l1i.1.7 — OK: Closed source-qualification scope records inspected revisions, actual license/rider requirements, the shared Asupersync patch, and evaluation-only boundaries without claiming imported/runtime behavior.\n- sr-roadmap-l1i.1.8 — OK: Closed frozen-policy scope records 12 representative synthetic cases, 19 adversarial checks, source hashes, and no measured-quality claim; later validator defects are separately repaired under sr-eval-audit-dwew.\n- sr-roadmap-l1i.1.9 — CONTRADICTION: Closed reason still relies on 69 mapped boundaries and six schema tests, while comment 73 explicitly refuses that closure as proof and preserves unresolved semantic-coverage/certification obligations; this record has no later explicit reconciliation of that dispute.\n- sr-roadmap-l1i.1.10 — OK: Public-contract reconciliation is source-bound to 917ec88 and recorded remote/documentation checks; comment 84 expressly attributes finished-product README voice to user instruction while distinguishing implemented CLI scope.\n- sr-roadmap-l1i.1.11 — OK: Closure records the accepted implementation cb3cafe, acceptance commit 83d3a58, 97 required-remote Rust tests, 105 Python tests, smoke 3/3, certificate 54/54, and named verification documents; it does not claim product ranking or release acceptance.\n- sr-roadmap-l1i.1.12 — OK: Runner-certification closure records 19 scenarios/54 checks; comments 104–105 identify the additional shadowed-unittest defect and bind its correction to 44722c3 with 63 discovery tests and 77 coverage declarations, expressly not product execution.\n- sr-roadmap-l1i.1.13 — OK: Scoped foundation repair records 32 accepted Rust tests, 36 Python regressions, seven before/after corruptions, a cross-target dependency negative, and docs/verification-foundation-audit.md; the earlier refused receipt is excluded.\n- sr-roadmap-l1i.1.14 — OK: Runner-engine acceptance records a47c5f0 plus independent cleanup regressions c34279b, frozen file hashes, 20 engine tests, two cleanup tests and smoke proof; earlier failures and UBS limitations are retained.\n- sr-roadmap-l1i.1.15 — OK: Independent certification slice records 0ff0f43, frozen bounded proof, 36 tests and 54 certification checks; whole-matrix acceptance remains separately owned by .1.12.\n- sr-roadmap-l1i.1.16 — OK: Repair closure binds to 4607d1935e4745892f68dd3af0a3c131429ed794 and a frozen six-file overlay, with 52 tests, 54 certificate checks, smoke 3/3, and explicit exclusion of concurrent matrix changes and product claims.\n\n### P1\n\n- sr-roadmap-l1i.2 — NEEDS-PROOF: Open phase epic correctly requires exact runtime/TLS/validation/admission evidence and separately consented live proof; unchecked acceptance is not a closure defect.\n- sr-roadmap-l1i.2.1 — OK: Closed runtime scope records e678489, required-remote clean-overlay identity, seven runtime tests and aggregate passing suites; .2.2/.2.3/HTTP are expressly excluded from this closure.\n- sr-roadmap-l1i.2.2 — NEEDS-PROOF: In-progress blocking-leaf record requires stalled operations, exhausted workers, queued/running cancellation, shutdown, and explicit uninterruptible-I/O limits; no completed proof is recorded.\n- sr-roadmap-l1i.2.3 — NEEDS-PROOF: Open subprocess record requires scrubbed environments, bounded independent pipes, descendants/ignored signals, safe Git invocation, and Linux/macOS proof; ACs remain unchecked.\n- sr-roadmap-l1i.2.4 — NEEDS-PROOF: Closed endpoint record cites 8/8 tests/endpoint_contract.rs tests but supplies no exact revision-bound execution receipt or closing evidence comment; its only comment is preimplementation API guidance, leaving its exact-source evidence AC unsupported in this record.\n- sr-roadmap-l1i.2.5 — NEEDS-PROOF: In-progress codec record specifies base-origin joining, bearer auth, exact question/option maps, 96 KiB serialized requests, finite values and decoded response bounds; sanitized recorded fixtures and hostile-map proof remain unchecked.\n- sr-roadmap-l1i.2.6 — NEEDS-PROOF: Open response-validation record correctly requires exact memberships, finite [0,1] values, positive sums within 1e-4, tie handling, usage validation and decoded 2 MiB bounds; no execution evidence is recorded.\n- sr-roadmap-l1i.2.7 — NEEDS-PROOF: Open transport record requires exact Asupersync/TLS features, trusted roots, no transparent fallback or internal retries, and local bad-chain/hostname/slow-handshake/body teardown evidence; no accepted proof is recorded.\n- sr-roadmap-l1i.2.8 — NEEDS-PROOF: Open admission record owns one invocation-wide counter, two logical requests/four attempts, unique attempt IDs, fresh admission and unknown-usage accounting; refusal/cancellation/cache-cost proof is unchecked.\n- sr-roadmap-l1i.2.9 — NEEDS-PROOF: Open retry record bounds explicitly classified retries, jitter and Retry-After by the same remaining deadline, forbids a fifth attempt and invalidates mixed immutable model revisions; local-server/clock proof is unchecked.\n- sr-roadmap-l1i.2.10 — NEEDS-PROOF: Open live spike requires separate authorization and bounded synthetic requests plus actual endpoint/model/limits/usage evidence; missing consent/key/network must remain an unresolved gate, not a mock pass.\n- sr-roadmap-l1i.2.11 — NEEDS-PROOF: Open end-to-end transport record requires actual TLS/process fault paths, signal/pipe/deadline controls, preserved attempts and no leaked tasks/children; complete exact-source suite evidence is not recorded.\n- sr-roadmap-l1i.2.12 — NEEDS-PROOF: Open readiness gate requires same-build runtime/validator/TLS evidence and separately consented live receipts; fixture success cannot substitute for public-root/provider readiness.\n\n### Other\n\n- sr-roadmap-l1i — STALE: Current ownership text says “All product work remains unstarted,” while the same record’s notes say implementation has started and the assigned foundation/runtime records contain closed implementation evidence; retain historical conversion comments, but date or correct the current-tense claim.\n- sr-eval-audit-dwew — OK: Closed validator repair binds to 3391b6b, reproduced failures, 43 evaluation checks and verification.json; it explicitly repairs the synthetic contract validator rather than claiming a live evaluator.\n- sr-7dvc — OK: Closed unknown-key diagnostic repair records pre-fix canary failures, post-fix 20/20 config coverage across user/project/environment/CLI layers, a valid counterpart and integration handoff; it is a bounded repair of .1.5, not a new configuration implementation track.\n- sr-8d2m — OK: Closed zero-runtime repair binds to 9cfef79, a failed pre-fix public-API regression and required-remote 15-test limits suite; it preserves positive budgets and request-cap precedence within .1.4’s existing obligation.\n- sr-adapter-audit-3djt — OK: Closed six-defect repair binds to f10321f/c80949c, seven regressions, exact aggregate evidence, 97 Rust tests and 105 independently checked Python tests; native/runtime support is not claimed.\n- sr-adapter-followup-s3n0 — OK: Closed follow-up binds to 3e06e97ff8fad92ba88e02d87b4d580265479aa0 and a three-file frozen overlay, three pre-fix failures/26 passes and final 101 Rust tests; the separate source-selection caller issue is explicitly handed to PurpleFrog under .4.1.\n\n## Actionable non-OK findings\n\n1. **.1.9 — preserve the closure dispute.** Comment 73 is explicit and remains the final comment on this assigned record. Later .1.12/.1.11 evidence is relevant to reconciliation, but do not erase the dispute or pretend the original six schema checks proved semantic coverage. Main should append a source-bound disposition of comments 66/68/73 and reconcile the close reason.\n2. **.1.5 — reconcile the effective-policy receipt contract.** The record explicitly assigns the generic runtime seam to .5.1/.5.11 and tests to .5.19/.5.20, so this is not evidence of a wholly ownerless product obligation. The defect is the closed P0 record’s unqualified receipt/revalidation AC versus its narrower closure evidence. Record what P0 froze and what P4 still must implement; do not require later P6/P7/P8 commands to close P0.\n3. **.2.4 — attach closure provenance.** The recorded 8/8 assertion is evidence that tests were reported, not the exact source/command/artifact binding required by its AC. Record the endpoint implementation revision and scoped execution evidence, with the redirect and credential-routing coverage distinguished from later transport integration.\n4. **Root epic — correct current-tense unstarted status.** The body contradicts its own implementation-started notes. Historical tracker-conversion comments can remain unchanged.\n5. **Expected pending proof, not defects:** .1, .2, .2.2, .2.3, .2.5, .2.6, .2.7, .2.8, .2.9, .2.10, .2.11, .2.12. Their individual missing evidence is enumerated above.\n\n## Recent correction and reference reconciliation\n\n- The archived review located the named recent commits in the recorded Git history. No fresh Git command or source audit was run here.\n- 02c08a3 addresses the nonexistent-reference rejection defect; the recorded review explicitly limits that result to source-reference validation, not exhaustive semantic coverage or execution of every referenced test.\n- .1.12 comment 105 explicitly binds the overwritten-unittest-method correction to 44722c3 and supersedes its earlier nothing-to-commit wording. Do not report that correction as unpublished.\n- .1.11 comment 107 explicitly includes 44722c3, 9cfef79 and adapter c80949c in the candidate based on 92553e3; its final close reason records the subsequent accepted implementation and acceptance commits. Its earlier “acceptance remains open” progress comment is historical, not by itself a contradiction of final closure.\n- The nonexistent tests/contract_matrix_contract.rs reference is recorded as an earlier defect in .1.9, not a newly verified current missing file. Do not turn that historical report into a fresh source claim.\n- No new broken-reference or ownerless-obligation finding is established by the assigned records. References to later-phase owners are handoffs, not proof that those owners have completed their work.\n\n## Four peer-added records: duplication versus gaps\n\nAll four are justified corrective work items within existing roadmap obligations, not evidence that four original product capabilities were missing from the roadmap:\n\n- sr-7dvc: concrete privacy regression inside .1.5’s unknown-key/config diagnostic contract.\n- sr-8d2m: concrete construction-path regression inside .1.4’s nonzero bounded-runtime contract.\n- sr-adapter-audit-3djt: concrete defects inside .1.6’s pure adapter/capability contract, with aggregate P0 acceptance separately owned.\n- sr-adapter-followup-s3n0: additional direct-call invariant and explicit-source defects after that audit; it preserves the P3 integration boundary and explicitly hands off the separate caller problem.\n\nTheir overlap is intentional defect ownership, not grounds to merge them into another fresh implementation track or delete their pre-fix evidence.\n\n## P1 contract-completeness conclusion\n\nThe assigned protocol records collectively specify the endpoint, credentials, deadlines, request/response bounds, retry admission and evidence separation coherently: trusted HTTPS base origin joined once to /v1/systemone; no URL credentials; credential-free loopback exception; origin-scoped bearer routing; explicit proxy policy; redirects/internal retries disabled; entry deadline propagated through all effects with cleanup reserve; every retry freshly admitted and charged; unknown usage never zero; separate bounded batch policy; and live proof distinct from local fixtures. No additional protocol-obligation GAP is established by these records. The remaining work is the recorded execution/acceptance proof, particularly .2.4’s closure provenance.\n\n## Verification boundary\n\nThis is a read-only acceptance review. The suggested fresh runtime command would violate the assignment’s explicit prohibition on validation commands and provider calls, and is unnecessary to identify these tracker defects. No runtime behavior was freshly verified; all test totals above are attributed to recorded evidence. Main owns all tracker amendments and any project-wide validation."
+    },
+    "ReviewB_P2P3": {
+      "summary": "Reality-check acceptance review of P2 (19 files) and P3 (15 files) is complete: every record read in full, including the char-per-line embedded comments (3.md 2043 lines, 4.md 1779 lines, 4.1.md 1012 lines, read via ranged continuations — no elision accepted). All records are open/in_progress product beads with unchecked ACs, so NEEDS-PROOF is the dominant expected verdict. One GAP found: the P2 parent's implementation-handoff comment enumerates children 3.1–3.17 but omits existing child 3.18 (shared command/config shell), which 3.13 depends on. No closed/deferred records exist in this set, so no closure defects. No contradictions with AGENTS.md/README.md invariants found: all embedded limits (1 MiB stdin, 32 MiB/10k roster, 2 MiB/2k tail, 256 KiB records, 128 terms/4096 scalars after escaping, 254+__none__, exit codes 5/6/7/11, manual-only semantics, Quill feature denylist, git ≥2.36 safe status flags, pre-redaction directive resolution, no-clobber publication, 200-char tool excerpts, 12 messages/12,000 scalars) match AGENTS.md and README exactly. All cited repo paths exist (tests/contract_matrix.toml, scripts/e2e/run.sh, docs/adapter-contract.md, docs/config-contract.md, THIRD_PARTY_NOTICES.md, COMPREHENSIVE_PLAN_TO_DESIGN_SKILLRANKER.md, docs/reality-check-bridge-plan.md). Recent commits (02c08a3, 44722c3, 9cfef79, 92553e3) are contract-matrix/config-evidence work; nothing in P2/P3 contradicts them. 4.1 (in_progress, PurpleFrog) carries an honest implementer comment: source-selection library and tests implemented, stdin-availability bypass fixed, final frozen proof pending, bead kept in_progress — consistent, no premature completion claim.",
+      "files": [
+        {
+          "path": "data/tmp/sr-acceptance-review-v2/md/P2/sr-roadmap-l1i.3.md",
+          "description": "P2 parent overview; GAP — handoff comment lists 3.1–3.17 only, omits existing 3.18"
+        },
+        {
+          "path": "data/tmp/sr-acceptance-review-v2/md/P2/sr-roadmap-l1i.3.1.md",
+          "description": "Descriptor-based skill reads; open, unchecked ACs"
+        },
+        {
+          "path": "data/tmp/sr-acceptance-review-v2/md/P2/sr-roadmap-l1i.3.2.md",
+          "description": "Secret scanning/redaction; in_progress (SnowyDune), no evidence comments yet"
+        },
+        {
+          "path": "data/tmp/sr-acceptance-review-v2/md/P2/sr-roadmap-l1i.3.3.md",
+          "description": "Bounded harness-compatible metadata parsing; open (goal text has cosmetic missing spaces 'at most32'-style only in 3.6/3.9)"
+        },
+        {
+          "path": "data/tmp/sr-acceptance-review-v2/md/P2/sr-roadmap-l1i.3.4.md",
+          "description": "Root discovery/precedence; open"
+        },
+        {
+          "path": "data/tmp/sr-acceptance-review-v2/md/P2/sr-roadmap-l1i.3.5.md",
+          "description": "IDs/aliases/collisions/restrictions; open"
+        },
+        {
+          "path": "data/tmp/sr-acceptance-review-v2/md/P2/sr-roadmap-l1i.3.6.md",
+          "description": "Explicit resolution before truncation; open (cosmetic 'at most32' typo)"
+        },
+        {
+          "path": "data/tmp/sr-acceptance-review-v2/md/P2/sr-roadmap-l1i.3.7.md",
+          "description": "Explicit roster import validation; open"
+        },
+        {
+          "path": "data/tmp/sr-acceptance-review-v2/md/P2/sr-roadmap-l1i.3.8.md",
+          "description": "Narrow Quill integration + feature denylist; open"
+        },
+        {
+          "path": "data/tmp/sr-acceptance-review-v2/md/P2/sr-roadmap-l1i.3.9.md",
+          "description": "Literal disjunction queries; open (cosmetic 'with128 terms and4096' typo)"
+        },
+        {
+          "path": "data/tmp/sr-acceptance-review-v2/md/P2/sr-roadmap-l1i.3.10.md",
+          "description": "Deterministic in-memory retrieval; open"
+        },
+        {
+          "path": "data/tmp/sr-acceptance-review-v2/md/P2/sr-roadmap-l1i.3.11.md",
+          "description": "Full revalidation before publication; open"
+        },
+        {
+          "path": "data/tmp/sr-acceptance-review-v2/md/P2/sr-roadmap-l1i.3.12.md",
+          "description": "Typed discovery/exclusion reason codes; open"
+        },
+        {
+          "path": "data/tmp/sr-acceptance-review-v2/md/P2/sr-roadmap-l1i.3.13.md",
+          "description": "Roster inspection/snapshot pagination; open; correctly delegates shared shell to 3.18"
+        },
+        {
+          "path": "data/tmp/sr-acceptance-review-v2/md/P2/sr-roadmap-l1i.3.14.md",
+          "description": "Atomic no-clobber private exports; open"
+        },
+        {
+          "path": "data/tmp/sr-acceptance-review-v2/md/P2/sr-roadmap-l1i.3.15.md",
+          "description": "Snapshot/drift comparison (I09); open"
+        },
+        {
+          "path": "data/tmp/sr-acceptance-review-v2/md/P2/sr-roadmap-l1i.3.16.md",
+          "description": "P2 end-to-end 'roster' suite owner; open; cites tests/contract_matrix.toml + scripts/e2e/run.sh (both exist)"
+        },
+        {
+          "path": "data/tmp/sr-acceptance-review-v2/md/P2/sr-roadmap-l1i.3.17.md",
+          "description": "P2 acceptance gate; open"
+        },
+        {
+          "path": "data/tmp/sr-acceptance-review-v2/md/P2/sr-roadmap-l1i.3.18.md",
+          "description": "Shared local-inspection command/config shell; open; exists but missing from parent 3.md handoff list"
+        },
+        {
+          "path": "data/tmp/sr-acceptance-review-v2/md/P3/sr-roadmap-l1i.4.md",
+          "description": "P3 parent overview; open; child list 4.1–4.14 complete"
+        },
+        {
+          "path": "data/tmp/sr-acceptance-review-v2/md/P3/sr-roadmap-l1i.4.1.md",
+          "description": "Source selection; in_progress (PurpleFrog) with honest pending-proof comment; consistent"
+        },
+        {
+          "path": "data/tmp/sr-acceptance-review-v2/md/P3/sr-roadmap-l1i.4.2.md",
+          "description": "Normalized local envelopes; open"
+        },
+        {
+          "path": "data/tmp/sr-acceptance-review-v2/md/P3/sr-roadmap-l1i.4.3.md",
+          "description": "Native JSONL snapshot readers/cursors; open"
+        },
+        {
+          "path": "data/tmp/sr-acceptance-review-v2/md/P3/sr-roadmap-l1i.4.4.md",
+          "description": "Branch/compaction/task boundaries; open"
+        },
+        {
+          "path": "data/tmp/sr-acceptance-review-v2/md/P3/sr-roadmap-l1i.4.5.md",
+          "description": "Claude prompt overlay; open"
+        },
+        {
+          "path": "data/tmp/sr-acceptance-review-v2/md/P3/sr-roadmap-l1i.4.6.md",
+          "description": "Optional cass adapter; open; exit-7 offline rejection matches README"
+        },
+        {
+          "path": "data/tmp/sr-acceptance-review-v2/md/P3/sr-roadmap-l1i.4.7.md",
+          "description": "Tool/result association + load evidence; open"
+        },
+        {
+          "path": "data/tmp/sr-acceptance-review-v2/md/P3/sr-roadmap-l1i.4.8.md",
+          "description": "Bounded request-first rendering; open"
+        },
+        {
+          "path": "data/tmp/sr-acceptance-review-v2/md/P3/sr-roadmap-l1i.4.9.md",
+          "description": "Task anchors/directives before loss; open"
+        },
+        {
+          "path": "data/tmp/sr-acceptance-review-v2/md/P3/sr-roadmap-l1i.4.10.md",
+          "description": "Safe project signals (git >=2.36 flags match AGENTS verbatim); open"
+        },
+        {
+          "path": "data/tmp/sr-acceptance-review-v2/md/P3/sr-roadmap-l1i.4.11.md",
+          "description": "Standard/minimal disclosure profiles (I06); open"
+        },
+        {
+          "path": "data/tmp/sr-acceptance-review-v2/md/P3/sr-roadmap-l1i.4.12.md",
+          "description": "Field-level disclosure receipts; open"
+        },
+        {
+          "path": "data/tmp/sr-acceptance-review-v2/md/P3/sr-roadmap-l1i.4.13.md",
+          "description": "Adapter conformance 'adapters' suite owner; open; cited paths exist"
+        },
+        {
+          "path": "data/tmp/sr-acceptance-review-v2/md/P3/sr-roadmap-l1i.4.14.md",
+          "description": "P3 acceptance gate; open"
+        }
+      ],
+      "architecture": "Tracker snapshot structure: P2 (sr-roadmap-l1i.3.*) is a 19-record phase graph — parent 3.md embedding the full roster/privacy/Quill embedded contract, 16 implementation children (3.1–3.16), a phase acceptance gate (3.17), and a shared command/config shell prerequisite (3.18, added later, consumed by 3.13). P3 (sr-roadmap-l1i.4.*) is a 15-record graph — parent 4.md, 12 implementation children (4.1–4.12), a conformance-suite owner (4.13), and acceptance gate (4.14). Both parents restate the P0–P9 implementation-order table; both e2e owners reference tests/contract_matrix.toml and scripts/e2e/run.sh. Invariants are pinned in AGENTS.md/README.md; all record-embedded limits and semantics were cross-checked against them.",
+      "report": "files_read: 34/34 (P2 19/19, P3 15/15), all complete including continuation ranges; baselines AGENTS.md (671 lines) and README.md (read through line 763 of 1954) used for contradiction checks.\n\nVerdict counts per phase:\n- P2 (19): OK 0, CONTRADICTION 0, STALE 0, NEEDS-PROOF 18, GAP 1.\n- P3 (15): OK 0, CONTRADICTION 0, STALE 0, NEEDS-PROOF 15, GAP 0.\n- Total: NEEDS-PROOF 33, GAP 1, all other verdicts 0.\n\nNEEDS-PROOF is the expected verdict: every record is open or in_progress with all acceptance_criteria boxes unchecked and no revision-bound evidence attached. 3.2 and 4.1 are in_progress with assigned owners; 4.1's comment honestly reports implemented tests but pending final frozen proof and instructs keeping the bead in_progress — no closure defect.\n\nNon-OK records (1):\n1. sr-roadmap-l1i.3 — GAP: the parent's 'Implementation handoff for P2' comment enumerates ownership for children 3.1–3.17 only; existing child 3.18 (shared local-inspection command/configuration shell, created 09:50, later than the parent's 09:17 snapshot) is absent from that list even though 3.13 explicitly consumes it ('consumes the strict local-inspection shell sr-roadmap-l1i.3.18'). An owner reading the parent's handoff would not learn 3.18 exists. Cosmetic observations, not verdict-level: 3.6 goal text 'at most32 requests' and 3.9 'with128 terms and4096 Unicode scalars' are missing spaces; meaning unambiguous from the embedded contracts (32 explicit references; 128 terms / 4,096 scalars).\n\nHunt results:\n- Closure defects: none — no record in P2/P3 is closed or deferred; no close_reason to audit.\n- AGENTS/README contradictions: none. Verified matches: 254 real skills + __none__; Quill-only BM25 with default-features-off denylist (no facade/lexical/gauntlet/oracle/cass-compat/Tantivy); explicit resolution before prefilter with exit 5 and 32-reference cap; full revalidation incl. outside-M/overflow/shadow dependencies, roster-changed vs exit 6; bounds table (1 MiB stdin, 1 MiB/64 context, 32 MiB/10k roster, 256 KiB/32 config, 2 MiB/2k tail, 256 KiB record, 8 MiB cass, 8 MiB observation watermark, 12/12,000, 200-char tool excerpts, 160/1000/700 excerpts, 256 KiB/16 KiB skill files, 10,000/32 MiB discovery); exit codes 5/6/7/11 semantics; offline cass rejection exit 7; manual_only vs user-invocable:false; git ≥2.36 safe status invocation flags verbatim; redact-before-truncate-then-rescan; duplicate-key/record rejection; no-clobber atomic publication; I06 minimal-profile restrict-only; I09 drift visibility; observe explicit-source and --no-ledger rejection.\n- Broken references: none — tests/contract_matrix.toml, scripts/e2e/run.sh, docs/adapter-contract.md, docs/config-contract.md, THIRD_PARTY_NOTICES.md, COMPREHENSIVE_PLAN_TO_DESIGN_SKILLRANKER.md, docs/reality-check-bridge-plan.md, docs/output-contract.md all exist; external links (code.claude.com, docs.typesafe.ai, git-scm.com) are plausible documentation citations not claimed as local files.\n- Missing owners: none within this set — every obligation has a live open/in_progress record; the only owner-enumeration gap is the 3.md handoff comment vs 3.18 above.\n- Stale content vs recent commits (02c08a3 contract-matrix unresolved-reference rejection, 44722c3 unittest-evidence fix, 9cfef79 zero live-batch runtime fix, 92553e3 bug filing): no P2/P3 record asserts anything these commits invalidate; 3.16/3.17/4.13/4.14's contract-matrix and no-silent-skip language is consistent with the tightened matrix validator.\n\nReviewed ID enumeration — P2: sr-roadmap-l1i.3, 3.1, 3.2, 3.3, 3.4, 3.5, 3.6, 3.7, 3.8, 3.9, 3.10, 3.11, 3.12, 3.13, 3.14, 3.15, 3.16, 3.17, 3.18. P3: sr-roadmap-l1i.4, 4.1, 4.2, 4.3, 4.4, 4.5, 4.6, 4.7, 4.8, 4.9, 4.10, 4.11, 4.12, 4.13, 4.14.\n\nRecommended main-agent amendment: append a handoff comment (or edit the existing one) on sr-roadmap-l1i.3 adding sr-roadmap-l1i.3.18 to the ownership list; optionally fix the two missing-space typos in 3.6/3.9 goals. No other tracker amendments indicated by this review."
+    },
+    "ReviewB_P4P5": {
+      "summary": "Completed all 53 assigned Markdown records: P4 23/23 and P5 30/30, including continuation reads and comments. Verdicts: 51 NEEDS-PROOF and 2 CONTRADICTION. No closed/deferred records or closure defects. Namespace, TTL, attribution, persistence and evaluation contracts are substantially consistent; two onboarding records retain conflicting README instructions.",
+      "files": [
+        {
+          "path": "/data/tmp/sr-acceptance-review-v2/md/P4",
+          "description": "All 23 assigned records reviewed completely; 21 NEEDS-PROOF, 2 CONTRADICTION."
+        },
+        {
+          "path": "/data/tmp/sr-acceptance-review-v2/md/P5",
+          "description": "All 30 assigned records reviewed completely; 30 NEEDS-PROOF."
+        }
+      ],
+      "architecture": "P4 owns strict configuration, two-stage ranking, exact session-scoped response caching, effect controls and core CLI publication. P5 adds optional metadata-only ledger state, independently attributed observations, historical feedback, frozen non-actionable replay and bounded evaluation. Calibration installation, priors and monitoring remain P8; protected shared allowance remains P6.",
+      "report": "## Scope and exact coverage\n\n| Phase | files_read | files_total | OK | CONTRADICTION | STALE | NEEDS-PROOF | GAP |\n|---|---:|---:|---:|---:|---:|---:|---:|\n| P4 | 23 | 23 | 0 | 2 | 0 | 21 | 0 |\n| P5 | 30 | 30 | 0 | 0 | 0 | 30 | 0 |\n| Total | 53 | 53 | 0 | 2 | 0 | 51 | 0 |\n\nEvery assigned file was read completely, including long parent handoff comments and the dry-run correction comment. All 53 records are open and have unchecked acceptance criteria. NEEDS-PROOF is the expected disposition of these unaccepted product obligations, not an implementation defect. No assigned record supplies a closed/deferred status or contradictory close_reason.\n\nReview was static and read-only: no source re-audit, validation commands, tests, provider requests or tracker mutations. Limited governing-document excerpts and path existence checks supported contradiction/reference classification; they do not establish runtime behavior or commit-specific verification.\n\n## Amendments warranted\n\n1. **sr-roadmap-l1i.5.16 — CONTRADICTION.** Its embedded I05 onboarding contract requires README to identify the “present documentation-only status before its command examples and installation instructions.” AGENTS.md:59–62 explicitly requires the requested finished-product voice and says not to add a design-stage banner; the comprehensive plan's opening alignment paragraph agrees. The same obsolete sentence remains in the plan's I05 paragraph, so this is conflicting governing prose inherited by the bead, not evidence that the demo implementation failed. Preserve honest technical status in capability/engineering/evidence records without ordering a forbidden README banner.\n2. **sr-roadmap-l1i.5.17 — CONTRADICTION.** Its embedded I05 paragraph repeats the same documentation-only README requirement, conflicting with the current finished-product instruction. Doctor's separation of key presence, network consent, historical transport checks and optional ledger readiness is otherwise consistent. Correct the inherited documentation instruction; leave product ACs open pending proof.\n\n## Targeted consistency findings\n\n- **Namespace:** .5/.5.7/.5.8/.5.10/.5.11/.5.20 agree on workspace/session/agent-branch namespaces, context epoch, adapter/schema/visibility and key generation. Request fingerprints are separate from decisions and delivery identities. Identical redacted text is not cross-session sharing authority. .6.9/.6.10 explicitly prevent cass or normalized producers from advancing native observation cursors merely by matching paths/session IDs.\n- **TTL versus observation versus retention:** response validity is 10 minutes from provider receipt, never renewed by reads/copies; negative ages/future timestamps invalidate. Observation attribution ends at the earliest next prompt/task boundary/session end/30 minutes. Ledger logical retention is 30 days. These are different clocks with consistent uses, not competing TTLs.\n- **Stage compatibility:** changing M, lowering a gate into an uncaptured stage, changed shortlist/request inputs, or incompatible model evidence cannot silently reuse another stage. Unversioned aliases prohibit cached-wide/fresh-rerank mixing. Replay freezes time/policy/eligibility and cannot import results into the live cache.\n- **Attribution/accounting:** shared responses do not share event IDs, decisions, exposures or judgments. Owners alone incur new attempt/usage counts; followers/cache consumers report zero new usage and retain provenance. Missing owner accounting remains unknown. Generated/prepared/emitted/acknowledged states are distinct; empty shadow output is not exposure. Latest preceding same-agent/turn emission wins attribution only with a proven boundary, and observations/loaded state/cursor CAS commit together.\n- **Persistence:** no-cache, no-ledger, no-persist and dry-run remain independent restrictive controls. Ordinary configuration/input reads remain permitted under no-persist; replay is intentionally stricter. Optional cache/ledger failure cannot silently reset protected allowance accounting. Clear fences old writers but permits new-generation recording. Quotas include maintenance reserve, sidecars/backups/temp, with no secure-erasure claim.\n- **Calibration/evaluation:** P5 supplies loss/metric/sampling machinery; references to calibration and priors do not authorize enabling P8 adaptation early. Loss 0/1/2, common judged cohorts, incomplete-versus-failed-versus-unstarted cases, fixed family splits, diagnostic seeds, weighted means and independent harm cohorts are consistently distinguished. .6.23 explicitly assigns optional pilot allocation to .10.14 rather than blocking P5.\n- **Minor historical-comment drift, not a closure defect:** .6 parent comment 11 lists the old .6.23 title “Separate diagnostic review queues and evaluate pilot allocation.” The current assigned .6.23 record clearly limits P5 to diagnostic queues and supplies the later owner. Prefer the current scoped record; the old handoff title is not a missing owner or proof of completion.\n\n## Reference checks\n\n- `scripts/e2e/run.sh`, `tests/contract_matrix.toml`, and `.env.example` exist.\n- Referenced external source paths exist: frankenscipy `crates/fsci-stats/src/lib.rs`; franken_numpy `crates/fnp-random/src/lib.rs`; frankenpandas `crates/fp-join/src/lib.rs` and `crates/fp-frame/src/lib.rs`. Only existence was checked; no backend source audit or qualification was performed.\n- The actual suite directory currently contains `runner-smoke.json` and `runner-contract.json`, not core-cli/cache/ledger/replay/evaluation product suites. The assigned open verification beads explicitly own creating/running those suites. Accordingly this is **pending product proof**, not fabricated executed evidence. Do not interpret “Own the checked-in … suite” as an already-executed receipt.\n- The matrix's sampled P5 rows are explicitly `status = \"planned\"`; its evaluator row currently names `replay` whereas .6.28 owns `evaluation`, and its ledger schema row names `replay` whereas .6.26 owns `ledger`. Their open mapping obligations must reconcile these designations before acceptance. No matrix validator or suite was run here.\n- No assigned record cites a concrete `schemas/...` filename whose nonexistence could establish a broken-schema reference. Generic requirements to deliver/update schemas remain unchecked obligations. Likewise illustrative skill paths and runtime output filenames are not asserted to be checked-in proof artifacts.\n- No commit-specific stale-code assertion is made for 02c08a3, 44722c3, 9cfef79 or 92553e3: this assignment did not re-audit those commits. Recorded source-reference repairs do not convert these open product ACs into passes.\n\n## Full per-record verdicts and ID enumeration\n\nEach NEEDS-PROOF line below names the particular unverified obligation. None should be treated as a newly discovered product defect solely because evidence is absent.\n\n### P4 — 23/23\n\n| Record ID | Verdict | One-line evidence / remaining proof |\n|---|---|---|\n| sr-roadmap-l1i.5 | NEEDS-PROOF | Parent requires executable P4 acceptance and revision-bound child evidence; all parent ACs remain unchecked and handoff explicitly says these are open product tasks. |\n| sr-roadmap-l1i.5.1 | NEEDS-PROOF | Strict precedence/trust validation and consequential-boundary policy rereads are specified, including overridden/no-op positive cases, but no execution receipt is attached. |\n| sr-roadmap-l1i.5.2 | NEEDS-PROOF | Bounded wide request, oriented gates, sentinel rescue and K/M-before-clamp cases have unchecked golden-request ACs. |\n| sr-roadmap-l1i.5.3 | NEEDS-PROOF | Meaningful independent fit questions, request bounds and injection-authority tests are requirements without recorded results. |\n| sr-roadmap-l1i.5.4 | NEEDS-PROOF | Per-candidate none eligibility and version-proven reusable-reference suppression are coherent; both numerical counterexamples and lifecycle tests remain unproved. |\n| sr-roadmap-l1i.5.5 | NEEDS-PROOF | Full-eligible softmax, finite extremes and stable-ID ties have explicit mapping/candidate-set distinctions but unchecked property evidence. |\n| sr-roadmap-l1i.5.6 | NEEDS-PROOF | First writable cache must verify actual SQLite engine/source ID and private paths; cache initialization is explicitly separate from ledger/allowance initialization, with no qualification receipt. |\n| sr-roadmap-l1i.5.7 | NEEDS-PROOF | Protected key and namespace/request/decision projections include session/source/epoch dependencies; one-dependency-at-a-time invalidation proof is absent. |\n| sr-roadmap-l1i.5.8 | NEEDS-PROOF | Per-stage actual-shortlist keys and receipt-based 10-minute TTL are consistent; rollback, partial-hit and unversioned-alias pair cases remain unchecked. |\n| sr-roadmap-l1i.5.9 | NEEDS-PROOF | Restrictive persistence modes and offline cass rejection are explicitly separated; filesystem/socket/process effect observations are not attached. |\n| sr-roadmap-l1i.5.10 | NEEDS-PROOF | Fenced namespace+exact-request response sharing preserves consumer identities and owner-only usage; competing-process takeover evidence is missing. |\n| sr-roadmap-l1i.5.11 | NEEDS-PROOF | Full pipeline and consumer-local publication checks distinguish network-only changes from output-sensitive changes; real CLI/TLS terminal-path proof remains unchecked. |\n| sr-roadmap-l1i.5.12 | NEEDS-PROOF | Versioned decisions, null unevaluated fields, bounded output and execution-versus-quality report status are specified without golden/output-boundary receipts. |\n| sr-roadmap-l1i.5.13 | NEEDS-PROOF | Table/TTY/explicit-format behavior and terminal sanitization are scoped to P4 while TUI remains later; real terminal/stream evidence is absent. |\n| sr-roadmap-l1i.5.14 | NEEDS-PROOF | Why-not must preserve candidate admission, request bytes/count and scores; no paired frozen-input run proves those invariants. |\n| sr-roadmap-l1i.5.15 | NEEDS-PROOF | Stateless exact preview and supplied stage-2 evidence are coherent; correction explicitly permits only the verified safe Git helper, but effect/byte-parity proof is absent. |\n| sr-roadmap-l1i.5.16 | CONTRADICTION | Embedded I05 orders a documentation-only README notice, conflicting with AGENTS' explicit no-banner finished-product instruction; demo behavior ACs also remain unproved. |\n| sr-roadmap-l1i.5.17 | CONTRADICTION | Embedded I05 repeats the conflicting documentation-only README requirement; doctor readiness/configuration behavior remains separately unproved. |\n| sr-roadmap-l1i.5.18 | NEEDS-PROOF | Capability registry must distinguish implemented/tested/planned interfaces and avoid exposing unfinished commands; feature/help/schema parity checks remain unchecked. |\n| sr-roadmap-l1i.5.19 | NEEDS-PROOF | Owns future core-cli production-boundary suite, positive controls and policy races; driver exists but no attached complete source-bound product run. |\n| sr-roadmap-l1i.5.20 | NEEDS-PROOF | Owns future cache multiprocess suite with TTL/fencing/consumer-policy races and network-only positive twins; no product receipt establishes it. |\n| sr-roadmap-l1i.5.21 | NEEDS-PROOF | Core acceptance explicitly requires complete applicable evidence and distinguishes later phases; no accepted build or completed gate is recorded. |\n| sr-roadmap-l1i.5.22 | NEEDS-PROOF | Bounded parser-corpus campaigns require nonzero counts, valid twins and minimized production-path regressions; no campaign output is attached. |\n\n### P5 — 30/30\n\n| Record ID | Verdict | One-line evidence / remaining proof |\n|---|---|---|\n| sr-roadmap-l1i.6 | NEEDS-PROOF | Parent consistently separates adoption, judgments, replay and inference quality; required P5 child/gate receipts remain unchecked. |\n| sr-roadmap-l1i.6.1 | NEEDS-PROOF | Metadata-only ledger schema separates verified deliveries, snapshots, attempts and judgments; real SQLite FK/uniqueness/namespace readback proof is absent. |\n| sr-roadmap-l1i.6.2 | NEEDS-PROOF | Transaction-local incarnation/generation checks prevent stale repopulation after clear; competing writer and new-generation success cases remain unchecked. |\n| sr-roadmap-l1i.6.3 | NEEDS-PROOF | 256-MiB ledger and 64-MiB cache/coordinator caps include reserve/sidecars/backups/temp; full-capacity maintenance and external-disk-pressure proof is missing. |\n| sr-roadmap-l1i.6.4 | NEEDS-PROOF | Explicit idempotent init and WAL-aware recoverable migration are specified; crash/reopen/backup evidence is not attached. |\n| sr-roadmap-l1i.6.5 | NEEDS-PROOF | Thirty-day logical retention, dependency-aware pruning and protected-state separation are coherent; boundary/clear/reserve tests remain unproved. |\n| sr-roadmap-l1i.6.6 | NEEDS-PROOF | Full historical membership includes outside-254/M alternatives and unknown coverage; dedup/retention/correction evidence remains unchecked. |\n| sr-roadmap-l1i.6.7 | NEEDS-PROOF | Unique owner attempt records preserve sent-timeout and unknown usage while followers add zero cost; no accounting integration receipt exists in the record. |\n| sr-roadmap-l1i.6.8 | NEEDS-PROOF | Prepared/emitted/acknowledged states and zero-byte shadow non-exposure are distinct; process death/short-write ambiguity tests remain unchecked. |\n| sr-roadmap-l1i.6.9 | NEEDS-PROOF | Separate 8-MiB observation delta, earliest 30-minute/boundary cutoff and atomic cursor CAS are specified without concurrency/crash proof. |\n| sr-roadmap-l1i.6.10 | NEEDS-PROOF | Exact-source observe preserves native/cass/normalized namespaces and required-write exits; native final-turn reconciliation and cross-source isolation remain unproved. |\n| sr-roadmap-l1i.6.11 | NEEDS-PROOF | Explicit versioned judgments preserve missing/conflicting labels and replace contributions on revision; assessor/revision/storage-failure cases remain unchecked. |\n| sr-roadmap-l1i.6.12 | NEEDS-PROOF | Paired historical corrections require distinct eligible alternatives and atomic group writes; unknown/absent/ineligible and failed-lookup cases lack results. |\n| sr-roadmap-l1i.6.13 | NEEDS-PROOF | Value reports distinguish adoption, judged usefulness, matched cost and unknown usage by channel; mixed-cohort arithmetic proof is absent. |\n| sr-roadmap-l1i.6.14 | NEEDS-PROOF | Frozen self-contained replay schema excludes live cache secrets and records completeness/numeric profile; import/tamper/profile validation ACs remain unchecked. |\n| sr-roadmap-l1i.6.15 | NEEDS-PROOF | CLI-only capture is bounded, private, no-clobber and deadline-charged; export race/full-disk/paid-request failure evidence is missing. |\n| sr-roadmap-l1i.6.16 | NEEDS-PROOF | Replay reads only explicit artifacts, freezes time/priors and rejects unsupported stage changes; exact parity and zero ambient effects remain unproved. |\n| sr-roadmap-l1i.6.17 | NEEDS-PROOF | Evaluation import preserves family splits, label revisions and join cardinality under bounded streaming; duplicate/null/many-to-many tests are not recorded. |\n| sr-roadmap-l1i.6.18 | NEEDS-PROOF | Named external Rust source paths exist, but interval sidedness, rejection sampling and actual pinned backend qualification remain unchecked. |\n| sr-roadmap-l1i.6.19 | NEEDS-PROOF | Offline default and separately authorized live batch attempts/deadlines retain unfinished work; cap/partial/fatal-error report evidence is absent. |\n| sr-roadmap-l1i.6.20 | NEEDS-PROOF | Independent relevance metrics and common 0/1/2 loss prohibit selective failure gains; exact arithmetic/denominator/confidence tests remain unchecked. |\n| sr-roadmap-l1i.6.21 | NEEDS-PROOF | Frozen family sampling distinguishes fresh randomized draws, diagnostic seeds, supplied provenance and census; membership/provenance tests are unrecorded. |\n| sr-roadmap-l1i.6.22 | NEEDS-PROOF | Horvitz–Thompson means, conservative stratum bounds and missing-label assignments are coherent; exhaustive tiny-population proof remains unchecked. |\n| sr-roadmap-l1i.6.23 | NEEDS-PROOF | Diagnostic queues cannot acquire representative inclusion probabilities; explicit ownership sends pilot allocation to .10.14, while queue/split isolation proof remains absent. |\n| sr-roadmap-l1i.6.24 | NEEDS-PROOF | Exact provider-handle bijections are separated from stable-identity/candidate-set changes and stochastic Jev effects; family/budget/invariance tests remain unchecked. |\n| sr-roadmap-l1i.6.25 | NEEDS-PROOF | Mathematical cards must recompute inputs and expose unsupported/partial gates without hook output; rendering/arithmetic evidence is missing. |\n| sr-roadmap-l1i.6.26 | NEEDS-PROOF | Owns future ledger CLI/SQLite lifecycle suite, scoped away from P8 monitor prerequisites; no source-bound product run is recorded. |\n| sr-roadmap-l1i.6.27 | NEEDS-PROOF | Owns future replay suite proving frozen parity, effect isolation, no-clobber publication and paid-failure accounting; no complete receipt is attached. |\n| sr-roadmap-l1i.6.28 | NEEDS-PROOF | Owns future evaluation suite and independent arithmetic/provenance oracles; planned matrix suite designation needs reconciliation before acceptance, not a fabricated pass. |\n| sr-roadmap-l1i.6.29 | NEEDS-PROOF | P5 acceptance demands same-revision storage/replay/evaluation evidence and honest not-established quality gates; all acceptance items remain unchecked. |\n\nNo missing live owner is established within the assigned records. References to later-phase ownership are not reviews of those unassigned records, and this report does not certify the rest of the tracker."
+    },
+    "ReviewB_P6P7": {
+      "summary": "Completed all 25 assigned record reviews: P6 14/14 and P7 11/11. Verdicts: 22 NEEDS-PROOF, 3 STALE, 0 OK, 0 CONTRADICTION, 0 GAP. Experimental-before-promotion ordering survives in acceptance criteria; no assigned record promises a GitHub Actions release path. The three stale records retain the obsolete literal 'documentation-only' status.",
+      "files": [
+        {
+          "path": "/data/tmp/sr-acceptance-review-v2/md/P6/sr-roadmap-l1i.7.md",
+          "description": "STALE — Embedded I05 still requires the 'present documentation-only status'; the recorded reality check establishes real foundation code/tests but no working recommendation product."
+        },
+        {
+          "path": "/data/tmp/sr-acceptance-review-v2/md/P6/sr-roadmap-l1i.7.1.md",
+          "description": "NEEDS-PROOF — Open, unchecked ACs require actual subprocess parser/runtime failure coverage, exit-zero quiet hooks, valid silent shadow predictions and preserved CLI errors; no execution evidence attached."
+        },
+        {
+          "path": "/data/tmp/sr-acceptance-review-v2/md/P6/sr-roadmap-l1i.7.2.md",
+          "description": "NEEDS-PROOF — Open renderer ACs require complete bounded explicit lists, safe single advice, current-mode publication checks and truthful partial-write state; no revision-bound proof attached."
+        },
+        {
+          "path": "/data/tmp/sr-acceptance-review-v2/md/P6/sr-roadmap-l1i.7.3.md",
+          "description": "NEEDS-PROOF — Open installer ACs require isolated-home managed-entry round trips, private backups, permissions/conflicts, cooperating locks and timeout coupling; no proof attached."
+        },
+        {
+          "path": "/data/tmp/sr-acceptance-review-v2/md/P6/sr-roadmap-l1i.7.4.md",
+          "description": "NEEDS-PROOF — Open allowance-setup ACs require crash-boundary/repeated-apply proof of intent/accounting/ready generations without charge reset; no evidence attached."
+        },
+        {
+          "path": "/data/tmp/sr-acceptance-review-v2/md/P6/sr-roadmap-l1i.7.5.md",
+          "description": "NEEDS-PROOF — Open debit ACs require real setup/admission races, verified writer durability, single-use permits and no guarded send before durable debit; no evidence attached."
+        },
+        {
+          "path": "/data/tmp/sr-acceptance-review-v2/md/P6/sr-roadmap-l1i.7.6.md",
+          "description": "NEEDS-PROOF — Open scope/recovery ACs require older-process activation, stateless intent refusal, clock/quota cases and wide-success/rerank-refusal without losing charges; no evidence attached."
+        },
+        {
+          "path": "/data/tmp/sr-acceptance-review-v2/md/P6/sr-roadmap-l1i.7.7.md",
+          "description": "NEEDS-PROOF — Open breaker ACs require fenced half-open races, obsolete-response rejection, credential isolation and honest process-local degradation; no evidence attached."
+        },
+        {
+          "path": "/data/tmp/sr-acceptance-review-v2/md/P6/sr-roadmap-l1i.7.8.md",
+          "description": "NEEDS-PROOF — Open snooze ACs require verified narrow scope, explicit precedence, no-persist behavior and ordered apply/publish races with positive counterparts; no evidence attached."
+        },
+        {
+          "path": "/data/tmp/sr-acceptance-review-v2/md/P6/sr-roadmap-l1i.7.9.md",
+          "description": "STALE — Embedded I05 line 61 retains 'present documentation-only status'; update to foundation/bootstrap-only wording while retaining the unavailable-product and honest-onboarding requirements."
+        },
+        {
+          "path": "/data/tmp/sr-acceptance-review-v2/md/P6/sr-roadmap-l1i.7.10.md",
+          "description": "NEEDS-PROOF — Open admission-suite ACs require complete multiprocess accounting/breaker evidence and distinguish process termination from power-loss proof; no results attached."
+        },
+        {
+          "path": "/data/tmp/sr-acceptance-review-v2/md/P6/sr-roadmap-l1i.7.11.md",
+          "description": "NEEDS-PROOF — Open claude-suite ACs require real supported-harness shadow conformance; renderer fixtures are separate and experimental delivery is explicitly assigned to .8.10."
+        },
+        {
+          "path": "/data/tmp/sr-acceptance-review-v2/md/P6/sr-roadmap-l1i.7.12.md",
+          "description": "NEEDS-PROOF — Open performance-suite ACs require all-invocation percentiles, memory, attempts/unknown usage and fallback causes on named conditions; targets are not claimed as measurements."
+        },
+        {
+          "path": "/data/tmp/sr-acceptance-review-v2/md/P6/sr-roadmap-l1i.7.13.md",
+          "description": "NEEDS-PROOF — Open shadow acceptance requires compatible real-harness, controls, accounting and complete applicable evidence-matrix reports; keeps advisory quality/release in P7."
+        },
+        {
+          "path": "/data/tmp/sr-acceptance-review-v2/md/P7/sr-roadmap-l1i.8.md",
+          "description": "NEEDS-PROOF — Open parent requires compatible relevance, independent controlled-harm and operational evidence; no achieved-gate or completion claim is recorded."
+        },
+        {
+          "path": "/data/tmp/sr-acceptance-review-v2/md/P7/sr-roadmap-l1i.8.1.md",
+          "description": "NEEDS-PROOF — Open relevance-promotion ACs require frozen independent-family holdout counts, explicit-case exclusion and prespecified justified uncertainty; no cohort/report attached."
+        },
+        {
+          "path": "/data/tmp/sr-acceptance-review-v2/md/P7/sr-roadmap-l1i.8.2.md",
+          "description": "NEEDS-PROOF — Open experiment-design ACs require equivalent isolated paired inputs, randomized arms, concealed adjudication and family grouping; no frozen design/proof attached."
+        },
+        {
+          "path": "/data/tmp/sr-acceptance-review-v2/md/P7/sr-roadmap-l1i.8.3.md",
+          "description": "NEEDS-PROOF — Open harm-promotion ACs require actual outcomes, harm-or-unresolved accounting and independent experimental delivery before advisory outcomes; no study evidence attached."
+        },
+        {
+          "path": "/data/tmp/sr-acceptance-review-v2/md/P7/sr-roadmap-l1i.8.4.md",
+          "description": "NEEDS-PROOF — Open availability ACs require at least 500 complete representative invocations, at most 5% fallback and verified experimental delivery for emitted outcomes; no traffic report attached."
+        },
+        {
+          "path": "/data/tmp/sr-acceptance-review-v2/md/P7/sr-roadmap-l1i.8.5.md",
+          "description": "STALE — Embedded I05 line 92 still calls the current state 'documentation-only'; replace that literal status without weakening the separate experimental trial, human observations or matched-cost requirements."
+        },
+        {
+          "path": "/data/tmp/sr-acceptance-review-v2/md/P7/sr-roadmap-l1i.8.6.md",
+          "description": "NEEDS-PROOF — Open promotion ACs explicitly require original complete relevance/harm/operational/trial studies and forbid substituting trial-mechanism conformance for production quality."
+        },
+        {
+          "path": "/data/tmp/sr-acceptance-review-v2/md/P7/sr-roadmap-l1i.8.7.md",
+          "description": "NEEDS-PROOF — Open release ACs require governed exact-revision checks, per-target installation proof and checksums; DSR is exclusive and GitHub Actions fallback is explicitly forbidden."
+        },
+        {
+          "path": "/data/tmp/sr-acceptance-review-v2/md/P7/sr-roadmap-l1i.8.8.md",
+          "description": "NEEDS-PROOF — Open rollout acceptance requires complete compatible gates/denominators, no holdout reuse, scoped claims and applicable unit/e2e evidence; no acceptance report attached."
+        },
+        {
+          "path": "/data/tmp/sr-acceptance-review-v2/md/P7/sr-roadmap-l1i.8.9.md",
+          "description": "NEEDS-PROOF — Open controlled-path ACs preserve shadow/public-readiness defaults, scoped trusted experimental selection and provider-independent rollback that fences pending publication."
+        },
+        {
+          "path": "/data/tmp/sr-acceptance-review-v2/md/P7/sr-roadmap-l1i.8.10.md",
+          "description": "NEEDS-PROOF — Open independent trial ACs require actual supported-harness emission, outage-safe rollback, complete safe evidence and both before/after-publication stop orderings; no proof attached."
+        }
+      ],
+      "architecture": "P6 owns quiet shadow protocol, production renderer, managed installation, durable allowance/breaker, snoozes and shadow acceptance. P7 .8.9 implements controlled experimental advice; .8.10 independently proves real-harness delivery before .8.3/.8.4/.8.5 studies; .8.6 promotes only after those studies and relevance evidence; .8.7 owns DSR release, .8.8 rollout acceptance. TUI remains separately gated P9 work.",
+      "report": "## Coverage and verdict counts\n\n| Phase | files_read | files_total | OK | CONTRADICTION | STALE | NEEDS-PROOF | GAP |\n|---|---:|---:|---:|---:|---:|---:|---:|\n| P6 | 14 | 14 | 0 | 0 | 2 | 12 | 0 |\n| P7 | 11 | 11 | 0 | 0 | 1 | 10 | 0 |\n| Total | 25 | 25 | 0 | 0 | 3 | 22 | 0 |\n\nEvery assigned file was read completely, including both parent comments; raw recovery reads removed ambiguity from reader-mode elision. Every record is open and every displayed acceptance checkbox is unchecked. No assigned record has a closed/deferred disposition or close_reason to challenge. NEEDS-PROOF is expected pending product acceptance, not a tracker defect. The files array contains the complete per-record verdict/evidence enumeration, including all non-OK records.\n\n## Amendments warranted\n\nThe same stale I05 sentence appears in sr-roadmap-l1i.7 (line 186), sr-roadmap-l1i.7.9 (line 61), and sr-roadmap-l1i.8.5 (line 92): 'The README must identify the present documentation-only status before its command examples and installation instructions.' The permitted reality-check index records real foundation code/tests and a bootstrap executable, while explicitly denying end-to-end ranking, hook safety and release readiness. Prefer foundation/bootstrap-only status with planned command examples and unavailable product workflows explicitly distinguished. This is a narrow wording correction, not a reason to close any product bead; all three also still require their scoped acceptance evidence.\n\n## Requested acceptance findings\n\n### Experimental-before-promotion: retained in AC text\n\n- sr-roadmap-l1i.8.9 ACs enable only explicit scoped trusted experimental selection while keeping ordinary shadow defaults and public readiness unchanged. Independent actual-harness acceptance belongs to the separate trial gate.\n- sr-roadmap-l1i.8.10 ACs require real supported-harness default silence plus a valid experimental emission, outage rollback and truthful delivery evidence. It explicitly accepts a mechanism, not quality or production readiness.\n- sr-roadmap-l1i.8.3, .8.4 and .8.5 each have a specific final AC requiring the independently verified experimental delivery path for advisory outcomes. Their embedded prerequisite names .8.9/.8.10 and expressly says not to wait for or prematurely claim .8.6 public promotion.\n- sr-roadmap-l1i.8.6's final AC requires original complete relevance, harm, operational and trial studies; experimental delivery conformance cannot substitute for quality evidence. Thus public promotion is not a circular prerequisite for gathering its own evidence.\n- sr-roadmap-l1i.7.2 and .7.11 separate local renderer verification/P6 shadow acceptance from the later actual experimental advisory trial. P6 does not wait on P7 trial evidence to finish its own shadow boundary.\n\n### Fail-open hook and safe installation: requirements present, execution unproved\n\n.7.1/.7.2/.7.11 classify the dedicated hook before non-exiting parsing and require empty stdout, sanitized stderr and exit zero for pre-publication failures, never blocking fields. Partial publication is separately classified as unknown delivery without retry/replacement JSON, not falsely promised empty output. .7.2 requires a current-mode final check. .7.3 limits writes/removal to the managed entry, uses trusted absolute executable paths, private backups and cooperating locks, preserves permissions, detects conflicts and explicitly disclaims compare-and-swap safety against unrelated external writers. Timeout changes cannot exceed the installed outer budget silently. .7.9 requires independent consent and explicit ledger initialization for recorded trials, not implicit installer activation.\n\n### Independence and empirical gates: requirements present, studies unproved\n\n.8.1 preserves at least 300 independent-family primary relevance cases, positive/no-match/near-miss and overflow coverage requirements, separate explicit-resolution metrics and frozen uncertainty methods. .8.2/.8.3 use equivalent isolated paired tasks with blinded review and family-level harm-or-unresolved endpoints; repeated runs do not enlarge independent sample size. Zero of 100 fails the 2% harm bound; zero of 150 meets it only under the declared valid model. Missing/unjudgeable outcomes are not silently dropped. The controlled harm cohort is distinct from the relevance holdout. .8.4 includes outages/timeouts across at least 500 representative invocations; .8.5 requires actual manual observations and disallows adoption-as-usefulness or unmatched cost claims.\n\n### Release and TUI boundaries\n\nNo assigned record promises a GitHub Actions path. .8.7 names DSR exclusively in its goal and explicitly forbids GitHub Actions fallback in both focused verification and AC text. Other standard evidence sections name DSR as the sole release orchestrator; .8.9/.8.10 make no release promise. This matches the supplied prohibition and the targeted AGENTS.md release-rule excerpt. References to TUI in .7.8/.7.10/.7.11/.7.12/.7.13 and the P7 promotion/layout material retain it as later P9 work with its own behavioral gate; they do not require shipping TUI to accept P6.\n\n## References, ownership and limitations\n\nThe referenced scripts/e2e/run.sh and tests/contract_matrix.toml paths resolve. Their existence was checked without reading implementation or executing them; this does not certify any named suite or future feature. The proposed crate tree in .8.7 is explicitly a starting layout, not evidence that every listed module exists, so planned filenames are not classified as broken proof references. The assigned snapshot contains live owners for the P6 hook/install/control/proof boundaries and P7 trial/empirical/promotion/release boundaries; no missing-owner GAP is established within this scope. Parent .8's older handoff comment enumerates the original eight children, but the later .8.9/.8.10 records and explicit consumer ACs retain their ownership, so that historical comment does not erase the trial work.\n\nNo source re-audit, validation command, provider call or tracker mutation was performed. Targeted supporting reads included the permitted reality-check index, release-rule/document excerpts, path listings and commit-subject metadata; commit subjects alone were not treated as implementation proof. No assigned record asserts that the recent evidence-validator/duration/configuration repairs are still absent. Verdicts are confined to these 25 snapshot records; no whole-tracker acceptance or actual dependency-graph verification is claimed."
+    },
+    "ReviewB_P8P9": {
+      "summary": "Completed resumed acceptance review of P8 (10 files) + P9 (37 files) of the SkillRanker tracker snapshot /data/tmp/sr-acceptance-review-v2/md/. All 47 records read completely (including all elided continuation ranges of both phase parents); every record is an open (or intentionally deferred) product bead with unchecked acceptance criteria, so protocol verdict NEEDS-PROOF applies across the board. Zero closure defects, zero contradictions with README.md/AGENTS.md/bridge plan, zero missing owners, zero broken references, and confirmed: all six P9 deferred records have live qualification owners, and no P9 record gates core P0–P4 work.",
+      "files": [
+        {
+          "path": "/data/tmp/sr-acceptance-review-v2/md/P8/sr-roadmap-l1i.9.md",
+          "description": "P8 parent; NEEDS-PROOF; open, 4/4 ACs unchecked; comment 14 = implementation handoff, children 9.1–9.9 enumerated and all verified present"
+        },
+        {
+          "path": "/data/tmp/sr-acceptance-review-v2/md/P8/sr-roadmap-l1i.9.1.md",
+          "description": "Centered shrunk Beta priors; NEEDS-PROOF; open, ACs unchecked, no comments"
+        },
+        {
+          "path": "/data/tmp/sr-acceptance-review-v2/md/P8/sr-roadmap-l1i.9.2.md",
+          "description": "Train/validation/holdout fitting; NEEDS-PROOF; open, ACs unchecked; leakage/missing-evidence contract internally consistent"
+        },
+        {
+          "path": "/data/tmp/sr-acceptance-review-v2/md/P8/sr-roadmap-l1i.9.3.md",
+          "description": "Preview/apply managed policy fields; NEEDS-PROOF; open, 5 ACs unchecked; I11 rollback seam added (updated 10:10Z), consistent with 9.4"
+        },
+        {
+          "path": "/data/tmp/sr-acceptance-review-v2/md/P8/sr-roadmap-l1i.9.4.md",
+          "description": "Rollback without restoring authority; NEEDS-PROOF; open, 4 ACs unchecked"
+        },
+        {
+          "path": "/data/tmp/sr-acceptance-review-v2/md/P8/sr-roadmap-l1i.9.5.md",
+          "description": "Composite-risk e-value accumulator; NEEDS-PROOF; open, 4 ACs unchecked; math contract self-consistent (supermartingale/Ville framing correct as written)"
+        },
+        {
+          "path": "/data/tmp/sr-acceptance-review-v2/md/P8/sr-roadmap-l1i.9.6.md",
+          "description": "Ordered finalization + nonrefundable alpha persistence; NEEDS-PROOF; open, 5 ACs unchecked; epoch-invalidation ownership clarification present"
+        },
+        {
+          "path": "/data/tmp/sr-acceptance-review-v2/md/P8/sr-roadmap-l1i.9.7.md",
+          "description": "Expose monitoring evidence, no automatic production changes; NEEDS-PROOF; open, 5 ACs unchecked; not-enabled vs unmonitored distinction present"
+        },
+        {
+          "path": "/data/tmp/sr-acceptance-review-v2/md/P8/sr-roadmap-l1i.9.8.md",
+          "description": "Learned-policy lifecycle e2e; NEEDS-PROOF; open, 7 ACs unchecked; owns learning suite (updated 10:10Z)"
+        },
+        {
+          "path": "/data/tmp/sr-acceptance-review-v2/md/P8/sr-roadmap-l1i.9.9.md",
+          "description": "Accept learning only after held-out benefit; NEEDS-PROOF; open, 6 ACs unchecked"
+        },
+        {
+          "path": "/data/tmp/sr-acceptance-review-v2/md/P9/sr-roadmap-l1i.10.md",
+          "description": "P9 parent; NEEDS-PROOF; open, 4/4 ACs unchecked; 30 children enumerated across full 3,772-line letter-spaced segments, all verified present; comments 20/21 document intentional deferrals and 10.30/10.31 ownership coverage"
+        },
+        {
+          "path": "/data/tmp/sr-acceptance-review-v2/md/P9/sr-roadmap-l1i.10.1.md",
+          "description": "I07 Quill passage selection experiment; NEEDS-PROOF; open, unchecked"
+        },
+        {
+          "path": "/data/tmp/sr-acceptance-review-v2/md/P9/sr-roadmap-l1i.10.1.1.md",
+          "description": "Passage equal-budget gate, owns `passages` suite; NEEDS-PROOF; open, unchecked"
+        },
+        {
+          "path": "/data/tmp/sr-acceptance-review-v2/md/P9/sr-roadmap-l1i.10.2.md",
+          "description": "I08 multi-view overflow retrieval experiment; NEEDS-PROOF; open, unchecked"
+        },
+        {
+          "path": "/data/tmp/sr-acceptance-review-v2/md/P9/sr-roadmap-l1i.10.3.md",
+          "description": "Description diagnostics + optional Jev rubric; NEEDS-PROOF; open, unchecked"
+        },
+        {
+          "path": "/data/tmp/sr-acceptance-review-v2/md/P9/sr-roadmap-l1i.10.4.md",
+          "description": "I10 evaluation-only description overlays; NEEDS-PROOF; open, unchecked"
+        },
+        {
+          "path": "/data/tmp/sr-acceptance-review-v2/md/P9/sr-roadmap-l1i.10.5.md",
+          "description": "Gap analysis from explicitly retained excerpts; NEEDS-PROOF; open, unchecked"
+        },
+        {
+          "path": "/data/tmp/sr-acceptance-review-v2/md/P9/sr-roadmap-l1i.10.6.md",
+          "description": "Per-session refresh scheduling (watch-mode budgets); NEEDS-PROOF; open, unchecked"
+        },
+        {
+          "path": "/data/tmp/sr-acceptance-review-v2/md/P9/sr-roadmap-l1i.10.7.md",
+          "description": "FrankenTUI build; NEEDS-PROOF; open, 5 ACs unchecked; PTY cases delegated to 10.24 which exists"
+        },
+        {
+          "path": "/data/tmp/sr-acceptance-review-v2/md/P9/sr-roadmap-l1i.10.8.md",
+          "description": "Native adapter aggregate qualification boundary; NEEDS-PROOF; open, unchecked; ownership clarification: aggregate review, not a prerequisite blocking adapter work"
+        },
+        {
+          "path": "/data/tmp/sr-acceptance-review-v2/md/P9/sr-roadmap-l1i.10.8.1.md",
+          "description": "Codex conformance proof; NEEDS-PROOF; DEFERRED with open qualification owners 10.15 (contract) + 10.27 (disposition); explicitly stays deferred/unclosed if unsupported — no closure defect"
+        },
+        {
+          "path": "/data/tmp/sr-acceptance-review-v2/md/P9/sr-roadmap-l1i.10.8.2.md",
+          "description": "omp/pi conformance proof; NEEDS-PROOF; DEFERRED with open owners 10.17 + 10.28"
+        },
+        {
+          "path": "/data/tmp/sr-acceptance-review-v2/md/P9/sr-roadmap-l1i.10.8.3.md",
+          "description": "Grok conformance proof; NEEDS-PROOF; DEFERRED with open owners 10.19 + 10.29"
+        },
+        {
+          "path": "/data/tmp/sr-acceptance-review-v2/md/P9/sr-roadmap-l1i.10.9.md",
+          "description": "Chunked selection experiment; NEEDS-PROOF; open, unchecked"
+        },
+        {
+          "path": "/data/tmp/sr-acceptance-review-v2/md/P9/sr-roadmap-l1i.10.10.md",
+          "description": "Repeated-advice suppression experiment; NEEDS-PROOF; open, unchecked; snooze/label separation consistent with I04 owners"
+        },
+        {
+          "path": "/data/tmp/sr-acceptance-review-v2/md/P9/sr-roadmap-l1i.10.11.md",
+          "description": "Independent equal-budget promotion studies; NEEDS-PROOF; open, unchecked; P8 deps only when learned outputs actually consumed"
+        },
+        {
+          "path": "/data/tmp/sr-acceptance-review-v2/md/P9/sr-roadmap-l1i.10.12.md",
+          "description": "FrankenSQLite behind established storage contract; NEEDS-PROOF; open, unchecked; anti-spoofing qualification clause present"
+        },
+        {
+          "path": "/data/tmp/sr-acceptance-review-v2/md/P9/sr-roadmap-l1i.10.13.md",
+          "description": "Phase close with per-feature dispositions; NEEDS-PROOF; open, unchecked"
+        },
+        {
+          "path": "/data/tmp/sr-acceptance-review-v2/md/P9/sr-roadmap-l1i.10.14.md",
+          "description": "Pilot-based sampling allocation; NEEDS-PROOF; open, 4 ACs unchecked; owns sampling-allocation suite"
+        },
+        {
+          "path": "/data/tmp/sr-acceptance-review-v2/md/P9/sr-roadmap-l1i.10.15.md",
+          "description": "Codex contract qualification; NEEDS-PROOF; open, unchecked; publishes findings to disposition 10.27"
+        },
+        {
+          "path": "/data/tmp/sr-acceptance-review-v2/md/P9/sr-roadmap-l1i.10.16.md",
+          "description": "Codex adapter implementation; NEEDS-PROOF; DEFERRED pending 10.15 + 10.27 (both open); activation protocol explicit"
+        },
+        {
+          "path": "/data/tmp/sr-acceptance-review-v2/md/P9/sr-roadmap-l1i.10.17.md",
+          "description": "omp/pi contract qualification; NEEDS-PROOF; open, unchecked; publishes to 10.28"
+        },
+        {
+          "path": "/data/tmp/sr-acceptance-review-v2/md/P9/sr-roadmap-l1i.10.18.md",
+          "description": "omp/pi adapter implementation; NEEDS-PROOF; DEFERRED pending 10.17 + 10.28"
+        },
+        {
+          "path": "/data/tmp/sr-acceptance-review-v2/md/P9/sr-roadmap-l1i.10.19.md",
+          "description": "Grok contract qualification; NEEDS-PROOF; open, unchecked; publishes to 10.29"
+        },
+        {
+          "path": "/data/tmp/sr-acceptance-review-v2/md/P9/sr-roadmap-l1i.10.20.md",
+          "description": "Grok adapter implementation; NEEDS-PROOF; DEFERRED pending 10.19 + 10.29"
+        },
+        {
+          "path": "/data/tmp/sr-acceptance-review-v2/md/P9/sr-roadmap-l1i.10.21.md",
+          "description": "Query-views verification gate; NEEDS-PROOF; open, owns `query-views` suite"
+        },
+        {
+          "path": "/data/tmp/sr-acceptance-review-v2/md/P9/sr-roadmap-l1i.10.22.md",
+          "description": "Description-overlays verification gate; NEEDS-PROOF; open, owns `description-overlays` suite"
+        },
+        {
+          "path": "/data/tmp/sr-acceptance-review-v2/md/P9/sr-roadmap-l1i.10.23.md",
+          "description": "Gaps privacy/uncertainty gate; NEEDS-PROOF; open, owns `gaps` suite"
+        },
+        {
+          "path": "/data/tmp/sr-acceptance-review-v2/md/P9/sr-roadmap-l1i.10.24.md",
+          "description": "TUI real-PTY gate; NEEDS-PROOF; open, owns `tui` suite; is the named owner referenced by 10.7"
+        },
+        {
+          "path": "/data/tmp/sr-acceptance-review-v2/md/P9/sr-roadmap-l1i.10.25.md",
+          "description": "Chunks verification gate; NEEDS-PROOF; open, owns `chunks` suite"
+        },
+        {
+          "path": "/data/tmp/sr-acceptance-review-v2/md/P9/sr-roadmap-l1i.10.26.md",
+          "description": "Advice-suppression gate; NEEDS-PROOF; open, owns `advice-suppression` suite"
+        },
+        {
+          "path": "/data/tmp/sr-acceptance-review-v2/md/P9/sr-roadmap-l1i.10.27.md",
+          "description": "Codex native-support disposition; NEEDS-PROOF; open, unchecked; both legitimate outcomes defined, inconclusive stays open"
+        },
+        {
+          "path": "/data/tmp/sr-acceptance-review-v2/md/P9/sr-roadmap-l1i.10.28.md",
+          "description": "omp/pi disposition; NEEDS-PROOF; open, unchecked"
+        },
+        {
+          "path": "/data/tmp/sr-acceptance-review-v2/md/P9/sr-roadmap-l1i.10.29.md",
+          "description": "Grok disposition; NEEDS-PROOF; open, unchecked"
+        },
+        {
+          "path": "/data/tmp/sr-acceptance-review-v2/md/P9/sr-roadmap-l1i.10.30.md",
+          "description": "Opt-in abstention-message + top-N hook experiments (owner); NEEDS-PROOF; open, 3 ACs unchecked; comment 21 confirms deliberate late ownership coverage"
+        },
+        {
+          "path": "/data/tmp/sr-acceptance-review-v2/md/P9/sr-roadmap-l1i.10.31.md",
+          "description": "Hook-presentation acceptance gate; NEEDS-PROOF; open, owns `hook-presentation` suite"
+        },
+        {
+          "path": "/data/tmp/sr-acceptance-review-v2/md/P9/sr-roadmap-l1i.10.32.md",
+          "description": "Description-doctor offline/online boundary gate; NEEDS-PROOF; open, 4 ACs unchecked; owns `description-doctor` suite"
+        }
+      ],
+      "architecture": "Review scope: per-record Markdown snapshot (git-tracked .beads/issues.jsonl export, sha256 e3b81e5f..., 195 rows) limited to P8/priors-calibration-monitoring (sr-roadmap-l1i.9.*) and P9/optional-experiments-native-TUI (sr-roadmap-l1i.10.*). Method: complete reads of all 47 files including ranged continuation of both phase parents (9.md: 1399 lines via 1-300/300-753/754-1399; 10.md: 3,772 lines via 1-300 plus 300-3103 in four ranges and 3104-3772), followed by targeted contradiction/broken-reference greps against README.md, AGENTS.md and docs/reality-check-bridge-plan.md and existence checks of cited files (scripts/e2e/run.sh, tests/contract_matrix.toml both exist). Read-only throughout: no edits, no tracker mutation, no validation commands, no provider calls.",
+      "report": "ACCEPTANCE REVIEW — P8 + P9, /data/tmp/sr-acceptance-review-v2/md/\n\nFILES READ: 47/47 (P8: 10, P9: 37). Every file read completely; both oversized phase parents read to their final lines (9.md → 1399; 10.md → 3772) with no elision accepted.\n\nVERDICT COUNTS\n- P8: NEEDS-PROOF 10 · OK 0 · CONTRADICTION 0 · STALE 0 · GAP 0\n- P9: NEEDS-PROOF 37 · OK 0 · CONTRADICTION 0 · STALE 0 · GAP 0\n- Total: 47 NEEDS-PROOF, 0 defects. NEEDS-PROOF is the protocol-expected verdict: all 47 records are status=open (41) or status=deferred (6) with 100% unchecked acceptance criteria and zero recorded verification evidence, and none carries a closure or close_reason claim to audit.\n\nFULL ID ENUMERATION (verdict per record)\nP8 (10): sr-roadmap-l1i.9 NEEDS-PROOF (parent, open; comment 14 = implementation handoff, not a completion claim; children 9.1–9.9 all enumerated and verified) · .9.1 NEEDS-PROOF · .9.2 NEEDS-PROOF · .9.3 NEEDS-PROOF · .9.4 NEEDS-PROOF · .9.5 NEEDS-PROOF · .9.6 NEEDS-PROOF · .9.7 NEEDS-PROOF · .9.8 NEEDS-PROOF · .9.9 NEEDS-PROOF. All unchecked ACs; no owner missing; internal math (Beta(1,4) centered/shrunk prior; q∈{0.05,0.10,0.20} mixture, threshold 20 at alpha=0.05) stated consistently across 9/9.1/9.2/9.5/9.6/9.7/9.8 with no internal contradiction.\nP9 (37): .10 NEEDS-PROOF (parent) · .10.1 · .10.1.1 · .10.2 · .10.3 · .10.4 · .10.5 · .10.6 · .10.7 · .10.8 · .10.8.1 (deferred) · .10.8.2 (deferred) · .10.8.3 (deferred) · .10.9 · .10.10 · .10.11 · .10.12 · .10.13 · .10.14 · .10.15 · .10.16 (deferred) · .10.17 · .10.18 (deferred) · .10.19 · .10.20 (deferred) · .10.21 · .10.22 · .10.23 · .10.24 · .10.25 · .10.26 · .10.27 · .10.28 · .10.29 · .10.30 · .10.31 · .10.32 — all NEEDS-PROOF (open+unchecked, or deferred-with-open-qualification-owner).\n\nASSIGNED CHECKS\n1) Deferred records have qualification owners — VERIFIED. All six deferred items name live open owners: .10.8.1←.10.15+.10.27; .10.8.2←.10.17+.10.28; .10.8.3←.10.19+.10.29; .10.16←.10.15+.10.27 (and blocker .10.8.1 before opening); .10.18←.10.17+.10.28; .10.20←.10.19+.10.29. Each deferral text explicitly keeps the branch deferred/unclosed on a verified-unsupported outcome ('a disposition is not proof of implementation'), and parent comment 20 confirms the six deferrals are intentional. Owner cross-check agrees with bridge-plan G69/G70 and the I13 owner set (.1.6/.4.13/.7.11/.10.8/.10.27–.10.29).\n2) No P9 record gates core P0–P4 work — VERIFIED. .10.8 states it is 'the aggregate support review, not a prerequisite that blocks its own adapter implementation... none delays the P4 CLI or P6 Claude boundary'; deferred native items activate only via an explicit disposition protocol; every per-feature gate says 'another unrelated experiment cannot be required just to test or report this feature'; parent 10 states 'P0 need not finalize P9 experimental interfaces'; bridge plan G7: 'P9 depends on P7 and only those P8 outputs actually used. No P9 experiment or generalized native adapter blocks first useful CLI delivery.' AGENTS.md:431–433 ('P4 CLI does not imply... P9 TUI availability') and 10.11 (P8 dependencies added 'only when learned outputs are actually consumed', .10.30: 'No P8 dependency unless the experiment actually consumes learned outputs') corroborate.\n3) Closure defects — none found: zero closed records in P8/P9; the six deferrals carry no close_reason and explicitly forbid closure-by-disposition.\n4) Contradictions vs README.md/AGENTS.md/COMPREHENSIVE_PLAN — none found in assigned records: README calibration/rollback sections (sr calibrate --rollback, loss table, priors disabled by default, monitor composite endpoint, threshold 20, epoch invalidation, unmonitored) match P8 text; README experiment table and TUI/suppression/chunk/capabilities sections match 10.1–10.10/10.24–10.26/10.30–10.31; AGENTS.md phase table and 'never penalize unobserved loads', monitoring and native-adapter clauses match. README's 'sr tui' badge/command presence describes the documented optional interface, and no P8/P9 record claims shipped implementation, so no staleness arises.\n5) Missing owners — none: every I04/I07/I08/I10/I13 obligation touching P8/P9 has a live record (I04: .10.10/.10.30/.10.31; I07: .10.1/.10.1.1; I08: .10.2/.10.21; I10: .10.3/.10.4/.10.22; I13: .10.8/.10.15/.10.17/.10.19/.10.27–.10.29), matching bridge-plan line 415.\n6) Broken references — none: cited artifacts exist (scripts/e2e/run.sh, tests/contract_matrix.toml, docs/reality-check-bridge-plan.md, README.md, AGENTS.md). Suite flags named by gate records (learning, passages, query-views, description-overlays, description-doctor, gaps, tui, chunks, advice-suppression, native-codex/omp/grok, sampling-allocation, storage-backend, hook-presentation) do not yet appear in run.sh — consistent with open status since the suites are those beads' deliverables, not cited-as-existing evidence; flagged as observation, not a defect. External links (arxiv.org/abs/1808.03204, 2010.09686, 1810.08240, NIST, StatCan, code.claude.com hooks) were not dereferenced per the no-provider-calls constraint.\n7) Stale content vs shipped commits (02c08a3, 44722c3, 9cfef79, 92553e3) — no contradiction found against current working-tree README/AGENTS content; commit-object inspection was not possible (no shell tool in this read-only assignment; git subcommands are outside the permitted toolset). This residual is explicitly not evidence of staleness. Code-level findings were not re-audited per contract (recorded in docs/reality-check-bridge-plan.md, used only as index).\n\nNON-OK RECORDS: none. No CONTRADICTION, STALE, or GAP findings to report; the 47 NEEDS-PROOF verdicts are the expected state for open product beads with unchecked ACs, not defects.\n\nHunt/scope compliance: claims limited to the 47 assigned records plus the named cross-reference docs; no source re-audit, no reality-check rerun."
+    }
+  },
+  "integration_corrections": [
+    "P6/P7 third stale record is sr-roadmap-l1i.8.5, not sr-roadmap-l1i.7.13.",
+    "README banner contradiction verdicts describe the reviewers snapshot instructions, not a universal or current prohibition; current loaded repository rules require truthful implementation status."
+  ],
+  "verdict_counts": {
+    "OK": 20,
+    "CONTRADICTION": 4,
+    "STALE": 4,
+    "GAP": 1,
+    "NEEDS-PROOF": 166
+  }
+}
