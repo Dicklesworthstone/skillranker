@@ -207,7 +207,8 @@ def validate_policy(policy: dict[str, Any]) -> None:
     require(relevance.get("minimum_positive_cases") == 150, "relevance cohort must require 150 positives")
     require(relevance.get("minimum_no_match_cases") == 100, "relevance cohort must require 100 no-match cases")
     require(relevance.get("minimum_near_miss_cases_across_groups") == 50, "relevance cohort must require 50 near-miss cases")
-    require("controlled_harm_cohort" in relevance.get("separate_from", []), "relevance cohort must stay separate from harm cohort")
+    require(id_set(relevance.get("separate_from")) == {"controlled_harm_cohort", "operational_fallback_cohort"},
+            "relevance, harm and operational cohorts must stay separate")
 
     harm = reqs.get("controlled_harm", {})
     require_count(harm.get("minimum_independent_task_family_pairs_for_zero_event_iid_claim"))
@@ -215,6 +216,10 @@ def validate_policy(policy: dict[str, Any]) -> None:
     bound = harm.get("maximum_one_sided_95_upper_bound")
     require(json_number(bound) and approx(bound, 0.02), "harm upper bound must be numeric 0.02")
     require(harm.get("endpoint") == "new_harm_or_unresolved", "harm endpoint must include unresolved cases")
+    require(harm.get("interval") == "one_sided_95_clopper_pearson_when_prespecified_binomial_model_is_justified",
+            "harm interval must preserve the frozen method and model assumptions")
+    require(harm.get("separate_from") == "300_case_relevance_holdout",
+            "harm cohort must stay separate from the relevance holdout")
 
     operational = reqs.get("operational_fallback", {})
     require_count(operational.get("minimum_representative_hook_invocations"))
@@ -234,8 +239,18 @@ def validate_policy(policy: dict[str, Any]) -> None:
     }
     require(loss_values == expected_loss, "loss table must exactly match frozen 0/1/2 policy")
     require(all(type(x) is int for x in loss_values.values()), "loss values must be integers, not booleans")
+    require(policy.get("loss_policy", {}).get("equal_loss_tie_break") ==
+            ["fewer_operational_failures", "frozen_baseline_policy"],
+            "equal loss must prefer fewer failures before the frozen baseline")
     require(policy.get("uncertainty_and_sampling", {}).get("model_assumptions_required") is True,
             "confidence claims require a prospectively justified endpoint model")
+    require(policy.get("uncertainty_and_sampling", {}).get("primary_relevance_intervals") ==
+            "two_sided_95_wilson_with_one_primary_case_per_independent_family",
+            "relevance intervals must preserve the frozen method and independent unit")
+    require(id_set(policy.get("baselines")) == {
+        "quill_only_lexical", "typesafe_cookbook_style_selection", "choice_only", "fit_only",
+        "proposed_blend", "always_abstain_negative_control", "latest_request_only_context",
+    }, "baselines must retain every frozen comparison and negative control")
     require_count(reqs.get("overflow_candidate_coverage_at_254", {}).get("minimum_positive_overflow_cases"))
     require(policy.get("loss_policy", {}).get("always_abstain_counterexample_required") is True,
             "always-abstain negative control is required")
@@ -260,6 +275,40 @@ def validate_policy(policy: dict[str, Any]) -> None:
             "attempted operational failures must retain full loss")
     require(missing.get("missing_replay_response", {}).get("status") == "not_estimable_for_policies_requiring_that_response", "missing replay responses must be not estimable")
     require(missing.get("unstarted_due_to_batch_cap_or_deadline", {}).get("status") == "unfinished_partial_report", "unstarted cases must be unfinished partial reports")
+
+
+def validate_case_availability(row: dict[str, Any], kind: str, acceptable: set[str]) -> None:
+    """Check synthetic case preconditions, not actual harness availability.
+
+    A fixed oracle flag cannot establish the loaded-reference/workflow contrast
+    if its input evidence was removed or contradicts the declared usage kind.
+    """
+    available = row.get("already_available_references")
+    unique_ids(available, "skill_id")
+    for record in available:
+        # Fixture versions are bounded opaque tokens, including synthetic tags;
+        # parsing them does not attest an actual content hash or loaded file.
+        id_set([record.get("content_version")])
+        require(record.get("availability") in ("complete_current_epoch", "historically_loaded_not_current_invocation"),
+                "availability evidence must identify current or historical content")
+    # Overflow fixtures intentionally have a roster summary rather than a full
+    # roster. Do not infer reference suppression from absent usage metadata.
+    roster = {record["skill_id"]: record for record in row.get("visible_roster", [])}
+    current_references = {
+        record["skill_id"] for record in available
+        if record["availability"] == "complete_current_epoch"
+        and roster.get(record["skill_id"], {}).get("usage_kind") == "reference"
+    }
+    if kind != "explicit_request":
+        require(not (acceptable & current_references),
+                "already available references cannot require an additional advisory invocation")
+    if kind == "loaded_reference_empty_y":
+        require(bool(current_references), "loaded-reference case needs a visible current reference")
+    if kind == "repeatable_workflow_nonempty_y":
+        require(any(record["skill_id"] in acceptable
+                    and roster.get(record["skill_id"], {}).get("usage_kind") == "workflow"
+                    for record in available),
+                "repeatable-workflow case needs a previously loaded acceptable workflow")
 
 
 def validate_cases(cases: list[dict[str, Any]], policy: dict[str, Any]) -> None:
@@ -298,11 +347,13 @@ def validate_cases(cases: list[dict[str, Any]], policy: dict[str, Any]) -> None:
             require(all(x.get("usage_kind") in {"reference", "workflow", "unknown"}
                         and isinstance(x.get("invocation_name"), str) and x["invocation_name"]
                         for x in roster), "invalid synthetic roster record")
-        unique_ids(row.get("already_available_references"), "skill_id")
+        validate_case_availability(row, kind, acceptable)
         require(row.get("split") == "diagnostic_synthetic", "synthetic case is not promotion evidence")
         require(type(row.get("primary_family_case")) is bool, "primary-family marker must be boolean")
         require("oracle" in row and isinstance(row["oracle"], dict), "oracle object required")
         eligible = kind not in {"explicit_request", "roster_change", "operational_failure_semantics"}
+        require(eligible or row["primary_family_case"] is False,
+                "non-advisory cases cannot be primary relevance observations")
         require(row["oracle"].get("advisory_metrics_eligible") is eligible,
                 "advisory metric eligibility contradicts case kind")
         require(row["oracle"].get("explicit_metrics_eligible") is (kind == "explicit_request"),
@@ -434,8 +485,16 @@ def validate_expected(expected: dict[str, Any]) -> None:
     require(sep.get("must_not_conflate") is True, "cohorts must be marked non-conflatable")
 
 
+class SafeArgumentParser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:
+        # argparse's default error includes unrecognized arguments, which can
+        # contain private paths or credentials even before any file is read.
+        fail("invalid command-line arguments")
+
+
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Validate SkillRanker v1 evaluation policy fixtures.")
+    parser = SafeArgumentParser(description="Validate SkillRanker v1 evaluation policy fixtures.",
+                                allow_abbrev=False)
     parser.add_argument("--policy", type=Path, default=DEFAULT_POLICY)
     parser.add_argument("--cases", type=Path, default=DEFAULT_CASES)
     parser.add_argument("--expected", type=Path, default=DEFAULT_EXPECTED)

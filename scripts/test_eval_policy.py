@@ -307,6 +307,129 @@ class EvaluationPolicyContract(unittest.TestCase):
         self.assertFalse(policy.json_number(10 ** 400))
         self.assertTrue(policy.json_number(300))
 
+    def test_frozen_policy_choices_cannot_be_removed_or_replaced(self):
+        mutations = [
+            (("loss_policy", "equal_loss_tie_break"),
+             ["frozen_baseline_policy", "fewer_operational_failures"]),
+            (("promotion_requirements", "relevance_cohort", "separate_from"),
+             ["controlled_harm_cohort"]),
+            (("promotion_requirements", "controlled_harm", "interval"), "bootstrap_zero_events"),
+            (("promotion_requirements", "controlled_harm", "separate_from"), "same_relevance_holdout"),
+            (("uncertainty_and_sampling", "primary_relevance_intervals"), "pooled_variant_intervals"),
+            (("baselines",), ["always_abstain_negative_control"]),
+        ]
+        for path, replacement in mutations:
+            for remove in (False, True):
+                with self.subTest(path=path, remove=remove):
+                    value = copy.deepcopy(self.policy)
+                    target = value
+                    for key in path[:-1]:
+                        target = target[key]
+                    if remove:
+                        del target[path[-1]]
+                    else:
+                        target[path[-1]] = replacement
+                    with self.assertRaises(SystemExit):
+                        policy.validate_policy(value)
+        # Set-valued fields do not impose arbitrary ordering; the loss tie-break does.
+        self.policy["baselines"].reverse()
+        self.policy["promotion_requirements"]["relevance_cohort"]["separate_from"].reverse()
+        policy.validate_policy(self.policy)
+
+    def test_case_preconditions_cannot_be_erased_or_contradicted(self):
+        mutations = [
+            ("loaded_reference_empty_y", lambda row: row.update(already_available_references=[])),
+            ("loaded_reference_empty_y", lambda row: row["already_available_references"][0].update(
+                availability="historically_loaded_not_current_invocation")),
+            ("loaded_reference_empty_y", lambda row: row["already_available_references"][0].update(
+                skill_id="not-in-roster")),
+            ("loaded_reference_empty_y", lambda row: row["visible_roster"][0].update(usage_kind="workflow")),
+            ("loaded_reference_empty_y", lambda row: row["already_available_references"][0].update(content_version="")),
+            ("loaded_reference_empty_y", lambda row: row["already_available_references"][0].update(content_version=" ")),
+            ("loaded_reference_empty_y", lambda row: row["already_available_references"][0].update(content_version=False)),
+            ("repeatable_workflow_nonempty_y", lambda row: row.update(already_available_references=[])),
+            ("repeatable_workflow_nonempty_y", lambda row: row["visible_roster"][0].update(usage_kind="reference")),
+            ("repeatable_workflow_nonempty_y", lambda row: row["already_available_references"][0].update(
+                skill_id="not-in-roster")),
+            ("repeatable_workflow_nonempty_y", lambda row: row["already_available_references"][0].update(
+                availability="unknown")),
+        ]
+        for kind, mutate in mutations:
+            cases = copy.deepcopy(self.cases)
+            row = next(row for row in cases if row["case_kind"] == kind)
+            mutate(row)
+            with self.subTest(kind=kind, row=row), self.assertRaises(SystemExit):
+                policy.validate_cases(cases, self.policy)
+
+    def test_available_reference_is_ineligible_but_workflow_and_unknown_remain_eligible(self):
+        for usage in ("reference", "workflow", "unknown"):
+            cases = copy.deepcopy(self.cases)
+            row = cases[0]
+            row["visible_roster"][0]["usage_kind"] = usage
+            row["already_available_references"] = [{
+                "skill_id": row["acceptable_additional_invocations_y"][0],
+                "content_version": "sha256:synthetic-current",
+                "availability": "complete_current_epoch",
+            }]
+            with self.subTest(usage=usage):
+                if usage == "reference":
+                    with self.assertRaises(SystemExit):
+                        policy.validate_cases(cases, self.policy)
+                    # Historical content alone cannot suppress a reference now.
+                    row["already_available_references"][0]["availability"] = "historically_loaded_not_current_invocation"
+                policy.validate_cases(cases, self.policy)
+        workflow = next(row for row in self.cases if row["case_kind"] == "repeatable_workflow_nonempty_y")
+        workflow["already_available_references"][0]["availability"] = "complete_current_epoch"
+        policy.validate_cases(self.cases, self.policy)
+
+    def test_explicit_reference_request_is_not_suppressed_by_available_content(self):
+        row = next(row for row in self.cases if row["case_kind"] == "explicit_request")
+        target = row["acceptable_additional_invocations_y"][0]
+        next(skill for skill in row["visible_roster"] if skill["skill_id"] == target)["usage_kind"] = "reference"
+        row["already_available_references"] = [{
+            "skill_id": target,
+            "content_version": "sha256:synthetic-current",
+            "availability": "complete_current_epoch",
+        }]
+        policy.validate_cases(self.cases, self.policy)
+
+    def test_non_advisory_cases_cannot_be_primary_relevance_observations(self):
+        for kind in ("explicit_request", "roster_change", "operational_failure_semantics"):
+            cases = copy.deepcopy(self.cases)
+            next(row for row in cases if row["case_kind"] == kind)["primary_family_case"] = True
+            with self.subTest(kind=kind), self.assertRaises(SystemExit):
+                policy.validate_cases(cases, self.policy)
+        self.cases[0]["primary_family_case"] = False
+        policy.validate_cases(self.cases, self.policy)
+
+    def test_cli_usage_errors_do_not_echo_private_arguments(self):
+        command = [sys.executable, str(policy.ROOT / "scripts/validate_eval_policy.py")]
+        for args in (["--PRIVATE-CANARY"], ["PRIVATE-CANARY"],
+                     ["--expected", "--PRIVATE-CANARY"], ["--policy"]):
+            result = subprocess.run(command + args, capture_output=True, timeout=5)
+            with self.subTest(args=args):
+                self.assertEqual(result.returncode, 1)
+                self.assertEqual(result.stdout, b"")
+                self.assertEqual(result.stderr, b"validation failed: invalid command-line arguments\n")
+        help_result = subprocess.run(command + ["--help"], capture_output=True, timeout=5)
+        self.assertEqual(help_result.returncode, 0)
+        self.assertIn(b"--policy", help_result.stdout)
+        self.assertEqual(help_result.stderr, b"")
+
+    def test_cli_rejects_inconsistent_cases_without_echoing_private_fields(self):
+        cases = copy.deepcopy(self.cases)
+        loaded = next(row for row in cases if row["case_kind"] == "loaded_reference_empty_y")
+        loaded["already_available_references"][0]["availability"] = "PRIVATE-CANARY"
+        path = self.artifacts / "contradictory-loaded-case.jsonl"
+        path.write_text("\n".join(json.dumps(row) for row in cases) + "\n", encoding="utf-8")
+        result = subprocess.run([sys.executable, str(policy.ROOT / "scripts/validate_eval_policy.py"),
+                                 "--cases", str(path)], capture_output=True, timeout=5)
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, b"")
+        self.assertTrue(result.stderr.startswith(b"validation failed: "))
+        self.assertNotIn(b"PRIVATE-CANARY", result.stderr)
+        self.assertNotIn(b"Traceback", result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
