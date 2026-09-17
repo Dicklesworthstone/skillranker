@@ -221,7 +221,7 @@ pub fn parse_skill_metadata(content_bytes: &[u8]) -> Result<ParsedSkillMetadata,
 
 fn extract_frontmatter(content: &str) -> Result<(Option<&str>, &str), FrontmatterError> {
     // Frontmatter must start with `---` as the first non-empty line (ignoring leading empty lines)
-    let trimmed_start = content.trim_start_matches(|c: char| c == '\r' || c == '\n');
+    let trimmed_start = content.trim_start_matches(['\r', '\n']);
     if !trimmed_start.starts_with("---") {
         return Ok((None, content));
     }

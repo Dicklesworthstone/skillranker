@@ -4,7 +4,7 @@ use skillranker::runtime::ProcessInvocation;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::os::unix::fs::symlink;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 fn temp_path(label: &str) -> PathBuf {
@@ -36,7 +36,7 @@ fn line(id: &str, role: &str, kind: &str, text: &str) -> String {
 }
 
 fn read(
-    path: &PathBuf,
+    path: &Path,
     previous: Option<&skillranker::context::jsonl::JsonlCursor>,
     kind: CursorKind,
 ) -> skillranker::context::jsonl::JsonlSnapshot {
