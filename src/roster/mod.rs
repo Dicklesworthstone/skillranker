@@ -2,6 +2,7 @@
 //! actual files/invocation rules belong to the selected harness adapter.
 
 pub mod discovery;
+pub mod evidence;
 pub mod explicit;
 pub mod frontmatter;
 pub mod import;

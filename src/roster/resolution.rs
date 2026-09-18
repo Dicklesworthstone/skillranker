@@ -165,6 +165,7 @@ pub struct ResolvedRoster {
     names: BTreeMap<String, Vec<(usize, usize)>>,
     partial: bool,
     diagnostics: Vec<(usize, ResolutionError)>,
+    sources: Vec<Diagnostic>,
 }
 impl fmt::Debug for ResolvedRoster {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -172,6 +173,7 @@ impl fmt::Debug for ResolvedRoster {
             .field("skills", &self.skills.len())
             .field("partial", &self.partial)
             .field("diagnostics", &self.diagnostics)
+            .field("sources", &self.sources.len())
             .finish()
     }
 }
@@ -266,6 +268,11 @@ impl ResolvedRoster {
     }
     pub fn diagnostics(&self) -> &[(usize, ResolutionError)] {
         &self.diagnostics
+    }
+    /// Source-level discovery outcomes (missing, unreadable or unenumerated
+    /// roots and stopped walks). Empty for rosters not built from a plan.
+    pub fn source_diagnostics(&self) -> &[Diagnostic] {
+        &self.sources
     }
     pub fn advisory(&self) -> impl Iterator<Item = AdvisorySkill<'_>> {
         self.skills.iter().filter_map(|skill| {
@@ -513,6 +520,7 @@ pub fn resolve_claude_plan(
         clock,
     )?;
     roster.diagnostics = diagnostics;
+    roster.sources = discovery.diagnostics().to_vec();
     Ok(roster)
 }
 
