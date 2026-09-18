@@ -8,6 +8,7 @@ pub mod frontmatter;
 pub mod import;
 pub mod resolution;
 pub mod retrieval;
+pub mod revalidation;
 
 pub use explicit::{
     DirectiveKind, ExplicitResolutionError, ExplicitResolutionRequest, ExplicitResolutionResult,

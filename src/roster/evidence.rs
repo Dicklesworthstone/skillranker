@@ -321,7 +321,7 @@ pub struct RosterEvidence {
     pub omitted_details: usize,
 }
 
-const fn source_code(diagnostic: &Diagnostic) -> &'static str {
+pub(crate) const fn source_code(diagnostic: &Diagnostic) -> &'static str {
     match diagnostic {
         Diagnostic::RootMissing(_) => "root-missing",
         Diagnostic::RootUnreadable(_) => "root-unreadable",
@@ -335,7 +335,7 @@ const fn source_code(diagnostic: &Diagnostic) -> &'static str {
     }
 }
 
-const fn record_code(error: ResolutionError) -> &'static str {
+pub(crate) const fn record_code(error: ResolutionError) -> &'static str {
     match error {
         ResolutionError::UnsupportedLayout => "unsupported-layout",
         ResolutionError::Metadata => "malformed-metadata",
