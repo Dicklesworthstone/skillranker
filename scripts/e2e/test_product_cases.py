@@ -89,6 +89,7 @@ class EvaluateTests(unittest.TestCase):
 
 class CatalogTests(unittest.TestCase):
     def test_every_product_catalog_matches_sources_and_the_matrix(self):
+<<<<<<< HEAD
         for path in sorted((Path(__file__).parent / "product").glob("*.json")):
             catalog = product_cases.load_catalog(path)
             self.assertEqual(product_cases.check(catalog), [], path.name)
@@ -107,6 +108,20 @@ class CatalogTests(unittest.TestCase):
         cases = [dict(case) for case in declared["cases"]]
         cases[0]["tests"] = cases[0]["tests"] + [live]
         problems = product_cases.check(dict(declared, cases=cases))
+=======
+        for name in ("roster", "context"):
+            catalog = product_cases.load_catalog(Path(__file__).parent / f"product/{name}.json")
+            self.assertEqual(product_cases.check(catalog), [], name)
+
+    def test_a_declared_ignored_test_must_really_be_ignored_and_cannot_back_a_case(self):
+        catalog = product_cases.load_catalog(Path(__file__).parent / "product/context.json")
+        live = catalog["allowed_ignored"][0]["test"]
+        broken = dict(catalog, allowed_ignored=[{"test": "context_contract::task_anchors", "reason": "x"}])
+        self.assertTrue(any("is not an #[ignore] test" in p for p in product_cases.check(broken)))
+        cases = [dict(case) for case in catalog["cases"]]
+        cases[0]["tests"] = cases[0]["tests"] + [live]
+        problems = product_cases.check(dict(catalog, cases=cases))
+>>>>>>> bfab6db (wipbase)
         self.assertTrue(any("cannot establish a case" in p for p in problems))
 
     def test_stale_names_unknown_targets_and_uncatalogued_cases_are_reported(self):

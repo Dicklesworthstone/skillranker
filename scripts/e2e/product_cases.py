@@ -137,11 +137,19 @@ def parse_log(text):
 
 
 def evaluate(catalog, text):
+<<<<<<< HEAD
     results, summaries, nested = parse_log(text)
     ignored = {name for name, status in results.items() if status == "ignored"}
     complete = (
         len(summaries) == len(catalog["targets"])
         and all(s[0] == "ok" and s[2] == 0 for s in summaries)
+=======
+    results, duplicates, summaries = parse_log(text)
+    ignored = {name for name, status in results.items() if status == "ignored"}
+    complete = (
+        len(summaries) == len(catalog["targets"])
+        and all(s[0] == "ok" and s[2] == 0 and s[5] == 0 for s in summaries)
+>>>>>>> bfab6db (wipbase)
         # Only declared opt-in tests may be ignored, and the counts must agree.
         and ignored <= allowed_ignored(catalog)
         and sum(s[3] for s in summaries) == len(ignored)
@@ -157,7 +165,11 @@ def evaluate(catalog, text):
                 "passed": sum(s[1] for s in summaries),
                 "failed": sum(s[2] for s in summaries),
                 "ignored": sorted(ignored),
+<<<<<<< HEAD
                 "nested_child_runs": nested,
+=======
+                "filtered": sum(s[5] for s in summaries),
+>>>>>>> bfab6db (wipbase)
             }
         else:
             names = [reference.partition("::")[2] for reference in case["tests"]]

@@ -1,0 +1,174 @@
+{
+  "schema_version": 1,
+  "suite": "context",
+  "tier": "rust-product-integration",
+  "targets": [
+    "cass_adapter",
+    "context_contract",
+    "context_failures",
+    "context_overlay_safety",
+    "jsonl_snapshot",
+    "native_identity",
+    "p3_gate",
+    "privacy_contract",
+    "project_signals",
+    "source_selection"
+  ],
+  "allowed_ignored": [
+    {
+      "test": "cass_adapter::actual_installed_cass_exports_synthetic_session",
+      "reason": "Opt-in check of an installed cass 0.8.0 binary (SR_TEST_CASS); build workers have none. It establishes no case here; the owned-child tests do."
+    }
+  ],
+  "cases": [
+    {
+      "id": "no-cross-session-fallthrough",
+      "assertions": ["exact_session_bound"],
+      "tests": [
+        "source_selection::failed_chosen_source_never_reads_a_successful_neighbor",
+        "source_selection::concurrent_sessions_require_choice_even_when_one_is_newer",
+        "source_selection::subagents_and_branches_never_collapse_into_one_session",
+        "context_overlay_safety::wrong_native_session_is_rejected_with_an_honest_matching_twin"
+      ]
+    },
+    {
+      "id": "bounded-normalized-parsing",
+      "assertions": ["normalized_bounded"],
+      "tests": [
+        "context_contract::normalized_envelopes"
+      ]
+    },
+    {
+      "id": "partial-tail-deferred",
+      "assertions": ["incremental_clean"],
+      "tests": [
+        "jsonl_snapshot::incomplete_tail_is_deferred_and_complete_records_publish",
+        "jsonl_snapshot::append_continues_from_the_same_generation",
+        "context_overlay_safety::incomplete_tail_cannot_claim_complete_context"
+      ]
+    },
+    {
+      "id": "compaction-detected",
+      "assertions": ["incremental_clean"],
+      "tests": [
+        "jsonl_snapshot::truncation_rebuilds_instead_of_skipping_unread_bytes",
+        "jsonl_snapshot::replacement_rebuilds_on_new_file_identity",
+        "context_contract::branch_and_worktree"
+      ]
+    },
+    {
+      "id": "sibling-branch-isolation",
+      "assertions": ["no_branch_confusion"],
+      "tests": [
+        "context_contract::branch_and_worktree",
+        "context_overlay_safety::pending_prompt_cannot_choose_a_sibling_by_file_order",
+        "context_overlay_safety::recorded_prompt_selects_only_its_ancestor_lineage",
+        "native_identity::branch_and_agent_selectors_resolve_the_declared_native_leaf"
+      ]
+    },
+    {
+      "id": "hook-prompt-overlaid-once",
+      "assertions": ["authoritative_prompt"],
+      "tests": [
+        "context_contract::claude_prompt_overlay",
+        "context_overlay_safety::pending_prompt_without_event_id_is_retained_once_after_native_lineage",
+        "context_overlay_safety::prompt_identity_cannot_retype_an_assistant_event"
+      ]
+    },
+    {
+      "id": "cass-bounded-pipe",
+      "assertions": ["cass_safe"],
+      "tests": [
+        "cass_adapter::exact_export_argv_and_success_use_real_owned_child_runner",
+        "cass_adapter::child_failure_and_eight_mib_overflow_are_sanitized",
+        "cass_adapter::provider_credentials_and_routing_environment_are_not_forwarded"
+      ]
+    },
+    {
+      "id": "offline-cass-mock",
+      "assertions": ["cass_safe"],
+      "tests": [
+        "cass_adapter::mode_restrictions_happen_before_even_capability_probe",
+        "source_selection::local_modes_refuse_cass_before_any_discovery_or_reader",
+        "cass_adapter::unsupported_capability_probe_never_runs_export"
+      ]
+    },
+    {
+      "id": "loaded-evidence-extracted",
+      "assertions": ["tool_association_exact"],
+      "tests": [
+        "context_contract::tool_associations",
+        "native_identity::invalid_or_conflicting_tool_call_ids_do_not_lose_associations",
+        "jsonl_snapshot::tool_result_without_invocation_in_window_marks_incomplete"
+      ]
+    },
+    {
+      "id": "visible-head-tail-truncation",
+      "assertions": ["rendered_within_budget"],
+      "tests": [
+        "context_contract::bounded_request_rendering"
+      ]
+    },
+    {
+      "id": "task-anchor-preserved",
+      "assertions": ["anchor_intact"],
+      "tests": [
+        "context_contract::task_anchors"
+      ]
+    },
+    {
+      "id": "dirty-paths-repo-relative",
+      "assertions": ["bounded_project_signals"],
+      "tests": [
+        "project_signals::byte_parser_preserves_identity_and_reports_partial_coverage",
+        "project_signals::actual_git_ignores_fsmonitor_and_handles_detached_worktrees",
+        "project_signals::actual_git_omits_non_utf8_paths_without_lossy_identity"
+      ]
+    },
+    {
+      "id": "minimal-profile-drops-tools",
+      "assertions": ["profile_respected"],
+      "tests": [
+        "privacy_contract::disclosure_profiles"
+      ]
+    },
+    {
+      "id": "disclosure-receipt-matches-payload",
+      "assertions": ["receipt_accurate"],
+      "tests": [
+        "privacy_contract::disclosure_receipts"
+      ]
+    },
+    {
+      "id": "corrupted-jsonl",
+      "assertions": ["safe_context_rejection"],
+      "tests": [
+        "jsonl_snapshot::corrupt_completed_record_is_sanitized_and_does_not_publish_body",
+        "native_identity::malformed_native_identities_are_not_silently_missing",
+        "context_failures::context_failure_cases"
+      ]
+    },
+    {
+      "id": "oversized-record",
+      "assertions": ["safe_context_rejection"],
+      "tests": [
+        "jsonl_snapshot::oversize_complete_line_is_skipped_neighbors_kept",
+        "context_overlay_safety::byte_limit_does_not_parse_old_history_outside_the_tail",
+        "context_failures::context_failure_cases"
+      ]
+    },
+    {
+      "id": "missing-prompt",
+      "assertions": ["safe_context_rejection"],
+      "tests": [
+        "context_failures::context_failure_cases",
+        "context_overlay_safety::expired_shared_deadline_refuses_even_prompt_only_output"
+      ]
+    },
+    {
+      "id": "full-context-suite",
+      "assertions": ["p3_gate_passed"],
+      "tests": "all"
+    }
+  ]
+}
