@@ -16,6 +16,7 @@ use asupersync::Cx;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::os::unix::ffi::OsStrExt;
+use std::path::Path;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ResolutionError {
@@ -383,6 +384,33 @@ fn resolve_collision(skills: &mut [ResolvedSkill], positions: &[(usize, usize)])
     }
 }
 
+/// Claude's supported direct layout, `<name>/SKILL.md` in a project or personal
+/// root, yielding the callable name. Discovery and explicit import share it so
+/// an imported record cannot claim a layout or name discovery would not produce.
+pub(crate) fn claude_invocation(kind: SourceKind, relative: &Path) -> Option<InvocationName> {
+    let components: Vec<_> = relative.components().collect();
+    let supported = matches!(kind, SourceKind::Project | SourceKind::User)
+        && components.len() == 2
+        && components[1].as_os_str() == "SKILL.md";
+    components
+        .first()
+        .and_then(|part| part.as_os_str().to_str())
+        .filter(|n| !n.eq_ignore_ascii_case("synced") && !n.contains([':', '\\']))
+        .and_then(|n| InvocationName::new(n).ok())
+        .filter(|_| supported)
+}
+
+/// The same declared path always yields the same logical key, so discovery and
+/// explicit import assign equal stable IDs to equal records.
+pub(crate) fn path_logical_key(path: &Path) -> Result<LogicalSkillKey, ResolutionError> {
+    LogicalSkillKey::new(
+        blake3::hash(path.as_os_str().as_bytes())
+            .to_hex()
+            .to_string(),
+    )
+    .map_err(|_| ResolutionError::InvalidBinding)
+}
+
 /// Resolve direct Claude project/personal skill directories. Caller supplies
 /// trusted effective settings as restrict-only overrides keyed by callable name.
 /// Unsupported layouts are excluded with partial coverage, never guessed.
@@ -411,17 +439,7 @@ pub fn resolve_claude_plan(
     let mut total = 0usize;
     for (index, candidate) in discovery.candidates().iter().enumerate() {
         budget(cx, clock)?;
-        let components: Vec<_> = candidate.relative().components().collect();
-        let name = components
-            .first()
-            .and_then(|part| part.as_os_str().to_str());
-        let supported = matches!(candidate.kind(), SourceKind::Project | SourceKind::User)
-            && components.len() == 2
-            && components[1].as_os_str() == "SKILL.md";
-        let invocation = name
-            .filter(|n| !n.eq_ignore_ascii_case("synced") && !n.contains([':', '\\']))
-            .and_then(|n| InvocationName::new(n).ok());
-        let Some(invocation) = invocation.filter(|_| supported) else {
+        let Some(invocation) = claude_invocation(candidate.kind(), candidate.relative()) else {
             diagnostics.push((index, ResolutionError::UnsupportedLayout));
             continue;
         };
@@ -449,12 +467,7 @@ pub fn resolve_claude_plan(
             diagnostics.push((index, ResolutionError::ChangedFile));
             continue;
         }
-        let logical_key = LogicalSkillKey::new(
-            blake3::hash(candidate.path().as_path().as_os_str().as_bytes())
-                .to_hex()
-                .to_string(),
-        )
-        .map_err(|_| ResolutionError::InvalidBinding)?;
+        let logical_key = path_logical_key(candidate.path().as_path())?;
         let restrictions =
             overrides
                 .get(invocation.as_str())
