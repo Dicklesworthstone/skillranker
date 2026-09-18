@@ -277,15 +277,16 @@ pub fn build<'a>(
         ResolutionError::Limit => WideError::TooManyCandidates,
         _ => WideError::IneligibleCandidate,
     })?;
-    // Fixed order: drop the oldest messages first, then shorten excerpts.
+    // Fixed order: drop the oldest messages first; only once all older
+    // context is gone do excerpts shrink. Dropped context is never restored.
+    let mut trimmed = state.clone();
+    let mut dropped = 0;
     for cap in DESCRIPTION_CAPS {
         let Descriptions {
             criteria,
             omitted,
             redactions,
         } = option_descriptions(&options, cap)?;
-        let mut trimmed = state.clone();
-        let mut dropped = 0;
         loop {
             match assemble(model, &trimmed, criteria.clone(), include_stuck) {
                 Ok(request) => {

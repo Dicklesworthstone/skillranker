@@ -33,6 +33,10 @@ pub const RERANK_DESCRIPTION_MAX_SCALARS: usize = 1000;
 /// Maximum characters (Unicode scalar values) for body excerpt.
 pub const BODY_EXCERPT_MAX_SCALARS: usize = 700;
 
+/// Body scalars kept beyond the excerpt so a secret that starts inside the
+/// excerpt is seen whole by redaction before the excerpt is cut.
+pub const REDACTION_LOOKAHEAD_SCALARS: usize = 1024;
+
 /// Maximum allowed frontmatter nesting depth.
 pub const MAX_FRONTMATTER_DEPTH: usize = 8;
 
@@ -49,6 +53,8 @@ pub struct ParsedSkillMetadata {
     pub description_short: PrivateText,
     /// Truncated body excerpt (max 700 characters).
     pub body_excerpt: PrivateText,
+    /// The body's first 700 + 1024 scalars: redact this, then cut the excerpt.
+    pub body_window: PrivateText,
     /// Whether the model may automatically invoke this skill (`true` unless disabled).
     pub agent_invocable: bool,
     /// Whether the user can manually invoke this skill (default `true`).
@@ -198,6 +204,12 @@ pub fn parse_skill_metadata(content_bytes: &[u8]) -> Result<ParsedSkillMetadata,
         .take(BODY_EXCERPT_MAX_SCALARS)
         .collect();
     let body_excerpt = PrivateText::new(body_chars);
+    let body_window = PrivateText::new(
+        body_excerpt_text
+            .chars()
+            .take(BODY_EXCERPT_MAX_SCALARS + REDACTION_LOOKAHEAD_SCALARS)
+            .collect::<String>(),
+    );
 
     let agent_invocable = !fields.disable_model_invocation;
     let user_invocable = fields.user_invocable;
@@ -211,6 +223,7 @@ pub fn parse_skill_metadata(content_bytes: &[u8]) -> Result<ParsedSkillMetadata,
         description_full,
         description_short,
         body_excerpt,
+        body_window,
         agent_invocable,
         user_invocable,
         usage_kind: fields.usage_kind,

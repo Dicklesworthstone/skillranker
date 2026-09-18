@@ -470,6 +470,46 @@ fn budget_pressure_trims_older_context_then_excerpts_but_never_candidates() {
 }
 
 #[test]
+fn excerpts_shrink_only_after_all_older_context_is_gone() {
+    let root = tree();
+    let descriptions: Vec<String> = plain(254)
+        .iter()
+        .map(|d| format!("{d} {}", "more words ".repeat(20)))
+        .collect();
+    let roster = roster_with(&root, &descriptions);
+    let messages: Vec<RenderedMessage> = (0..6)
+        .map(|i| message(&format!("m{i} {}", "ctx ".repeat(500))))
+        .collect();
+    // A long latest request leaves room only once excerpts shrink.
+    let latest = "y".repeat(60 * 1024);
+    let wide = build(
+        &roster,
+        &ids(&roster),
+        &state(messages, &latest),
+        "jev-latest",
+        false,
+    )
+    .unwrap();
+    let trimming = wide.trimming();
+    assert!(trimming.description_cap < 160, "excerpts had to shrink");
+    assert_eq!(trimming.dropped_messages, 6, "all older context went first");
+    let value: Value = serde_json::from_slice(wide.bytes()).unwrap();
+    assert!(
+        value["state"]["recent_messages"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        value["questions"]["which"]["criteria"]
+            .as_object()
+            .unwrap()
+            .len(),
+        255
+    );
+}
+
+#[test]
 fn descriptions_are_redacted_before_truncation_and_the_payload_is_inspected() {
     let root = tree();
     let secret = format!("ghp_{}", "a".repeat(36));

@@ -112,6 +112,7 @@ impl SkillEntry {
             description_full: metadata.description_full,
             description_short: metadata.description_short,
             body_excerpt: metadata.body_excerpt,
+            body_window: metadata.body_window,
             tags: metadata.tags,
             phases: metadata.phases,
             parse_warnings: metadata.parse_warnings,

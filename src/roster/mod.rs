@@ -197,6 +197,8 @@ pub struct SkillRecord {
     pub description_full: PrivateText,
     pub description_short: PrivateText,
     pub body_excerpt: PrivateText,
+    /// Body lookahead window for redact-then-cut excerpts; see frontmatter.
+    pub body_window: PrivateText,
     pub tags: Vec<PrivateText>,
     pub phases: Vec<PrivateText>,
     pub parse_warnings: Vec<ParseWarning>,
