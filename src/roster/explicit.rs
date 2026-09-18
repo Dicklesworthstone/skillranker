@@ -97,14 +97,10 @@ pub enum ExplicitResolutionResult {
         excluded_skills: Vec<SkillId>,
     },
     /// No explicit requirements specified; proceed to normal ranking and Quill retrieval.
-    NoneSpecified {
-        excluded_skills: Vec<SkillId>,
-    },
+    NoneSpecified { excluded_skills: Vec<SkillId> },
     /// One or more explicit requirements failed resolution.
     /// Maps to Decision::Unavailable / ErrorKind::UnresolvedExplicit (Exit 5).
-    Unavailable {
-        unresolved: Vec<UnresolvedRecord>,
-    },
+    Unavailable { unresolved: Vec<UnresolvedRecord> },
 }
 
 /// Fatal validation error during explicit resolution.
@@ -496,9 +492,7 @@ pub fn resolve_explicit_requirements(
                 unresolved.push(UnresolvedRecord {
                     target: target.clone(),
                     reason: UnresolvedReason::Ambiguous,
-                    diagnostic: format!(
-                        "skill '{target}' has ambiguous visibility across sources"
-                    ),
+                    diagnostic: format!("skill '{target}' has ambiguous visibility across sources"),
                 });
             }
             ExactResolution::Shadowed => {

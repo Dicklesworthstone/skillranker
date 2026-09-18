@@ -433,9 +433,7 @@ fn local_explicit_resolution() {
     };
     use skillranker::roster::explicit::*;
     use skillranker::roster::resolution::{BindingSpec, ResolvedRoster, SkillEntry};
-    use skillranker::roster::{
-        InvocationKind, InvocationName, InvocationRestrictions, Visibility,
-    };
+    use skillranker::roster::{InvocationKind, InvocationName, InvocationRestrictions, Visibility};
     use skillranker::runtime::{EntryClock, ProcessInvocation};
     use std::fs;
     use std::path::Path;
@@ -475,7 +473,8 @@ fn local_explicit_resolution() {
     );
 
     // Slash commands
-    let slash_prompt = "/use-skill tool-a\n/require-skill tool-b\n/exclude-skill tool-c\n/no-skill tool-d";
+    let slash_prompt =
+        "/use-skill tool-a\n/require-skill tool-b\n/exclude-skill tool-c\n/no-skill tool-d";
     let dirs = parse_prompt_directives(slash_prompt);
     assert_eq!(
         dirs,
@@ -734,7 +733,8 @@ fn local_explicit_resolution() {
         )),
         ..Default::default()
     };
-    let res_missing = resolve_explicit_requirements(&req_missing, &roster).expect("must return result");
+    let res_missing =
+        resolve_explicit_requirements(&req_missing, &roster).expect("must return result");
     match res_missing {
         ExplicitResolutionResult::Unavailable { unresolved } => {
             assert_eq!(unresolved.len(), 1);
@@ -836,10 +836,7 @@ fn local_explicit_resolution() {
         ExplicitResolutionResult::Unavailable { unresolved } => {
             assert_eq!(unresolved.len(), 1);
             assert_eq!(unresolved[0].target, "skill-01");
-            assert_eq!(
-                unresolved[0].reason,
-                UnresolvedReason::ConflictingDirective
-            );
+            assert_eq!(unresolved[0].reason, UnresolvedReason::ConflictingDirective);
         }
         other => panic!("expected Unavailable for conflict, got {other:?}"),
     }
@@ -860,10 +857,7 @@ fn local_explicit_resolution() {
         ExplicitResolutionResult::Unavailable { unresolved } => {
             assert_eq!(unresolved.len(), 1);
             assert_eq!(unresolved[0].target, "skill-02");
-            assert_eq!(
-                unresolved[0].reason,
-                UnresolvedReason::ConflictingDirective
-            );
+            assert_eq!(unresolved[0].reason, UnresolvedReason::ConflictingDirective);
         }
         other => panic!("expected Unavailable for cross conflict, got {other:?}"),
     }

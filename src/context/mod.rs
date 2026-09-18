@@ -7,6 +7,7 @@ pub mod branch;
 pub mod cass;
 pub mod jsonl;
 pub mod overlay;
+pub mod render;
 pub mod signals;
 pub mod source;
 pub mod tool;
@@ -18,6 +19,12 @@ pub use branch::{
 };
 pub use overlay::{
     ClaudeOverlayRequest, ClaudeOverlayResult, OverlayError, apply_claude_prompt_overlay,
+};
+pub use render::{
+    IMAGE_OMISSION_MARKER, MEDIA_OMISSION_MARKER, RenderContextError, RenderContextOptions,
+    RenderedContextPayload, RenderedLoadedReference, RenderedMessage, RenderedProjectSignals,
+    RenderedSessionState, detect_languages_from_markers, is_sr_advisory_text, render_context,
+    sanitize_media_data, strip_advisory_from_non_user, strip_thinking_blocks,
 };
 pub use tool::{
     AssociatedToolCall, DEFAULT_TOOL_EXCERPT_CHARS, SimpleSkillResolver, SkillEvidenceResolver,

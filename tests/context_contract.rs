@@ -19,10 +19,16 @@ use skillranker::context::branch::{
 use skillranker::context::overlay::{
     ClaudeOverlayRequest, OverlayError, apply_claude_prompt_overlay,
 };
+use skillranker::context::render::{
+    IMAGE_OMISSION_MARKER, MEDIA_OMISSION_MARKER, RenderContextError, RenderContextOptions,
+    RenderedLoadedReference, render_context, sanitize_media_data,
+};
+use skillranker::context::signals::{DirtyPaths, ProjectSignals};
 use skillranker::context::{
-    ContextError, EventKind, LoadState, NormalizedEvent, PrivateText, Role, SimpleSkillResolver,
-    SkillMatch, ToolEvent, ToolStatus, associate_tool_events, extract_load_observations,
-    extract_loaded_skill_records, filter_events_for_provider, parse_normalized_context,
+    ContextError, CurrentRequest, EventKind, LoadState, NormalizedContext, NormalizedEvent,
+    PrivateText, Role, SimpleSkillResolver, SkillMatch, ToolEvent, ToolStatus,
+    associate_tool_events, extract_load_observations, extract_loaded_skill_records,
+    filter_events_for_provider, parse_normalized_context,
 };
 use skillranker::identity::{
     BranchId, ContentHash, ContextEpoch, EventId, HarnessId, SessionId, SessionIdentity, SkillId,
@@ -1484,4 +1490,577 @@ fn tool_associations() {
     );
 
     let _ = fs::remove_dir_all(&test_dir);
+}
+
+// ==============================================================================
+// Boundary p3_request_context: Render bounded request-first context and provenance
+// ==============================================================================
+
+#[test]
+fn bounded_request_rendering() {
+    // -------------------------------------------------------------------------
+    // Sub-case 1: Request-first ordering and deduplication
+    // -------------------------------------------------------------------------
+    let req_event_id = EventId::new("req-event-01").unwrap();
+    let old_event_id = EventId::new("old-event-01").unwrap();
+
+    let context = NormalizedContext {
+        schema_version: 1,
+        harness: HarnessId::new("claude_code").unwrap(),
+        producer_id: None,
+        workspace_root: PrivateText::new("/workspaces/my-project"),
+        session_id: Some(SessionId::new("session-01").unwrap()),
+        agent_id: None,
+        branch_id: None,
+        context_epoch: None,
+        current_request: CurrentRequest {
+            event_id: Some(req_event_id.clone()),
+            text: PrivateText::new("Please optimize the serialization loop."),
+            attachments_omitted: false,
+            essential_attachment_missing: false,
+        },
+        events: vec![
+            NormalizedEvent {
+                event_id: Some(old_event_id.clone()),
+                parent_id: None,
+                turn_id: None,
+                agent_id: None,
+                branch_id: None,
+                role: Role::User,
+                kind: EventKind::Message,
+                timestamp_unix_ms: Some(100),
+                text: PrivateText::new("Initial discussion about performance."),
+                tool: None,
+            },
+            // Duplicate event that has the same ID as current_request
+            NormalizedEvent {
+                event_id: Some(req_event_id.clone()),
+                parent_id: Some(old_event_id.clone()),
+                turn_id: None,
+                agent_id: None,
+                branch_id: None,
+                role: Role::User,
+                kind: EventKind::Message,
+                timestamp_unix_ms: Some(200),
+                text: PrivateText::new("Please optimize the serialization loop."),
+                tool: None,
+            },
+        ],
+        explicit_skill_references: vec![],
+        supplied_loads: vec![],
+    };
+
+    let options = RenderContextOptions::default();
+    let payload = render_context(&context, &options).expect("render context should succeed");
+
+    assert_eq!(
+        payload.latest_user_request,
+        "Please optimize the serialization loop."
+    );
+    // Crucial: The duplicate event matching current_request.event_id must NOT be in recent_messages
+    assert_eq!(payload.recent_messages.len(), 1);
+    assert_eq!(payload.recent_messages[0].role, "user");
+    assert_eq!(
+        payload.recent_messages[0].text.as_deref(),
+        Some("Initial discussion about performance.")
+    );
+    assert_eq!(payload.context_quality, ContextQuality::Complete);
+
+    // -------------------------------------------------------------------------
+    // Sub-case 2: Unicode boundaries, emoji, and deterministic head/tail long-request truncation
+    // -------------------------------------------------------------------------
+    // Build a long request with complex multi-byte characters and emoji
+    let repeated_phrase = "🦀 Rust is fast! こんにちは世界 🚀 ";
+    let mut long_text = String::new();
+    while long_text.chars().count() < 15_000 {
+        long_text.push_str(repeated_phrase);
+    }
+
+    let long_context = NormalizedContext {
+        schema_version: 1,
+        harness: HarnessId::new("claude_code").unwrap(),
+        producer_id: None,
+        workspace_root: PrivateText::new("/workspaces/my-project"),
+        session_id: Some(SessionId::new("session-02").unwrap()),
+        agent_id: None,
+        branch_id: None,
+        context_epoch: None,
+        current_request: CurrentRequest {
+            event_id: Some(EventId::new("req-long").unwrap()),
+            text: PrivateText::new(&long_text),
+            attachments_omitted: false,
+            essential_attachment_missing: false,
+        },
+        events: vec![],
+        explicit_skill_references: vec![],
+        supplied_loads: vec![],
+    };
+
+    let options_budget = RenderContextOptions {
+        max_total_scalars: 12_000,
+        ..RenderContextOptions::default()
+    };
+    let payload_long =
+        render_context(&long_context, &options_budget).expect("render long request should succeed");
+
+    // Assertion ID: rendered_within_budget
+    assert!(
+        payload_long.latest_user_request.chars().count() <= 12_000,
+        "rendered_within_budget: latest request must fit 12,000 scalars"
+    );
+    assert_eq!(
+        payload_long.context_quality,
+        ContextQuality::Partial,
+        "Truncated request must yield Partial context quality"
+    );
+    assert!(
+        payload_long.latest_user_request.contains("... [")
+            && payload_long
+                .latest_user_request
+                .contains("chars omitted] ..."),
+        "Truncated request must contain head/tail omission marker"
+    );
+    // Verify multi-byte UTF-8 validity (no panic, valid string)
+    assert!(payload_long.latest_user_request.starts_with("🦀 Rust"));
+
+    // -------------------------------------------------------------------------
+    // Sub-case 3: Reasoning / thinking block removal
+    // -------------------------------------------------------------------------
+    let thinking_context = NormalizedContext {
+        schema_version: 1,
+        harness: HarnessId::new("claude_code").unwrap(),
+        producer_id: None,
+        workspace_root: PrivateText::new("/workspaces/my-project"),
+        session_id: Some(SessionId::new("session-03").unwrap()),
+        agent_id: None,
+        branch_id: None,
+        context_epoch: None,
+        current_request: CurrentRequest {
+            event_id: Some(EventId::new("req-thinking").unwrap()),
+            text: PrivateText::new("Next step?"),
+            attachments_omitted: false,
+            essential_attachment_missing: false,
+        },
+        events: vec![
+            NormalizedEvent {
+                event_id: Some(EventId::new("asst-with-thinking").unwrap()),
+                parent_id: None,
+                turn_id: None,
+                agent_id: None,
+                branch_id: None,
+                role: Role::Assistant,
+                kind: EventKind::Message,
+                timestamp_unix_ms: Some(10),
+                text: PrivateText::new(
+                    "<thinking>\nInternal scratchpad: checking tests\n</thinking>\nI will run cargo test.",
+                ),
+                tool: None,
+            },
+            // Message that contains ONLY thinking block: must be dropped from recent_messages
+            NormalizedEvent {
+                event_id: Some(EventId::new("asst-only-thinking").unwrap()),
+                parent_id: None,
+                turn_id: None,
+                agent_id: None,
+                branch_id: None,
+                role: Role::Assistant,
+                kind: EventKind::Message,
+                timestamp_unix_ms: Some(20),
+                text: PrivateText::new("<thought>Silent internal deliberation only</thought>"),
+                tool: None,
+            },
+        ],
+        explicit_skill_references: vec![],
+        supplied_loads: vec![],
+    };
+
+    let payload_thinking =
+        render_context(&thinking_context, &options).expect("render should succeed");
+    assert_eq!(payload_thinking.recent_messages.len(), 1);
+    assert_eq!(
+        payload_thinking.recent_messages[0].text.as_deref(),
+        Some("I will run cargo test.")
+    );
+
+    // -------------------------------------------------------------------------
+    // Sub-case 4: Binary and media data sanitization
+    // -------------------------------------------------------------------------
+    let media_raw = "Here is the error screenshot: data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg== and binary data:application/octet-stream;base64,AQIDBA==";
+    let sanitized_media = sanitize_media_data(media_raw);
+    assert!(sanitized_media.contains(IMAGE_OMISSION_MARKER));
+    assert!(sanitized_media.contains(MEDIA_OMISSION_MARKER));
+    assert!(!sanitized_media.contains("iVBORw0KGgo"));
+
+    // -------------------------------------------------------------------------
+    // Sub-case 5: Essential attachment missing semantics
+    // -------------------------------------------------------------------------
+    let missing_att_context = NormalizedContext {
+        schema_version: 1,
+        harness: HarnessId::new("claude_code").unwrap(),
+        producer_id: None,
+        workspace_root: PrivateText::new("/workspaces/my-project"),
+        session_id: Some(SessionId::new("session-05").unwrap()),
+        agent_id: None,
+        branch_id: None,
+        context_epoch: None,
+        current_request: CurrentRequest {
+            event_id: Some(EventId::new("req-att").unwrap()),
+            text: PrivateText::new("Analyze the attached image [image omitted]"),
+            attachments_omitted: true,
+            essential_attachment_missing: true,
+        },
+        events: vec![],
+        explicit_skill_references: vec![],
+        supplied_loads: vec![],
+    };
+
+    let payload_att = render_context(&missing_att_context, &options)
+        .expect("render without fail_on_unsupported_context should produce Insufficient payload");
+    assert_eq!(payload_att.context_quality, ContextQuality::Insufficient);
+    assert!(payload_att.is_unsupported_context());
+
+    let strict_att_options = RenderContextOptions {
+        fail_on_unsupported_context: true,
+        ..RenderContextOptions::default()
+    };
+    let err_att = render_context(&missing_att_context, &strict_att_options)
+        .expect_err("strict mode must fail on essential attachment missing");
+    assert!(matches!(err_att, RenderContextError::UnsupportedContext(_)));
+
+    // -------------------------------------------------------------------------
+    // Sub-case 6: Provenance-aware prior advisory stripping vs user quote preservation
+    // -------------------------------------------------------------------------
+    let advisory_context = NormalizedContext {
+        schema_version: 1,
+        harness: HarnessId::new("claude_code").unwrap(),
+        producer_id: None,
+        workspace_root: PrivateText::new("/workspaces/my-project"),
+        session_id: Some(SessionId::new("session-06").unwrap()),
+        agent_id: None,
+        branch_id: None,
+        context_epoch: None,
+        current_request: CurrentRequest {
+            event_id: Some(EventId::new("req-adv").unwrap()),
+            text: PrivateText::new("Proceed with the task."),
+            attachments_omitted: false,
+            essential_attachment_missing: false,
+        },
+        events: vec![
+            // Assistant message containing prior sr advisory block + assistant response
+            NormalizedEvent {
+                event_id: Some(EventId::new("asst-adv").unwrap()),
+                parent_id: None,
+                turn_id: None,
+                agent_id: None,
+                branch_id: None,
+                role: Role::Assistant,
+                kind: EventKind::Message,
+                timestamp_unix_ms: Some(10),
+                text: PrivateText::new(
+                    "Suggested skill for the next step: rust-cargo-basics. Use it only if it fits the user's request and current instructions.\n\nUnderstood. I will inspect Cargo.toml.",
+                ),
+                tool: None,
+            },
+            // User message quoting the advisory marker: MUST BE PRESERVED!
+            NormalizedEvent {
+                event_id: Some(EventId::new("user-quote").unwrap()),
+                parent_id: None,
+                turn_id: None,
+                agent_id: None,
+                branch_id: None,
+                role: Role::User,
+                kind: EventKind::Message,
+                timestamp_unix_ms: Some(20),
+                text: PrivateText::new(
+                    "Why did you suggest \"Suggested skill for the next step: rust-cargo-basics\"?",
+                ),
+                tool: None,
+            },
+        ],
+        explicit_skill_references: vec![],
+        supplied_loads: vec![],
+    };
+
+    let payload_adv = render_context(&advisory_context, &options).expect("render should succeed");
+    assert_eq!(payload_adv.recent_messages.len(), 2);
+    // Assistant message must have advisory stripped
+    assert_eq!(
+        payload_adv.recent_messages[0].text.as_deref(),
+        Some("Understood. I will inspect Cargo.toml.")
+    );
+    // User message MUST PRESERVE the exact quote of the advisory marker!
+    assert_eq!(
+        payload_adv.recent_messages[1].text.as_deref(),
+        Some("Why did you suggest \"Suggested skill for the next step: rust-cargo-basics\"?")
+    );
+
+    // -------------------------------------------------------------------------
+    // Sub-case 7: Whole-field redaction before truncation and payload inspection
+    // -------------------------------------------------------------------------
+    let secret_aws = "AKIAIOSFODNN7EXAMPLE";
+    let secret_ghp = "ghp_123456789012345678901234567890123456";
+    let secret_bearer = "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.doNotLeakThisSignature123456789";
+
+    let secret_context = NormalizedContext {
+        schema_version: 1,
+        harness: HarnessId::new("claude_code").unwrap(),
+        producer_id: None,
+        workspace_root: PrivateText::new("/workspaces/my-project"),
+        session_id: Some(SessionId::new("session-07").unwrap()),
+        agent_id: None,
+        branch_id: None,
+        context_epoch: None,
+        current_request: CurrentRequest {
+            event_id: Some(EventId::new("req-secret").unwrap()),
+            text: PrivateText::new(format!(
+                "Deploy with token {} and key {}",
+                secret_ghp, secret_aws
+            )),
+            attachments_omitted: false,
+            essential_attachment_missing: false,
+        },
+        events: vec![NormalizedEvent {
+            event_id: Some(EventId::new("ev-secret-tool").unwrap()),
+            parent_id: None,
+            turn_id: None,
+            agent_id: None,
+            branch_id: None,
+            role: Role::Tool,
+            kind: EventKind::ToolInvocation,
+            timestamp_unix_ms: Some(10),
+            text: PrivateText::new(""),
+            tool: Some(ToolEvent {
+                call_id: Some(ToolCallId::new("call-sec-01").unwrap()),
+                name: PrivateText::new("curl"),
+                status: ToolStatus::Failed,
+                arguments: Some(PrivateText::new(format!(
+                    r#"{{"command":"curl -H \"Authorization: {}\" https://api.example.com"}}"#,
+                    secret_bearer
+                ))),
+                result: Some(PrivateText::new(format!(
+                    "error: authentication failed for key {}",
+                    secret_aws
+                ))),
+            }),
+        }],
+        explicit_skill_references: vec![],
+        supplied_loads: vec![],
+    };
+
+    let payload_secret = render_context(&secret_context, &options).expect("render should succeed");
+
+    // Zero secret leak in latest request
+    assert!(!payload_secret.latest_user_request.contains(secret_aws));
+    assert!(!payload_secret.latest_user_request.contains(secret_ghp));
+    assert!(payload_secret.latest_user_request.contains("[REDACTED]"));
+
+    // Zero secret leak in tool summaries
+    let tool_summary = payload_secret.recent_messages[0].summary.as_ref().unwrap();
+    assert!(!tool_summary.contains(secret_aws));
+    assert!(!tool_summary.contains(secret_bearer));
+    assert!(tool_summary.contains("[REDACTED]"));
+
+    // Full assembled payload inspection passes cleanly
+    let json_bytes = payload_secret
+        .to_json_bytes()
+        .expect("inspection must pass cleanly");
+    let json_str = String::from_utf8(json_bytes).unwrap();
+    assert!(!json_str.contains(secret_aws));
+    assert!(!json_str.contains(secret_ghp));
+    assert!(!json_str.contains(secret_bearer));
+
+    // -------------------------------------------------------------------------
+    // Sub-case 8: Tool summaries, error lines, and --no-tools isolation
+    // -------------------------------------------------------------------------
+    let tool_context = NormalizedContext {
+        schema_version: 1,
+        harness: HarnessId::new("claude_code").unwrap(),
+        producer_id: None,
+        workspace_root: PrivateText::new("/workspaces/my-project"),
+        session_id: Some(SessionId::new("session-08").unwrap()),
+        agent_id: None,
+        branch_id: None,
+        context_epoch: None,
+        current_request: CurrentRequest {
+            event_id: Some(EventId::new("req-tool").unwrap()),
+            text: PrivateText::new("Fix the build failure."),
+            attachments_omitted: false,
+            essential_attachment_missing: false,
+        },
+        events: vec![NormalizedEvent {
+            event_id: Some(EventId::new("tool-shell-fail").unwrap()),
+            parent_id: None,
+            turn_id: None,
+            agent_id: None,
+            branch_id: None,
+            role: Role::Tool,
+            kind: EventKind::ToolResult,
+            timestamp_unix_ms: Some(15),
+            text: PrivateText::new(""),
+            tool: Some(ToolEvent {
+                call_id: Some(ToolCallId::new("call-shell-01").unwrap()),
+                name: PrivateText::new("shell"),
+                status: ToolStatus::Failed,
+                arguments: Some(PrivateText::new(
+                    r#"{"command":"cargo test --test universe"}"#,
+                )),
+                result: Some(PrivateText::new(
+                    "compiling...\nerror: 3 failures in typeck::universe\nfatal: compilation failed",
+                )),
+            }),
+        }],
+        explicit_skill_references: vec![],
+        supplied_loads: vec![],
+    };
+
+    let payload_with_tools =
+        render_context(&tool_context, &options).expect("render should succeed");
+    assert_eq!(payload_with_tools.recent_messages.len(), 1);
+    let msg = &payload_with_tools.recent_messages[0];
+    assert_eq!(msg.role, "tool");
+    assert_eq!(msg.tool.as_deref(), Some("shell"));
+    assert_eq!(msg.status.as_deref(), Some("failed"));
+    let summary = msg.summary.as_ref().unwrap();
+    assert!(summary.contains("error: 3 failures in typeck::universe"));
+
+    // Now test with --no-tools
+    let no_tools_options = RenderContextOptions {
+        no_tools: true,
+        ..RenderContextOptions::default()
+    };
+    let payload_no_tools =
+        render_context(&tool_context, &no_tools_options).expect("render should succeed");
+    // Tool message must be completely absent from recent_messages
+    assert_eq!(payload_no_tools.recent_messages.len(), 0);
+
+    // -------------------------------------------------------------------------
+    // Sub-case 9: 12-message window and 12,000 Unicode scalar budget
+    // -------------------------------------------------------------------------
+    let mut many_events = Vec::new();
+    for i in 1..=20 {
+        many_events.push(NormalizedEvent {
+            event_id: Some(EventId::new(format!("msg-{i}")).unwrap()),
+            parent_id: None,
+            turn_id: None,
+            agent_id: None,
+            branch_id: None,
+            role: if i % 2 == 0 {
+                Role::Assistant
+            } else {
+                Role::User
+            },
+            kind: EventKind::Message,
+            timestamp_unix_ms: Some(i as i64 * 10),
+            text: PrivateText::new(format!("Turn {i}: details about task component {i}")),
+            tool: None,
+        });
+    }
+
+    let many_context = NormalizedContext {
+        schema_version: 1,
+        harness: HarnessId::new("claude_code").unwrap(),
+        producer_id: None,
+        workspace_root: PrivateText::new("/workspaces/my-project"),
+        session_id: Some(SessionId::new("session-09").unwrap()),
+        agent_id: None,
+        branch_id: None,
+        context_epoch: None,
+        current_request: CurrentRequest {
+            event_id: Some(EventId::new("req-many").unwrap()),
+            text: PrivateText::new("Final summary request"),
+            attachments_omitted: false,
+            essential_attachment_missing: false,
+        },
+        events: many_events,
+        explicit_skill_references: vec![],
+        supplied_loads: vec![],
+    };
+
+    let payload_many = render_context(&many_context, &options).expect("render should succeed");
+    // Max messages limit is 12: only the latest 12 of 20 must be kept
+    assert_eq!(payload_many.recent_messages.len(), 12);
+    assert_eq!(payload_many.context_quality, ContextQuality::Partial);
+    assert_eq!(
+        payload_many.recent_messages[0].text.as_deref(),
+        Some("Turn 9: details about task component 9")
+    );
+    assert_eq!(
+        payload_many.recent_messages[11].text.as_deref(),
+        Some("Turn 20: details about task component 20")
+    );
+    assert!(payload_many.total_message_scalars() <= 12_000);
+
+    // -------------------------------------------------------------------------
+    // Sub-case 10: Project signals and language detection
+    // -------------------------------------------------------------------------
+    let dirty = DirtyPaths {
+        paths: vec![
+            PrivateText::new("src/kernel/typeck.rs"),
+            PrivateText::new("crates/core/lib.rs"),
+        ],
+        omitted_non_utf8: 0,
+        omitted_unsafe: 0,
+        truncated: false,
+    };
+    let signals = ProjectSignals {
+        filenames: vec!["Cargo.toml", "lakefile.lean", "go.mod"],
+        tools_on_path: vec!["cargo", "lake", "rch"],
+        dirty_paths: Some(dirty),
+        git_omission: None,
+        inventory_partial: false,
+    };
+
+    let signals_options = RenderContextOptions {
+        project_signals: Some(&signals),
+        loaded_references: vec![RenderedLoadedReference {
+            name: "rust-cargo-basics".to_string(),
+            summary: "Cargo commands and common build errors".to_string(),
+        }],
+        loaded_state: "observed".to_string(),
+        explicit_exclusions: vec!["skill-deprecated".to_string()],
+        ..RenderContextOptions::default()
+    };
+
+    let payload_signals =
+        render_context(&context, &signals_options).expect("render should succeed");
+    assert_eq!(
+        payload_signals.project_signals.languages,
+        vec!["go", "lean", "rust"]
+    );
+    assert_eq!(
+        payload_signals.project_signals.tools_on_path,
+        vec!["cargo", "lake", "rch"]
+    );
+    assert_eq!(
+        payload_signals.project_signals.dirty_paths,
+        vec!["src/kernel/typeck.rs", "crates/core/lib.rs"]
+    );
+    assert!(!payload_signals.project_signals.dirty_paths_truncated);
+    assert_eq!(payload_signals.session_state.loaded_references.len(), 1);
+    assert_eq!(
+        payload_signals.session_state.loaded_references[0].name,
+        "rust-cargo-basics"
+    );
+    assert_eq!(payload_signals.session_state.loaded_state, "observed");
+    assert_eq!(
+        payload_signals.session_state.explicit_exclusions,
+        vec!["skill-deprecated"]
+    );
+
+    // Verify round-trip serialization matching documented Jev payload shape
+    let val = payload_signals
+        .to_value()
+        .expect("value conversion must succeed");
+    assert_eq!(val["schema_version"], 1);
+    assert_eq!(val["harness"], "claude_code");
+    assert_eq!(val["context_quality"], "complete");
+    assert_eq!(val["project_signals"]["languages"][0], "go");
+    assert_eq!(
+        val["session_state"]["loaded_references"][0]["name"],
+        "rust-cargo-basics"
+    );
+    assert_eq!(
+        val["latest_user_request"],
+        "Please optimize the serialization loop."
+    );
 }

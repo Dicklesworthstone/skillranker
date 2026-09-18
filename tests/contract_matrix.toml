@@ -839,7 +839,7 @@ e2e_cases = ["visible-head-tail-truncation"]
 assertion_ids = ["rendered_within_budget"]
 platforms = ["linux"]
 features = []
-status = "planned"
+status = "implemented"
 
 [[boundaries]]
 id = "p3_task_anchors"
