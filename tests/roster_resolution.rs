@@ -364,6 +364,11 @@ fn malformed_winner_and_unsupported_layout_withhold_authority() {
     let home = tree();
     write(
         &root,
+        ".claude/skills/other/SKILL.md",
+        "# Other\n\nvalid project",
+    );
+    write(
+        &root,
         ".claude/skills/run/SKILL.md",
         "# Run\n\nvalid project",
     );
@@ -375,8 +380,12 @@ fn malformed_winner_and_unsupported_layout_withhold_authority() {
     let (clock, runtime, cx) = invocation();
     let plan = claude_code_plan(&root, Some(&home), verified()).unwrap();
     let bad = resolve_claude_plan(&plan, &BTreeMap::new(), &cx, &clock).unwrap();
-    assert_eq!(bad.advisory().count(), 0);
+    assert_eq!(bad.advisory().count(), 1);
     assert_eq!(bad.exact_name("run"), ExactResolution::Unverified);
+    assert!(matches!(
+        bad.exact_name("other"),
+        ExactResolution::Resolved { .. }
+    ));
     assert!(
         bad.diagnostics()
             .iter()
@@ -388,7 +397,7 @@ fn malformed_winner_and_unsupported_layout_withhold_authority() {
     )
     .unwrap();
     let good = resolve_claude_plan(&plan, &BTreeMap::new(), &cx, &clock).unwrap();
-    assert_eq!(good.advisory().count(), 1);
+    assert_eq!(good.advisory().count(), 2);
     write(
         &root,
         ".claude/skills/nested/deep/SKILL.md",
@@ -397,12 +406,50 @@ fn malformed_winner_and_unsupported_layout_withhold_authority() {
     let unknown = resolve_claude_plan(&plan, &BTreeMap::new(), &cx, &clock).unwrap();
     assert!(unknown.is_partial());
     assert_eq!(unknown.advisory().count(), 0);
+    assert_eq!(unknown.exact_name("other"), ExactResolution::Unverified);
+    assert_eq!(unknown.exact_name("run"), ExactResolution::Ambiguous);
     assert!(
         unknown
             .diagnostics()
             .iter()
             .any(|(_, e)| *e == ResolutionError::UnsupportedLayout)
     );
+    assert!(runtime.shutdown());
+}
+
+#[test]
+fn read_failure_and_escaping_symlink_continue_and_scope_withholding() {
+    let root = tree();
+    let outside = tree();
+    write(&outside, "escaped.md", "# Escaped\n\nbody");
+    // Place escaping symlink alphabetically before valid candidate
+    fs::create_dir_all(root.join(".claude/skills/aa-escape")).unwrap();
+    std::os::unix::fs::symlink(
+        outside.join("escaped.md"),
+        root.join(".claude/skills/aa-escape/SKILL.md"),
+    )
+    .unwrap();
+    write(
+        &root,
+        ".claude/skills/valid/SKILL.md",
+        "# Valid\n\nvalid project",
+    );
+    let (clock, runtime, cx) = invocation();
+    let plan = claude_code_plan(&root, None, verified()).unwrap();
+    let roster = resolve_claude_plan(&plan, &BTreeMap::new(), &cx, &clock).unwrap();
+    assert!(roster.is_partial());
+    assert!(
+        roster
+            .diagnostics()
+            .iter()
+            .any(|(_, e)| *e == ResolutionError::Read)
+    );
+    assert_eq!(roster.advisory().count(), 1);
+    assert_eq!(roster.exact_name("aa-escape"), ExactResolution::Missing);
+    assert!(matches!(
+        roster.exact_name("valid"),
+        ExactResolution::Resolved { .. }
+    ));
     assert!(runtime.shutdown());
 }
 
@@ -506,15 +553,51 @@ fn authorized_file_symlink_deduplicates_but_escape_withholds_authority() {
     assert_eq!(good.advisory().count(), 1);
     let outside_file = write(&outside, "SKILL.md", "# Outside\n\nprivate");
     fs::create_dir_all(root.join(".claude/skills/escape")).unwrap();
-    symlink(outside_file, root.join(".claude/skills/escape/SKILL.md")).unwrap();
+    symlink(&outside_file, root.join(".claude/skills/escape/SKILL.md")).unwrap();
     let bad = resolve_claude_plan(&plan, &BTreeMap::new(), &cx, &clock).unwrap();
     assert!(bad.is_partial());
-    assert_eq!(bad.advisory().count(), 0);
+    assert_eq!(bad.advisory().count(), 1);
+    assert_eq!(bad.exact_name("escape"), ExactResolution::Missing);
+    assert!(matches!(
+        bad.exact_name("original"),
+        ExactResolution::Resolved { .. }
+    ));
     assert!(
         bad.diagnostics()
             .iter()
             .any(|(_, e)| *e == ResolutionError::Read)
     );
+
+    // When an escaping file competes with a valid skill under the same name,
+    // authority for that specific name is withheld.
+    let home = tree();
+    fs::create_dir_all(home.join(".claude/skills/original")).unwrap();
+    symlink(&outside_file, home.join(".claude/skills/original/SKILL.md")).unwrap();
+    let competing_plan = claude_code_plan(&root, Some(&home), verified()).unwrap();
+    let competing_bad =
+        resolve_claude_plan(&competing_plan, &BTreeMap::new(), &cx, &clock).unwrap();
+    assert!(competing_bad.is_partial());
+    // "original" has a competing escaping definition: authority withheld for "original",
+    // while "alias" remains unaffected and advisory!
+    assert_eq!(
+        competing_bad.exact_name("original"),
+        ExactResolution::Unverified
+    );
+    assert!(matches!(
+        competing_bad.exact_name("alias"),
+        ExactResolution::Resolved { .. }
+    ));
+    assert_eq!(competing_bad.advisory().count(), 1);
+
+    // If "alias" also has an escaping competing definition, then all names are withheld.
+    fs::create_dir_all(home.join(".claude/skills/alias")).unwrap();
+    symlink(&outside_file, home.join(".claude/skills/alias/SKILL.md")).unwrap();
+    let both_plan = claude_code_plan(&root, Some(&home), verified()).unwrap();
+    let both_bad = resolve_claude_plan(&both_plan, &BTreeMap::new(), &cx, &clock).unwrap();
+    assert!(both_bad.is_partial());
+    assert_eq!(both_bad.exact_name("original"), ExactResolution::Unverified);
+    assert_eq!(both_bad.exact_name("alias"), ExactResolution::Unverified);
+    assert_eq!(both_bad.advisory().count(), 0);
     assert!(runtime.shutdown());
 }
 

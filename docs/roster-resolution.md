@@ -50,11 +50,16 @@ restrict-only inputs. See the [Claude skill contract](https://code.claude.com/do
 
 Nested, plugin, managed, synced, and legacy-command discovery are not implemented
 here. Unsupported layouts and parsing/read failures produce bounded diagnostics
-and partial coverage. Such omissions withhold invocation authority from remaining
-records, because an omitted entry could shadow them. Declared unenumerated
-sources remain separately disclosed by discovery; a caller's verified visibility
-assertion must cover the actual session before using any advice. This is an
-adapter API, not proof of conformance with a running Claude installation.
+and partial coverage. An unreadable root, walk limits, or an unsupported layout
+(whose callable name is unknowable) withhold invocation authority globally.
+For per-file metadata or read errors where the callable name is known from the
+supported `<name>/SKILL.md` layout, authority is withheld specifically for the
+invocation names the failed candidates could claim (preventing shadowed winners),
+continuing past individual file errors so remaining valid records stay inspectable
+and advisory. Declared unenumerated sources remain separately disclosed by discovery;
+a caller's verified visibility assertion must cover the actual session before
+using any advice. This is an adapter API, not proof of conformance with a running
+Claude installation.
 
 Limits are 10,000 inputs, 256 KiB per file, and 32 MiB cumulative read/parse bytes.
 Cancellation and the invocation deadline are checked around filesystem work and

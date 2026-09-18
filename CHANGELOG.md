@@ -4,12 +4,31 @@
 
 ### Fixed
 
+- Scoped roster authority withholding to affected invocation names and continue
+  past per-file read errors during Claude plan resolution (`sr-fzia`). Individual
+  malformed or escaping skill files now withhold authority only for the callable
+  names they could claim, leaving the remaining valid skills advisory and
+  inspectable, while unknowable layouts and root-level failures remain globally
+  withheld.
+- Several test fixtures keep their temporary trees after the run. They named
+  them only by process ID and a counter, so a reused process ID on a build
+  worker could pick up an earlier run's tree. The names now include a
+  timestamp, and the trees are created exclusively.
 - Matrix source-reference validation rejects unittest methods overwritten or
   deleted in the class body instead of counting their earlier declarations as
   test evidence. A surviving method still makes the class reference eligible;
   declaration validation remains distinct from an execution receipt.
 
 ### Added
+- Product e2e case evidence. `scripts/e2e/product/roster.json` maps each P2
+  e2e case to the real Rust tests that establish it. `scripts/e2e/product_cases.py`
+  checks the mapping against the sources and the contract matrix, and evaluates
+  each case from the actual test log. The roster suite now runs Quill-query,
+  local-inspection and P2 gate targets too, and it passes only if every case
+  passes. `tests/p2_gate.rs` checks that every admitted option maps to a
+  currently authorized file whose bytes match the record. An import test shows
+  that importing a roster changes nothing on disk. Stale P2 matrix test
+  references now name the tests that exist.
 - `sr doctor` readiness report: configuration validity with a policy
   fingerprint, roster counts and causes, key presence (never "verified"),
   network consent, transport evidence state, ledger and hook mode. Each is

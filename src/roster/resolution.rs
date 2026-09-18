@@ -447,15 +447,19 @@ pub fn resolve_claude_plan(
     let mut entries = Vec::new();
     let mut diagnostics = Vec::new();
     let mut total = 0usize;
+    let mut withheld_names = BTreeSet::new();
+    let mut global_withhold = false;
     for (index, candidate) in discovery.candidates().iter().enumerate() {
         budget(cx, clock)?;
         let Some(invocation) = claude_invocation(candidate.kind(), candidate.relative()) else {
             diagnostics.push((index, ResolutionError::UnsupportedLayout));
+            global_withhold = true;
             continue;
         };
         let remaining = DISCOVERY_PARSED_BYTES.max().saturating_sub(total);
         if remaining == 0 {
             diagnostics.push((index, ResolutionError::Limit));
+            global_withhold = true;
             break;
         }
         let limit = ResourceLimit::try_new(
@@ -468,13 +472,15 @@ pub fn resolve_claude_plan(
             Ok(read) => read,
             Err(_) => {
                 diagnostics.push((index, ResolutionError::Read));
-                break;
+                withheld_names.insert(invocation.as_str().to_owned());
+                continue;
             }
         };
         total += read.len();
         budget(cx, clock)?;
         if read.identity() != candidate.identity() {
             diagnostics.push((index, ResolutionError::ChangedFile));
+            withheld_names.insert(invocation.as_str().to_owned());
             continue;
         }
         let logical_key = path_logical_key(candidate.path().as_path())?;
@@ -489,29 +495,41 @@ pub fn resolve_claude_plan(
         let spec = BindingSpec {
             source: candidate.source().clone(),
             logical_key,
-            invocation,
+            invocation: invocation.clone(),
             priority: Some(candidate.priority()),
             visibility: candidate.visibility().clone(),
             restrictions,
         };
         match SkillEntry::from_read(spec, read) {
             Ok(entry) => entries.push(entry),
-            Err(error) => diagnostics.push((index, error)),
+            Err(error) => {
+                diagnostics.push((index, error));
+                withheld_names.insert(invocation.as_str().to_owned());
+            }
         }
     }
     // An omitted candidate might be the actual winner of a callable name.
-    // Keep parsed records for inspection but withhold invocation authority.
-    let incomplete = !diagnostics.is_empty()
-        || discovery.diagnostics().iter().any(|d| {
-            !matches!(
-                d,
-                Diagnostic::RootMissing(_) | Diagnostic::SourceNotEnumerated(_)
-            )
-        });
-    if incomplete {
+    // If the invocation name is unknowable (unsupported layout) or the failure
+    // was root-level (unreadable root or walk limits), withhold authority globally.
+    // Otherwise, withhold authority only for the specific invocation names the
+    // failed candidate could have claimed, keeping the remaining valid records advisory.
+    let discovery_withhold = discovery.diagnostics().iter().any(|d| {
+        !matches!(
+            d,
+            Diagnostic::RootMissing(_) | Diagnostic::SourceNotEnumerated(_)
+        )
+    });
+    if global_withhold || discovery_withhold {
         for entry in &mut entries {
             entry.binding.visibility = Visibility::Unverified;
             entry.record.visibility = Visibility::Unverified;
+        }
+    } else if !withheld_names.is_empty() {
+        for entry in &mut entries {
+            if withheld_names.contains(entry.binding.invocation.as_str()) {
+                entry.binding.visibility = Visibility::Unverified;
+                entry.record.visibility = Visibility::Unverified;
+            }
         }
     }
     let mut roster = ResolvedRoster::resolve(
