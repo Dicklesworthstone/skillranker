@@ -241,6 +241,7 @@ fn changed_membership_and_hostile_metadata_never_become_publishable() {
     let roster = tree.resolve(&clock, &cx);
     assert!(roster.is_partial());
     assert_eq!(roster.skills().len(), 2);
+    // Unrelated valid record remains invocable under scoped withholding
     assert!(
         matches!(
             resolve_explicit_requirements(
@@ -249,6 +250,45 @@ fn changed_membership_and_hostile_metadata_never_become_publishable() {
                     ..Default::default()
                 },
                 &roster
+            )
+            .unwrap(),
+            ExplicitResolutionResult::Resolved { .. }
+        ),
+        "unrelated valid record remains invocable under scoped withholding"
+    );
+    // The malformed record itself is unavailable
+    assert!(
+        matches!(
+            resolve_explicit_requirements(
+                &ExplicitResolutionRequest {
+                    cli_required_skills: vec!["malformed".into()],
+                    ..Default::default()
+                },
+                &roster
+            )
+            .unwrap(),
+            ExplicitResolutionResult::Unavailable { .. }
+        ),
+        "malformed record must not be invocable"
+    );
+    // When a competing definition of manual is unreadable, invocation authority is revoked
+    let home_malformed = tree.home().join(".claude/skills/manual");
+    std::fs::create_dir_all(&home_malformed).unwrap();
+    std::fs::write(
+        home_malformed.join("SKILL.md"),
+        "---\nname: [unsupported]\n---\nbody\n",
+    )
+    .unwrap();
+    let competing_roster = tree.resolve(&clock, &cx);
+    assert!(competing_roster.is_partial());
+    assert!(
+        matches!(
+            resolve_explicit_requirements(
+                &ExplicitResolutionRequest {
+                    cli_required_skills: vec!["manual".into()],
+                    ..Default::default()
+                },
+                &competing_roster
             )
             .unwrap(),
             ExplicitResolutionResult::Unavailable { .. }
