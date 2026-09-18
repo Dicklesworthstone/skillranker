@@ -4,6 +4,7 @@
 pub mod adapter;
 pub mod authorized_read;
 pub mod blocking;
+pub mod cache;
 pub mod cli;
 pub mod config;
 pub mod context;
