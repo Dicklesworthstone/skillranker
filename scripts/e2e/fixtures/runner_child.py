@@ -53,9 +53,16 @@ elif mode == "isolation":
     passed = passed and all(Path(os.environ[name]).is_dir() for name in
                             ("XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "TMPDIR"))
 
-emit("assertion", id="behavior", passed=passed and mode != "failthenpass")
+assertion_id = (
+    "p1_gate_passed"
+    if case == "full-transport-suite"
+    else "safe_error_reporting"
+    if case in {"stalled-dns", "handshake-timeout", "429-backoff", "success-twin"}
+    else "behavior"
+)
+emit("assertion", id=assertion_id, passed=passed and mode != "failthenpass")
 if mode in {"duplicate", "failthenpass"}:
-    emit("assertion", id="behavior", passed=mode == "failthenpass")
+    emit("assertion", id=assertion_id, passed=mode == "failthenpass")
 if mode != "noresult":
     emit("result", outcome="refused" if mode == "refuse" else "ok", effects=0,
          fault_reached=mode == "refuse")

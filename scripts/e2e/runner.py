@@ -364,20 +364,21 @@ def run(spec, binary, artifacts, selection=None, *, fixture=FIXTURE, run_id=None
 
 def main():
     parser = SafeParser(description=__doc__)
-    parser.add_argument("--suite", required=True, choices=["runner-smoke", "runner-contract"])
+    parser.add_argument("--suite", required=True, choices=["runner-smoke", "runner-contract", "transport"])
     parser.add_argument("--binary", default=sys.executable,
                         help="Python interpreter for runner-mechanics fixtures; not a product binary")
     parser.add_argument("--artifacts", required=True, help="existing artifact parent directory")
     parser.add_argument("--case", action="append", dest="selection")
     try:
         args = parser.parse_args()
+        binary = Path(args.binary).resolve(strict=True)
         if args.suite == "runner-contract":
             ev.require(args.selection is None, "contract-selection")
             import runner_contract
-            directory, summary = runner_contract.run_contract(args.binary, args.artifacts)
+            directory, summary = runner_contract.run_contract(binary, args.artifacts)
         else:
             spec = ev.read_json(HERE / "suites" / (args.suite + ".json"))
-            directory, summary = run(spec, args.binary, args.artifacts, args.selection)
+            directory, summary = run(spec, binary, args.artifacts, args.selection)
         # Generated basename only: caller-supplied paths/arguments never become log text.
         print(ev.encode({"schema_version": ev.VERSION, "run": directory.name,
                          "runner_status": summary["runner_status"], "product_gate": "not-applicable"})

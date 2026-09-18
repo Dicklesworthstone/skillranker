@@ -10,7 +10,7 @@ from pathlib import Path
 
 VERSION = 2
 MAX_DOCUMENT = 1024 * 1024
-ID = re.compile(r"[a-z][a-z0-9-]{0,63}\Z", re.ASCII)
+ID = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}\Z", re.ASCII)
 DIGEST = re.compile(r"[0-9a-f]{64}\Z", re.ASCII)
 MODES = frozenset({"pass", "refuse", "badexit", "signal", "hang", "flood",
                    "badjson", "duplicate", "noresult", "faultmiss", "secret",
