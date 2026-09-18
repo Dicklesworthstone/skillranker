@@ -1,4 +1,5 @@
-//! Local configuration inspection. No discovery, child, network, or state writes.
+//! Local configuration and roster inspection. Roster discovery reads only the
+//! documented skill roots; there are no child, network, or state writes.
 use crate::authorized_read::{AuthorizedRoot, AuthorizedRoots, ReadError};
 use crate::config::{
     ConfigSources, MAX_LAYER_ENTRIES, RawValue, ResolvedConfig, SettingKey, ValueSource,
@@ -11,7 +12,7 @@ use std::ffi::OsString;
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
-const HELP: &str = "SkillRanker — powered by TypeSafe.ai Jev\n\nUsage: sr doctor --config [--json | --table] [--top N] [--shortlist N]\n       sr --help | --version\n\nLocal configuration inspection only. Ranking requires your own TypeSafe API key\nand trusted network consent; ranking and roster execution are not available here.\n";
+const HELP: &str = "SkillRanker — powered by TypeSafe.ai Jev\n\nUsage: sr doctor --config [--json | --table] [--top N] [--shortlist N]\n       sr roster [--json] [--limit N] [--cursor TOKEN]\n       sr --help | --version\n\nLocal configuration and roster inspection only. Ranking requires your own TypeSafe\nAPI key and trusted network consent; ranking is not available here.\n";
 
 fn command() -> Command {
     let mut doctor = Command::new("doctor")
@@ -73,6 +74,19 @@ fn command() -> Command {
                 .conflicts_with("help"),
         )
         .subcommand(doctor)
+        .subcommand(
+            Command::new("roster")
+                .disable_help_flag(true)
+                .arg(
+                    Arg::new("help")
+                        .long("help")
+                        .short('h')
+                        .action(ArgAction::SetTrue),
+                )
+                .arg(Arg::new("json").long("json").action(ArgAction::SetTrue))
+                .arg(Arg::new("limit").long("limit").action(ArgAction::Set))
+                .arg(Arg::new("cursor").long("cursor").action(ArgAction::Set)),
+        )
 }
 
 /// Exit and streams are deliberately separate; diagnostics never echo clap/TOML input.
@@ -129,6 +143,12 @@ fn execute(clock: &EntryClock, args: Vec<OsString>) -> Result<String, Failure> {
             "invalid-usage",
             "Top-level flags cannot accompany a command".into(),
         ));
+    }
+    if let Some(("roster", roster)) = matches.subcommand() {
+        if roster.get_flag("help") {
+            return Ok(HELP.into());
+        }
+        return roster_listing(clock, roster);
     }
     let Some(("doctor", doctor)) = matches.subcommand() else {
         return Err((
@@ -447,4 +467,64 @@ fn config_report(config: &ResolvedConfig) -> Value {
         settings.insert(key.path().into(), json!({"value":value,"sources":sources}));
     }
     json!({"schema_version":1,"command":"doctor-config","scope":"local-configuration-only","settings":settings})
+}
+
+/// `sr roster`: inspect the Claude roots of the current workspace. The Claude
+/// adapter's visibility is unverified, so no precedence is claimed. Output is
+/// JSON; tables belong to the renderer.
+fn roster_listing(clock: &EntryClock, matches: &clap::ArgMatches) -> Result<String, Failure> {
+    use crate::roster::inspect::{MAX_PAGE, PageError, listing, page};
+    let usage = |message: &str| (2u8, "invalid-usage", message.to_owned());
+    let limit = match matches.get_one::<String>("limit") {
+        Some(text) => text
+            .parse::<usize>()
+            .map_err(|_| usage("--limit must be a whole number from 1 to 128"))?,
+        None => MAX_PAGE,
+    };
+    let cursor = matches.get_one::<String>("cursor").map(String::as_str);
+    timely(clock)?;
+    let unusable = |message: &str| (5u8, "unusable-roster", message.to_owned());
+    let workspace =
+        std::env::current_dir().map_err(|_| unusable("The workspace directory is unavailable"))?;
+    let home = std::env::var_os("HOME")
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from);
+    let plan = crate::roster::discovery::claude_code_plan(
+        &workspace,
+        home.as_deref(),
+        crate::roster::Visibility::Unverified,
+    )
+    .map_err(|_| unusable("The documented skill roots could not be planned"))?;
+    let invocation = crate::runtime::ProcessInvocation::from_clock(*clock)
+        .map_err(|_| unusable("The local runtime is unavailable"))?;
+    let cx = invocation
+        .request_cx()
+        .map_err(|_| unusable("The local runtime is unavailable"))?;
+    let roster = crate::roster::resolution::resolve_claude_plan(
+        &plan,
+        &std::collections::BTreeMap::new(),
+        &cx,
+        clock,
+    )
+    .map_err(|error| match error {
+        crate::roster::resolution::ResolutionError::Deadline
+        | crate::roster::resolution::ResolutionError::Cancelled => (
+            6u8,
+            "timeout",
+            "Local inspection deadline exceeded".to_owned(),
+        ),
+        _ => unusable("The roster could not be resolved"),
+    })?;
+    let listing = listing(&roster);
+    let page = page(&listing, cursor, limit).map_err(|error| match error {
+        PageError::InvalidLimit => usage("--limit must be a whole number from 1 to 128"),
+        PageError::InvalidCursor => usage("Unrecognized --cursor; restart without it"),
+        PageError::RosterChanged => (
+            5u8,
+            "roster-changed",
+            "The roster changed since this cursor was issued; restart without --cursor".to_owned(),
+        ),
+    })?;
+    timely(clock)?;
+    Ok(format!("{}\n", page.to_json()))
 }

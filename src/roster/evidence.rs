@@ -265,7 +265,18 @@ pub fn trace(
     // Policy and retrieval act per skill, so any binding of the target's file
     // counts. Retrieval never sees explicitly excluded skills, but it does see
     // loaded references, so a loaded candidate still reports its admission.
-    let siblings = sibling_ids(roster, target);
+    // Only policy and retrieval need the file's other bindings; skip the scan
+    // when neither was evaluated.
+    let needs_siblings = policy.is_some()
+        || matches!(
+            retrieval,
+            RetrievalView::Admitted { .. } | RetrievalView::Empty
+        );
+    let siblings = if needs_siblings {
+        sibling_ids(roster, target)
+    } else {
+        Vec::new()
+    };
     let any = |set: &BTreeSet<&SkillId>| siblings.iter().any(|id| set.contains(id));
     let explicitly_excluded = policy.is_some_and(|p| any(p.excluded));
     if let Some(policy) = policy {

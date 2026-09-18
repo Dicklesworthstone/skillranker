@@ -6,6 +6,7 @@ pub mod evidence;
 pub mod explicit;
 pub mod frontmatter;
 pub mod import;
+pub mod inspect;
 pub mod resolution;
 pub mod retrieval;
 pub mod revalidation;
