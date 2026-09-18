@@ -22,6 +22,10 @@ pub use branch::{
     ResolvedWorktree, SkillSuppressionVerdict, SkillUsageKind, UnresolvedBranchReason,
     WorktreeError, evaluate_loaded_skill_eligibility, resolve_active_branch, resolve_worktree,
 };
+pub use jsonl::{
+    CursorKind, FileIdentity, JsonlCursor, JsonlError, JsonlSnapshot, SkipKind, SkippedRecord,
+    parse_line, snapshot_jsonl,
+};
 pub use overlay::{
     ClaudeOverlayRequest, ClaudeOverlayResult, OverlayError, apply_claude_prompt_overlay,
 };
