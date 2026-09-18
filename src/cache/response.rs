@@ -18,7 +18,8 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::{Arc, RwLock};
 
-/// Default maximum time-to-live: 10 minutes (600 seconds).
+/// Default and maximum time-to-live: 10 minutes (600 seconds). A longer stored
+/// TTL never extends freshness beyond this.
 pub const DEFAULT_CACHE_TTL_SECS: u32 = 600;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -138,7 +139,8 @@ impl CachedResponseEntry {
         }
 
         let age_ms = now_unix_ms.saturating_sub(self.received_at_unix_ms);
-        let ttl_ms = (self.ttl_seconds as u64).saturating_mul(1000);
+        // Ten minutes from receipt is a maximum, whatever TTL was stored.
+        let ttl_ms = u64::from(self.ttl_seconds.min(DEFAULT_CACHE_TTL_SECS)).saturating_mul(1000);
 
         if age_ms >= ttl_ms {
             FreshnessStatus::Expired { age_ms }

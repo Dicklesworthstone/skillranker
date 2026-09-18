@@ -660,3 +660,56 @@ fn namespace_isolation_and_eviction() {
         "evicted namespace must be a miss"
     );
 }
+
+#[test]
+fn a_stored_ttl_never_extends_freshness_past_ten_minutes() {
+    let key = test_key();
+    let ns = test_namespace("sess-ttl-cap");
+    let cache = MemoryResponseCache::new();
+    let candidates = sample_candidates_m3();
+    let fp = make_request_fingerprint(&key, &ns, RequestStage::Wide, &candidates);
+    let t0 = 30_000_000u64;
+    let entry = CachedResponseEntry {
+        stage: RequestStage::Wide,
+        request_fingerprint: fp,
+        response_bytes: b"{\"wide\":\"valid\"}".to_vec(),
+        received_at_unix_ms: t0,
+        ttl_seconds: 3_600,
+        model: "jev-model".to_string(),
+        model_revision: Some("rev-1".to_string()),
+        original_usage: Usage {
+            input_tokens: 50,
+            output_tokens: 10,
+        },
+        attempt_id: None,
+    };
+    cache.put(&key, &ns, entry).unwrap();
+    let at = |ms: u64| {
+        cache
+            .get(&lookup_query(
+                &key,
+                &ns,
+                RequestStage::Wide,
+                &fp,
+                ms,
+                "jev-model",
+                Some("rev-1"),
+            ))
+            .unwrap()
+    };
+    // Nine minutes after receipt: still fresh, with at most the capped remainder.
+    match at(t0 + 9 * 60 * 1000) {
+        CacheLookupResult::Hit {
+            remaining_ttl_ms, ..
+        } => assert_eq!(remaining_ttl_ms, 60 * 1000),
+        other => panic!("expected a fresh hit, got {other:?}"),
+    }
+    // Eleven minutes: expired, although the stored TTL claimed an hour.
+    assert!(matches!(
+        at(t0 + 11 * 60 * 1000),
+        CacheLookupResult::Stale {
+            status: FreshnessStatus::Expired { .. },
+            ..
+        }
+    ));
+}
