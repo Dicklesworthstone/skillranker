@@ -1,5 +1,5 @@
 //! Bounded query construction for the pinned default Quill schema.
-//! This module has no roster, provider, persistence, or fallback effects.
+//! Retrieval uses a fresh bounded in-memory index; no provider, persistence, or fallback effects.
 
 use asupersync::Cx;
 use frankensearch_quill::{
@@ -296,9 +296,375 @@ fn preserves_terms(query: &Query, expected: &BTreeSet<&str>) -> bool {
             .all(|(text, mask)| *mask == 3 && expected.contains(text))
 }
 
+/// Versioned mapping/selection policy, separate from the pinned engine version.
+pub const RETRIEVAL_VERSION: &str = "roster-quill-v1";
+pub const RETRIEVAL_SCHEMA: &str = "quill-default-content-title-v1";
+pub const MAX_CANDIDATES: usize = 254;
+pub const TITLE_SCALARS: usize = 2048;
+pub const DESCRIPTION_SCALARS: usize = 8192;
+pub const TAG_SCALARS: usize = 2048;
+
+/// Logical engine budgets, not an RSS limit. Callers may restrict these values.
+#[derive(Clone, Copy, Debug)]
+pub struct RetrievalBudget {
+    pub scribe_bytes: usize,
+    pub delta_bytes: usize,
+    pub document_bytes: usize,
+    pub query_fuel: u64,
+}
+impl Default for RetrievalBudget {
+    fn default() -> Self {
+        Self {
+            scribe_bytes: 16 * 1024 * 1024,
+            delta_bytes: 4 * 1024 * 1024,
+            document_bytes: 32 * 1024 * 1024,
+            query_fuel: 1_000_000,
+        }
+    }
+}
+impl RetrievalBudget {
+    fn valid(self) -> bool {
+        let cap = Self::default();
+        self.scribe_bytes > 0
+            && self.scribe_bytes <= cap.scribe_bytes
+            && self.delta_bytes > 0
+            && self.delta_bytes <= cap.delta_bytes
+            && self.document_bytes > 0
+            && self.document_bytes <= cap.document_bytes
+            && self.query_fuel > 0
+            && self.query_fuel <= cap.query_fuel
+    }
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RetrievalMethod {
+    FullRoster,
+    QuillBm25,
+}
+#[derive(Clone, Debug)]
+pub struct RetrievalDiagnostics {
+    pub policy_version: &'static str,
+    pub engine_version: &'static str,
+    pub schema_version: &'static str,
+    pub method: Option<RetrievalMethod>,
+    pub roster_count: usize,
+    pub eligible_count: Option<usize>,
+    pub admitted_count: usize,
+    pub partial_roster: bool,
+    /// Candidates omitted relative to the eligible roster, not an exact match count.
+    pub truncated: bool,
+    /// The page filled; more matches may exist, without requesting exact count.
+    pub hit_limit_reached: bool,
+    pub truncated_documents: usize,
+    pub indexed_bytes: usize,
+    pub build_commit_us: Option<u64>,
+    pub search_us: Option<u64>,
+    pub query: Option<QueryDiagnostics>,
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RetrievalError {
+    InvalidBudget,
+    NoEligibleCandidates,
+    RetrievalEmpty,
+    Query(QueryCompileError),
+    InputLimit,
+    Cancelled,
+    Deadline,
+    Index,
+    QueryFuel,
+    EngineContract,
+}
+#[derive(Clone, Debug)]
+pub struct RetrievalFailure {
+    pub kind: RetrievalError,
+    pub diagnostics: Box<RetrievalDiagnostics>,
+}
+impl fmt::Display for RetrievalFailure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "roster retrieval: {:?}", self.kind)
+    }
+}
+impl std::error::Error for RetrievalFailure {}
+#[derive(Debug)]
+pub struct RetrievalSelection<'a> {
+    /// Borrowed from this immutable roster; pass binding IDs into OptionMap.
+    pub candidates: Vec<super::resolution::AdvisorySkill<'a>>,
+    pub diagnostics: RetrievalDiagnostics,
+}
+fn retrieval_checkpoint(cx: &Cx, clock: &crate::runtime::EntryClock) -> Result<(), RetrievalError> {
+    clock
+        .admit_new_work()
+        .map_err(|_| RetrievalError::Deadline)?;
+    cx.checkpoint().map_err(|_| RetrievalError::Cancelled)
+}
+fn elapsed_us(start: std::time::Instant) -> u64 {
+    u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX)
+}
+fn engine_error(error: frankensearch_quill::QuillIndexError) -> RetrievalError {
+    match error {
+        frankensearch_quill::QuillIndexError::Cancelled { .. } => RetrievalError::Cancelled,
+        frankensearch_quill::QuillIndexError::QueryFuelExhausted { .. } => {
+            RetrievalError::QueryFuel
+        }
+        _ => RetrievalError::Index, // Never retain upstream strings containing local text.
+    }
+}
+/// Bound text by scalar count with separators inside the bound, retaining a
+/// truncation flag. No field can smuggle query operators into the query compiler.
+fn bounded_fields<'a>(fields: impl IntoIterator<Item = &'a str>, cap: usize) -> (String, bool) {
+    let mut result = String::new();
+    let mut used = 0;
+    let mut truncated = false;
+    for field in fields {
+        if field.is_empty() {
+            continue;
+        }
+        if !result.is_empty() {
+            if used == cap {
+                truncated = true;
+                break;
+            }
+            result.push(' ');
+            used += 1;
+        }
+        for c in field.chars() {
+            if used == cap {
+                truncated = true;
+                break;
+            }
+            result.push(c);
+            used += 1;
+        }
+        if truncated {
+            break;
+        }
+    }
+    (result, truncated)
+}
+
+/// Select advisory candidates. Exact user requirements are resolved separately
+/// before this boundary. Excluding any binding excludes its whole physical file.
+/// The borrowed snapshot cannot be substituted by a provider-returned name/path.
+pub async fn retrieve<'a>(
+    roster: &'a super::resolution::ResolvedRoster,
+    excluded: &BTreeSet<crate::identity::SkillId>,
+    input: QueryInput<'_>,
+    budget: RetrievalBudget,
+    cx: &Cx,
+    clock: &crate::runtime::EntryClock,
+) -> Result<RetrievalSelection<'a>, RetrievalFailure> {
+    let mut diagnostics = RetrievalDiagnostics {
+        policy_version: RETRIEVAL_VERSION,
+        engine_version: frankensearch_quill::FRANKENSEARCH_QUILL_CRATE_VERSION,
+        schema_version: RETRIEVAL_SCHEMA,
+        method: None,
+        roster_count: roster.skills().len(),
+        eligible_count: None,
+        admitted_count: 0,
+        partial_roster: roster.is_partial(),
+        truncated: false,
+        hit_limit_reached: false,
+        truncated_documents: 0,
+        indexed_bytes: 0,
+        build_commit_us: None,
+        search_us: None,
+        query: None,
+    };
+    let outcome: Result<Vec<super::resolution::AdvisorySkill<'a>>, RetrievalError> = async {
+        retrieval_checkpoint(cx, clock)?;
+        if !budget.valid() {
+            return Err(RetrievalError::InvalidBudget);
+        }
+        if excluded.len() > crate::limits::DISCOVERY_FILES.max() {
+            return Err(RetrievalError::InputLimit);
+        }
+        let mut selected = Vec::new();
+        for skill in roster.skills() {
+            retrieval_checkpoint(cx, clock)?;
+            if skill.bindings().iter().any(|b| excluded.contains(&b.id)) {
+                continue;
+            }
+            if let Some(binding) = skill.bindings().iter().find(|b| {
+                b.restrictions.agent_invocable
+                    && matches!(b.visibility, super::Visibility::Verified { .. })
+            }) {
+                selected.push(super::resolution::AdvisorySkill {
+                    record: skill.record(),
+                    binding,
+                });
+            }
+        }
+        selected.sort_by(|a, b| a.record.id.cmp(&b.record.id));
+        retrieval_checkpoint(cx, clock)?;
+        diagnostics.eligible_count = Some(selected.len());
+        diagnostics.method = Some(RetrievalMethod::FullRoster);
+        if selected.is_empty() {
+            return Err(RetrievalError::NoEligibleCandidates);
+        }
+        if selected.len() <= MAX_CANDIDATES {
+            diagnostics.admitted_count = selected.len();
+            return Ok(selected);
+        }
+        diagnostics.method = Some(RetrievalMethod::QuillBm25);
+        let compiled = compile_query(cx, input).map_err(RetrievalError::Query)?;
+        diagnostics.query = Some(compiled.diagnostics);
+        let query = compiled.query.ok_or(RetrievalError::RetrievalEmpty)?;
+        retrieval_checkpoint(cx, clock)?;
+        let started = std::time::Instant::now();
+        let build_result = async {
+            let mut docs = Vec::with_capacity(selected.len());
+            // ResolvedRoster guarantees canonical IDs are unique. The map is local
+            // to these exact documents, not reconstructed from a search string.
+            let by_id: BTreeMap<_, _> = roster
+                .skills()
+                .iter()
+                .map(|s| (&s.record().id, s))
+                .collect();
+            for skill in &selected {
+                retrieval_checkpoint(cx, clock)?;
+                let resolved = by_id
+                    .get(&skill.record.id)
+                    .ok_or(RetrievalError::EngineContract)?;
+                let mut unique_names = BTreeSet::new();
+                let names = std::iter::once(skill.binding.invocation.as_str())
+                    .chain(
+                        resolved
+                            .bindings()
+                            .iter()
+                            .filter(|b| {
+                                b.restrictions.agent_invocable
+                                    && matches!(b.visibility, super::Visibility::Verified { .. })
+                            })
+                            .map(|b| b.invocation.as_str()),
+                    )
+                    .chain(std::iter::once(skill.record.display_name.as_str()))
+                    .filter(|name| unique_names.insert(*name));
+                let (title, title_cut) = bounded_fields(names, TITLE_SCALARS);
+                let (description, description_cut) = bounded_fields(
+                    [skill.record.description_full.as_str()],
+                    DESCRIPTION_SCALARS,
+                );
+                let (tags, tags_cut) =
+                    bounded_fields(skill.record.tags.iter().map(|t| t.as_str()), TAG_SCALARS);
+                let content = format!("{description}\n{tags}");
+                let bytes = title
+                    .len()
+                    .checked_add(content.len())
+                    .and_then(|n| n.checked_add(skill.record.id.as_str().len()))
+                    .ok_or(RetrievalError::InputLimit)?;
+                diagnostics.indexed_bytes = diagnostics
+                    .indexed_bytes
+                    .checked_add(bytes)
+                    .ok_or(RetrievalError::InputLimit)?;
+                if diagnostics.indexed_bytes > budget.document_bytes {
+                    return Err(RetrievalError::InputLimit);
+                }
+                diagnostics.truncated_documents +=
+                    usize::from(title_cut || description_cut || tags_cut);
+                docs.push(
+                    frankensearch_core::IndexableDocument::new(skill.record.id.as_str(), content)
+                        .with_title(title),
+                );
+            }
+            let config = frankensearch_quill::QuillConfig {
+                scribe_shard_budget_bytes: budget.scribe_bytes,
+                delta_budget_bytes: budget.delta_bytes,
+                max_ingest_shards: 1,
+                deterministic_ingest: true,
+                query_fuel_budget: budget.query_fuel,
+                glob_expansion_limit: MAX_QUERY_TERMS,
+                max_visibility_lag_ms: u64::MAX,
+                ..frankensearch_quill::QuillConfig::default()
+            };
+            let index = frankensearch_quill::QuillIndex::in_memory(config).map_err(engine_error)?;
+            index
+                .index_documents(cx, &docs)
+                .await
+                .map_err(engine_error)?;
+            retrieval_checkpoint(cx, clock)?;
+            index.commit(cx).await.map_err(engine_error)?;
+            retrieval_checkpoint(cx, clock)?;
+            Ok(index)
+        }
+        .await;
+        diagnostics.build_commit_us = Some(elapsed_us(started));
+        retrieval_checkpoint(cx, clock)?;
+        let index = build_result?;
+        let started = std::time::Instant::now();
+        let page = index
+            .search_paginated(cx, query.as_str(), MAX_CANDIDATES, 0, false)
+            .map_err(engine_error);
+        diagnostics.search_us = Some(elapsed_us(started));
+        retrieval_checkpoint(cx, clock)?;
+        let page = page?;
+        if !page.diagnostics.is_empty()
+            || page.total_count.is_some()
+            || page.doc_count != selected.len() as u64
+            || page.hits.len() > MAX_CANDIDATES
+        {
+            return Err(RetrievalError::EngineContract);
+        }
+        let snapshot: BTreeMap<_, _> = selected
+            .iter()
+            .map(|s| (s.record.id.as_str(), *s))
+            .collect();
+        let mut seen = BTreeSet::new();
+        let mut hits = Vec::with_capacity(page.hits.len());
+        for hit in page.hits.iter() {
+            if !hit.score.is_finite() || !seen.insert(hit.document_id.as_str()) {
+                return Err(RetrievalError::EngineContract);
+            }
+            hits.push(
+                *snapshot
+                    .get(hit.document_id.as_str())
+                    .ok_or(RetrievalError::EngineContract)?,
+            );
+        }
+        if hits.is_empty() {
+            return Err(RetrievalError::RetrievalEmpty);
+        }
+        diagnostics.admitted_count = hits.len();
+        diagnostics.hit_limit_reached = hits.len() == MAX_CANDIDATES;
+        diagnostics.truncated = hits.len() < selected.len();
+        retrieval_checkpoint(cx, clock)?;
+        Ok(hits)
+    }
+    .await;
+    match outcome {
+        Ok(candidates) => Ok(RetrievalSelection {
+            candidates,
+            diagnostics,
+        }),
+        Err(kind) => Err(RetrievalFailure {
+            kind,
+            diagnostics: Box::new(diagnostics),
+        }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn engine_failures_are_sanitized_and_never_become_empty_retrieval() {
+        use frankensearch_quill::{QuillConfig, QuillIndex, QuillIndexError};
+        let invalid = QuillConfig {
+            delta_budget_bytes: 0,
+            ..QuillConfig::default()
+        };
+        let error = match QuillIndex::in_memory(invalid) {
+            Ok(_) => panic!("invalid engine config accepted"),
+            Err(error) => error,
+        };
+        assert_eq!(engine_error(error), RetrievalError::Index);
+        assert!(QuillIndex::in_memory(QuillConfig::default()).is_ok());
+        // Pure error-boundary canary, not simulated storage-corruption evidence.
+        let private = engine_error(QuillIndexError::InvalidState {
+            detail: "PrivateEngineCanary".into(),
+        });
+        assert_eq!(private, RetrievalError::Index);
+        assert!(!format!("{private:?}").contains("PrivateEngineCanary"));
+    }
 
     #[test]
     fn parser_recovery_and_truncation_are_failures_with_text_free_diagnostics() {
