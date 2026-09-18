@@ -192,3 +192,206 @@ fn rejected_records_share_the_record_budget_and_leave_a_resumable_cursor() {
     assert!(!second.unread_backlog);
     assert!(invocation.shutdown());
 }
+
+#[test]
+fn supported_native_block_shapes_preserve_text_and_tool_associations() {
+    use serde_json::json;
+    use skillranker::context::{EventKind, Role, ToolStatus};
+
+    // 1. Assistant message with content array: text + tool_use
+    let assistant_record = json!({
+        "type": "assistant",
+        "uuid": "ast-01",
+        "message": {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "text",
+                    "text": "I will examine the codebase."
+                },
+                {
+                    "type": "tool_use",
+                    "id": "call-read-01",
+                    "name": "read_file",
+                    "input": { "path": "src/main.rs" }
+                }
+            ]
+        }
+    });
+    let ev = parse(assistant_record).expect("assistant message with blocks must parse");
+    assert_eq!(ev.text.as_str(), "I will examine the codebase.");
+    assert_eq!(ev.kind, EventKind::ToolInvocation);
+    assert_eq!(ev.role, Role::Assistant);
+    let tool = ev.tool.expect("tool event must be extracted");
+    assert_eq!(tool.call_id.unwrap().as_str(), "call-read-01");
+    assert_eq!(tool.name.as_str(), "read_file");
+    assert_eq!(tool.status, ToolStatus::Attempted);
+    assert_eq!(tool.arguments.unwrap().as_str(), "{\"path\":\"src/main.rs\"}");
+
+    // 2. User message with content array: tool_result
+    let tool_res_record = json!({
+        "type": "user",
+        "uuid": "usr-01",
+        "parentUuid": "ast-01",
+        "message": {
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "call-read-01",
+                    "content": "fn main() {}",
+                    "is_error": false
+                }
+            ]
+        }
+    });
+    let ev = parse(tool_res_record).expect("tool_result block must parse");
+    assert_eq!(ev.kind, EventKind::ToolResult);
+    assert_eq!(ev.role, Role::Tool);
+    let tool = ev.tool.expect("tool event must be extracted");
+    assert_eq!(tool.call_id.unwrap().as_str(), "call-read-01");
+    assert_eq!(tool.status, ToolStatus::Succeeded);
+    assert_eq!(tool.result.unwrap().as_str(), "fn main() {}");
+
+    // 3. Tool result with is_error: true
+    let error_record = json!({
+        "type": "tool_result",
+        "uuid": "err-01",
+        "call_id": "call-fail-01",
+        "content": "file not found",
+        "is_error": true
+    });
+    let ev = parse(error_record).expect("tool_result with is_error must parse");
+    assert_eq!(ev.kind, EventKind::ToolResult);
+    let tool = ev.tool.expect("tool event must be extracted");
+    assert_eq!(tool.status, ToolStatus::Failed);
+    assert_eq!(tool.result.unwrap().as_str(), "file not found");
+
+    // 4. Nested blocks inside tool_result content
+    let nested_res_record = json!({
+        "type": "user",
+        "uuid": "usr-02",
+        "message": {
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "call-nested-01",
+                    "content": [
+                        { "type": "text", "text": "chunk 1" },
+                        { "type": "text", "text": "chunk 2" }
+                    ],
+                    "is_error": false
+                }
+            ]
+        }
+    });
+    let ev = parse(nested_res_record).expect("nested tool_result blocks must parse");
+    let tool = ev.tool.expect("tool event must be extracted");
+    assert_eq!(tool.result.unwrap().as_str(), "chunk 1\nchunk 2");
+
+    // 5. Multiple text blocks concatenated
+    let multi_text_record = json!({
+        "type": "user",
+        "uuid": "usr-03",
+        "message": {
+            "role": "user",
+            "content": [
+                { "type": "text", "text": "first paragraph" },
+                { "type": "text", "text": "second paragraph" }
+            ]
+        }
+    });
+    let ev = parse(multi_text_record).expect("multi-text blocks must parse");
+    assert_eq!(ev.text.as_str(), "first paragraph\nsecond paragraph");
+
+    // 6. Thinking and image blocks are dropped while preserving text
+    let cot_record = json!({
+        "type": "assistant",
+        "uuid": "ast-02",
+        "message": {
+            "role": "assistant",
+            "content": [
+                { "type": "thinking", "thinking": "internal secret reasoning" },
+                { "type": "text", "text": "clean user-facing answer" },
+                { "type": "image", "source": { "type": "base64", "data": "binary" } }
+            ]
+        }
+    });
+    let ev = parse(cot_record).expect("thinking/image blocks must drop cleanly");
+    assert_eq!(ev.text.as_str(), "clean user-facing answer");
+    assert!(!ev.text.as_str().contains("reasoning"));
+
+    // 7. Dedicated top-level tool_use record
+    let dedicated_tool_use = json!({
+        "type": "tool_use",
+        "uuid": "tu-01",
+        "call_id": "call-ded-01",
+        "name": "bash",
+        "input": { "cmd": "cargo test" }
+    });
+    let ev = parse(dedicated_tool_use).expect("dedicated tool_use record must parse");
+    assert_eq!(ev.kind, EventKind::ToolInvocation);
+    let tool = ev.tool.expect("tool event must be present");
+    assert_eq!(tool.call_id.unwrap().as_str(), "call-ded-01");
+    assert_eq!(tool.name.as_str(), "bash");
+    assert_eq!(tool.arguments.unwrap().as_str(), "{\"cmd\":\"cargo test\"}");
+}
+
+#[test]
+fn unsupported_essential_shapes_are_rejected_not_silently_accepted() {
+    use serde_json::json;
+
+    let corrupt_cases = [
+        // Empty object
+        json!({}),
+        // Message with null message
+        json!({ "type": "user", "message": null }),
+        // Message with integer content
+        json!({ "type": "user", "message": { "content": 42 } }),
+        // Message with boolean content
+        json!({ "type": "user", "message": { "content": true } }),
+        // Message with empty content array
+        json!({ "type": "user", "message": { "content": [] } }),
+        // Message with content block missing type
+        json!({ "type": "user", "message": { "content": [{ "text": "missing type" }] } }),
+        // Message with unsupported block type
+        json!({ "type": "user", "message": { "content": [{ "type": "future_block_kind", "val": 1 }] } }),
+        // Text block with non-string text
+        json!({ "type": "user", "message": { "content": [{ "type": "text", "text": 123 }] } }),
+        // Tool use missing tool name
+        json!({ "type": "tool_use", "call_id": "call-1" }),
+        // Tool use missing call_id
+        json!({ "type": "tool_use", "name": "bash" }),
+        // Tool result missing call_id / tool_use_id
+        json!({ "type": "tool_result", "content": "output" }),
+        // User record with empty text
+        json!({ "type": "user", "text": "" }),
+        // User record with no text, message, content, or tool
+        json!({ "type": "user", "uuid": "u-empty" }),
+        // Assistant record with empty content object
+        json!({ "type": "assistant", "message": {} }),
+    ];
+
+    for case in corrupt_cases {
+        assert_eq!(
+            parse(case.clone()),
+            Err(SkipKind::Corrupt),
+            "case must be rejected as corrupt: {case}"
+        );
+    }
+}
+
+#[test]
+fn descriptor_bound_snapshot_detects_path_traversal() {
+    use skillranker::context::jsonl::{CursorKind, JsonlError, snapshot_jsonl};
+    use skillranker::runtime::ProcessInvocation;
+    use std::path::Path;
+
+    let invocation = ProcessInvocation::enter().unwrap();
+    let cx = invocation.request_cx().unwrap();
+    let traversal_path = Path::new("some/dir/../../etc/passwd");
+    let err = snapshot_jsonl(&invocation, &cx, traversal_path, None, CursorKind::Ranking).unwrap_err();
+    assert_eq!(err, JsonlError::UnsafePath);
+    assert!(invocation.shutdown());
+}

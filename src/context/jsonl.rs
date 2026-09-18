@@ -19,6 +19,9 @@ use crate::limits::{
 };
 use crate::runtime::{ProcessInvocation, RuntimeError};
 use asupersync::Cx;
+use nix::errno::Errno;
+use nix::fcntl::{OFlag, open};
+use nix::sys::stat::{Mode, SFlag, fstat};
 use serde_json::Value;
 use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom};
@@ -49,12 +52,16 @@ impl CursorKind {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct FileIdentity {
-    dev: u64,
-    ino: u64,
+    pub dev: u64,
+    pub ino: u64,
 }
 
 impl FileIdentity {
-    fn from_metadata(meta: &fs::Metadata) -> Self {
+    pub const fn new(dev: u64, ino: u64) -> Self {
+        Self { dev, ino }
+    }
+
+    pub fn from_metadata(meta: &fs::Metadata) -> Self {
         Self {
             dev: meta.dev(),
             ino: meta.ino(),
@@ -153,18 +160,35 @@ fn read_snapshot(
     previous: Option<&JsonlCursor>,
     kind: CursorKind,
 ) -> Result<JsonlSnapshot, JsonlError> {
+    if path.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+        return Err(JsonlError::UnsafePath);
+    }
     let link_meta = fs::symlink_metadata(path).map_err(|_| JsonlError::Io)?;
     if link_meta.file_type().is_symlink() || !link_meta.file_type().is_file() {
         return Err(JsonlError::UnsafePath);
     }
-    let mut file = File::open(path).map_err(|_| JsonlError::Io)?;
-    let meta = file.metadata().map_err(|_| JsonlError::Io)?;
-    if !meta.is_file() {
+    let flags = OFlag::O_RDONLY | OFlag::O_CLOEXEC | OFlag::O_NOFOLLOW;
+    let fd = match open(path, flags, Mode::empty()) {
+        Ok(fd) => fd,
+        Err(Errno::ELOOP | Errno::EMLINK) => return Err(JsonlError::UnsafePath),
+        Err(Errno::ENOENT | Errno::EACCES | Errno::EPERM) => return Err(JsonlError::Io),
+        Err(_) => return Err(JsonlError::Io),
+    };
+    let stat = fstat(&fd).map_err(|_| JsonlError::Io)?;
+    let bits = SFlag::from_bits_truncate(stat.st_mode) & SFlag::S_IFMT;
+    if bits != SFlag::S_IFREG {
         return Err(JsonlError::UnsafePath);
     }
-    let identity = FileIdentity::from_metadata(&meta);
-    let snapshot_len = meta.len();
+    if link_meta.dev() != stat.st_dev as u64 || link_meta.ino() != stat.st_ino as u64 {
+        return Err(JsonlError::UnsafePath);
+    }
+    let identity = FileIdentity {
+        dev: stat.st_dev as u64,
+        ino: stat.st_ino as u64,
+    };
+    let snapshot_len = stat.st_size as u64;
     let cap = kind.byte_cap();
+    let mut file = File::from(fd);
 
     let (start, rebuilt, align_to_record) = match previous {
         Some(cursor)
@@ -377,21 +401,37 @@ fn event_from_value(value: &Value) -> Option<NormalizedEvent> {
     let agent_id = native_identity(object, &["agent_id"], AgentId::new)?;
     let branch_id = native_identity(object, &["branch_id"], BranchId::new)?;
     let native_type = string_field(object, &["type"]).unwrap_or("message");
-    let (role, kind) = map_native_type(native_type);
-    let text = native_text(object);
-    let tool = native_tool(object, kind)?;
+    let (default_role, default_kind) = map_native_type(native_type);
     let timestamp_unix_ms = object.get("timestamp_unix_ms").and_then(Value::as_i64);
+
+    if matches!(default_kind, EventKind::Compaction | EventKind::Resume) {
+        let text = string_field(object, &["text"]).unwrap_or("").to_owned();
+        return Some(NormalizedEvent {
+            event_id,
+            parent_id,
+            turn_id,
+            agent_id,
+            branch_id,
+            role: default_role,
+            kind: default_kind,
+            timestamp_unix_ms,
+            text: PrivateText::new(text),
+            tool: None,
+        });
+    }
+
+    let parsed = parse_native_content(object, default_role, default_kind)?;
     Some(NormalizedEvent {
         event_id,
         parent_id,
         turn_id,
         agent_id,
         branch_id,
-        role,
-        kind,
+        role: parsed.role,
+        kind: parsed.kind,
         timestamp_unix_ms,
-        text: PrivateText::new(text),
-        tool,
+        text: PrivateText::new(parsed.text),
+        tool: parsed.tool,
     })
 }
 
@@ -414,41 +454,240 @@ fn string_field<'a>(object: &'a serde_json::Map<String, Value>, names: &[&str]) 
         .find_map(|name| object.get(*name).and_then(Value::as_str))
 }
 
-fn native_text(object: &serde_json::Map<String, Value>) -> String {
-    if let Some(text) = object.get("text").and_then(Value::as_str) {
-        return text.to_owned();
+struct ParsedContent {
+    role: Role,
+    kind: EventKind,
+    text: String,
+    tool: Option<ToolEvent>,
+}
+
+fn parse_native_content(
+    object: &serde_json::Map<String, Value>,
+    default_role: Role,
+    default_kind: EventKind,
+) -> Option<ParsedContent> {
+    // 1. Dedicated tool invocation or result record (top-level)
+    if matches!(default_kind, EventKind::ToolInvocation | EventKind::ToolResult) {
+        let call_id = native_identity(object, &["call_id", "tool_use_id", "id"], ToolCallId::new)?;
+        let call_id = call_id?;
+        let name = string_field(object, &["name", "tool_name"]);
+        let text = string_field(object, &["text"]).unwrap_or("").to_owned();
+        if default_kind == EventKind::ToolInvocation {
+            let name = name?;
+            let arguments = if let Some(input) = object.get("input") {
+                match input {
+                    Value::String(s) => Some(PrivateText::new(s.clone())),
+                    other => Some(PrivateText::new(serde_json::to_string(other).ok()?)),
+                }
+            } else if let Some(args) = object.get("arguments") {
+                match args {
+                    Value::String(s) => Some(PrivateText::new(s.clone())),
+                    other => Some(PrivateText::new(serde_json::to_string(other).ok()?)),
+                }
+            } else {
+                None
+            };
+            return Some(ParsedContent {
+                role: default_role,
+                kind: EventKind::ToolInvocation,
+                text,
+                tool: Some(ToolEvent {
+                    call_id: Some(call_id),
+                    name: PrivateText::new(name),
+                    status: ToolStatus::Attempted,
+                    arguments,
+                    result: None,
+                }),
+            });
+        } else {
+            // ToolResult
+            let name = name.unwrap_or("tool");
+            let status = match object.get("is_error").and_then(Value::as_bool) {
+                Some(true) => ToolStatus::Failed,
+                Some(false) => ToolStatus::Succeeded,
+                None => ToolStatus::Unknown,
+            };
+            let result = if let Some(content) = object.get("content") {
+                match content {
+                    Value::String(s) => Some(PrivateText::new(s.clone())),
+                    other => Some(PrivateText::new(serde_json::to_string(other).ok()?)),
+                }
+            } else if let Some(res) = object.get("result") {
+                match res {
+                    Value::String(s) => Some(PrivateText::new(s.clone())),
+                    other => Some(PrivateText::new(serde_json::to_string(other).ok()?)),
+                }
+            } else {
+                None
+            };
+            return Some(ParsedContent {
+                role: Role::Tool,
+                kind: EventKind::ToolResult,
+                text,
+                tool: Some(ToolEvent {
+                    call_id: Some(call_id),
+                    name: PrivateText::new(name),
+                    status,
+                    arguments: None,
+                    result,
+                }),
+            });
+        }
     }
-    match object.get("message") {
-        Some(Value::String(text)) => text.clone(),
-        Some(Value::Object(message)) => message
-            .get("content")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_owned(),
-        _ => String::new(),
+
+    // 2. Message records (Claude / Anthropic style)
+    let (content_val, role_hint) = if let Some(msg) = object.get("message") {
+        match msg {
+            Value::String(_) => (Some(msg), None),
+            Value::Object(m) => {
+                let role_hint = match m.get("role").and_then(Value::as_str) {
+                    Some("user") => Some(Role::User),
+                    Some("assistant") => Some(Role::Assistant),
+                    Some("system") => Some(Role::System),
+                    Some("tool") => Some(Role::Tool),
+                    _ => None,
+                };
+                if let Some(c) = m.get("content") {
+                    (Some(c), role_hint)
+                } else {
+                    let t = m.get("text")?;
+                    (Some(t), role_hint)
+                }
+            }
+            _ => return None,
+        }
+    } else if let Some(text) = object.get("text") {
+        (Some(text), None)
+    } else {
+        let content = object.get("content")?;
+        (Some(content), None)
+    };
+
+    let role = role_hint.unwrap_or(default_role);
+
+    match content_val? {
+        Value::String(s) => {
+            if s.is_empty() {
+                return None;
+            }
+            Some(ParsedContent {
+                role,
+                kind: default_kind,
+                text: s.clone(),
+                tool: None,
+            })
+        }
+        Value::Array(blocks) => parse_blocks(blocks, role, default_kind),
+        _ => None,
     }
 }
 
-fn native_tool(
-    object: &serde_json::Map<String, Value>,
-    kind: EventKind,
-) -> Option<Option<ToolEvent>> {
-    if !matches!(kind, EventKind::ToolInvocation | EventKind::ToolResult) {
-        return Some(None);
+fn parse_blocks(
+    blocks: &[Value],
+    default_role: Role,
+    default_kind: EventKind,
+) -> Option<ParsedContent> {
+    if blocks.is_empty() {
+        return None;
     }
-    let call_id = native_identity(object, &["call_id", "tool_use_id"], ToolCallId::new)?;
-    let name = string_field(object, &["name", "tool_name"]).unwrap_or("tool");
-    Some(Some(ToolEvent {
-        call_id,
-        name: PrivateText::new(name),
-        status: if kind == EventKind::ToolResult {
-            ToolStatus::Unknown
-        } else {
-            ToolStatus::Attempted
-        },
-        arguments: None,
-        result: None,
-    }))
+    let mut text_parts = Vec::new();
+    let mut tool_event: Option<ToolEvent> = None;
+    let mut kind = default_kind;
+    let mut role = default_role;
+
+    for block in blocks {
+        let block_obj = block.as_object()?;
+        let block_type = block_obj.get("type").and_then(Value::as_str)?;
+        match block_type {
+            "text" | "input_text" | "output_text" => {
+                let part = block_obj.get("text").and_then(Value::as_str)?;
+                text_parts.push(part.to_owned());
+            }
+            "tool_use" => {
+                let name = block_obj.get("name").and_then(Value::as_str)?;
+                let call_id = native_identity(block_obj, &["call_id", "tool_use_id", "id"], ToolCallId::new)?;
+                let arguments = if let Some(input) = block_obj.get("input") {
+                    match input {
+                        Value::String(s) => Some(PrivateText::new(s.clone())),
+                        other => Some(PrivateText::new(serde_json::to_string(other).ok()?)),
+                    }
+                } else if let Some(args) = block_obj.get("arguments") {
+                    match args {
+                        Value::String(s) => Some(PrivateText::new(s.clone())),
+                        other => Some(PrivateText::new(serde_json::to_string(other).ok()?)),
+                    }
+                } else {
+                    None
+                };
+                tool_event = Some(ToolEvent {
+                    call_id,
+                    name: PrivateText::new(name),
+                    status: ToolStatus::Attempted,
+                    arguments,
+                    result: None,
+                });
+                kind = EventKind::ToolInvocation;
+            }
+            "tool_result" => {
+                let call_id = native_identity(block_obj, &["call_id", "tool_use_id", "id"], ToolCallId::new)?;
+                let status = match block_obj.get("is_error").and_then(Value::as_bool) {
+                    Some(true) => ToolStatus::Failed,
+                    Some(false) => ToolStatus::Succeeded,
+                    None => ToolStatus::Unknown,
+                };
+                let result = if let Some(content) = block_obj.get("content") {
+                    match content {
+                        Value::String(s) => Some(PrivateText::new(s.clone())),
+                        Value::Array(inner_blocks) => {
+                            let mut inner_text = Vec::new();
+                            for ib in inner_blocks {
+                                if let Some(ibo) = ib.as_object()
+                                    && let Some(t) = ibo.get("text").and_then(Value::as_str)
+                                {
+                                    inner_text.push(t);
+                                }
+                            }
+                            Some(PrivateText::new(inner_text.join("\n")))
+                        }
+                        other => Some(PrivateText::new(serde_json::to_string(other).ok()?)),
+                    }
+                } else if let Some(res) = block_obj.get("result") {
+                    match res {
+                        Value::String(s) => Some(PrivateText::new(s.clone())),
+                        other => Some(PrivateText::new(serde_json::to_string(other).ok()?)),
+                    }
+                } else {
+                    None
+                };
+                let name = string_field(block_obj, &["name", "tool_name"]).unwrap_or("tool");
+                tool_event = Some(ToolEvent {
+                    call_id,
+                    name: PrivateText::new(name),
+                    status,
+                    arguments: None,
+                    result,
+                });
+                kind = EventKind::ToolResult;
+                role = Role::Tool;
+            }
+            "thinking" => {
+                let _ = block_obj.get("thinking").and_then(Value::as_str)?;
+            }
+            "image" => {}
+            _ => return None,
+        }
+    }
+
+    if text_parts.is_empty() && tool_event.is_none() {
+        return None;
+    }
+
+    Some(ParsedContent {
+        role,
+        kind,
+        text: text_parts.join("\n"),
+        tool: tool_event,
+    })
 }
 
 /// Outer None rejects malformed/conflicting declarations; inner None is genuine

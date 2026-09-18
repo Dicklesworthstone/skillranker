@@ -209,11 +209,14 @@ fn symlink_and_directory_are_rejected_before_open() {
     fs::create_dir(&dir).unwrap();
     let err = snapshot_jsonl(&invocation, &cx, &dir, None, CursorKind::Ranking).unwrap_err();
     assert_eq!(err, JsonlError::UnsafePath);
+    let _ = invocation.shutdown();
 
     let target = temp_path("link-target");
     write_file(&target, &line("e1", "user", "message", "x"));
     let link = temp_path("link");
     symlink(&target, &link).unwrap();
+    let invocation = ProcessInvocation::enter().unwrap();
+    let cx = invocation.request_cx().unwrap();
     let err = snapshot_jsonl(&invocation, &cx, &link, None, CursorKind::Ranking).unwrap_err();
     assert_eq!(err, JsonlError::UnsafePath);
     let _ = invocation.shutdown();
