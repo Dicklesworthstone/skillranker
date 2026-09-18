@@ -9,10 +9,15 @@
 //! 5. SQLite/coordination write transactions are short (< 1ms) and never held across HTTP calls.
 //! 6. Coordination state stores NO response bodies; `--no-cache` disables cross-process response sharing.
 //! 7. Request owner alone records provider attempts/usage; followers incur zero new requests and zero new tokens.
+//! 8. Stage-aware coordination distinguishes Wide and Rerank stages.
+//! 9. Responses are put in cache before lease completion is marked, eliminating completion/body races.
+//! 10. Expired or lost cache entries can reacquire leadership for fresh retrieval.
+//! 11. SQLite connection opening is verified against qualified engine version and safe directory permissions.
 
-use super::fingerprint::{CacheKey, CacheNamespace, RequestFingerprint};
+use super::fingerprint::{CacheKey, CacheNamespace, RequestFingerprint, RequestStage};
 use super::response::{
-    CacheError, CacheLookupQuery, CacheLookupResult, CachedResponseEntry, MemoryResponseCache,
+    CacheError, CacheLookupQuery, CacheLookupResult, CachedResponseEntry, FreshnessStatus,
+    MemoryResponseCache, ResponseCache,
 };
 use crate::jev::codec::Usage;
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
@@ -237,6 +242,8 @@ pub enum PublishOutcome {
 /// Outcome of a follower waiting for a leader to complete.
 #[derive(Clone, Debug)]
 pub enum FollowerResolution {
+    /// Leader completed and published to cache.
+    Completed,
     /// Leader completed and response was safely retrieved from cache.
     Reused(CachedResponseEntry),
     /// Follower's remaining deadline was reached before completion (quiet fallback).
@@ -258,6 +265,14 @@ pub trait LeaseCoordinator: Send + Sync {
         now_unix_ms: u64,
         policy: &CoordinationPolicy,
     ) -> Result<LeaseAcquisition, CoordinationError>;
+
+    /// Reacquires leadership for a key, bumping the fencing generation.
+    fn force_reacquire(
+        &self,
+        key: CoordinationKey,
+        now_unix_ms: u64,
+        policy: &CoordinationPolicy,
+    ) -> Result<LeaderContext, CoordinationError>;
 
     /// Completes and releases a lease if the fencing generation and owner match.
     fn complete(
@@ -301,12 +316,11 @@ impl LeaseCoordinator for MemoryCoordinator {
             .map_err(|_| CoordinationError::LockPoisoned)?;
 
         if let Some(existing) = map.get_mut(&key) {
-            if existing.is_completed {
-                return Ok(LeaseAcquisition::AlreadyCompleted);
-            }
-
+            // First check if lease is unexpired
             if now_unix_ms < existing.expires_at_unix_ms {
-                // Active lease exists; caller is a follower
+                if existing.is_completed {
+                    return Ok(LeaseAcquisition::AlreadyCompleted);
+                }
                 return Ok(LeaseAcquisition::Following(FollowerContext {
                     key,
                     leader_generation: existing.fencing_generation,
@@ -314,7 +328,7 @@ impl LeaseCoordinator for MemoryCoordinator {
                 }));
             }
 
-            // Existing lease expired without completion; successor reacquires with bumped generation
+            // Existing lease expired; successor reacquires with bumped generation
             let new_gen = existing.fencing_generation.next();
             let new_token = OwnerToken::generate()
                 .map_err(|e| CoordinationError::StorageError(e.to_string()))?;
@@ -365,6 +379,48 @@ impl LeaseCoordinator for MemoryCoordinator {
             lease_expires_at_unix_ms: expires_at,
             attempt_id,
         }))
+    }
+
+    fn force_reacquire(
+        &self,
+        key: CoordinationKey,
+        now_unix_ms: u64,
+        policy: &CoordinationPolicy,
+    ) -> Result<LeaderContext, CoordinationError> {
+        let mut map = self
+            .leases
+            .write()
+            .map_err(|_| CoordinationError::LockPoisoned)?;
+
+        let cur_gen = map
+            .get(&key)
+            .map(|r| r.fencing_generation)
+            .unwrap_or_else(FencingGeneration::initial);
+        let new_gen = cur_gen.next();
+        let new_token = OwnerToken::generate()
+            .map_err(|e| CoordinationError::StorageError(e.to_string()))?;
+        let expires_at = now_unix_ms.saturating_add(policy.lease_ttl_ms);
+        let attempt_id = format!("att-inmem-{}", new_gen.as_u64());
+
+        map.insert(
+            key,
+            LeaseRecord {
+                owner_token: new_token,
+                fencing_generation: new_gen,
+                acquired_at_unix_ms: now_unix_ms,
+                expires_at_unix_ms: expires_at,
+                attempt_id: attempt_id.clone(),
+                is_completed: false,
+            },
+        );
+
+        Ok(LeaderContext {
+            key,
+            owner_token: new_token,
+            fencing_generation: new_gen,
+            lease_expires_at_unix_ms: expires_at,
+            attempt_id,
+        })
     }
 
     fn complete(
@@ -437,7 +493,7 @@ impl MemoryCoordinator {
 
             if let Ok(Some(record)) = self.check_lease(key) {
                 if record.is_completed {
-                    return FollowerResolution::LeaderFailed; // caller will inspect cache
+                    return FollowerResolution::Completed;
                 }
                 if now >= record.expires_at_unix_ms {
                     return FollowerResolution::LeaseExpired;
@@ -454,6 +510,106 @@ impl MemoryCoordinator {
     }
 }
 
+fn validate_sqlite_path(path: &Path) -> Result<(), CoordinationError> {
+    if !path.is_absolute() {
+        return Err(CoordinationError::StorageError(
+            "coordination database path must be absolute".to_string(),
+        ));
+    }
+    for component in path.components() {
+        if let std::path::Component::ParentDir = component {
+            return Err(CoordinationError::StorageError(
+                "coordination database path must not contain '..'".to_string(),
+            ));
+        }
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if let Some(parent) = path.parent() {
+            if let Ok(meta) = std::fs::symlink_metadata(parent) {
+                if !meta.is_dir() {
+                    return Err(CoordinationError::StorageError(
+                        "coordination parent is not a directory".to_string(),
+                    ));
+                }
+                let uid = nix::unistd::geteuid().as_raw();
+                if meta.uid() != uid && meta.uid() != 0 {
+                    return Err(CoordinationError::StorageError(
+                        "coordination parent directory not owned by current user or root"
+                            .to_string(),
+                    ));
+                }
+                let mode = meta.mode();
+                if (mode & 0o022 != 0) && !(meta.uid() == 0 && (mode & 0o1000 != 0)) {
+                    return Err(CoordinationError::StorageError(
+                        "coordination parent directory has unsafe permissions".to_string(),
+                    ));
+                }
+            }
+        }
+        if let Ok(meta) = std::fs::symlink_metadata(path) {
+            if meta.file_type().is_symlink() {
+                return Err(CoordinationError::StorageError(
+                    "coordination database path must not be a symlink".to_string(),
+                ));
+            }
+            let uid = nix::unistd::geteuid().as_raw();
+            if meta.uid() != uid {
+                return Err(CoordinationError::StorageError(
+                    "coordination database file not owned by current user".to_string(),
+                ));
+            }
+            if meta.mode() & 0o077 != 0 {
+                return Err(CoordinationError::StorageError(
+                    "coordination database file has unsafe permissions (must be owner-only)"
+                        .to_string(),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn open_qualified_connection(path: &Path) -> Result<Connection, CoordinationError> {
+    crate::storage::linked_engine().map_err(|e| CoordinationError::StorageError(e.to_string()))?;
+    validate_sqlite_path(path)?;
+
+    let flags = OpenFlags::SQLITE_OPEN_READ_WRITE
+        | OpenFlags::SQLITE_OPEN_CREATE
+        | OpenFlags::SQLITE_OPEN_NO_MUTEX
+        | OpenFlags::SQLITE_OPEN_NOFOLLOW;
+
+    let conn = Connection::open_with_flags(path, flags)?;
+    conn.busy_timeout(Duration::from_millis(25))?;
+    conn.pragma_update(None, "journal_mode", "WAL")?;
+    conn.pragma_update(None, "synchronous", "NORMAL")?;
+    conn.pragma_update(None, "temp_store", "MEMORY")?;
+    conn.set_limit(rusqlite::limits::Limit::SQLITE_LIMIT_LENGTH, 2 * 1024 * 1024)?;
+    conn.set_limit(rusqlite::limits::Limit::SQLITE_LIMIT_SQL_LENGTH, 64 * 1024)?;
+    conn.set_limit(rusqlite::limits::Limit::SQLITE_LIMIT_ATTACHED, 0)?;
+    conn.set_limit(rusqlite::limits::Limit::SQLITE_LIMIT_WORKER_THREADS, 0)?;
+    conn.set_db_config(rusqlite::config::DbConfig::SQLITE_DBCONFIG_DEFENSIVE, true)?;
+    conn.set_db_config(rusqlite::config::DbConfig::SQLITE_DBCONFIG_TRUSTED_SCHEMA, false)?;
+    conn.set_db_config(rusqlite::config::DbConfig::SQLITE_DBCONFIG_ENABLE_TRIGGER, false)?;
+    conn.set_db_config(rusqlite::config::DbConfig::SQLITE_DBCONFIG_ENABLE_VIEW, false)?;
+    conn.set_db_config(rusqlite::config::DbConfig::SQLITE_DBCONFIG_ENABLE_FKEY, true)?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(meta) = std::fs::metadata(path) {
+            let mut perms = meta.permissions();
+            if perms.mode() & 0o777 != 0o600 {
+                perms.set_mode(0o600);
+                let _ = std::fs::set_permissions(path, perms);
+            }
+        }
+    }
+
+    Ok(conn)
+}
+
 /// SQLite-backed lease coordinator for cross-process coordination.
 ///
 /// Guarantees:
@@ -468,11 +624,9 @@ impl SqliteLeaseCoordinator {
     /// Creates or connects to a SQLite lease coordinator at `db_path`.
     pub fn open(db_path: impl AsRef<Path>) -> Result<Self, CoordinationError> {
         let db_path = db_path.as_ref().to_path_buf();
-        let conn = Self::open_connection(&db_path)?;
+        let conn = open_qualified_connection(&db_path)?;
         conn.execute_batch(
-            "PRAGMA journal_mode = WAL;
-             PRAGMA busy_timeout = 25;
-             CREATE TABLE IF NOT EXISTS sr_coordination_leases (
+            "CREATE TABLE IF NOT EXISTS sr_coordination_leases (
                  coordination_key BLOB PRIMARY KEY CHECK(length(coordination_key) = 32),
                  owner_token BLOB NOT NULL CHECK(length(owner_token) = 16),
                  fencing_generation INTEGER NOT NULL CHECK(fencing_generation >= 1),
@@ -483,17 +637,6 @@ impl SqliteLeaseCoordinator {
              ) STRICT;",
         )?;
         Ok(Self { db_path })
-    }
-
-    fn open_connection(path: &Path) -> Result<Connection, CoordinationError> {
-        let conn = Connection::open_with_flags(
-            path,
-            OpenFlags::SQLITE_OPEN_READ_WRITE
-                | OpenFlags::SQLITE_OPEN_CREATE
-                | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-        )?;
-        conn.busy_timeout(Duration::from_millis(25))?;
-        Ok(conn)
     }
 
     pub fn db_path(&self) -> &Path {
@@ -508,7 +651,7 @@ impl LeaseCoordinator for SqliteLeaseCoordinator {
         now_unix_ms: u64,
         policy: &CoordinationPolicy,
     ) -> Result<LeaseAcquisition, CoordinationError> {
-        let mut conn = Self::open_connection(&self.db_path)?;
+        let mut conn = open_qualified_connection(&self.db_path)?;
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
 
         let row: Option<(Vec<u8>, i64, i64, i64, String, i64)> = tx
@@ -525,12 +668,11 @@ impl LeaseCoordinator for SqliteLeaseCoordinator {
             let expires_at = exp_i64 as u64;
             let is_completed = completed_i64 == 1;
 
-            if is_completed {
-                tx.commit()?;
-                return Ok(LeaseAcquisition::AlreadyCompleted);
-            }
-
             if now_unix_ms < expires_at {
+                if is_completed {
+                    tx.commit()?;
+                    return Ok(LeaseAcquisition::AlreadyCompleted);
+                }
                 tx.commit()?;
                 return Ok(LeaseAcquisition::Following(FollowerContext {
                     key,
@@ -606,6 +748,63 @@ impl LeaseCoordinator for SqliteLeaseCoordinator {
         }))
     }
 
+    fn force_reacquire(
+        &self,
+        key: CoordinationKey,
+        now_unix_ms: u64,
+        policy: &CoordinationPolicy,
+    ) -> Result<LeaderContext, CoordinationError> {
+        let mut conn = open_qualified_connection(&self.db_path)?;
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+
+        let cur_gen_i64: Option<i64> = tx
+            .query_row(
+                "SELECT fencing_generation FROM sr_coordination_leases WHERE coordination_key = ?1",
+                params![key.as_bytes()],
+                |r| r.get(0),
+            )
+            .optional()?;
+
+        let cur_gen = cur_gen_i64
+            .map(|g| FencingGeneration(g as u64))
+            .unwrap_or_else(FencingGeneration::initial);
+        let new_gen = cur_gen.next();
+        let new_token = OwnerToken::generate()
+            .map_err(|e| CoordinationError::StorageError(e.to_string()))?;
+        let new_expires_at = now_unix_ms.saturating_add(policy.lease_ttl_ms);
+        let new_attempt_id = format!("att-proc-{}", new_gen.as_u64());
+
+        tx.execute(
+            "INSERT INTO sr_coordination_leases (
+                coordination_key, owner_token, fencing_generation, acquired_at_unix_ms, expires_at_unix_ms, attempt_id, is_completed
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0)
+             ON CONFLICT(coordination_key) DO UPDATE SET
+                owner_token = excluded.owner_token,
+                fencing_generation = excluded.fencing_generation,
+                acquired_at_unix_ms = excluded.acquired_at_unix_ms,
+                expires_at_unix_ms = excluded.expires_at_unix_ms,
+                attempt_id = excluded.attempt_id,
+                is_completed = 0",
+            params![
+                key.as_bytes(),
+                new_token.as_bytes(),
+                new_gen.as_u64() as i64,
+                now_unix_ms as i64,
+                new_expires_at as i64,
+                new_attempt_id
+            ],
+        )?;
+        tx.commit()?;
+
+        Ok(LeaderContext {
+            key,
+            owner_token: new_token,
+            fencing_generation: new_gen,
+            lease_expires_at_unix_ms: new_expires_at,
+            attempt_id: new_attempt_id,
+        })
+    }
+
     fn complete(
         &self,
         key: CoordinationKey,
@@ -613,7 +812,7 @@ impl LeaseCoordinator for SqliteLeaseCoordinator {
         generation: FencingGeneration,
         now_unix_ms: u64,
     ) -> Result<PublishOutcome, CoordinationError> {
-        let mut conn = Self::open_connection(&self.db_path)?;
+        let mut conn = open_qualified_connection(&self.db_path)?;
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
 
         let row: Option<(Vec<u8>, i64, i64, i64)> = tx
@@ -662,7 +861,7 @@ impl LeaseCoordinator for SqliteLeaseCoordinator {
     }
 
     fn check_lease(&self, key: CoordinationKey) -> Result<Option<LeaseRecord>, CoordinationError> {
-        let conn = Self::open_connection(&self.db_path)?;
+        let conn = open_qualified_connection(&self.db_path)?;
         let row: Option<(Vec<u8>, i64, i64, i64, String, i64)> = conn
             .query_row(
                 "SELECT owner_token, fencing_generation, acquired_at_unix_ms, expires_at_unix_ms, attempt_id, is_completed
@@ -716,7 +915,7 @@ impl SqliteLeaseCoordinator {
             };
 
             if record.is_completed {
-                return Ok(FollowerResolution::LeaderFailed); // caller retrieves from cache
+                return Ok(FollowerResolution::Completed);
             }
 
             if now >= record.expires_at_unix_ms {
@@ -727,6 +926,206 @@ impl SqliteLeaseCoordinator {
             let sleep_dur = poll_interval.min(Duration::from_millis(remaining_ms));
             std::thread::sleep(sleep_dur);
         }
+    }
+}
+
+/// Persistent SQLite-backed response cache for cross-process response sharing.
+///
+/// Stores validated provider responses separately from coordination lease metadata.
+pub struct SqliteResponseCache {
+    db_path: PathBuf,
+}
+
+impl SqliteResponseCache {
+    /// Creates or connects to a SQLite response cache at `db_path`.
+    pub fn open(db_path: impl AsRef<Path>) -> Result<Self, CoordinationError> {
+        let db_path = db_path.as_ref().to_path_buf();
+        let conn = open_qualified_connection(&db_path)?;
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS sr_response_cache (
+                namespace_hash BLOB NOT NULL CHECK(length(namespace_hash) = 32),
+                stage TEXT NOT NULL CHECK(stage IN ('wide', 'rerank')),
+                request_fingerprint BLOB NOT NULL CHECK(length(request_fingerprint) = 32),
+                response_bytes BLOB NOT NULL,
+                received_at_unix_ms INTEGER NOT NULL,
+                ttl_seconds INTEGER NOT NULL,
+                model TEXT NOT NULL,
+                model_revision TEXT,
+                input_tokens INTEGER NOT NULL,
+                output_tokens INTEGER NOT NULL,
+                attempt_id TEXT,
+                PRIMARY KEY (namespace_hash, stage, request_fingerprint)
+            ) STRICT;",
+        )?;
+        Ok(Self { db_path })
+    }
+
+    pub fn db_path(&self) -> &Path {
+        &self.db_path
+    }
+
+    pub fn get(&self, query: &CacheLookupQuery<'_>) -> Result<CacheLookupResult, CacheError> {
+        <Self as ResponseCache>::get(self, query)
+    }
+
+    pub fn put(
+        &self,
+        key: &CacheKey,
+        namespace: &CacheNamespace,
+        entry: CachedResponseEntry,
+    ) -> Result<(), CacheError> {
+        <Self as ResponseCache>::put(self, key, namespace, entry)
+    }
+
+    pub fn evict_namespace(
+        &self,
+        key: &CacheKey,
+        namespace: &CacheNamespace,
+    ) -> Result<usize, CacheError> {
+        <Self as ResponseCache>::evict_namespace(self, key, namespace)
+    }
+}
+
+type CachedResponseRow = (
+    Vec<u8>,
+    i64,
+    i64,
+    String,
+    Option<String>,
+    i64,
+    i64,
+    Option<String>,
+);
+
+impl ResponseCache for SqliteResponseCache {
+    fn get(&self, query: &CacheLookupQuery<'_>) -> Result<CacheLookupResult, CacheError> {
+        let conn = open_qualified_connection(&self.db_path)
+            .map_err(|e| CacheError::StorageError(e.to_string()))?;
+        let ns_hash = MemoryResponseCache::namespace_hash(query.key, query.namespace);
+        let stage_str = query.stage.as_str();
+        let fp_bytes = query.fingerprint.as_bytes();
+
+        let row: Option<CachedResponseRow> = conn
+            .query_row(
+                "SELECT response_bytes, received_at_unix_ms, ttl_seconds, model, model_revision, input_tokens, output_tokens, attempt_id
+                 FROM sr_response_cache
+                 WHERE namespace_hash = ?1 AND stage = ?2 AND request_fingerprint = ?3",
+                params![&ns_hash[..], stage_str, &fp_bytes[..]],
+                |r| {
+                    Ok((
+                        r.get(0)?,
+                        r.get(1)?,
+                        r.get(2)?,
+                        r.get(3)?,
+                        r.get(4)?,
+                        r.get(5)?,
+                        r.get(6)?,
+                        r.get(7)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(|e| CacheError::StorageError(e.to_string()))?;
+
+        let Some((resp_bytes, rec_ms, ttl_s, model, rev, in_tok, out_tok, att_id)) = row else {
+            return Ok(CacheLookupResult::Miss);
+        };
+
+        let entry = CachedResponseEntry {
+            stage: query.stage,
+            request_fingerprint: *query.fingerprint,
+            response_bytes: resp_bytes,
+            received_at_unix_ms: rec_ms as u64,
+            ttl_seconds: ttl_s as u32,
+            model,
+            model_revision: rev,
+            original_usage: Usage {
+                input_tokens: in_tok as u64,
+                output_tokens: out_tok as u64,
+            },
+            attempt_id: att_id,
+        };
+
+        let freshness = entry.evaluate_freshness(
+            query.now_unix_ms,
+            query.active_model,
+            query.active_revision,
+        );
+
+        match freshness {
+            FreshnessStatus::Fresh {
+                age_ms,
+                remaining_ttl_ms,
+            } => Ok(CacheLookupResult::Hit {
+                entry,
+                age_ms,
+                remaining_ttl_ms,
+            }),
+            status => Ok(CacheLookupResult::Stale { entry, status }),
+        }
+    }
+
+    fn put(
+        &self,
+        key: &CacheKey,
+        namespace: &CacheNamespace,
+        entry: CachedResponseEntry,
+    ) -> Result<(), CacheError> {
+        let conn = open_qualified_connection(&self.db_path)
+            .map_err(|e| CacheError::StorageError(e.to_string()))?;
+        let ns_hash = MemoryResponseCache::namespace_hash(key, namespace);
+        let stage_str = entry.stage.as_str();
+        let fp_bytes = entry.request_fingerprint.as_bytes();
+
+        conn.execute(
+            "INSERT INTO sr_response_cache (
+                namespace_hash, stage, request_fingerprint, response_bytes,
+                received_at_unix_ms, ttl_seconds, model, model_revision,
+                input_tokens, output_tokens, attempt_id
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+             ON CONFLICT(namespace_hash, stage, request_fingerprint) DO UPDATE SET
+                response_bytes = excluded.response_bytes,
+                received_at_unix_ms = excluded.received_at_unix_ms,
+                ttl_seconds = excluded.ttl_seconds,
+                model = excluded.model,
+                model_revision = excluded.model_revision,
+                input_tokens = excluded.input_tokens,
+                output_tokens = excluded.output_tokens,
+                attempt_id = excluded.attempt_id",
+            params![
+                &ns_hash[..],
+                stage_str,
+                &fp_bytes[..],
+                &entry.response_bytes[..],
+                entry.received_at_unix_ms as i64,
+                entry.ttl_seconds as i64,
+                &entry.model,
+                &entry.model_revision,
+                entry.original_usage.input_tokens as i64,
+                entry.original_usage.output_tokens as i64,
+                &entry.attempt_id
+            ],
+        )
+        .map_err(|e| CacheError::StorageError(e.to_string()))?;
+
+        Ok(())
+    }
+
+    fn evict_namespace(
+        &self,
+        key: &CacheKey,
+        namespace: &CacheNamespace,
+    ) -> Result<usize, CacheError> {
+        let conn = open_qualified_connection(&self.db_path)
+            .map_err(|e| CacheError::StorageError(e.to_string()))?;
+        let ns_hash = MemoryResponseCache::namespace_hash(key, namespace);
+        let deleted = conn
+            .execute(
+                "DELETE FROM sr_response_cache WHERE namespace_hash = ?1",
+                params![&ns_hash[..]],
+            )
+            .map_err(|e| CacheError::StorageError(e.to_string()))?;
+        Ok(deleted)
     }
 }
 
@@ -742,6 +1141,7 @@ pub struct SingleFlightCoordinator {
 pub struct CoordinateRequestQuery<'a> {
     pub key: &'a CacheKey,
     pub namespace: &'a CacheNamespace,
+    pub stage: RequestStage,
     pub request_fingerprint: &'a RequestFingerprint,
     pub deadline_unix_ms: u64,
     pub active_model: &'a str,
@@ -759,6 +1159,19 @@ impl LeaseCoordinator for SingleFlightCoordinator {
             sql.acquire(key, now_unix_ms, policy)
         } else {
             self.memory.acquire(key, now_unix_ms, policy)
+        }
+    }
+
+    fn force_reacquire(
+        &self,
+        key: CoordinationKey,
+        now_unix_ms: u64,
+        policy: &CoordinationPolicy,
+    ) -> Result<LeaderContext, CoordinationError> {
+        if let Some(sql) = &self.sqlite {
+            sql.force_reacquire(key, now_unix_ms, policy)
+        } else {
+            self.memory.force_reacquire(key, now_unix_ms, policy)
         }
     }
 
@@ -818,17 +1231,76 @@ impl SingleFlightCoordinator {
         })
     }
 
+    fn execute_as_leader<C, F>(
+        &self,
+        query: &CoordinateRequestQuery<'_>,
+        coord_key: CoordinationKey,
+        leader: LeaderContext,
+        cache: &C,
+        now_fn: &impl Fn() -> u64,
+        execute_provider: F,
+    ) -> Result<CoordinatedResponse, CoordinationError>
+    where
+        C: ResponseCache + ?Sized,
+        F: FnOnce(&str) -> Result<(CachedResponseEntry, Usage), String>,
+    {
+        let coordinator: &dyn LeaseCoordinator = if let Some(sql) = &self.sqlite {
+            sql
+        } else {
+            &self.memory
+        };
+
+        let attempt_id = leader.attempt_id.clone();
+        let (response_entry, usage) = execute_provider(&attempt_id).map_err(|e| {
+            CoordinationError::StorageError(format!("provider execution failed: {e}"))
+        })?;
+
+        // Put in cache BEFORE marking completed to eliminate completion/body race
+        if self.policy.cache_enabled {
+            cache
+                .put(query.key, query.namespace, response_entry.clone())
+                .map_err(CoordinationError::CacheError)?;
+        }
+
+        let finish_now = now_fn();
+        let outcome = coordinator.complete(
+            coord_key,
+            leader.owner_token,
+            leader.fencing_generation,
+            finish_now,
+        )?;
+
+        match outcome {
+            PublishOutcome::Published => Ok(CoordinatedResponse {
+                entry: response_entry,
+                served_from_cache: false,
+                new_requests: 1,
+                new_tokens: usage.total_tokens(),
+                attempt_id: Some(attempt_id),
+                is_follower: false,
+            }),
+            PublishOutcome::Superseded {
+                expected_generation,
+                current_generation,
+            } => Err(CoordinationError::StorageError(format!(
+                "leader superseded (gen {:?}, current {:?}); quiet fallback",
+                expected_generation, current_generation
+            ))),
+        }
+    }
+
     /// Primary entry point: coordinates execution of an exact provider request.
     ///
     /// Shares ONLY the validated response. Decisions, identity, and exposures remain distinct.
-    pub fn coordinate_request<F>(
+    pub fn coordinate_request<C, F>(
         &self,
         query: &CoordinateRequestQuery<'_>,
-        cache: &MemoryResponseCache,
+        cache: &C,
         now_fn: impl Fn() -> u64,
         execute_provider: F,
     ) -> Result<CoordinatedResponse, CoordinationError>
     where
+        C: ResponseCache + ?Sized,
         F: FnOnce(&str) -> Result<(CachedResponseEntry, Usage), String>,
     {
         let coord_key =
@@ -840,7 +1312,7 @@ impl SingleFlightCoordinator {
             let lookup = cache.get(&CacheLookupQuery {
                 key: query.key,
                 namespace: query.namespace,
-                stage: super::fingerprint::RequestStage::Wide,
+                stage: query.stage,
                 fingerprint: query.request_fingerprint,
                 now_unix_ms: now,
                 active_model: query.active_model,
@@ -873,7 +1345,7 @@ impl SingleFlightCoordinator {
                     let lookup = cache.get(&CacheLookupQuery {
                         key: query.key,
                         namespace: query.namespace,
-                        stage: super::fingerprint::RequestStage::Wide,
+                        stage: query.stage,
                         fingerprint: query.request_fingerprint,
                         now_unix_ms: now_fn(),
                         active_model: query.active_model,
@@ -889,54 +1361,32 @@ impl SingleFlightCoordinator {
                             is_follower: true,
                         });
                     }
+
+                    // Cache entry missing or stale despite completed lease flag.
+                    // Force reacquisition so the request can be refreshed!
+                    let leader = coordinator.force_reacquire(coord_key, now_fn(), &self.policy)?;
+                    return self.execute_as_leader(
+                        query,
+                        coord_key,
+                        leader,
+                        cache,
+                        &now_fn,
+                        execute_provider,
+                    );
                 }
                 // If cache disabled, cannot read shared body
                 Err(CoordinationError::StorageError(
                     "cache disabled; cannot share response body".to_string(),
                 ))
             }
-            LeaseAcquisition::Leading(leader) => {
-                // We are the leader! Execute the provider call
-                let attempt_id = leader.attempt_id.clone();
-                let (response_entry, usage) = execute_provider(&attempt_id).map_err(|e| {
-                    CoordinationError::StorageError(format!("provider execution failed: {e}"))
-                })?;
-
-                let finish_now = now_fn();
-                let outcome = coordinator.complete(
-                    coord_key,
-                    leader.owner_token,
-                    leader.fencing_generation,
-                    finish_now,
-                )?;
-
-                match outcome {
-                    PublishOutcome::Published => {
-                        // Put in cache if enabled
-                        if self.policy.cache_enabled {
-                            cache.put(query.key, query.namespace, response_entry.clone())?;
-                        }
-                        Ok(CoordinatedResponse {
-                            entry: response_entry,
-                            served_from_cache: false,
-                            new_requests: 1,
-                            new_tokens: usage.total_tokens(),
-                            attempt_id: Some(attempt_id),
-                            is_follower: false,
-                        })
-                    }
-                    PublishOutcome::Superseded {
-                        expected_generation,
-                        current_generation,
-                    } => {
-                        // Late completion rejected; quiet fallback
-                        Err(CoordinationError::StorageError(format!(
-                            "leader superseded (gen {:?}, current {:?}); quiet fallback",
-                            expected_generation, current_generation
-                        )))
-                    }
-                }
-            }
+            LeaseAcquisition::Leading(leader) => self.execute_as_leader(
+                query,
+                coord_key,
+                leader,
+                cache,
+                &now_fn,
+                execute_provider,
+            ),
             LeaseAcquisition::Following(_follower) => {
                 if !self.policy.cache_enabled {
                     // With cache disabled, cross-process response sharing is forbidden
@@ -960,29 +1410,11 @@ impl SingleFlightCoordinator {
                 };
 
                 match resolution {
-                    FollowerResolution::DeadlineExceeded => Err(CoordinationError::StorageError(
-                        "follower deadline exceeded; quiet fallback".to_string(),
-                    )),
-                    FollowerResolution::LeaseExpired => Err(CoordinationError::StorageError(
-                        "leader lease expired without completion".to_string(),
-                    )),
-                    FollowerResolution::CacheDisabled => Err(CoordinationError::StorageError(
-                        "cache disabled; cannot read response body".to_string(),
-                    )),
-                    FollowerResolution::Reused(entry) => Ok(CoordinatedResponse {
-                        entry,
-                        served_from_cache: true,
-                        new_requests: 0,
-                        new_tokens: 0,
-                        attempt_id: None,
-                        is_follower: true,
-                    }),
-                    FollowerResolution::LeaderFailed => {
-                        // Check if response was published to cache
+                    FollowerResolution::Completed => {
                         let lookup = cache.get(&CacheLookupQuery {
                             key: query.key,
                             namespace: query.namespace,
-                            stage: super::fingerprint::RequestStage::Wide,
+                            stage: query.stage,
                             fingerprint: query.request_fingerprint,
                             now_unix_ms: now_fn(),
                             active_model: query.active_model,
@@ -1003,6 +1435,26 @@ impl SingleFlightCoordinator {
                             ))
                         }
                     }
+                    FollowerResolution::DeadlineExceeded => Err(CoordinationError::StorageError(
+                        "follower deadline exceeded; quiet fallback".to_string(),
+                    )),
+                    FollowerResolution::LeaseExpired => Err(CoordinationError::StorageError(
+                        "leader lease expired without completion".to_string(),
+                    )),
+                    FollowerResolution::CacheDisabled => Err(CoordinationError::StorageError(
+                        "cache disabled; cannot read response body".to_string(),
+                    )),
+                    FollowerResolution::LeaderFailed => Err(CoordinationError::StorageError(
+                        "leader failed or cancelled without completing".to_string(),
+                    )),
+                    FollowerResolution::Reused(entry) => Ok(CoordinatedResponse {
+                        entry,
+                        served_from_cache: true,
+                        new_requests: 0,
+                        new_tokens: 0,
+                        attempt_id: None,
+                        is_follower: true,
+                    }),
                 }
             }
         }

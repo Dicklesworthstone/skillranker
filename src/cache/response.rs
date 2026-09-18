@@ -22,24 +22,26 @@ use std::sync::{Arc, RwLock};
 /// TTL never extends freshness beyond this.
 pub const DEFAULT_CACHE_TTL_SECS: u32 = 600;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CacheError {
     CorruptEntry,
     OfflineCacheMiss,
     UnversionedPairMismatch,
     LockPoisoned,
+    StorageError(String),
 }
 
 impl fmt::Display for CacheError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            Self::CorruptEntry => "cache entry payload is corrupt or invalid",
-            Self::OfflineCacheMiss => "missing complete offline cache result",
-            Self::UnversionedPairMismatch => {
-                "cannot pair cached stage with fresh stage under unversioned model alias"
-            }
-            Self::LockPoisoned => "internal cache lock poisoned",
-        })
+        match self {
+            Self::CorruptEntry => f.write_str("cache entry payload is corrupt or invalid"),
+            Self::OfflineCacheMiss => f.write_str("missing complete offline cache result"),
+            Self::UnversionedPairMismatch => f.write_str(
+                "cannot pair cached stage with fresh stage under unversioned model alias",
+            ),
+            Self::LockPoisoned => f.write_str("internal cache lock poisoned"),
+            Self::StorageError(e) => write!(f, "cache storage error: {e}"),
+        }
     }
 }
 
@@ -250,7 +252,7 @@ impl MemoryResponseCache {
         }
     }
 
-    fn namespace_hash(key: &CacheKey, namespace: &CacheNamespace) -> [u8; 32] {
+    pub fn namespace_hash(key: &CacheKey, namespace: &CacheNamespace) -> [u8; 32] {
         let mut hasher = blake3::Hasher::new_keyed(key.as_raw_bytes());
         hasher.update(b"SR_CACHE_NS_HASH_V2\0");
         namespace.feed_into(&mut hasher);
@@ -313,6 +315,50 @@ impl MemoryResponseCache {
         let before = map.len();
         map.retain(|(h, _, _), _| *h != ns_hash);
         Ok(before.saturating_sub(map.len()))
+    }
+}
+
+/// Abstract contract for response cache backends.
+pub trait ResponseCache: Send + Sync {
+    /// Looks up a cached entry and evaluates freshness.
+    fn get(&self, query: &CacheLookupQuery<'_>) -> Result<CacheLookupResult, CacheError>;
+
+    /// Stores a validated response entry in cache.
+    fn put(
+        &self,
+        key: &CacheKey,
+        namespace: &CacheNamespace,
+        entry: CachedResponseEntry,
+    ) -> Result<(), CacheError>;
+
+    /// Evicts all entries for a specific namespace.
+    fn evict_namespace(
+        &self,
+        key: &CacheKey,
+        namespace: &CacheNamespace,
+    ) -> Result<usize, CacheError>;
+}
+
+impl ResponseCache for MemoryResponseCache {
+    fn get(&self, query: &CacheLookupQuery<'_>) -> Result<CacheLookupResult, CacheError> {
+        self.get(query)
+    }
+
+    fn put(
+        &self,
+        key: &CacheKey,
+        namespace: &CacheNamespace,
+        entry: CachedResponseEntry,
+    ) -> Result<(), CacheError> {
+        self.put(key, namespace, entry)
+    }
+
+    fn evict_namespace(
+        &self,
+        key: &CacheKey,
+        namespace: &CacheNamespace,
+    ) -> Result<usize, CacheError> {
+        self.evict_namespace(key, namespace)
     }
 }
 

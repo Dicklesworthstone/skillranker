@@ -13,6 +13,7 @@ pub use coordination::{
     CoordinationPolicy, DEFAULT_LEASE_TTL_MS, FencingGeneration, FollowerContext,
     FollowerResolution, LeaderContext, LeaseAcquisition, LeaseCoordinator, LeaseRecord,
     MemoryCoordinator, OwnerToken, PublishOutcome, SingleFlightCoordinator, SqliteLeaseCoordinator,
+    SqliteResponseCache,
 };
 pub use fingerprint::{
     CacheKey, CacheNamespace, CandidateDigest, DecisionFingerprint, DecisionFingerprintInput,
@@ -23,6 +24,6 @@ pub use fingerprint::{
 pub use response::{
     CacheError, CacheLookupQuery, CacheLookupResult, CacheStorageKey, CacheStorageMap,
     CachedResponseEntry, DEFAULT_CACHE_TTL_SECS, ExecutionAccounting, FreshnessStatus,
-    InspectionView, MemoryResponseCache, PipelineCacheProvenance, StageProvenance,
+    InspectionView, MemoryResponseCache, PipelineCacheProvenance, ResponseCache, StageProvenance,
     validate_stage_pair_coherence,
 };
