@@ -53,8 +53,9 @@ assert that the defaults equal the documented values.
 A candidate names one file whose name equals the root's declared skill file
 (`SKILL.md` for Claude). It carries its source, kind, priority, visibility, the
 path relative to its root, the local path, `(device, inode)` identity and size.
-Candidates are ordered by priority descending, then source, then relative path,
-so project roots precede user roots deterministically.
+Candidates are ordered by priority descending, then source, then relative path.
+Claude's documented precedence is enterprise > personal > project, so user
+(personal) roots precede project roots deterministically.
 
 A symlinked *skill file* is a candidate, flagged `via_symlink`, because the
 authorized read still decides whether its target lies inside an authorized root.
@@ -75,8 +76,8 @@ load contract stays `Unverified`, and discovery never upgrades it.
 ## Verification
 
 `tests/roster_discovery.rs` builds real trees and covers: documented Claude
-roots only with no cross-harness union and no ancestor traversal; project before
-user precedence; unenumerated sources forcing partial; missing (normal) versus
+roots only with no cross-harness union and no ancestor traversal; personal (user)
+before project precedence; unenumerated sources forcing partial; missing (normal) versus
 unreadable (partial) roots; entry, byte and depth ceilings, each with a
 generous-bound success twin; symlinked directory skipped while a symlinked skill
 file is flagged and shares its target's inode; only the declared file name
