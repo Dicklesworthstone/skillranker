@@ -19,8 +19,12 @@ use skillranker::context::branch::{
 use skillranker::context::overlay::{
     ClaudeOverlayRequest, OverlayError, apply_claude_prompt_overlay,
 };
-use skillranker::context::{EventKind, NormalizedEvent, PrivateText, Role};
-use skillranker::identity::{BranchId, ContentHash, ContextEpoch, EventId, SkillId, TurnId};
+use skillranker::context::{
+    ContextError, EventKind, NormalizedEvent, PrivateText, Role, parse_normalized_context,
+};
+use skillranker::identity::{
+    BranchId, ContentHash, ContextEpoch, EventId, SkillId, SourceProvenance, TurnId, WorkspaceId,
+};
 use skillranker::output::ContextQuality;
 use std::fs::{self, File};
 use std::io::Write;
@@ -874,4 +878,189 @@ fn claude_prompt_overlay() {
 
     // Cleanup
     let _ = fs::remove_dir_all(&test_dir);
+}
+
+#[test]
+fn normalized_envelopes() {
+    // 1. Valid normalized context parses successfully
+    let valid_json = r#"{
+        "schema_version": 1,
+        "harness": "claude_code",
+        "producer_id": "adapter-v1",
+        "workspace_root": "/data/workspaces/project",
+        "session_id": "sess-normalized-1",
+        "agent_id": "agent-root",
+        "branch_id": "main",
+        "context_epoch": "epoch-0",
+        "current_request": {
+            "event_id": "req-1",
+            "text": "Help me refactor the database queries",
+            "attachments_omitted": false,
+            "essential_attachment_missing": false
+        },
+        "events": [
+            {
+                "event_id": "ev-1",
+                "parent_id": null,
+                "turn_id": "turn-1",
+                "agent_id": "agent-root",
+                "branch_id": "main",
+                "role": "user",
+                "kind": "message",
+                "timestamp_unix_ms": 1700000000000,
+                "text": "Initial greeting",
+                "tool": null
+            }
+        ],
+        "explicit_skill_references": ["skill-rust", "skill-rust"],
+        "supplied_loads": [
+            {
+                "skill_id": "skill-db-helper",
+                "source_content": "1111111111111111111111111111111111111111111111111111111111111111",
+                "rendered_content": null
+            }
+        ]
+    }"#;
+
+    let parsed = parse_normalized_context(valid_json.as_bytes())
+        .expect("valid normalized context must parse");
+    assert_eq!(parsed.schema_version, 1);
+    assert_eq!(parsed.harness.as_str(), "claude_code");
+    assert_eq!(parsed.events.len(), 1);
+    assert_eq!(parsed.explicit_skill_references.len(), 2);
+    // Duplicate references across stages are valid and not rejected
+    assert_eq!(
+        parsed.explicit_skill_references[0],
+        parsed.explicit_skill_references[1]
+    );
+
+    // 2. Session identity retains SourceProvenance::Normalized, preventing native hook hijacking
+    let session_id = parsed
+        .session_identity(Some(WorkspaceId::new("ws-project").unwrap()))
+        .unwrap();
+    match session_id.source {
+        SourceProvenance::Normalized {
+            producer,
+            harness,
+            schema_version,
+        } => {
+            assert_eq!(producer.as_ref().map(|p| p.as_str()), Some("adapter-v1"));
+            assert_eq!(harness.as_str(), "claude_code");
+            assert_eq!(schema_version, 1);
+        }
+        _ => panic!("normalized session must have SourceProvenance::Normalized"),
+    }
+
+    // 3. Schema version != 1 rejected with UnsupportedSchema
+    let mut bad_version: serde_json::Value = serde_json::from_str(valid_json).unwrap();
+    bad_version["schema_version"] = serde_json::json!(2);
+    let bad_ver_bytes = serde_json::to_vec(&bad_version).unwrap();
+    assert_eq!(
+        parse_normalized_context(&bad_ver_bytes),
+        Err(ContextError::UnsupportedSchema)
+    );
+
+    // 4. Duplicate JSON object keys rejected with DuplicateKey
+    let dup_key_json = r#"{
+        "schema_version": 1,
+        "schema_version": 1,
+        "harness": "claude_code",
+        "workspace_root": "/data/workspaces/project",
+        "current_request": {
+            "text": "hi",
+            "attachments_omitted": false,
+            "essential_attachment_missing": false
+        },
+        "events": []
+    }"#;
+    assert_eq!(
+        parse_normalized_context(dup_key_json.as_bytes()),
+        Err(ContextError::DuplicateKey)
+    );
+
+    // 5. Duplicate event IDs rejected with DuplicateEvent
+    let mut dup_events: serde_json::Value = serde_json::from_str(valid_json).unwrap();
+    dup_events["events"] = serde_json::json!([
+        {
+            "event_id": "ev-same",
+            "role": "user",
+            "kind": "message",
+            "text": "first"
+        },
+        {
+            "event_id": "ev-same",
+            "role": "assistant",
+            "kind": "message",
+            "text": "second"
+        }
+    ]);
+    let dup_events_bytes = serde_json::to_vec(&dup_events).unwrap();
+    assert_eq!(
+        parse_normalized_context(&dup_events_bytes),
+        Err(ContextError::DuplicateEvent)
+    );
+
+    // 6. Duplicate load definitions rejected with DuplicateLoadDefinition
+    let mut dup_loads: serde_json::Value = serde_json::from_str(valid_json).unwrap();
+    dup_loads["supplied_loads"] = serde_json::json!([
+        {
+            "skill_id": "skill-duplicate",
+            "source_content": null,
+            "rendered_content": null
+        },
+        {
+            "skill_id": "skill-duplicate",
+            "source_content": null,
+            "rendered_content": null
+        }
+    ]);
+    let dup_loads_bytes = serde_json::to_vec(&dup_loads).unwrap();
+    assert_eq!(
+        parse_normalized_context(&dup_loads_bytes),
+        Err(ContextError::DuplicateLoadDefinition)
+    );
+
+    // 7. Byte limit (1 MiB) rejected with LimitExceeded
+    let huge_bytes = vec![b' '; 1024 * 1024 + 1];
+    assert_eq!(
+        parse_normalized_context(&huge_bytes),
+        Err(ContextError::LimitExceeded)
+    );
+
+    // 8. Nesting depth limit (> 64) rejected with LimitExceeded
+    let mut deep_json = String::new();
+    for _ in 0..65 {
+        deep_json.push_str("{\"nested\":");
+    }
+    deep_json.push('1');
+    for _ in 0..65 {
+        deep_json.push('}');
+    }
+    assert_eq!(
+        parse_normalized_context(deep_json.as_bytes()),
+        Err(ContextError::LimitExceeded)
+    );
+
+    // 9. Malicious path / workspace_root confers zero authority and redacts in debug
+    let malicious_json = r#"{
+        "schema_version": 1,
+        "harness": "claude_code",
+        "workspace_root": "/etc/shadow",
+        "current_request": {
+            "text": "secret api key sk-test-1234567890abcdef",
+            "attachments_omitted": false,
+            "essential_attachment_missing": false
+        },
+        "events": []
+    }"#;
+    let mal_parsed = parse_normalized_context(malicious_json.as_bytes()).unwrap();
+    let debug_repr = format!("{:?}", mal_parsed.current_request.text);
+    assert!(
+        !debug_repr.contains("sk-test"),
+        "PrivateText must redact contents in Debug"
+    );
+    assert!(
+        debug_repr.contains("PrivateText(<"),
+        "PrivateText Debug must show length only"
+    );
 }
