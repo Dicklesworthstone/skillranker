@@ -1,0 +1,188 @@
+{
+  "schema_version": 2,
+  "suite": "context",
+  "tier": "runner-mechanics",
+  "timeout_ms": 30000,
+  "cases": [
+    {
+      "id": "no-cross-session-fallthrough",
+      "mode": "pass",
+      "timeout_ms": 5000,
+      "output_bytes": 8192,
+      "expected_exit": 0,
+      "expected_outcome": "ok",
+      "assertions": ["exact_session_bound"],
+      "require_fault": false
+    },
+    {
+      "id": "bounded-normalized-parsing",
+      "mode": "pass",
+      "timeout_ms": 5000,
+      "output_bytes": 8192,
+      "expected_exit": 0,
+      "expected_outcome": "ok",
+      "assertions": ["normalized_bounded"],
+      "require_fault": false
+    },
+    {
+      "id": "partial-tail-deferred",
+      "mode": "pass",
+      "timeout_ms": 5000,
+      "output_bytes": 8192,
+      "expected_exit": 0,
+      "expected_outcome": "ok",
+      "assertions": ["incremental_clean"],
+      "require_fault": false
+    },
+    {
+      "id": "compaction-detected",
+      "mode": "pass",
+      "timeout_ms": 5000,
+      "output_bytes": 8192,
+      "expected_exit": 0,
+      "expected_outcome": "ok",
+      "assertions": ["incremental_clean"],
+      "require_fault": false
+    },
+    {
+      "id": "sibling-branch-isolation",
+      "mode": "pass",
+      "timeout_ms": 5000,
+      "output_bytes": 8192,
+      "expected_exit": 0,
+      "expected_outcome": "ok",
+      "assertions": ["no_branch_confusion"],
+      "require_fault": false
+    },
+    {
+      "id": "hook-prompt-overlaid-once",
+      "mode": "pass",
+      "timeout_ms": 5000,
+      "output_bytes": 8192,
+      "expected_exit": 0,
+      "expected_outcome": "ok",
+      "assertions": ["authoritative_prompt"],
+      "require_fault": false
+    },
+    {
+      "id": "cass-bounded-pipe",
+      "mode": "pass",
+      "timeout_ms": 5000,
+      "output_bytes": 8192,
+      "expected_exit": 0,
+      "expected_outcome": "ok",
+      "assertions": ["cass_safe"],
+      "require_fault": false
+    },
+    {
+      "id": "offline-cass-mock",
+      "mode": "pass",
+      "timeout_ms": 5000,
+      "output_bytes": 8192,
+      "expected_exit": 0,
+      "expected_outcome": "ok",
+      "assertions": ["cass_safe"],
+      "require_fault": false
+    },
+    {
+      "id": "loaded-evidence-extracted",
+      "mode": "pass",
+      "timeout_ms": 5000,
+      "output_bytes": 8192,
+      "expected_exit": 0,
+      "expected_outcome": "ok",
+      "assertions": ["tool_association_exact"],
+      "require_fault": false
+    },
+    {
+      "id": "visible-head-tail-truncation",
+      "mode": "pass",
+      "timeout_ms": 5000,
+      "output_bytes": 8192,
+      "expected_exit": 0,
+      "expected_outcome": "ok",
+      "assertions": ["rendered_within_budget"],
+      "require_fault": false
+    },
+    {
+      "id": "task-anchor-preserved",
+      "mode": "pass",
+      "timeout_ms": 5000,
+      "output_bytes": 8192,
+      "expected_exit": 0,
+      "expected_outcome": "ok",
+      "assertions": ["anchor_intact"],
+      "require_fault": false
+    },
+    {
+      "id": "dirty-paths-repo-relative",
+      "mode": "pass",
+      "timeout_ms": 5000,
+      "output_bytes": 8192,
+      "expected_exit": 0,
+      "expected_outcome": "ok",
+      "assertions": ["bounded_project_signals"],
+      "require_fault": false
+    },
+    {
+      "id": "minimal-profile-drops-tools",
+      "mode": "pass",
+      "timeout_ms": 5000,
+      "output_bytes": 8192,
+      "expected_exit": 0,
+      "expected_outcome": "ok",
+      "assertions": ["profile_respected"],
+      "require_fault": false
+    },
+    {
+      "id": "disclosure-receipt-matches-payload",
+      "mode": "pass",
+      "timeout_ms": 5000,
+      "output_bytes": 8192,
+      "expected_exit": 0,
+      "expected_outcome": "ok",
+      "assertions": ["receipt_accurate"],
+      "require_fault": false
+    },
+    {
+      "id": "corrupted-jsonl",
+      "mode": "refuse",
+      "timeout_ms": 5000,
+      "output_bytes": 8192,
+      "expected_exit": 7,
+      "expected_outcome": "refused",
+      "assertions": ["safe_context_rejection"],
+      "require_fault": true
+    },
+    {
+      "id": "oversized-record",
+      "mode": "refuse",
+      "timeout_ms": 5000,
+      "output_bytes": 8192,
+      "expected_exit": 7,
+      "expected_outcome": "refused",
+      "assertions": ["safe_context_rejection"],
+      "require_fault": true
+    },
+    {
+      "id": "missing-prompt",
+      "mode": "refuse",
+      "timeout_ms": 5000,
+      "output_bytes": 8192,
+      "expected_exit": 7,
+      "expected_outcome": "refused",
+      "assertions": ["safe_context_rejection"],
+      "require_fault": true
+    },
+    {
+      "id": "full-context-suite",
+      "mode": "pass",
+      "timeout_ms": 5000,
+      "output_bytes": 8192,
+      "expected_exit": 0,
+      "expected_outcome": "ok",
+      "assertions": ["p3_gate_passed"],
+      "require_fault": false
+    }
+  ]
+}

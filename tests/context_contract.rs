@@ -10,6 +10,7 @@
 //! - Unresolved branch withholds session-specific advice.
 //! - Worktree identity: distinct canonical worktree IDs for linked worktrees; non-Git and detached HEAD.
 
+use serde_json::json;
 use skillranker::adapter::{ClaudeUserPromptSubmit, UnknownFieldPolicy};
 use skillranker::context::anchor::{
     AnchorDirectiveKind, AnchorError, AnchorProvenance, AnchorResolution, is_terse_continuation,
@@ -20,6 +21,7 @@ use skillranker::context::branch::{
     UnresolvedBranchReason, evaluate_loaded_skill_eligibility, resolve_active_branch,
     resolve_worktree,
 };
+use skillranker::context::jsonl::{CursorKind, snapshot_jsonl};
 use skillranker::context::overlay::{
     ClaudeOverlayRequest, OverlayError, apply_claude_prompt_overlay,
 };
@@ -27,7 +29,9 @@ use skillranker::context::render::{
     IMAGE_OMISSION_MARKER, MEDIA_OMISSION_MARKER, RenderContextError, RenderContextOptions,
     RenderedLoadedReference, render_context, sanitize_media_data,
 };
-use skillranker::context::signals::{DirtyPaths, ProjectSignals};
+use skillranker::context::signals::{
+    DIRTY_PATH_LIMIT, DirtyPaths, ProjectSignals, parse_dirty_paths,
+};
 use skillranker::context::{
     ContextError, CurrentRequest, EventKind, LoadState, NormalizedContext, NormalizedEvent,
     PrivateText, Role, SimpleSkillResolver, SkillMatch, ToolEvent, ToolStatus,
@@ -41,6 +45,7 @@ use skillranker::identity::{
 use skillranker::limits::HOOK_STDIN_BYTES;
 use skillranker::output::ContextQuality;
 use skillranker::privacy::redaction::Redactor;
+use skillranker::runtime::ProcessInvocation;
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -2704,4 +2709,185 @@ fn task_anchors() {
             other
         ),
     }
+}
+
+#[test]
+fn native_jsonl_incremental() {
+    let dir = temp_dir("native_jsonl");
+    let path = dir.join("session.jsonl");
+
+    // 1. Initial write with 2 valid records and an incomplete trailing line
+    let initial_content = concat!(
+        "{\"event_id\":\"e1\",\"role\":\"user\",\"kind\":\"message\",\"text\":\"first prompt\"}\n",
+        "{\"event_id\":\"e2\",\"role\":\"assistant\",\"kind\":\"message\",\"text\":\"first answer\"}\n",
+        "{\"event_id\":\"e3\""
+    );
+    fs::write(&path, initial_content).unwrap();
+
+    let invocation = ProcessInvocation::enter().unwrap();
+    let cx = invocation.request_cx().unwrap();
+    let snap1 = snapshot_jsonl(&invocation, &cx, &path, None, CursorKind::Ranking).unwrap();
+    let _ = invocation.shutdown();
+
+    assert_eq!(snap1.events.len(), 2);
+    assert_eq!(snap1.events[0].event_id.as_ref().unwrap().as_str(), "e1");
+    assert_eq!(snap1.events[1].event_id.as_ref().unwrap().as_str(), "e2");
+    assert!(
+        snap1.incomplete_tail,
+        "incomplete trailing line must be deferred"
+    );
+    assert_eq!(snap1.cursor.generation, 1);
+    assert_eq!(snap1.cursor.last_event_id.as_ref().unwrap().as_str(), "e2");
+
+    // 2. Complete the record and append a 4th record
+    let full_content = concat!(
+        "{\"event_id\":\"e1\",\"role\":\"user\",\"kind\":\"message\",\"text\":\"first prompt\"}\n",
+        "{\"event_id\":\"e2\",\"role\":\"assistant\",\"kind\":\"message\",\"text\":\"first answer\"}\n",
+        "{\"event_id\":\"e3\",\"role\":\"user\",\"kind\":\"message\",\"text\":\"second prompt\"}\n",
+        "{\"event_id\":\"e4\",\"role\":\"assistant\",\"kind\":\"message\",\"text\":\"second answer\"}\n"
+    );
+    fs::write(&path, full_content).unwrap();
+
+    let invocation = ProcessInvocation::enter().unwrap();
+    let cx = invocation.request_cx().unwrap();
+    let snap2 = snapshot_jsonl(
+        &invocation,
+        &cx,
+        &path,
+        Some(&snap1.cursor),
+        CursorKind::Ranking,
+    )
+    .unwrap();
+    let _ = invocation.shutdown();
+
+    assert!(
+        !snap2.rebuilt,
+        "incremental read must not rebuild when cursor is valid"
+    );
+    assert_eq!(
+        snap2.events.len(),
+        2,
+        "only newly added events e3 and e4 must be returned"
+    );
+    assert_eq!(snap2.events[0].event_id.as_ref().unwrap().as_str(), "e3");
+    assert_eq!(snap2.events[1].event_id.as_ref().unwrap().as_str(), "e4");
+    assert!(!snap2.incomplete_tail);
+    assert_eq!(snap2.cursor.generation, 1);
+    assert_eq!(snap2.cursor.last_event_id.as_ref().unwrap().as_str(), "e4");
+
+    // 3. Truncation / compaction: replace with a smaller file
+    let compacted = "{\"event_id\":\"e5\",\"role\":\"user\",\"kind\":\"message\",\"text\":\"compacted prompt\"}\n";
+    fs::write(&path, compacted).unwrap();
+
+    let invocation = ProcessInvocation::enter().unwrap();
+    let cx = invocation.request_cx().unwrap();
+    let snap3 = snapshot_jsonl(
+        &invocation,
+        &cx,
+        &path,
+        Some(&snap2.cursor),
+        CursorKind::Ranking,
+    )
+    .unwrap();
+    let _ = invocation.shutdown();
+
+    assert!(snap3.rebuilt, "truncation/compaction must trigger rebuilt");
+    assert!(
+        snap3.cursor.generation > snap2.cursor.generation,
+        "generation must advance"
+    );
+    assert_eq!(snap3.events.len(), 1);
+    assert_eq!(snap3.events[0].event_id.as_ref().unwrap().as_str(), "e5");
+}
+
+#[test]
+fn cass_adapter() {
+    use skillranker::context::cass::{ArchiveSelection, validate_capabilities};
+    use skillranker::identity::{ContentHash, SourceId};
+
+    let valid_caps = json!({
+        "crate_version": "0.8.0",
+        "api_version": 1,
+        "contract_version": "1",
+        "build_commit": "abcdef123456",
+        "global_flags": [{"name": "db"}],
+        "features": ["json_output", "export_command", "self_describing_capabilities"],
+        "commands": [
+            {
+                "name": "export",
+                "arguments": [
+                    {"name": "path"},
+                    {"name": "source"},
+                    {"name": "format", "enum_values": ["json"]},
+                    {"name": "include-tools"}
+                ]
+            },
+            {
+                "name": "sessions",
+                "arguments": [
+                    {"name": "workspace"},
+                    {"name": "limit"},
+                    {"name": "json"}
+                ]
+            }
+        ]
+    });
+
+    let caps_bytes = serde_json::to_vec(&valid_caps).unwrap();
+    let digest = ContentHash::from_bytes(b"cass-binary-content");
+    let producer = validate_capabilities(&caps_bytes, digest.clone());
+    assert!(producer.is_ok(), "valid cass capabilities must be accepted");
+    let p = producer.unwrap();
+    assert!(p.validate_support_claim().is_ok());
+
+    let bad_crate = json!({
+        "crate_version": "0.9.0",
+        "api_version": 1,
+        "contract_version": "1",
+        "features": ["json_output"],
+        "commands": []
+    });
+    assert!(
+        validate_capabilities(&serde_json::to_vec(&bad_crate).unwrap(), digest.clone()).is_err()
+    );
+
+    let no_export = json!({
+        "crate_version": "0.8.0",
+        "api_version": 1,
+        "contract_version": "1",
+        "features": ["json_output", "export_command"],
+        "commands": [
+            {"name": "sessions", "arguments": []}
+        ]
+    });
+    assert!(validate_capabilities(&serde_json::to_vec(&no_export).unwrap(), digest).is_err());
+
+    let bad_path = PathBuf::from("relative/path.jsonl");
+    assert!(ArchiveSelection::local(bad_path, SourceId::new("local").unwrap()).is_err());
+}
+
+#[test]
+fn project_signals() {
+    let raw = b" M src/lib.rs\0A  untracked.txt\0 M path with spaces/file.txt\0";
+    let parsed = parse_dirty_paths(raw).unwrap();
+    assert_eq!(parsed.paths.len(), 3);
+    assert_eq!(parsed.paths[0].as_str(), "src/lib.rs");
+    assert_eq!(parsed.paths[1].as_str(), "untracked.txt");
+    assert_eq!(parsed.paths[2].as_str(), "path with spaces/file.txt");
+    assert!(!parsed.truncated);
+    assert!(parsed.paths.len() <= DIRTY_PATH_LIMIT);
+    assert_eq!(parsed.omitted_non_utf8, 0);
+    assert_eq!(parsed.omitted_unsafe, 0);
+
+    let traversal = b" M ../outside.rs\0 M safe.rs\0";
+    let parsed_traversal = parse_dirty_paths(traversal).unwrap();
+    assert_eq!(parsed_traversal.paths.len(), 1);
+    assert_eq!(parsed_traversal.paths[0].as_str(), "safe.rs");
+    assert_eq!(parsed_traversal.omitted_unsafe, 1);
+
+    let empty = parse_dirty_paths(b"").unwrap();
+    assert!(empty.paths.is_empty());
+    assert!(!empty.truncated);
+
+    assert!(parse_dirty_paths(b" M incomplete_without_null").is_err());
 }

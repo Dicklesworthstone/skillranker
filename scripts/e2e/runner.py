@@ -364,7 +364,7 @@ def run(spec, binary, artifacts, selection=None, *, fixture=FIXTURE, run_id=None
 
 def main():
     parser = SafeParser(description=__doc__)
-    parser.add_argument("--suite", required=True, choices=["runner-smoke", "runner-contract", "transport"])
+    parser.add_argument("--suite", required=True, choices=["runner-smoke", "runner-contract", "transport", "context"])
     parser.add_argument("--binary", default=sys.executable,
                         help="Python interpreter for runner-mechanics fixtures; not a product binary")
     parser.add_argument("--artifacts", required=True, help="existing artifact parent directory")

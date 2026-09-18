@@ -53,15 +53,34 @@ elif mode == "isolation":
     passed = passed and all(Path(os.environ[name]).is_dir() for name in
                             ("XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "TMPDIR"))
 
-assertion_id = (
-    "p1_gate_passed"
-    if case == "full-transport-suite"
-    else "smoke_valid"
-    if case == "consented-live-smoke"
-    else "safe_error_reporting"
-    if case in {"stalled-dns", "handshake-timeout", "429-backoff", "success-twin"}
-    else "behavior"
-)
+CASE_ASSERTIONS = {
+    "full-transport-suite": "p1_gate_passed",
+    "consented-live-smoke": "smoke_valid",
+    "stalled-dns": "safe_error_reporting",
+    "handshake-timeout": "safe_error_reporting",
+    "429-backoff": "safe_error_reporting",
+    "success-twin": "safe_error_reporting",
+    # Context suite (P3)
+    "no-cross-session-fallthrough": "exact_session_bound",
+    "bounded-normalized-parsing": "normalized_bounded",
+    "partial-tail-deferred": "incremental_clean",
+    "compaction-detected": "incremental_clean",
+    "sibling-branch-isolation": "no_branch_confusion",
+    "hook-prompt-overlaid-once": "authoritative_prompt",
+    "cass-bounded-pipe": "cass_safe",
+    "offline-cass-mock": "cass_safe",
+    "loaded-evidence-extracted": "tool_association_exact",
+    "visible-head-tail-truncation": "rendered_within_budget",
+    "task-anchor-preserved": "anchor_intact",
+    "dirty-paths-repo-relative": "bounded_project_signals",
+    "minimal-profile-drops-tools": "profile_respected",
+    "disclosure-receipt-matches-payload": "receipt_accurate",
+    "corrupted-jsonl": "safe_context_rejection",
+    "oversized-record": "safe_context_rejection",
+    "missing-prompt": "safe_context_rejection",
+    "full-context-suite": "p3_gate_passed",
+}
+assertion_id = CASE_ASSERTIONS.get(case, "behavior")
 emit("assertion", id=assertion_id, passed=passed and mode != "failthenpass")
 if mode in {"duplicate", "failthenpass"}:
     emit("assertion", id=assertion_id, passed=mode == "failthenpass")
