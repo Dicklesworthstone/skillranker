@@ -534,7 +534,7 @@ e2e_cases = ["explicit-resolved-offline"]
 assertion_ids = ["no_network_needed"]
 platforms = ["linux"]
 features = []
-status = "implemented"
+status = "planned"
 
 [[boundaries]]
 id = "p2_roster_imports"
@@ -847,7 +847,7 @@ e2e_cases = ["visible-head-tail-truncation"]
 assertion_ids = ["rendered_within_budget"]
 platforms = ["linux"]
 features = []
-status = "implemented"
+status = "planned"
 
 [[boundaries]]
 id = "p3_task_anchors"
@@ -863,7 +863,7 @@ e2e_cases = ["task-anchor-preserved"]
 assertion_ids = ["anchor_intact"]
 platforms = ["linux"]
 features = []
-status = "implemented"
+status = "planned"
 
 [[boundaries]]
 id = "p3_project_signals"
@@ -895,7 +895,7 @@ e2e_cases = ["minimal-profile-drops-tools"]
 assertion_ids = ["profile_respected"]
 platforms = ["linux"]
 features = []
-status = "implemented"
+status = "planned"
 
 [[boundaries]]
 id = "p3_disclosure_receipts"
@@ -911,7 +911,7 @@ e2e_cases = ["disclosure-receipt-matches-payload"]
 assertion_ids = ["receipt_accurate"]
 platforms = ["linux"]
 features = []
-status = "implemented"
+status = "planned"
 
 [[boundaries]]
 id = "p3_conformance_matrix"
@@ -927,7 +927,7 @@ e2e_cases = ["corrupted-jsonl", "oversized-record", "missing-prompt"]
 assertion_ids = ["safe_context_rejection"]
 platforms = ["linux"]
 features = []
-status = "implemented"
+status = "planned"
 
 [[boundaries]]
 id = "p3_acceptance_gate"
