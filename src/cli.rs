@@ -207,9 +207,40 @@ pub fn run(clock: EntryClock) -> u8 {
         },
         Err((code, kind, message)) => {
             if wants_json {
-                let error = json!({"schema_version":1,"decision":"unavailable","error":{
-                    "code":code,"kind":kind,"message":message,"hint":"Use sr --help; inspect trusted-user and project configuration.","retryable":false}});
-                let _ = writeln!(io::stdout().lock(), "{error}");
+                if message.trim_start().starts_with('{')
+                    && crate::output::OutputDocument::from_json(message.as_bytes()).is_ok()
+                {
+                    let _ = writeln!(io::stdout().lock(), "{message}");
+                } else {
+                    let error_kind = crate::output::ErrorKind::ALL
+                        .iter()
+                        .copied()
+                        .find(|k| k.as_str() == kind)
+                        .unwrap_or_else(|| match code {
+                            2 => crate::output::ErrorKind::InvalidUsage,
+                            3 => crate::output::ErrorKind::MissingSession,
+                            4 => crate::output::ErrorKind::ProviderFailure,
+                            5 => crate::output::ErrorKind::EmptyRoster,
+                            6 => crate::output::ErrorKind::Timeout,
+                            7 => crate::output::ErrorKind::MalformedInput,
+                            8 => crate::output::ErrorKind::NetworkDenied,
+                            9 => crate::output::ErrorKind::StorageFailure,
+                            10 => crate::output::ErrorKind::InvalidProviderResponse,
+                            11 => crate::output::ErrorKind::CacheMiss,
+                            _ => crate::output::ErrorKind::InvalidUsage,
+                        });
+                    let doc = crate::output::OutputDocument::failure_with_details(
+                        error_kind,
+                        &message,
+                        "Use sr --help; inspect trusted-user and project configuration.",
+                        false,
+                    );
+                    let wire = doc
+                        .to_json()
+                        .unwrap_or_else(|_| serde_json::to_vec(doc.as_value()).unwrap());
+                    let _ = io::stdout().lock().write_all(&wire);
+                    let _ = writeln!(io::stdout().lock());
+                }
             } else {
                 let _ = writeln!(io::stderr().lock(), "sr: {message}");
             }
@@ -218,10 +249,12 @@ pub fn run(clock: EntryClock) -> u8 {
     }
 }
 
-type Failure = (u8, &'static str, String);
+pub type Failure = (u8, &'static str, String);
+
 fn invalid(message: impl Into<String>) -> Failure {
     (2, "invalid-configuration", message.into())
 }
+
 fn timely(clock: &EntryClock) -> Result<(), Failure> {
     clock
         .admit_new_work()
@@ -530,8 +563,30 @@ fn rank_command(
 
     timely(clock)?;
 
+    if output_doc.kind()
+        == crate::output::OutputKind::Decision(crate::output::Decision::Unavailable)
+    {
+        let code = output_doc.exit_code() as u8;
+        let val = output_doc.as_value();
+        let kind = val["error"]["kind"]
+            .as_str()
+            .and_then(|s| crate::output::ErrorKind::ALL.iter().find(|k| k.as_str() == s))
+            .map(|k| k.as_str())
+            .unwrap_or("unavailable");
+        if json_output {
+            let json_str = serde_json::to_string(output_doc.as_value()).unwrap();
+            return Err((code, kind, json_str));
+        } else {
+            let msg = val["error"]["message"].as_str().unwrap_or("Unavailable");
+            return Err((code, kind, msg.to_string()));
+        }
+    }
+
     if json_output {
-        Ok(format!("{}\n", serde_json::to_string(output_doc.as_value()).unwrap()))
+        Ok(format!(
+            "{}\n",
+            serde_json::to_string(output_doc.as_value()).unwrap()
+        ))
     } else {
         match output_doc.kind() {
             crate::output::OutputKind::Decision(crate::output::Decision::Ranked) => {
@@ -545,7 +600,9 @@ fn rank_command(
                         let prob = s["rerank_probability"].as_f64().unwrap_or(0.0);
                         let fit = s["fits"].as_f64().unwrap_or(0.0);
                         let name = s["name"].as_str().unwrap_or("");
-                        out.push_str(&format!("{rank}\t{id}\t{score:.6}\t{prob:.6}\t{fit:.6}\t{name}\n"));
+                        out.push_str(&format!(
+                            "{rank}\t{id}\t{score:.6}\t{prob:.6}\t{fit:.6}\t{name}\n"
+                        ));
                     }
                 }
                 Ok(out)
@@ -567,13 +624,10 @@ fn rank_command(
                 let reason = val["reason"].as_str().unwrap_or("unknown");
                 Ok(format!("ABSTAIN: {reason}\n"))
             }
-            crate::output::OutputKind::Decision(crate::output::Decision::Unavailable) => {
-                let val = output_doc.as_value();
-                let kind = val["error"]["kind"].as_str().unwrap_or("unavailable");
-                let message = val["error"]["message"].as_str().unwrap_or("");
-                Ok(format!("UNAVAILABLE: {kind}: {message}\n"))
-            }
-            _ => Ok(format!("{}\n", serde_json::to_string(output_doc.as_value()).unwrap())),
+            _ => Ok(format!(
+                "{}\n",
+                serde_json::to_string(output_doc.as_value()).unwrap()
+            )),
         }
     }
 }

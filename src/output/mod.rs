@@ -19,7 +19,7 @@ pub const MAX_OUTPUT_DEPTH: usize = 64;
 pub const MAX_WARNING_DETAILS: usize = 32;
 pub const MAX_TRACE_PAGE_ITEMS: usize = 128;
 pub const MAX_TRACE_ITEMS: u64 = 80_000;
-const MAX_TEXT_BYTES: usize = 4096;
+pub const MAX_TEXT_BYTES: usize = 4096;
 const SUM_TOLERANCE: f64 = 1e-4;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -258,6 +258,112 @@ impl OutputDocument {
             }),
             kind: OutputKind::Decision(Decision::Unavailable),
             exit: kind.exit_code(),
+        }
+    }
+
+    /// Construct a failure document with sanitized message and hint text.
+    /// Control characters (such as newlines) are replaced with spaces, and text
+    /// is bounded by `MAX_TEXT_BYTES`.
+    pub fn failure_with_details(
+        kind: ErrorKind,
+        message: &str,
+        hint: &str,
+        retryable: bool,
+    ) -> Self {
+        let clean_message =
+            sanitize_diagnostic_text(message, "The requested operation is unavailable.");
+        let clean_hint =
+            sanitize_diagnostic_text(hint, "Inspect local readiness and the structured error kind.");
+        Self {
+            value: json!({
+                "schema_version": SCHEMA_VERSION,
+                "decision": "unavailable",
+                "error": {
+                    "code": kind.exit_code() as u8,
+                    "kind": kind.as_str(),
+                    "message": clean_message,
+                    "hint": clean_hint,
+                    "retryable": retryable
+                }
+            }),
+            kind: OutputKind::Decision(Decision::Unavailable),
+            exit: kind.exit_code(),
+        }
+    }
+
+    /// Attaches unresolved explicit skill references to an unavailable decision document.
+    pub fn with_unresolved(
+        mut self,
+        unresolved: Vec<UnresolvedReference>,
+    ) -> Result<Self, ContractError> {
+        if unresolved.is_empty() {
+            return Ok(self);
+        }
+        if unresolved.len() > 32 {
+            return Err(ContractError::LimitExceeded);
+        }
+        let items: Vec<Value> = unresolved
+            .into_iter()
+            .map(|u| {
+                json!({
+                    "reference": u.reference,
+                    "reason": u.reason.as_str()
+                })
+            })
+            .collect();
+        if let Some(obj) = self.value.as_object_mut() {
+            obj.insert("unresolved".into(), Value::Array(items));
+        }
+        Self::from_value(self.value)
+    }
+}
+
+/// Bounded sanitized diagnostic text helper for output envelopes.
+pub fn sanitize_diagnostic_text(text: &str, fallback: &str) -> String {
+    let clean: String = text
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    let clean = clean.trim();
+    if clean.is_empty() {
+        fallback.to_string()
+    } else if clean.len() > MAX_TEXT_BYTES {
+        let mut end = MAX_TEXT_BYTES;
+        while end > 0 && !clean.is_char_boundary(end) {
+            end -= 1;
+        }
+        let trimmed = clean[..end].trim_end();
+        if trimmed.is_empty() {
+            fallback.to_string()
+        } else {
+            trimmed.to_string()
+        }
+    } else {
+        clean.to_string()
+    }
+}
+
+/// Unresolved explicit skill reference for unavailable error envelopes.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct UnresolvedReference {
+    pub reference: String,
+    pub reason: UnresolvedReason,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UnresolvedReason {
+    Missing,
+    Ambiguous,
+    Restricted,
+}
+
+impl UnresolvedReason {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Missing => "missing",
+            Self::Ambiguous => "ambiguous",
+            Self::Restricted => "restricted",
         }
     }
 }

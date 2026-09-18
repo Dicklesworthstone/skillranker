@@ -988,6 +988,28 @@ features = []
 status = "executed"
 
 [[boundaries]]
+id = "p4_versioned_json_failure_envelopes"
+owner_bead = "sr-roadmap-l1i.5.12"
+member_beads = ["sr-roadmap-l1i.5.12"]
+phase = "P4"
+title = "Render bounded versioned JSON and stable failure envelopes"
+unit_property_tests = [
+    "tests/json_envelopes.rs::test_all_28_error_kinds_and_documented_exit_categories",
+    "tests/json_envelopes.rs::test_control_character_sanitization_and_length_bounding",
+    "tests/json_envelopes.rs::test_unresolved_explicit_skill_references",
+    "tests/json_envelopes.rs::test_cli_binary_failure_envelopes",
+    "tests/json_envelopes.rs::test_artifact_report_semantics_never_imply_passed_gates",
+    "tests/output_contract.rs::all_decisions_and_artifact_kinds_round_trip_without_becoming_hook_output",
+    "tests/output_contract.rs::every_stable_error_kind_has_the_documented_exit_category"
+]
+e2e_suite = "core-cli"
+e2e_cases = ["versioned-failure-envelopes"]
+assertion_ids = ["bounded_versioned_json_verified"]
+platforms = ["linux"]
+features = []
+status = "executed"
+
+[[boundaries]]
 id = "p4_dry_run"
 owner_bead = "sr-roadmap-l1i.5.15"
 member_beads = ["sr-roadmap-l1i.5.15"]

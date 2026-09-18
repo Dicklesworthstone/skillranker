@@ -382,7 +382,41 @@ pub async fn execute_pipeline(
                 } else {
                     "Unresolved explicit skill".to_string()
                 };
-                return Err(failure(5, "unresolved-explicit", msg));
+                let unresolved_refs: Vec<crate::output::UnresolvedReference> = unresolved
+                    .iter()
+                    .map(|u| {
+                        let reason = match u.reason {
+                            crate::roster::explicit::UnresolvedReason::Missing => {
+                                crate::output::UnresolvedReason::Missing
+                            }
+                            crate::roster::explicit::UnresolvedReason::Ambiguous => {
+                                crate::output::UnresolvedReason::Ambiguous
+                            }
+                            crate::roster::explicit::UnresolvedReason::Forbidden
+                            | crate::roster::explicit::UnresolvedReason::Shadowed
+                            | crate::roster::explicit::UnresolvedReason::ConflictingDirective
+                            | crate::roster::explicit::UnresolvedReason::Unverified
+                            | crate::roster::explicit::UnresolvedReason::InvalidName => {
+                                crate::output::UnresolvedReason::Restricted
+                            }
+                        };
+                        crate::output::UnresolvedReference {
+                            reference: u.target.clone(),
+                            reason,
+                        }
+                    })
+                    .collect();
+                let doc = OutputDocument::failure_with_details(
+                    ErrorKind::UnresolvedExplicit,
+                    &msg,
+                    "Inspect available skills in the roster or configure skill roots.",
+                    false,
+                )
+                .with_unresolved(unresolved_refs)
+                .map_err(|e| {
+                    failure(5, "unresolved-explicit", format!("Contract error: {e:?}"))
+                })?;
+                return Ok(doc);
             }
             ExplicitResolutionResult::NoneSpecified { .. } => {}
         }
@@ -417,7 +451,12 @@ pub async fn execute_pipeline(
     }
 
     if initial_advisory.is_empty() {
-        let doc = OutputDocument::failure(ErrorKind::EmptyRoster, false);
+        let doc = OutputDocument::failure_with_details(
+            ErrorKind::EmptyRoster,
+            "No eligible skills found in roster",
+            "Check skill directory paths or frontmatter syntax.",
+            false,
+        );
         return Ok(doc);
     }
 
@@ -436,7 +475,12 @@ pub async fn execute_pipeline(
                 return Ok(doc);
             }
             Verdict::Unavailable(reason) => {
-                let doc = OutputDocument::failure(reason.kind(), false);
+                let doc = OutputDocument::failure_with_details(
+                    reason.kind(),
+                    &format!("Candidate unavailable: {}", reason.as_str()),
+                    "Check candidate eligibility and loaded state.",
+                    false,
+                );
                 return Ok(doc);
             }
         }
@@ -707,7 +751,12 @@ pub async fn execute_pipeline(
                 return Ok(doc);
             }
             Verdict::Unavailable(reason) => {
-                let doc = OutputDocument::failure(reason.kind(), false);
+                let doc = OutputDocument::failure_with_details(
+                    reason.kind(),
+                    &format!("Candidate unavailable after rerank: {}", reason.as_str()),
+                    "Check candidate eligibility after rerank.",
+                    false,
+                );
                 return Ok(doc);
             }
         }
