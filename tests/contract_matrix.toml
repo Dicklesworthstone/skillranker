@@ -1280,3 +1280,33 @@ assertion_ids = ["complete_independent_evidence"]
 platforms = ["linux"]
 features = []
 status = "planned"
+
+# Reality-check corrective boundary; planned, not execution evidence.
+[[boundaries]]
+id = "p1_stdin_deadline_repair"
+owner_bead = "sr-roadmap-l1i.2.13"
+phase = "P1"
+title = "Repair stalled stdin deadlines and inclusive byte-cap handling"
+member_beads = ["sr-roadmap-l1i.2.13"]
+platforms = ["linux", "macos"]
+features = []
+e2e_suite = "transport"
+e2e_cases = ["stdin-held-open", "stdin-late-eof", "stdin-exact-cap", "stdin-timely-eof"]
+assertion_ids = ["bounded_stdin_cleanup", "inclusive_byte_cap", "no_late_publication"]
+unit_property_tests = ["tests/stdin_boundary_contract.rs::accepted_boundary"]
+status = "planned"
+
+# Reality-check corrective boundary; planned, not execution evidence.
+[[boundaries]]
+id = "p4_macos_storage_qualification"
+owner_bead = "sr-roadmap-l1i.5.23"
+phase = "P4"
+title = "Qualify macOS private storage and atomic export before dual-platform release"
+member_beads = ["sr-roadmap-l1i.5.23"]
+platforms = ["linux", "macos"]
+features = []
+e2e_suite = "storage-platforms"
+e2e_cases = ["native-private-storage", "wal-contention", "export-no-clobber", "unsafe-target-refusal"]
+assertion_ids = ["native_platform_behavior", "qualified_engine", "private_no_clobber", "linux_nonregression"]
+unit_property_tests = ["tests/storage_platform_contract.rs::accepted_boundary"]
+status = "planned"

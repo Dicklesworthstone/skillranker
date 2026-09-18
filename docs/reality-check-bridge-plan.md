@@ -1,8 +1,198 @@
 # SkillRanker reality check and bridge plan
 
-Date: 2026-09-17. Status: source/document findings and executed checks are recorded below; the resumed per-record acceptance review (195 records) completed the same day and is integrated in the final section. Inventory and ownership statements describe their stated snapshots, not current tracker state or a frozen release.
+Latest assessment: 2026-09-18. Earlier 2026-09-17 reviews and receipts are retained
+below as history. Inventory and ownership statements describe their stated
+snapshots, not a frozen release or a product-completion percentage.
 
-## Current follow-up assessment (2026-09-17)
+## Current assessment — 2026-09-18
+
+**SkillRanker has substantial tested foundations, but it does not yet deliver its
+central user promise: recommending skills for a session.** The executable now
+supports help, version and local `doctor --config`; the previous assessment's
+help/version-only description is obsolete. There is still no `rank` dispatch.
+Do not install this binary as the planned quiet hook: unsupported hook arguments
+currently return a usage error, not the future non-blocking hook protocol.
+
+This assessment read all 671 lines of AGENTS.md and all 1,971 lines of README.md,
+then reconciled the comprehensive plan, existing engineering contracts, source
+entry points, tests, live tracker and distribution state. Initial source anchor:
+`dee4aac` on `main`. Concurrent roster work continued during review; uncommitted
+retrieval/explicit-resolution changes are work in progress, not accepted product
+capabilities. This is a workflow and acceptance audit, not a claim of exhaustive
+line-by-line security verification of every implementation.
+
+### What users can actually do
+
+| Workflow | Current reality | Decisive source / remaining owners |
+|---|---|---|
+| Inspect configuration | **Working narrow CLI:** `doctor --config`, JSON/table, trusted precedence, sanitized errors. General readiness is still missing. | `src/main.rs` → `src/cli.rs::run` → `execute`; `tests/cli_config.rs`; `.5.1` and `.5.17` remain broader work |
+| Select and normalize session input | **Implemented library components:** exact source selection, bounded normalized envelopes/native JSONL, branch resolution, Claude prompt overlay, tool/load associations and capability-checked cass. **Not a rank journey.** | `src/context/`; `.4.8`/`.4.9` context rendering and anchors, `.4.11`/`.4.12` disclosure, `.4.13`/`.4.14` conformance/acceptance |
+| Discover/select skills | **Implemented library components:** authorized reads, metadata, harness-visible roots, identity/aliases/restrictions, bounded literal Quill query compiler. Deterministic roster retrieval and explicit resolution are actively being implemented. | `src/authorized_read.rs`, `src/roster/`; `.3.6`, `.3.7`, `.3.10`–`.3.17`; no roster CLI dispatch yet |
+| Protect disclosures | Bounded redaction and authority/effect contracts exist. Complete request-field redaction/disclosure wiring remains open. | `src/privacy/`; `.3.2`, `.4.11`, `.4.12`, `.5.9`, `.5.15` |
+| Call Jev | **Real library transport:** selected Asupersync HTTPS, typed request/reply validation, attempt accounting and deadline/budget-bounded retries. Local TLS tests are real; live TypeSafe interoperability is separately unproven. | `src/jev/{endpoint,codec,admission,client,retry}.rs`; `.2.10`–`.2.12` |
+| Recommend a next skill | **Not implemented as a product path.** No connected wide/rerank builders, gate policy, eligible-candidate scoring and final publication through the CLI. Output validation alone does not select anything. | `.5.2`–`.5.5`, `.5.11`–`.5.15`, `.5.19`/`.5.21` |
+| Reuse responses safely | **Linux storage foundation only:** real rusqlite, actual engine identity checks, private files, metadata/incarnation/generation and atomic exports. No stage-response cache, keyed namespace or single-flight integration yet. | `src/storage/`; `.5.7`–`.5.10`, `.5.20`; schema currently stores foundation metadata |
+| Capture, replay, observe, judge, report | Schemas/policy fixtures exist; no reachable ledger/replay/feedback/evaluator commands. | P5 `.6.1`–`.6.29` |
+| Install a Claude hook / control spending | Adapter contracts exist; dedicated hook protocol, installer, durable allowance, shared cooldown and snooze integration do not. Invocation retry accounting is not a cross-process allowance. | P6 `.7.1`–`.7.13` |
+| Demonstrate benefit or low latency | **Unproven.** Synthetic arithmetic and library TLS tests do not establish recommendation quality, harm risk, production fallback or end-to-end latency. | P7 `.8.1`–`.8.10`; measured cohorts and operational trials required |
+| Learn, monitor, inspect interactively | Policy design exists; calibration/priors/monitoring/TUI and later experiments are not delivered. `tui = []` remains an empty reserved Cargo feature. | P8/P9, individually gated |
+| Install a released Linux/macOS product | GitHub release query returned no releases. Storage/export module is Linux-only. No verified dual-platform artifact is established. | `.8.7`, new `.5.23`; DSR remains the sole release orchestrator |
+
+Quill is genuinely integrated through the shipping narrow crate, with native
+expected-result fixtures and a dependency denylist; this is not a Tantivy wrapper.
+Asupersync is the active runtime/transport. There is no requirement to install
+`ms`; no numerical-backend implementation is claimed from the availability of
+FrankenNumPy/SciPy/Pandas. Their narrow evaluation qualification remains `.6.18`.
+`src/transport.rs` is still outside the crate module graph; the active Jev client
+uses `src/jev/endpoint.rs`. An uncompiled alternate file is not a capability.
+
+### Concrete gaps that the prior closure picture missed
+
+1. **Stalled stdin is not bounded by the advertised helper.**
+   `read_stdin_before_cleanup` checks the clock before calling generic blocking
+   `Read::read`. It cannot interrupt that read and returns success on EOF without
+   checking completion time. It also rejects exact-cap data before probing EOF.
+   The current slow-input test sleeps before entering an immediate `Cursor`, so
+   it cannot detect an in-flight stall. New **`sr-roadmap-l1i.2.13`** owns the
+   repair and real pipe/late-EOF/signal/cleanup tests; it blocks `.2.11` and `.7.1`.
+   This is source-established, not a newly executed reproducer or completed fix.
+   Historical `.2.1` proof remains intact but is not whole-boundary acceptance.
+2. **macOS persistence/export is absent, not merely untested packaging.**
+   `src/lib.rs` hides the complete storage module outside Linux, including the
+   shared atomic exporter; `tests/storage_contract.rs` is Linux-only. New
+   **`sr-roadmap-l1i.5.23`** owns platform implementation and native behavioral
+   qualification after `.5.6`/`.3.14`; dual-platform release `.8.7` depends on it.
+   Linux development remains independently useful. Do not qualify macOS from
+   successful cross-compilation, skipped tests or a nominal portable fallback
+   inside an unavailable module.
+3. **Engineering status had become stale.** The prior assessment said no actual
+   HTTP client, no rusqlite dependency and only help/version. Those are now false.
+   The comprehensive plan also claimed no local tracker and required a
+   documentation-only README banner. Both plan contradictions are corrected;
+   the requested finished-product README voice is preserved.
+4. **Product E2E remains future work.** The checked-in runner suite directory
+   contains runner mechanics suites, not executable rank/cache/hook/learning
+   suites. Planned matrix rows are obligations, not evidence that those suites
+   exist or passed. The two corrective boundaries are explicitly planned rows
+   in both coverage authority and matrix, with positive and failure cases.
+
+### Does the backlog close the vision?
+
+The initial live snapshot contained **196 issues: 48 closed, 135 open,
+7 in progress and 6 deferred**. Counts are not a delivery percentage. The
+existing 17 workflow groups, 70 goal rows and I01–I15 crosswalk below still cover
+the intended feature set. This pass revalidated current source and ownership
+against those mappings; it does not reissue the older 195-record per-body audit
+as a fresh exhaustive review of every current comment.
+
+**Implementing and genuinely accepting the roadmap, including these two repair
+obligations, covers the scoped vision. Merely closing its coding tasks does not.**
+Live provider interoperability, installed-harness conformance, independent
+consented labels, controlled outcome trials, supported-platform tests and DSR
+artifacts are deliverables with external evidence requirements. They cannot be
+manufactured by more code or synthetic fixtures. Deferred native adapters retain
+individual qualification/disposition gates; normalized input is not native
+support. No additional missing product feature was established in this pass.
+
+The new tasks fill a closed-boundary repair gap and a platform implementation
+gap; they do not replace the existing core, hook, evaluation or experiment tasks.
+They contain self-contained causes, constraints, proof requirements and success
+counterparts. All tracker mutations were performed with `br`.
+
+### Bridge to useful delivery, in logical order
+
+1. **Finish already-owned foundation leaves and acceptance.** Preserve active
+   explicit resolution/retrieval work. Complete disclosure/context rendering,
+   roster revalidation, stdin repair and transport failure proof. `.2.10` is an
+   explicitly consented live check, not permission to use ambient credentials.
+2. **Deliver one real normalized-input CLI journey through `.5.21`.** Implement
+   builders → wide gate → rerank → per-candidate eligibility/none comparison →
+   finite scoring → final current-state validation → bounded output. Prove
+   useful, explicit, genuine abstention and unavailable outcomes. Show exact
+   request counts and paid-attempt accounting, not only JSON shape. Offline
+   demo/dry-run must use the same production normalization and decision paths.
+3. **Prove exact caching and failure boundaries before calling the core done.**
+   Test current-authority revocation, source changes during requests, cache
+   isolation, owner loss, no-persist/offline semantics and stale publication.
+   Keep standalone ranking independent of the optional observation ledger.
+4. **Add faithful evidence and recorded shadow hooks.** P5 and P6 preserve
+   independent initialization/consent, exact-session attribution, durable
+   allowance and non-blocking output. Actual supported harness evidence remains
+   mandatory; parsing an event fixture is insufficient.
+5. **Measure before advisory promotion and release.** Freeze independent
+   relevance/harm/operational designs, include failed/unstarted cases, and meet
+   the declared gates. macOS storage qualification can proceed in parallel and
+   blocks only claims that require it. Publish only verified DSR target cells.
+6. **Retain all later ambition behind its own gate.** Learning, statistical
+   monitoring, TUI, additional adapters, passage/query-view experiments and
+   description diagnostics remain in P8/P9. None is silently dropped, and none
+   should substitute for completing the first useful selector.
+
+The initial `bv --robot-triage` ranked core acceptance `.5.21` as a central
+bottleneck and recommended ready transport work. Its summary reported zero
+blocked while individual recommendations listed blockers; use live `br`
+dependencies for claimability, not that aggregate field. No fabricated ETA is
+inferred from graph centrality or default task estimates.
+
+### Ambition and refinement in this pass
+
+Three ambition passes improved the existing bridge rather than adding speculative
+features: (1) measure progress by a connected user journey instead of library or
+bead counts; (2) require real fault witnesses and completion-time evidence at the
+stdin boundary; (3) separate portable implementation and native proof from a
+release packaging checkbox, while preserving all statistical and P9 ambitions.
+
+Five refinement passes followed: (1) reconcile current entry points and replace
+stale capability claims; (2) inspect closed runtime/storage boundaries and create
+only the two concrete corrective tasks; (3) overlay dependencies without making
+macOS a prerequisite for Linux core development; (4) add explicit planned matrix
+rows, success/failure cases and receipt limits, preserving existing rows and
+historical evidence; (5) rerun declaration and graph checks and review the final
+diff for unsupported claims. No further feature-level gap was found in that final
+review. This records actual dispositions, not five new product certifications.
+
+### Verification and evidence limits
+
+Audit artifacts are retained under
+`/data/tmp/sr-reality-20260918-m6_9ak1p`:
+
+- Fresh required-remote Cargo run on `hz3`, job `30024414133224260`:
+  `cargo test --locked --test bootstrap_cli --test cli_config --test runtime_contract -j 2`;
+  **19 passed, zero failed or ignored** (3 bootstrap, 8 config, 8 runtime).
+  The CLI tests execute the real compiled binary. This is selected-suite
+  evidence from the transferred shared-tree snapshot, not a frozen whole-tree
+  release certificate or proof of the missing stalled-read cases.
+- Python discovery: **72 passed**. After coverage edits, the independent matrix
+  suite in a detached frozen worktree passed **21/21**, including actual runner
+  receipt checks. The preceding moving-tree run failed one receipt-identity
+  assertion while peer changes occurred; its log is retained and is not a pass.
+  Freezing source resolved that failure without changing code or assertions.
+- Public-document consistency and **79 coverage declarations** passed. These
+  validate links/contracts and planned obligations, not runtime feature support.
+- `br dep cycles --json`: **zero active cycles**. Export inspection found
+  **419 blocking edges, 191 parent-child edges, zero dangling endpoints**, and
+  no non-P9 task transitively blocked by a deferred P9 adapter. Final observed
+  inventory: **198 issues, 48 closed, 136 open, 8 in progress, 6 deferred**;
+  `.2.13` had already moved to in progress during review.
+- `bv --robot-triage`, `bv --robot-insights` and `git diff --check` completed.
+- `ubs --staged` exited 3 because this documentation/TOML/tracker change set
+  contains no supported scanner language. No scanner ran; this is not a UBS pass.
+
+The earlier complete Rust test/check/
+Clippy evidence in `/data/tmp/skillranker-retry-hwu6py3m/final-evidence.json`
+belongs to its recorded source snapshot; it is not a fresh whole-tree receipt.
+The two discovered repairs remain open. No live Jev request, private transcript
+read, credential read, installed-hook change, quality trial or release occurred.
+
+Agent Mail initially supplied current peer ownership; later reservation/message
+calls failed at HTTP transport. Failed delivery is not claimed as coordination.
+Exact owned audit paths and findings were recorded in a root Beads comment.
+After recovery, leases 10817–10820 were granted without conflicts and message
+41843 delivered the findings and scope to both active roster owners.
+Active roster edits were preserved. The historical sections below retain dated
+findings, including superseded failures, and are not current capability claims.
+
+## Historical follow-up assessment (2026-09-17)
 
 This follow-up reread all 671 lines of AGENTS.md and all 1,954 lines of README.md,
 the comprehensive plan and engineering contracts, then checked live source,
