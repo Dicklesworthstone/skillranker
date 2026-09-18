@@ -10,6 +10,7 @@ pub mod client;
 pub mod codec;
 pub mod endpoint;
 pub mod retry;
+pub mod wide;
 
 pub use admission::{
     AdmissionError, AdmissionRefusal, AttemptAdmission, AttemptBudget, AttemptId, AttemptPermit,
