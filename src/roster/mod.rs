@@ -4,7 +4,6 @@
 pub mod discovery;
 pub mod explicit;
 pub mod frontmatter;
-pub mod import;
 pub mod resolution;
 pub mod retrieval;
 
