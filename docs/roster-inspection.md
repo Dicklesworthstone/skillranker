@@ -59,3 +59,18 @@ environment. It covers:
 - piped output without `--json`;
 - an empty workspace;
 - help without discovery.
+
+## Output privacy and connected verification
+
+Listing serialization scans full display, invocation and source labels with the
+shared redactor. An uninspectable label is withheld as `[REDACTED]`; exact local
+identities remain internal for resolution and snapshot comparison. Ordinary
+readable labels are unchanged. This does not make arbitrary private prose public.
+
+Run `scripts/e2e/run.sh --suite roster --artifacts EXISTING_DIRECTORY` for real
+Rust filesystem, CLI, Quill, explicit-resolution and publication-revalidation
+checks through required-remote RCH. The suite retains stdout and stderr and fails
+on any selected target failure. Its 0/1/254/255/1000 cases record counts and cold
+index timings, not private metadata. The synthetic adapter visibility used in
+library tests does not establish an installed harness's compatibility. These are
+local integration checks, not live Jev or recommendation-quality measurements.

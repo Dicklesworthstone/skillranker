@@ -12,6 +12,7 @@ use super::evidence::{Counts, RetrievalView, RosterEvidence, summarize, trace};
 use super::resolution::ResolvedRoster;
 use crate::identity::SkillId;
 use crate::output::ErrorKind;
+use crate::privacy::redaction::{REDACTION_MARKER, Redactor};
 use serde_json::{Value, json};
 
 pub const LISTING_SCHEMA: &str = "sr.roster-listing.v1";
@@ -188,9 +189,9 @@ impl Page<'_> {
             .map(|r| {
                 json!({
                     "skill_id": r.id.as_str(),
-                    "invocation_name": r.invocation,
-                    "name": r.display_name,
-                    "source": r.source,
+                    "invocation_name": redacted_label(&r.invocation),
+                    "name": redacted_label(&r.display_name),
+                    "source": redacted_label(&r.source),
                     "status": r.status,
                     "agent_invocable": r.agent_invocable,
                     "user_invocable": r.user_invocable,
@@ -214,4 +215,14 @@ impl Page<'_> {
             "next_cursor": self.next_cursor,
         })
     }
+}
+
+/// Local inspection is an output boundary too. Scan complete metadata before
+/// serialization; retain exact names internally for resolution and snapshots.
+/// An uninspectable label is withheld, never copied into an error message.
+fn redacted_label(text: &str) -> String {
+    Redactor::default()
+        .redact_field(text)
+        .map(|field| field.into_string())
+        .unwrap_or_else(|_| REDACTION_MARKER.to_owned())
 }

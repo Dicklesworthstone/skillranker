@@ -73,6 +73,7 @@ pub struct Dependencies {
     content_scope: BTreeSet<SkillId>,
     incomplete: BTreeMap<&'static str, usize>,
     captured_at: MonotonicMillis,
+    capture_clock: EntryClock,
 }
 
 impl Dependencies {
@@ -168,6 +169,9 @@ pub fn capture<'a>(
     content: impl IntoIterator<Item = &'a SkillId>,
     clock: &EntryClock,
 ) -> Result<Dependencies, RevalidationError> {
+    clock
+        .admit_new_work()
+        .map_err(|_| RevalidationError::Deadline)?;
     let mut content_scope = BTreeSet::new();
     for id in content {
         let record = roster
@@ -177,12 +181,45 @@ pub fn capture<'a>(
             .ok_or(RevalidationError::UnknownDependency)?;
         content_scope.insert(record.record().id.clone());
     }
+    let digest = digest(roster, &content_scope);
+    let incomplete = incomplete_causes(roster);
+    let captured_at = clock
+        .admit_new_work()
+        .map_err(|_| RevalidationError::Deadline)?;
     Ok(Dependencies {
-        digest: digest(roster, &content_scope),
+        digest,
         content_scope,
-        incomplete: incomplete_causes(roster),
-        captured_at: clock.now(),
+        incomplete,
+        captured_at,
+        capture_clock: *clock,
     })
+}
+
+// Never let a caller restart the invocation deadline. Both clocks must still
+// admit work; the resolver receives the tighter remaining work window.
+fn revalidation_clock<'a>(
+    captured: &'a Dependencies,
+    caller: &'a EntryClock,
+) -> Result<&'a EntryClock, RevalidationError> {
+    captured
+        .capture_clock
+        .admit_new_work()
+        .map_err(|_| RevalidationError::Deadline)?;
+    caller
+        .admit_new_work()
+        .map_err(|_| RevalidationError::Deadline)?;
+    Ok(
+        if captured
+            .capture_clock
+            .remaining_before_cleanup()
+            .as_millis()
+            <= caller.remaining_before_cleanup().as_millis()
+        {
+            &captured.capture_clock
+        } else {
+            caller
+        },
+    )
 }
 
 /// Compare a freshly resolved roster with the captured dependencies.
@@ -191,9 +228,7 @@ pub fn revalidate(
     fresh: &ResolvedRoster,
     clock: &EntryClock,
 ) -> Result<Validated, RevalidationError> {
-    clock
-        .admit_new_work()
-        .map_err(|_| RevalidationError::Deadline)?;
+    revalidation_clock(captured, clock)?;
     let incomplete = incomplete_causes(fresh);
     if incomplete
         .iter()
@@ -204,9 +239,10 @@ pub fn revalidate(
     if digest(fresh, &captured.content_scope) != captured.digest {
         return Err(RevalidationError::Changed);
     }
+    revalidation_clock(captured, clock)?;
     Ok(Validated {
         captured_at: captured.captured_at,
-        validated_at: clock.now(),
+        validated_at: captured.capture_clock.now(),
     })
 }
 
@@ -227,7 +263,9 @@ pub fn revalidate_plan(
     cx: &Cx,
     clock: &EntryClock,
 ) -> Result<Validated, RevalidationError> {
-    let fresh = resolve_claude_plan(fresh_plan, overrides, cx, clock).map_err(resolution_error)?;
+    let bounded_clock = revalidation_clock(captured, clock)?;
+    let fresh =
+        resolve_claude_plan(fresh_plan, overrides, cx, bounded_clock).map_err(resolution_error)?;
     revalidate(captured, &fresh, clock)
 }
 
@@ -241,9 +279,7 @@ pub fn revalidate_claude(
     cx: &Cx,
     clock: &EntryClock,
 ) -> Result<Validated, RevalidationError> {
-    clock
-        .admit_new_work()
-        .map_err(|_| RevalidationError::Deadline)?;
+    revalidation_clock(captured, clock)?;
     let plan = claude_code_plan(workspace, user_home, visibility)
         .map_err(|_| RevalidationError::Incomplete)?;
     revalidate_plan(captured, &plan, overrides, cx, clock)

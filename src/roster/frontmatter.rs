@@ -394,11 +394,13 @@ fn parse_yaml_frontmatter(yaml: &str) -> Result<FrontmatterFields, FrontmatterEr
 
         match key.as_str() {
             "name" => {
+                require_scalar_value(value_after_colon)?;
                 let (val, next_idx) = parse_scalar_or_block(value_after_colon, &lines, idx + 1)?;
                 fields.name = Some(val.trim().to_string());
                 idx = next_idx;
             }
             "description" => {
+                require_scalar_value(value_after_colon)?;
                 let (val, next_idx) = parse_scalar_or_block(value_after_colon, &lines, idx + 1)?;
                 fields.description = val.trim().to_string();
                 idx = next_idx;
@@ -452,6 +454,16 @@ fn parse_yaml_frontmatter(yaml: &str) -> Result<FrontmatterFields, FrontmatterEr
     }
 
     Ok(fields)
+}
+
+// A balanced flow collection is valid YAML, but not a string field. Quoted
+// bracketed text remains a legitimate name/description. Check the source type
+// before unquoting, since that distinction is lost after scalar decoding.
+fn require_scalar_value(value: &str) -> Result<(), FrontmatterError> {
+    if value.starts_with(['[', '{']) {
+        return Err(FrontmatterError::InvalidYamlSyntax);
+    }
+    Ok(())
 }
 
 fn parse_boolean(val: &str) -> Result<bool, FrontmatterError> {
