@@ -102,13 +102,20 @@ The unified Phase P3 test suite (`tests/p3_gate.rs`) exercises all 13 core invar
   rch exec -- cargo test --test source_selection
   rch exec -- cargo test --test privacy_contract
   rch exec -- cargo test --test context_failures
+  rch exec -- cargo test --test context_overlay_safety
+  rch exec -- cargo test --test native_identity
+  rch exec -- cargo test --test jsonl_snapshot
+  rch exec -- cargo test --test project_signals
+  rch exec -- cargo test --test cass_adapter
   ```
 - **Contract Matrix Conformance**:
   ```bash
   python3 -I -B scripts/validate_contract_matrix.py
+  python3 -I -B scripts/e2e/product_cases.py check scripts/e2e/product/context.json
   ```
-- **End-to-End Context Mechanics Suite**:
+- **End-to-End Context Product Integration Suite**:
   ```bash
-  scripts/e2e/run.sh --suite context --binary /usr/bin/python3 --artifacts /tmp/context-e2e-artifacts
+  scripts/e2e/run.sh --suite context --artifacts /tmp/context-artifacts
   ```
-  All 18 scenarios in `scripts/e2e/suites/context.json` execute under sandbox isolation and pass with `status: "passed"` and matching assertion IDs.
+  Executes all 10 real Rust integration test targets remotely via RCH (`cass_adapter`, `context_contract`, `context_failures`, `context_overlay_safety`, `jsonl_snapshot`, `native_identity`, `p3_gate`, `privacy_contract`, `project_signals`, `source_selection`), evaluating real test log results against `scripts/e2e/product/context.json`.
+  All 18 matrix cases pass (`status: "passed"`), with 77 tests passing and 1 declared opt-in ignored test (`actual_installed_cass_exports_synthetic_session`) accounted for. Zero failed, zero missing.
