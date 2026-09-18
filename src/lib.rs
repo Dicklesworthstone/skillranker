@@ -14,6 +14,7 @@ pub mod identity;
 pub mod jev;
 pub mod limits;
 pub mod output;
+pub mod pipeline;
 pub mod privacy;
 pub mod readiness;
 pub mod roster;

@@ -966,6 +966,28 @@ features = []
 status = "planned"
 
 [[boundaries]]
+id = "p4_rank_pipeline"
+owner_bead = "sr-roadmap-l1i.5.11"
+member_beads = ["sr-roadmap-l1i.5.11"]
+phase = "P4"
+title = "Assemble the two-stage rank pipeline and final revalidation"
+unit_property_tests = [
+    "tests/rank_pipeline.rs::test_explicit_directive_bypasses_inference",
+    "tests/rank_pipeline.rs::test_ranked_flow_with_mock_jev",
+    "tests/rank_pipeline.rs::test_low_need_abstention",
+    "tests/rank_pipeline.rs::test_low_fit_abstention",
+    "tests/rank_pipeline.rs::test_none_winner_abstention",
+    "tests/rank_pipeline.rs::test_dry_run_preview_without_network",
+    "tests/rank_pipeline.rs::test_cli_bare_sr_and_rank_flags"
+]
+e2e_suite = "core-cli"
+e2e_cases = ["two-stage-rank-pipeline"]
+assertion_ids = ["pipeline_assembly_verified"]
+platforms = ["linux"]
+features = []
+status = "executed"
+
+[[boundaries]]
 id = "p4_dry_run"
 owner_bead = "sr-roadmap-l1i.5.15"
 member_beads = ["sr-roadmap-l1i.5.15"]

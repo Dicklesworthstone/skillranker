@@ -12,7 +12,7 @@ use std::ffi::OsString;
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
-const HELP: &str = "SkillRanker — powered by TypeSafe.ai Jev\n\nUsage: sr doctor [--json | --table] [--offline | --allow-network]\n       sr doctor --config [--json | --table] [--top N] [--shortlist N]\n       sr roster [--json] [--limit N] [--cursor TOKEN]\n       sr roster --snapshot FILE | --diff FILE\n       sr --help | --version\n\nLocal readiness, configuration and roster inspection only. Ranking requires your own\nTypeSafe API key and trusted network consent; ranking is not available here.\n";
+const HELP: &str = "SkillRanker — powered by TypeSafe.ai Jev\n\nUsage: sr [rank] [--context FILE | --transcript FILE --harness NAME | --session PATH]\n                 [--roster FILE] [--require-skill ID] [--dry-run]\n                 [--offline | --allow-network] [--json | --table]\n                 [--top N] [--shortlist M] [--gate FLOAT] [--fits FLOAT]\n                 [--explain] [--why-not ID] [--no-tools] [--no-cache]\n       sr doctor [--json | --table] [--offline | --allow-network]\n       sr doctor --config [--json | --table] [--top N] [--shortlist N]\n       sr roster [--json] [--limit N] [--cursor TOKEN]\n       sr roster --snapshot FILE | --diff FILE\n       sr --help | --version\n\nRank the next step of an agent session using TypeSafe Jev.\nRequires your own TypeSafe API key (TYPESAFE_API_KEY) and network consent (--allow-network).\n";
 
 fn command() -> Command {
     let mut doctor = Command::new("doctor")
@@ -52,6 +52,105 @@ fn command() -> Command {
             doctor = doctor.arg(Arg::new(name).long(name).action(action));
         }
     }
+
+    let mut rank = Command::new("rank")
+        .disable_help_flag(true)
+        .arg(
+            Arg::new("help")
+                .long("help")
+                .short('h')
+                .action(ArgAction::SetTrue),
+        )
+        .arg(
+            Arg::new("context")
+                .long("context")
+                .action(ArgAction::Set)
+                .conflicts_with_all(["transcript", "session"]),
+        )
+        .arg(
+            Arg::new("transcript")
+                .long("transcript")
+                .action(ArgAction::Set)
+                .requires("harness")
+                .conflicts_with_all(["context", "session"]),
+        )
+        .arg(
+            Arg::new("harness")
+                .long("harness")
+                .action(ArgAction::Set)
+                .requires("transcript")
+                .conflicts_with_all(["context", "session"]),
+        )
+        .arg(
+            Arg::new("session")
+                .long("session")
+                .action(ArgAction::Set)
+                .conflicts_with_all(["context", "transcript", "harness"]),
+        )
+        .arg(Arg::new("roster").long("roster").action(ArgAction::Set))
+        .arg(
+            Arg::new("require-skill")
+                .long("require-skill")
+                .action(ArgAction::Append),
+        )
+        .arg(Arg::new("explain").long("explain").action(ArgAction::SetTrue))
+        .arg(
+            Arg::new("why-not")
+                .long("why-not")
+                .action(ArgAction::Set)
+                .requires("explain"),
+        )
+        .arg(
+            Arg::new("json")
+                .long("json")
+                .conflicts_with("table")
+                .action(ArgAction::SetTrue),
+        )
+        .arg(Arg::new("table").long("table").action(ArgAction::SetTrue))
+        .arg(
+            Arg::new("offline")
+                .long("offline")
+                .conflicts_with("allow-network")
+                .action(ArgAction::SetTrue),
+        )
+        .arg(
+            Arg::new("allow-network")
+                .long("allow-network")
+                .conflicts_with("offline")
+                .action(ArgAction::SetTrue),
+        )
+        .arg(
+            Arg::new("dry-run")
+                .long("dry-run")
+                .conflicts_with_all(["allow-network", "save-case"])
+                .action(ArgAction::SetTrue),
+        )
+        .arg(Arg::new("no-cache").long("no-cache").action(ArgAction::SetTrue))
+        .arg(Arg::new("no-ledger").long("no-ledger").action(ArgAction::SetTrue))
+        .arg(
+            Arg::new("no-persist")
+                .long("no-persist")
+                .conflicts_with("save-case")
+                .action(ArgAction::SetTrue),
+        )
+        .arg(
+            Arg::new("save-case")
+                .long("save-case")
+                .conflicts_with_all(["dry-run", "no-persist"])
+                .action(ArgAction::Set),
+        );
+    for key in SettingKey::ALL {
+        if let Some(flag) = key.spec().cli_flag {
+            let name = flag.trim_start_matches('-');
+            let action = if matches!(name, "shadow" | "no-tools") {
+                ArgAction::SetTrue
+            } else {
+                ArgAction::Set
+            };
+            rank = rank.arg(Arg::new(name).long(name).action(action));
+        }
+    }
+
     Command::new("sr")
         .disable_help_flag(true)
         .disable_help_subcommand(true)
@@ -69,6 +168,7 @@ fn command() -> Command {
                 .conflicts_with("help"),
         )
         .subcommand(doctor)
+        .subcommand(rank)
         .subcommand(
             Command::new("roster")
                 .disable_help_flag(true)
@@ -157,16 +257,26 @@ fn execute(clock: &EntryClock, args: Vec<OsString>) -> Result<String, Failure> {
         }
         return roster_listing(clock, roster);
     }
-    let Some(("doctor", doctor)) = matches.subcommand() else {
-        return Err((
-            2,
-            "invalid-usage",
-            "Select an implemented command; use --help".into(),
-        ));
-    };
-    if doctor.get_flag("help") {
-        return Ok(HELP.into());
+    if let Some(("doctor", doctor)) = matches.subcommand() {
+        if doctor.get_flag("help") {
+            return Ok(HELP.into());
+        }
+        return doctor_command(clock, doctor);
     }
+    if let Some(("rank", rank_matches)) = matches.subcommand() {
+        if rank_matches.get_flag("help") {
+            return Ok(HELP.into());
+        }
+        return rank_command(clock, Some(rank_matches));
+    }
+    Err((
+        2,
+        "invalid-usage",
+        "Select an implemented command; use --help".into(),
+    ))
+}
+
+fn doctor_command(clock: &EntryClock, doctor: &clap::ArgMatches) -> Result<String, Failure> {
     let flags = crate::privacy::EffectFlags {
         offline: doctor.get_flag("offline"),
         allow_network: doctor.get_flag("allow-network"),
@@ -254,6 +364,238 @@ fn execute(clock: &EntryClock, args: Vec<OsString>) -> Result<String, Failure> {
         }
         Ok(output)
     }
+}
+
+fn rank_command(
+    clock: &EntryClock,
+    rank_matches: Option<&clap::ArgMatches>,
+) -> Result<String, Failure> {
+    timely(clock)?;
+    let json_output = rank_matches
+        .map(|m| m.get_flag("json") || (!m.get_flag("table") && !io::stdout().is_terminal()))
+        .unwrap_or_else(|| !io::stdout().is_terminal());
+
+    let offline = rank_matches.is_some_and(|m| m.get_flag("offline"));
+    let allow_network = rank_matches.is_some_and(|m| m.get_flag("allow-network"));
+    let dry_run = rank_matches.is_some_and(|m| m.get_flag("dry-run"));
+    let no_cache = rank_matches.is_some_and(|m| m.get_flag("no-cache"));
+    let no_ledger = rank_matches.is_some_and(|m| m.get_flag("no-ledger"));
+    let no_persist = rank_matches.is_some_and(|m| m.get_flag("no-persist"));
+    let save_case = rank_matches.is_some_and(|m| {
+        m.contains_id("save-case") && m.get_one::<String>("save-case").is_some()
+    });
+
+    let flags = crate::privacy::EffectFlags {
+        offline,
+        allow_network,
+        dry_run,
+        no_cache,
+        no_ledger,
+        no_persist,
+        save_case,
+    };
+    let gate = crate::effects::EffectGate::new(flags, crate::effects::Scope::Rank).map_err(
+        |conflicts| {
+            let first = conflicts
+                .first()
+                .expect("from_flags reports at least one conflict on error");
+            (2u8, "invalid-usage", first.to_string())
+        },
+    )?;
+
+    let mut sources = ConfigSources::default();
+    if let Some(m) = rank_matches {
+        for key in SettingKey::ALL {
+            let Some(flag) = key.spec().cli_flag else {
+                continue;
+            };
+            let name = flag.trim_start_matches('-');
+            let value = match name {
+                "shadow" if m.get_flag(name) => Some(RawValue::String("shadow".into())),
+                "no-tools" if m.get_flag(name) => Some(RawValue::Bool(true)),
+                "shadow" | "no-tools" => None,
+                _ => m
+                    .get_one::<String>(name)
+                    .map(|text| match key.spec().kind {
+                        crate::config::ValueKind::Count { .. }
+                        | crate::config::ValueKind::Millis { .. } => text
+                            .parse()
+                            .map(RawValue::Integer)
+                            .map_err(|_| invalid("CLI count must be an integer")),
+                        crate::config::ValueKind::Unit { .. } => text
+                            .parse()
+                            .map(RawValue::Float)
+                            .map_err(|_| invalid("CLI threshold must be numeric")),
+                        _ => Ok(RawValue::String(text.clone())),
+                    })
+                    .transpose()?,
+            };
+            if let Some(value) = value {
+                sources.cli.push((key.path().into(), value));
+            }
+        }
+    }
+
+    // Snapshot only recognized namespace candidates; the resolver rejects unknown SR_*.
+    for (name, value) in std::env::vars_os() {
+        if name.as_encoded_bytes().starts_with(b"SR_")
+            || name == "TYPESAFE_API_KEY"
+            || name == "TYPESAFE_ENDPOINT"
+        {
+            if sources.environment.len() == MAX_LAYER_ENTRIES {
+                return Err(invalid("Too many environment settings"));
+            }
+            sources.environment.push((name, value));
+        }
+    }
+
+    let workspace = std::env::current_dir().map_err(|_| invalid("Workspace is unavailable"))?;
+    let user_root = user_config_root()?;
+
+    let stdin_supplied = is_stdin_supplied();
+    let context = rank_matches
+        .and_then(|m| m.get_one::<String>("context"))
+        .map(|s| crate::roster::LocalPath::new(PathBuf::from(s)));
+    let transcript = rank_matches
+        .and_then(|m| m.get_one::<String>("transcript"))
+        .map(|s| crate::roster::LocalPath::new(PathBuf::from(s)));
+    let harness = rank_matches
+        .and_then(|m| m.get_one::<String>("harness"))
+        .map(|s| crate::identity::HarnessId::new(s).map_err(|_| invalid("Invalid harness ID")))
+        .transpose()?;
+    let cass_session = rank_matches
+        .and_then(|m| m.get_one::<String>("session"))
+        .map(|s| crate::roster::LocalPath::new(PathBuf::from(s)));
+
+    let source_options = crate::context::source::SourceOptions {
+        stdin_supplied,
+        claude_hook: false,
+        context,
+        transcript,
+        harness,
+        cass_session,
+        latest: false,
+    };
+
+    let roster_file = rank_matches
+        .and_then(|m| m.get_one::<String>("roster"))
+        .map(PathBuf::from);
+
+    let mut require_skills = Vec::new();
+    if let Some(m) = rank_matches {
+        if let Some(reqs) = m.get_many::<String>("require-skill") {
+            for req in reqs {
+                let id = crate::identity::SkillId::new(req).map_err(|_| {
+                    (5u8, "unresolved-explicit", format!("Invalid skill ID: {req}"))
+                })?;
+                require_skills.push(id);
+            }
+        }
+    }
+
+    let explain = rank_matches.is_some_and(|m| m.get_flag("explain"));
+    let why_not = rank_matches
+        .and_then(|m| m.get_one::<String>("why-not"))
+        .map(|s| crate::identity::SkillId::new(s).map_err(|_| {
+            (2u8, "invalid-usage", format!("Invalid skill ID for --why-not: {s}"))
+        }))
+        .transpose()?;
+
+    let args = crate::pipeline::RankArgs {
+        workspace,
+        user_config_root: user_root,
+        sources,
+        gate,
+        source_options,
+        require_skills,
+        roster_file,
+        explain,
+        why_not,
+        output_json: json_output,
+        output_table: !json_output,
+        dry_run,
+    };
+
+    timely(clock)?;
+    let invocation = crate::runtime::ProcessInvocation::from_clock(*clock).map_err(|_| {
+        (6u8, "timeout", "Local runtime unavailable".into())
+    })?;
+    let cx = invocation.request_cx().map_err(|_| {
+        (6u8, "timeout", "Local runtime unavailable".into())
+    })?;
+
+    let output_doc = invocation.runtime().block_on(async {
+        crate::pipeline::execute_pipeline(clock, &cx, args, None).await
+    })?;
+
+    timely(clock)?;
+
+    if json_output {
+        Ok(format!("{}\n", serde_json::to_string(output_doc.as_value()).unwrap()))
+    } else {
+        match output_doc.kind() {
+            crate::output::OutputKind::Decision(crate::output::Decision::Ranked) => {
+                let val = output_doc.as_value();
+                let mut out = String::from("RANK\tSKILL\tSCORE\tPROBABILITY\tFIT\tNAME\n");
+                if let Some(skills) = val["skills"].as_array() {
+                    for s in skills {
+                        let rank = s["rank"].as_u64().unwrap_or(0);
+                        let id = s["skill_id"].as_str().unwrap_or("");
+                        let score = s["rank_score"].as_f64().unwrap_or(0.0);
+                        let prob = s["rerank_probability"].as_f64().unwrap_or(0.0);
+                        let fit = s["fits"].as_f64().unwrap_or(0.0);
+                        let name = s["name"].as_str().unwrap_or("");
+                        out.push_str(&format!("{rank}\t{id}\t{score:.6}\t{prob:.6}\t{fit:.6}\t{name}\n"));
+                    }
+                }
+                Ok(out)
+            }
+            crate::output::OutputKind::Decision(crate::output::Decision::Explicit) => {
+                let val = output_doc.as_value();
+                let mut out = String::from("EXPLICIT SKILL\n");
+                if let Some(skills) = val["skills"].as_array() {
+                    for s in skills {
+                        let id = s["skill_id"].as_str().unwrap_or("");
+                        let name = s["name"].as_str().unwrap_or("");
+                        out.push_str(&format!("Selected: {id} ({name})\n"));
+                    }
+                }
+                Ok(out)
+            }
+            crate::output::OutputKind::Decision(crate::output::Decision::Abstain) => {
+                let val = output_doc.as_value();
+                let reason = val["reason"].as_str().unwrap_or("unknown");
+                Ok(format!("ABSTAIN: {reason}\n"))
+            }
+            crate::output::OutputKind::Decision(crate::output::Decision::Unavailable) => {
+                let val = output_doc.as_value();
+                let kind = val["error"]["kind"].as_str().unwrap_or("unavailable");
+                let message = val["error"]["message"].as_str().unwrap_or("");
+                Ok(format!("UNAVAILABLE: {kind}: {message}\n"))
+            }
+            _ => Ok(format!("{}\n", serde_json::to_string(output_doc.as_value()).unwrap())),
+        }
+    }
+}
+
+fn is_stdin_supplied() -> bool {
+    use std::io::IsTerminal;
+    if std::io::stdin().is_terminal() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use nix::sys::stat::{SFlag, fstat};
+        use std::os::fd::AsFd;
+        if let Ok(stat) = fstat(std::io::stdin().as_fd()) {
+            let flag = SFlag::from_bits_truncate(stat.st_mode);
+            if flag.contains(SFlag::S_IFIFO) || flag.contains(SFlag::S_IFSOCK) || flag.contains(SFlag::S_IFREG) {
+                return true;
+            }
+            return false;
+        }
+    }
+    false
 }
 
 fn user_config_root() -> Result<Option<PathBuf>, Failure> {
