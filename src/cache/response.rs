@@ -250,27 +250,8 @@ impl MemoryResponseCache {
 
     fn namespace_hash(key: &CacheKey, namespace: &CacheNamespace) -> [u8; 32] {
         let mut hasher = blake3::Hasher::new_keyed(key.as_raw_bytes());
-        hasher.update(b"SR_CACHE_NS_HASH_V1\0");
-        hasher.update(namespace.harness_id.as_str().as_bytes());
-        hasher.update(&namespace.key_generation.to_le_bytes());
-        if let Some(ws) = &namespace.workspace_id {
-            hasher.update(ws.as_str().as_bytes());
-        }
-        if let Some(sess) = &namespace.session_id {
-            hasher.update(sess.as_str().as_bytes());
-        }
-        if let Some(branch) = &namespace.branch_id {
-            hasher.update(branch.as_str().as_bytes());
-        }
-        if let Some(epoch) = &namespace.context_epoch {
-            hasher.update(epoch.as_str().as_bytes());
-        }
-        if let Some(adapter) = &namespace.adapter_id {
-            hasher.update(adapter.as_str().as_bytes());
-        }
-        if let Some(ver) = &namespace.adapter_version {
-            hasher.update(ver.as_str().as_bytes());
-        }
+        hasher.update(b"SR_CACHE_NS_HASH_V2\0");
+        namespace.feed_into(&mut hasher);
         *hasher.finalize().as_bytes()
     }
 

@@ -144,7 +144,7 @@ impl CacheNamespace {
     }
 
     /// Serializes namespace into the hasher using length framing.
-    fn feed_into(&self, hasher: &mut blake3::Hasher) {
+    pub(super) fn feed_into(&self, hasher: &mut blake3::Hasher) {
         feed_length_prefixed(hasher, self.harness_id.as_str().as_bytes());
         hasher.update(&self.key_generation.to_le_bytes());
 
