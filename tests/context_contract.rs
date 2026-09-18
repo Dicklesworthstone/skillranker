@@ -1090,10 +1090,9 @@ fn tool_associations() {
     let skill_forked = SkillId::new("skill-git-rebase").unwrap();
     let skill_path_only = SkillId::new("skill-file-read").unwrap();
 
-    let known_digest = ContentHash::parse(
-        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-    )
-    .unwrap();
+    let known_digest =
+        ContentHash::parse("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+            .unwrap();
 
     resolver.register_tool(
         "cargo_test",
@@ -1344,11 +1343,7 @@ fn tool_associations() {
         .unwrap();
     assert_eq!(matched_call.status, ToolStatus::Succeeded);
     assert_eq!(
-        matched_call
-            .invocation_event_id
-            .as_ref()
-            .unwrap()
-            .as_str(),
+        matched_call.invocation_event_id.as_ref().unwrap().as_str(),
         "ev_call_1"
     );
     assert_eq!(
@@ -1387,12 +1382,8 @@ fn tool_associations() {
     assert!(missing_call.result_event_id.is_none());
 
     // Test 2: Extract load observations with active branch isolation
-    let observations = extract_load_observations(
-        &events,
-        &base_session,
-        &resolver,
-        Some(&active_branch),
-    );
+    let observations =
+        extract_load_observations(&events, &base_session, &resolver, Some(&active_branch));
 
     // Must NOT contain the forked branch load
     assert!(
@@ -1448,12 +1439,8 @@ fn tool_associations() {
 
     // Test 3: Extract loaded skill records
     let current_epoch = ContextEpoch::new("epoch-0").unwrap();
-    let records = extract_loaded_skill_records(
-        &events,
-        &resolver,
-        Some(&active_branch),
-        &current_epoch,
-    );
+    let records =
+        extract_loaded_skill_records(&events, &resolver, Some(&active_branch), &current_epoch);
 
     // Only successful calls without error lines qualify as LoadedSkillRecord
     assert!(records.iter().any(|r| r.skill_id == skill_cargo));
@@ -1498,4 +1485,3 @@ fn tool_associations() {
 
     let _ = fs::remove_dir_all(&test_dir);
 }
-

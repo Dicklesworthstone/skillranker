@@ -65,7 +65,10 @@ pub fn head_tail_truncate(text: &str, max_chars: usize) -> String {
 
     // Measure marker size
     let placeholder_digits = char_count.to_string().len() + 1;
-    let sample_marker = format!(" ... [{} chars omitted] ... ", "0".repeat(placeholder_digits));
+    let sample_marker = format!(
+        " ... [{} chars omitted] ... ",
+        "0".repeat(placeholder_digits)
+    );
     let marker_len = sample_marker.chars().count();
 
     if max_chars <= marker_len {
@@ -168,7 +171,12 @@ pub fn associate_tool_events(
                 let (args_summary, _) = tool
                     .arguments
                     .as_ref()
-                    .map(|a| (Some(summarize_tool_arguments(a.as_str(), max_excerpt_chars)), ()))
+                    .map(|a| {
+                        (
+                            Some(summarize_tool_arguments(a.as_str(), max_excerpt_chars)),
+                            (),
+                        )
+                    })
                     .unwrap_or((None, ()));
 
                 let idx = associated.len();
@@ -543,8 +551,7 @@ pub fn filter_events_for_provider(
                         )));
                     }
                     if let Some(res) = &tool.result {
-                        let (excerpt, _) =
-                            summarize_tool_result(res.as_str(), max_excerpt_chars);
+                        let (excerpt, _) = summarize_tool_result(res.as_str(), max_excerpt_chars);
                         tool.result = Some(PrivateText::new(excerpt));
                     }
                 }

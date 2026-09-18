@@ -22,7 +22,8 @@ pub use overlay::{
 pub use tool::{
     AssociatedToolCall, DEFAULT_TOOL_EXCERPT_CHARS, SimpleSkillResolver, SkillEvidenceResolver,
     SkillMatch, associate_tool_events, extract_load_observations, extract_loaded_skill_records,
-    filter_events_for_provider, head_tail_truncate, summarize_tool_arguments, summarize_tool_result,
+    filter_events_for_provider, head_tail_truncate, summarize_tool_arguments,
+    summarize_tool_result,
 };
 
 use crate::identity::{
