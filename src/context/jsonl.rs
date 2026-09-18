@@ -350,7 +350,7 @@ fn parse_window(
     })
 }
 
-fn parse_line(line: &[u8]) -> Result<NormalizedEvent, SkipKind> {
+pub(crate) fn parse_line(line: &[u8]) -> Result<NormalizedEvent, SkipKind> {
     if line.len() > ONE_TRANSCRIPT_RECORD_BYTES.max() {
         return Err(SkipKind::Oversize);
     }

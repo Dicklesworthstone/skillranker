@@ -10,14 +10,22 @@
 //! - Unresolved branch withholds session-specific advice.
 //! - Worktree identity: distinct canonical worktree IDs for linked worktrees; non-Git and detached HEAD.
 
+use skillranker::adapter::{ClaudeUserPromptSubmit, UnknownFieldPolicy};
 use skillranker::context::branch::{
     ActiveBranch, BranchAdvice, BranchResolutionTarget, LoadedSkillRecord, SkillUsageKind,
     UnresolvedBranchReason, evaluate_loaded_skill_eligibility, resolve_active_branch,
     resolve_worktree,
 };
+use skillranker::context::overlay::{
+    ClaudeOverlayRequest, ClaudeOverlayResult, OverlayError, apply_claude_prompt_overlay,
+};
 use skillranker::context::{EventKind, NormalizedEvent, PrivateText, Role};
-use skillranker::identity::{BranchId, ContentHash, ContextEpoch, EventId, SkillId, TurnId};
-use std::fs;
+use skillranker::identity::{
+    BranchId, ContentHash, ContextEpoch, EventId, SessionId, SkillId, TurnId,
+};
+use skillranker::output::ContextQuality;
+use std::fs::{self, File};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -521,4 +529,351 @@ fn branch_and_worktree() {
 
     // Cleanup
     let _ = fs::remove_dir_all(&temp_root);
+}
+
+// ==============================================================================
+// Unit Property Test: tests/context_contract.rs::claude_prompt_overlay
+// ==============================================================================
+
+#[test]
+fn claude_prompt_overlay() {
+    let test_dir = temp_dir("claude-overlay");
+    let authorized_root = test_dir.join("authorized");
+    fs::create_dir_all(&authorized_root).unwrap();
+
+    let parse_hook = |json: &str| -> ClaudeUserPromptSubmit {
+        ClaudeUserPromptSubmit::from_json(json.as_bytes(), UnknownFieldPolicy::RetainAdditive)
+            .unwrap()
+    };
+
+    let write_lines = |path: &Path, lines: &[&str]| {
+        let mut file = File::create(path).unwrap();
+        for l in lines {
+            writeln!(file, "{l}").unwrap();
+        }
+        file.sync_all().unwrap();
+    };
+
+    // 1. First File Missing -> PromptOnly Context Quality
+    let absent_transcript = authorized_root.join("absent_transcript.jsonl");
+    let hook_p1 = parse_hook(&format!(
+        r#"{{
+            "hook_event_name": "UserPromptSubmit",
+            "prompt": "initial requirement",
+            "prompt_id": "p1",
+            "session_id": "sess-alpha",
+            "transcript_path": "{}",
+            "cwd": "{}"
+        }}"#,
+        absent_transcript.display(),
+        authorized_root.display()
+    ));
+
+    let req_p1 = ClaudeOverlayRequest {
+        hook_input: hook_p1,
+        transcript_path: Some(absent_transcript.clone()),
+        authorized_root: Some(authorized_root.clone()),
+    };
+    let res_p1 = apply_claude_prompt_overlay(&req_p1)
+        .expect("absent first file must succeed as prompt_only");
+    assert_eq!(res_p1.context_quality, ContextQuality::PromptOnly);
+    assert!(res_p1.prompt_overlaid);
+    assert!(!res_p1.deduplicated_by_event_id);
+    assert_eq!(res_p1.events.len(), 1);
+    assert_eq!(res_p1.events[0].event_id.as_ref().unwrap().as_str(), "p1");
+    assert_eq!(res_p1.current_request.text.as_str(), "initial requirement");
+    assert_eq!(res_p1.session_id.as_ref().unwrap().as_str(), "sess-alpha");
+
+    // 2. Prompt Absent from Existing Transcript -> Appended Authoritatively Once
+    let existing_transcript = authorized_root.join("existing_transcript.jsonl");
+    write_lines(
+        &existing_transcript,
+        &[
+            r#"{"event_id":"e1","role":"user","kind":"message","text":"turn 1 prompt"}"#,
+            r#"{"event_id":"e2","parent_id":"e1","role":"assistant","kind":"message","text":"turn 1 answer"}"#,
+        ],
+    );
+
+    let hook_p2 = parse_hook(&format!(
+        r#"{{
+            "hook_event_name": "UserPromptSubmit",
+            "prompt": "second request",
+            "prompt_id": "p2",
+            "session_id": "sess-alpha",
+            "transcript_path": "{}",
+            "cwd": "{}"
+        }}"#,
+        existing_transcript.display(),
+        authorized_root.display()
+    ));
+    let req_p2 = ClaudeOverlayRequest {
+        hook_input: hook_p2,
+        transcript_path: Some(existing_transcript.clone()),
+        authorized_root: Some(authorized_root.clone()),
+    };
+    let res_p2 = apply_claude_prompt_overlay(&req_p2).expect("absent prompt must overlay once");
+    assert_eq!(res_p2.context_quality, ContextQuality::Complete);
+    assert!(res_p2.prompt_overlaid);
+    assert!(!res_p2.deduplicated_by_event_id);
+    assert_eq!(res_p2.events.len(), 3);
+    assert_eq!(res_p2.events[0].event_id.as_ref().unwrap().as_str(), "e1");
+    assert_eq!(res_p2.events[1].event_id.as_ref().unwrap().as_str(), "e2");
+    assert_eq!(res_p2.events[2].event_id.as_ref().unwrap().as_str(), "p2");
+    assert_eq!(res_p2.events[2].parent_id.as_ref().unwrap().as_str(), "e2");
+    assert_eq!(res_p2.current_request.text.as_str(), "second request");
+
+    // 3. Prompt Already Present in Transcript -> Deduplicated by Event ID, Never Duplicated
+    let flushed_transcript = authorized_root.join("flushed_transcript.jsonl");
+    write_lines(
+        &flushed_transcript,
+        &[
+            r#"{"event_id":"e1","role":"user","kind":"message","text":"turn 1 prompt"}"#,
+            r#"{"event_id":"e2","parent_id":"e1","role":"assistant","kind":"message","text":"turn 1 answer"}"#,
+            r#"{"event_id":"p2","parent_id":"e2","role":"user","kind":"message","text":"old partial text"}"#,
+        ],
+    );
+    let hook_flushed = parse_hook(&format!(
+        r#"{{
+            "hook_event_name": "UserPromptSubmit",
+            "prompt": "authoritative second request",
+            "prompt_id": "p2",
+            "session_id": "sess-alpha",
+            "transcript_path": "{}",
+            "cwd": "{}"
+        }}"#,
+        flushed_transcript.display(),
+        authorized_root.display()
+    ));
+    let req_flushed = ClaudeOverlayRequest {
+        hook_input: hook_flushed,
+        transcript_path: Some(flushed_transcript.clone()),
+        authorized_root: Some(authorized_root.clone()),
+    };
+    let res_flushed = apply_claude_prompt_overlay(&req_flushed)
+        .expect("present prompt must deduplicate by event ID");
+    assert_eq!(res_flushed.context_quality, ContextQuality::Complete);
+    assert!(res_flushed.prompt_overlaid);
+    assert!(res_flushed.deduplicated_by_event_id);
+    // Overlaid in-place at index 2, NOT duplicated to length 4!
+    assert_eq!(res_flushed.events.len(), 3);
+    assert_eq!(
+        res_flushed.events[2].event_id.as_ref().unwrap().as_str(),
+        "p2"
+    );
+    assert_eq!(
+        res_flushed.events[2].text.as_str(),
+        "authoritative second request"
+    );
+    assert_eq!(
+        res_flushed.current_request.text.as_str(),
+        "authoritative second request"
+    );
+
+    // 4. Equal Text on Distinct Turns -> NEVER Deduplicated by Text Equality
+    let repeat_transcript = authorized_root.join("repeat_transcript.jsonl");
+    write_lines(
+        &repeat_transcript,
+        &[
+            r#"{"event_id":"p1","role":"user","kind":"message","text":"run tests"}"#,
+            r#"{"event_id":"a1","parent_id":"p1","role":"assistant","kind":"message","text":"tests passed"}"#,
+        ],
+    );
+    // User types the EXACT SAME prompt text again ("run tests") with a new prompt_id ("p3")
+    let hook_repeat = parse_hook(&format!(
+        r#"{{
+            "hook_event_name": "UserPromptSubmit",
+            "prompt": "run tests",
+            "prompt_id": "p3",
+            "session_id": "sess-alpha",
+            "transcript_path": "{}",
+            "cwd": "{}"
+        }}"#,
+        repeat_transcript.display(),
+        authorized_root.display()
+    ));
+    let req_repeat = ClaudeOverlayRequest {
+        hook_input: hook_repeat,
+        transcript_path: Some(repeat_transcript.clone()),
+        authorized_root: Some(authorized_root.clone()),
+    };
+    let res_repeat = apply_claude_prompt_overlay(&req_repeat)
+        .expect("repeated prompt text must be distinct turn");
+    assert_eq!(res_repeat.events.len(), 3);
+    assert_eq!(
+        res_repeat.events[0].event_id.as_ref().unwrap().as_str(),
+        "p1"
+    );
+    assert_eq!(res_repeat.events[0].text.as_str(), "run tests");
+    assert_eq!(
+        res_repeat.events[2].event_id.as_ref().unwrap().as_str(),
+        "p3"
+    );
+    assert_eq!(res_repeat.events[2].text.as_str(), "run tests");
+    assert!(!res_repeat.deduplicated_by_event_id);
+    assert_eq!(
+        res_repeat
+            .current_request
+            .event_id
+            .as_ref()
+            .unwrap()
+            .as_str(),
+        "p3"
+    );
+
+    // 5. Malformed Existing File -> Rejected with MalformedTranscript
+    let malformed_transcript = authorized_root.join("malformed_transcript.jsonl");
+    write_lines(
+        &malformed_transcript,
+        &[
+            r#"{"event_id":"e1","role":"user","kind":"message","text":"valid"}"#,
+            r#"{"broken-json-record"#,
+        ],
+    );
+    let hook_malformed = parse_hook(&format!(
+        r#"{{
+            "hook_event_name": "UserPromptSubmit",
+            "prompt": "some prompt",
+            "prompt_id": "p_bad",
+            "session_id": "sess-alpha",
+            "transcript_path": "{}",
+            "cwd": "{}"
+        }}"#,
+        malformed_transcript.display(),
+        authorized_root.display()
+    ));
+    let req_malformed = ClaudeOverlayRequest {
+        hook_input: hook_malformed,
+        transcript_path: Some(malformed_transcript),
+        authorized_root: Some(authorized_root.clone()),
+    };
+    let err_malformed = apply_claude_prompt_overlay(&req_malformed)
+        .expect_err("malformed transcript must be rejected");
+    assert!(matches!(
+        err_malformed,
+        OverlayError::MalformedTranscript(_)
+    ));
+
+    // 6. FIFO Rejected
+    let fifo_path = authorized_root.join("named_fifo.jsonl");
+    nix::unistd::mkfifo(&fifo_path, nix::sys::stat::Mode::from_bits_truncate(0o600)).unwrap();
+    let hook_fifo = parse_hook(&format!(
+        r#"{{
+            "hook_event_name": "UserPromptSubmit",
+            "prompt": "some prompt",
+            "prompt_id": "p_fifo",
+            "session_id": "sess-alpha",
+            "transcript_path": "{}",
+            "cwd": "{}"
+        }}"#,
+        fifo_path.display(),
+        authorized_root.display()
+    ));
+    let req_fifo = ClaudeOverlayRequest {
+        hook_input: hook_fifo,
+        transcript_path: Some(fifo_path),
+        authorized_root: Some(authorized_root.clone()),
+    };
+    let err_fifo = apply_claude_prompt_overlay(&req_fifo).expect_err("FIFO must be rejected");
+    assert!(matches!(
+        err_fifo,
+        OverlayError::TranscriptIsDeviceOrFifo(_)
+    ));
+
+    // 7. Directory Rejected
+    let dir_path = authorized_root.join("transcript_dir");
+    fs::create_dir_all(&dir_path).unwrap();
+    let hook_dir = parse_hook(&format!(
+        r#"{{
+            "hook_event_name": "UserPromptSubmit",
+            "prompt": "some prompt",
+            "prompt_id": "p_dir",
+            "session_id": "sess-alpha",
+            "transcript_path": "{}",
+            "cwd": "{}"
+        }}"#,
+        dir_path.display(),
+        authorized_root.display()
+    ));
+    let req_dir = ClaudeOverlayRequest {
+        hook_input: hook_dir,
+        transcript_path: Some(dir_path),
+        authorized_root: Some(authorized_root.clone()),
+    };
+    let err_dir =
+        apply_claude_prompt_overlay(&req_dir).expect_err("directory transcript must be rejected");
+    assert!(matches!(err_dir, OverlayError::TranscriptIsDirectory(_)));
+
+    // 8. Cross-Session Read Outside Authorized Root Rejected
+    let outside_dir = test_dir.join("outside");
+    fs::create_dir_all(&outside_dir).unwrap();
+    let outside_transcript = outside_dir.join("other_session.jsonl");
+    write_lines(
+        &outside_transcript,
+        &[r#"{"event_id":"x1","role":"user","kind":"message","text":"foreign"}"#],
+    );
+
+    let hook_outside = parse_hook(&format!(
+        r#"{{
+            "hook_event_name": "UserPromptSubmit",
+            "prompt": "some prompt",
+            "prompt_id": "p_out",
+            "session_id": "sess-alpha",
+            "transcript_path": "{}",
+            "cwd": "{}"
+        }}"#,
+        outside_transcript.display(),
+        authorized_root.display()
+    ));
+    let req_outside = ClaudeOverlayRequest {
+        hook_input: hook_outside,
+        transcript_path: Some(outside_transcript),
+        authorized_root: Some(authorized_root.clone()),
+    };
+    let err_outside =
+        apply_claude_prompt_overlay(&req_outside).expect_err("outside transcript must be rejected");
+    assert!(matches!(
+        err_outside,
+        OverlayError::CrossSessionReadForbidden
+    ));
+
+    // 9. Valid Symlink Inside Authorized Root Allowed; Broken Symlink Rejected
+    let symlink_target = authorized_root.join("real_target.jsonl");
+    write_lines(
+        &symlink_target,
+        &[r#"{"event_id":"s1","role":"user","kind":"message","text":"real target"}"#],
+    );
+    let valid_symlink = authorized_root.join("valid_symlink.jsonl");
+    std::os::unix::fs::symlink(&symlink_target, &valid_symlink).unwrap();
+
+    let hook_symlink = parse_hook(&format!(
+        r#"{{
+            "hook_event_name": "UserPromptSubmit",
+            "prompt": "prompt via symlink",
+            "prompt_id": "p_sym",
+            "session_id": "sess-alpha",
+            "transcript_path": "{}",
+            "cwd": "{}"
+        }}"#,
+        valid_symlink.display(),
+        authorized_root.display()
+    ));
+    let req_symlink = ClaudeOverlayRequest {
+        hook_input: hook_symlink,
+        transcript_path: Some(valid_symlink),
+        authorized_root: Some(authorized_root),
+    };
+    let res_symlink =
+        apply_claude_prompt_overlay(&req_symlink).expect("valid symlink inside root must succeed");
+    assert_eq!(res_symlink.events.len(), 2);
+    assert_eq!(
+        res_symlink.events[0].event_id.as_ref().unwrap().as_str(),
+        "s1"
+    );
+    assert_eq!(
+        res_symlink.events[1].event_id.as_ref().unwrap().as_str(),
+        "p_sym"
+    );
+
+    // Cleanup
+    let _ = fs::remove_dir_all(&test_dir);
 }

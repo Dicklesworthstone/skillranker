@@ -6,6 +6,7 @@ pub mod branch;
 #[cfg(unix)]
 pub mod cass;
 pub mod jsonl;
+pub mod overlay;
 pub mod signals;
 pub mod source;
 
@@ -13,6 +14,9 @@ pub use branch::{
     ActiveBranch, BranchAdvice, BranchResolution, BranchResolutionTarget, LoadedSkillRecord,
     ResolvedWorktree, SkillSuppressionVerdict, SkillUsageKind, UnresolvedBranchReason,
     WorktreeError, evaluate_loaded_skill_eligibility, resolve_active_branch, resolve_worktree,
+};
+pub use overlay::{
+    ClaudeOverlayRequest, ClaudeOverlayResult, OverlayError, apply_claude_prompt_overlay,
 };
 
 use crate::identity::{

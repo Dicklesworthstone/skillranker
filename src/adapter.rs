@@ -613,6 +613,7 @@ impl ClaudeHookEvent {
     }
 }
 
+#[derive(Clone)]
 pub struct ClaudeUserPromptSubmit {
     pub session_id: Option<SessionId>,
     pub transcript_path: Option<PrivateText>,
