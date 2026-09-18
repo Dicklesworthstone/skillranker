@@ -10,6 +10,7 @@ pub mod inspect;
 pub mod resolution;
 pub mod retrieval;
 pub mod revalidation;
+pub mod snapshot;
 
 pub use explicit::{
     DirectiveKind, ExplicitResolutionError, ExplicitResolutionRequest, ExplicitResolutionResult,

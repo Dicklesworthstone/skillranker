@@ -12,7 +12,7 @@ use std::ffi::OsString;
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
-const HELP: &str = "SkillRanker — powered by TypeSafe.ai Jev\n\nUsage: sr doctor --config [--json | --table] [--top N] [--shortlist N]\n       sr roster [--json] [--limit N] [--cursor TOKEN]\n       sr --help | --version\n\nLocal configuration and roster inspection only. Ranking requires your own TypeSafe\nAPI key and trusted network consent; ranking is not available here.\n";
+const HELP: &str = "SkillRanker — powered by TypeSafe.ai Jev\n\nUsage: sr doctor --config [--json | --table] [--top N] [--shortlist N]\n       sr roster [--json] [--limit N] [--cursor TOKEN]\n       sr roster --snapshot FILE | --diff FILE\n       sr --help | --version\n\nLocal configuration and roster inspection only. Ranking requires your own TypeSafe\nAPI key and trusted network consent; ranking is not available here.\n";
 
 fn command() -> Command {
     let mut doctor = Command::new("doctor")
@@ -85,7 +85,19 @@ fn command() -> Command {
                 )
                 .arg(Arg::new("json").long("json").action(ArgAction::SetTrue))
                 .arg(Arg::new("limit").long("limit").action(ArgAction::Set))
-                .arg(Arg::new("cursor").long("cursor").action(ArgAction::Set)),
+                .arg(Arg::new("cursor").long("cursor").action(ArgAction::Set))
+                .arg(
+                    Arg::new("snapshot")
+                        .long("snapshot")
+                        .action(ArgAction::Set)
+                        .conflicts_with_all(["diff", "limit", "cursor"]),
+                )
+                .arg(
+                    Arg::new("diff")
+                        .long("diff")
+                        .action(ArgAction::Set)
+                        .conflicts_with_all(["limit", "cursor"]),
+                ),
         )
 }
 
@@ -469,9 +481,8 @@ fn config_report(config: &ResolvedConfig) -> Value {
     json!({"schema_version":1,"command":"doctor-config","scope":"local-configuration-only","settings":settings})
 }
 
-/// `sr roster`: inspect the Claude roots of the current workspace. The Claude
-/// adapter's visibility is unverified, so no precedence is claimed. Output is
-/// JSON; tables belong to the renderer.
+/// `sr roster`: inspect, snapshot or compare the Claude roots of the current
+/// workspace. Output is JSON; tables belong to the renderer.
 fn roster_listing(clock: &EntryClock, matches: &clap::ArgMatches) -> Result<String, Failure> {
     use crate::roster::inspect::{MAX_PAGE, PageError, listing, page};
     let usage = |message: &str| (2u8, "invalid-usage", message.to_owned());
@@ -483,15 +494,62 @@ fn roster_listing(clock: &EntryClock, matches: &clap::ArgMatches) -> Result<Stri
     };
     let cursor = matches.get_one::<String>("cursor").map(String::as_str);
     timely(clock)?;
-    let unusable = |message: &str| (5u8, "unusable-roster", message.to_owned());
-    let workspace =
-        std::env::current_dir().map_err(|_| unusable("The workspace directory is unavailable"))?;
+    let workspace = std::env::current_dir().map_err(|_| {
+        (
+            5u8,
+            "unusable-roster",
+            "The workspace directory is unavailable".to_owned(),
+        )
+    })?;
     let home = std::env::var_os("HOME")
         .filter(|path| !path.is_empty())
         .map(PathBuf::from);
+    let roster = resolve_workspace_roster(clock, &workspace, home.as_deref())?;
+    if let Some(target) = matches.get_one::<String>("snapshot") {
+        let fresh = workspace_snapshot(&roster, &workspace, home.as_deref());
+        timely(clock)?;
+        return export_snapshot(&fresh, &workspace.join(target));
+    }
+    if let Some(saved) = matches.get_one::<String>("diff") {
+        let saved = crate::roster::snapshot::read_snapshot_file(&workspace.join(saved))
+            .map_err(snapshot_failure)?;
+        let fresh = workspace_snapshot(&roster, &workspace, home.as_deref());
+        let diff = crate::roster::snapshot::diff(&saved, &fresh).map_err(snapshot_failure)?;
+        timely(clock)?;
+        let value = serde_json::to_value(&diff).map_err(|_| {
+            (
+                5u8,
+                "unusable-roster",
+                "The comparison could not be rendered".to_owned(),
+            )
+        })?;
+        return Ok(format!("{value}\n"));
+    }
+    let listing = listing(&roster);
+    let page = page(&listing, cursor, limit).map_err(|error| match error {
+        PageError::InvalidLimit => usage("--limit must be a whole number from 1 to 128"),
+        PageError::InvalidCursor => usage("Unrecognized --cursor; restart without it"),
+        PageError::RosterChanged => (
+            5u8,
+            "roster-changed",
+            "The roster changed since this cursor was issued; restart without --cursor".to_owned(),
+        ),
+    })?;
+    timely(clock)?;
+    Ok(format!("{}\n", page.to_json()))
+}
+
+/// Discover and resolve the documented Claude roots of `workspace`. The Claude
+/// adapter's visibility is unverified, so no precedence is claimed.
+fn resolve_workspace_roster(
+    clock: &EntryClock,
+    workspace: &Path,
+    home: Option<&Path>,
+) -> Result<crate::roster::resolution::ResolvedRoster, Failure> {
+    let unusable = |message: &str| (5u8, "unusable-roster", message.to_owned());
     let plan = crate::roster::discovery::claude_code_plan(
-        &workspace,
-        home.as_deref(),
+        workspace,
+        home,
         crate::roster::Visibility::Unverified,
     )
     .map_err(|_| unusable("The documented skill roots could not be planned"))?;
@@ -500,7 +558,7 @@ fn roster_listing(clock: &EntryClock, matches: &clap::ArgMatches) -> Result<Stri
     let cx = invocation
         .request_cx()
         .map_err(|_| unusable("The local runtime is unavailable"))?;
-    let roster = crate::roster::resolution::resolve_claude_plan(
+    crate::roster::resolution::resolve_claude_plan(
         &plan,
         &std::collections::BTreeMap::new(),
         &cx,
@@ -514,17 +572,81 @@ fn roster_listing(clock: &EntryClock, matches: &clap::ArgMatches) -> Result<Stri
             "Local inspection deadline exceeded".to_owned(),
         ),
         _ => unusable("The roster could not be resolved"),
+    })
+}
+
+/// A snapshot in this workspace's namespace; paths enter only as digests.
+fn workspace_snapshot(
+    roster: &crate::roster::resolution::ResolvedRoster,
+    workspace: &Path,
+    home: Option<&Path>,
+) -> crate::roster::snapshot::Snapshot {
+    let canonical =
+        |path: &Path| std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let home = home.map(canonical);
+    let namespace = crate::roster::snapshot::Namespace::new(
+        crate::adapter::CLAUDE_CODE_ID,
+        &canonical(workspace),
+        home.as_deref(),
+    );
+    crate::roster::snapshot::capture(roster, namespace)
+}
+
+fn snapshot_failure(error: crate::roster::snapshot::SnapshotError) -> Failure {
+    use crate::roster::snapshot::SnapshotError;
+    let kind = error.kind();
+    let message = match error {
+        SnapshotError::Malformed => "The saved snapshot is malformed or has unknown fields",
+        SnapshotError::TooLarge => "The saved snapshot exceeds 32 MiB",
+        SnapshotError::TooManyRecords => "The snapshot exceeds 10,000 records",
+        SnapshotError::Unreadable => "The saved snapshot is not a readable regular file",
+        SnapshotError::Incompatible => {
+            "The saved snapshot belongs to a different schema, harness or workspace"
+        }
+    };
+    (kind.exit_code() as u8, kind.as_str(), message.to_owned())
+}
+
+/// Export an owner-only snapshot without replacing any existing file.
+#[cfg(target_os = "linux")]
+fn export_snapshot(
+    snapshot: &crate::roster::snapshot::Snapshot,
+    target: &Path,
+) -> Result<String, Failure> {
+    use crate::storage::export::{ExportConfig, ExportError, export_private_atomic};
+    let bytes = snapshot.to_bytes().map_err(snapshot_failure)?;
+    export_private_atomic(target, &bytes, ExportConfig::for_snapshot()).map_err(|error| {
+        let message = match &error {
+            ExportError::TargetAlreadyExists(_) => {
+                "The snapshot target already exists; refusing to overwrite it"
+            }
+            ExportError::Oversized { .. } => "The snapshot exceeds 32 MiB",
+            ExportError::InvalidDirectory(_) | ExportError::Permissions(_) => {
+                "The snapshot directory is missing or not private enough"
+            }
+            ExportError::Io(_) => "The snapshot could not be written",
+        };
+        let kind = error.kind();
+        (kind.exit_code() as u8, kind.as_str(), message.to_owned())
     })?;
-    let listing = listing(&roster);
-    let page = page(&listing, cursor, limit).map_err(|error| match error {
-        PageError::InvalidLimit => usage("--limit must be a whole number from 1 to 128"),
-        PageError::InvalidCursor => usage("Unrecognized --cursor; restart without it"),
-        PageError::RosterChanged => (
-            5u8,
-            "roster-changed",
-            "The roster changed since this cursor was issued; restart without --cursor".to_owned(),
-        ),
-    })?;
-    timely(clock)?;
-    Ok(format!("{}\n", page.to_json()))
+    let receipt = json!({
+        "schema": crate::roster::snapshot::SNAPSHOT_SCHEMA,
+        "exported": true,
+        "records": snapshot.records.len(),
+        "snapshot": snapshot.snapshot,
+        "partial": snapshot.partial,
+    });
+    Ok(format!("{receipt}\n"))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn export_snapshot(
+    _snapshot: &crate::roster::snapshot::Snapshot,
+    _target: &Path,
+) -> Result<String, Failure> {
+    Err((
+        9,
+        "storage-failure",
+        "Snapshot export is not qualified on this platform".to_owned(),
+    ))
 }
