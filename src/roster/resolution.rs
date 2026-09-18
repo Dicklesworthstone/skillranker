@@ -106,6 +106,8 @@ impl SkillEntry {
             visibility: spec.visibility,
             restrictions,
             usage_kind: metadata.usage_kind,
+            forked_context: metadata.forked_context,
+            dynamic_content: metadata.dynamic_content,
             aliases: Vec::new(),
             description_full: metadata.description_full,
             description_short: metadata.description_short,

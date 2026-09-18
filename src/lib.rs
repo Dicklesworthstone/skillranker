@@ -7,6 +7,7 @@ pub mod blocking;
 pub mod cli;
 pub mod config;
 pub mod context;
+pub mod eligibility;
 pub mod identity;
 pub mod jev;
 pub mod limits;

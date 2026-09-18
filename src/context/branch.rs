@@ -350,8 +350,7 @@ pub fn resolve_active_branch(
         }
     }
 
-    let current_epoch = ContextEpoch::new(format!("epoch-{epoch_index}"))
-        .unwrap_or_else(|_| ContextEpoch::new("epoch-0").expect("valid epoch"));
+    let current_epoch = epoch_name(epoch_index);
 
     let branch_id = target
         .target_branch_id
@@ -367,6 +366,27 @@ pub fn resolve_active_branch(
         task_boundary_count,
         ancestor_chain_truncated,
     })
+}
+
+fn epoch_name(index: u64) -> ContextEpoch {
+    ContextEpoch::new(format!("epoch-{index}"))
+        .unwrap_or_else(|_| ContextEpoch::new("epoch-0").expect("valid epoch"))
+}
+
+/// The epoch of each identified event on the branch. A compaction starts a new
+/// epoch, so evidence from before it never carries the branch's current epoch.
+pub(crate) fn event_epochs(branch: &ActiveBranch) -> BTreeMap<EventId, ContextEpoch> {
+    let mut index = 0u64;
+    let mut epochs = BTreeMap::new();
+    for event in &branch.events {
+        if matches!(event.kind, EventKind::Compaction) {
+            index += 1;
+        }
+        if let Some(id) = &event.event_id {
+            epochs.insert(id.clone(), epoch_name(index));
+        }
+    }
+    epochs
 }
 
 /// Verdict on whether a candidate skill should be suppressed by prior loaded state.
@@ -392,10 +412,15 @@ impl SkillSuppressionVerdict {
 /// - Workflows and unknown usage kinds remain eligible for re-invocation.
 /// - Reusable references are suppressed ONLY if:
 ///   1. Active branch is resolved.
-///   2. Loaded on the active branch (sibling branch loads do NOT count).
+///   2. Loaded by an identified event on the active branch (sibling branch
+///      loads and loads without an event ID do NOT count).
 ///   3. Loaded in the current context epoch (loaded prior to compaction is NOT proven present).
-///   4. Content hash matches candidate version.
+///   4. Both source hashes are known and equal: an unknown version is never a
+///      match. Rendered hashes, when both are known, must also match.
 ///   5. Invocations did not have dynamic arguments and were not turn-scoped.
+///
+/// Callers must also withhold suppression for skills whose content forks or
+/// renders dynamically; this record-level check cannot see that.
 pub fn evaluate_loaded_skill_eligibility(
     candidate_skill_id: &SkillId,
     candidate_usage_kind: SkillUsageKind,
@@ -429,11 +454,13 @@ pub fn evaluate_loaded_skill_eligibility(
             continue;
         }
 
-        // Must be on the active branch
-        if let Some(event_id) = record.event_id.as_ref()
-            && !active_event_ids.contains(event_id)
+        // Must be proven on the active branch; an unidentified load proves nothing.
+        if !record
+            .event_id
+            .as_ref()
+            .is_some_and(|event_id| active_event_ids.contains(event_id))
         {
-            continue; // Loaded on a sibling branch or fork
+            continue; // Loaded on a sibling branch or fork, or unattributed
         }
 
         // Must be in the current context epoch (compaction invalidates presence assumption)
@@ -451,12 +478,11 @@ pub fn evaluate_loaded_skill_eligibility(
             continue; // Turn-scoped permissions/loads do not survive across turns
         }
 
-        // Source content hash must match if known
-        if let (Some(cand_src), Some(rec_src)) =
-            (candidate_source_hash, record.source_content.as_ref())
-            && cand_src != rec_src
+        // Source content hash must be known on both sides and match
+        if candidate_source_hash.is_none()
+            || candidate_source_hash != record.source_content.as_ref()
         {
-            continue; // Version mismatch
+            continue; // Unknown or mismatched version
         }
 
         // Rendered content hash must match if known

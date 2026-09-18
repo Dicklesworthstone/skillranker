@@ -463,6 +463,7 @@ pub fn extract_loaded_skill_records(
 ) -> Vec<LoadedSkillRecord> {
     let associated = associate_tool_events(events, DEFAULT_TOOL_EXCERPT_CHARS);
     let active_ids = active_branch.map(|b| b.event_id_set());
+    let epochs = active_branch.map(super::branch::event_epochs);
     let mut records = Vec::new();
     let mut seen_skills = HashSet::new();
 
@@ -504,13 +505,24 @@ pub fn extract_loaded_skill_records(
             continue;
         }
 
+        let event_id = call.invocation_event_id.or(call.result_event_id);
+        // A load keeps the epoch of its own event; a later compaction must be
+        // able to invalidate it. Without a branch no suppression is possible.
+        let epoch = match (&epochs, &event_id) {
+            (Some(epochs), Some(id)) => match epochs.get(id) {
+                Some(epoch) => epoch.clone(),
+                None => continue,
+            },
+            (Some(_), None) => continue,
+            (None, _) => current_epoch.clone(),
+        };
         if seen_skills.insert(matched.skill_id.clone()) {
             records.push(LoadedSkillRecord {
                 skill_id: matched.skill_id,
-                event_id: call.invocation_event_id.or(call.result_event_id),
+                event_id,
                 turn_id: call.turn_id,
                 usage_kind: matched.usage_kind,
-                epoch: current_epoch.clone(),
+                epoch,
                 source_content: matched.source_content,
                 rendered_content: matched.rendered_content,
                 has_dynamic_arguments: matched.has_dynamic_arguments,

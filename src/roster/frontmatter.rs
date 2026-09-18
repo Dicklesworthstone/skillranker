@@ -61,6 +61,12 @@ pub struct ParsedSkillMetadata {
     pub tags: Vec<PrivateText>,
     /// Declared workflow phases.
     pub phases: Vec<PrivateText>,
+    /// `context: fork`: the harness runs the skill in a forked context, so its
+    /// content is not retained in the invoking conversation.
+    pub forked_context: bool,
+    /// The body uses invocation-time substitutions or command injection, so
+    /// identical source bytes do not prove identical rendered content.
+    pub dynamic_content: bool,
     /// Informational warnings during parse (e.g. missing frontmatter).
     pub parse_warnings: Vec<ParseWarning>,
     /// Whether YAML frontmatter was present.
@@ -211,6 +217,8 @@ pub fn parse_skill_metadata(content_bytes: &[u8]) -> Result<ParsedSkillMetadata,
         aliases: fields.aliases,
         tags,
         phases,
+        forked_context: fields.forked_context,
+        dynamic_content: has_dynamic_content(body),
         parse_warnings: warnings,
         has_frontmatter,
         frontmatter_bytes,
@@ -281,6 +289,19 @@ fn extract_frontmatter(content: &str) -> Result<(Option<&str>, &str), Frontmatte
     Ok((Some(fm_raw), body))
 }
 
+/// Claude renders `$ARGUMENTS`, `$N`, `${CLAUDE_…}` and `` !`command` `` when a
+/// skill is invoked. Matching is deliberately broad: a false positive only
+/// withholds reference-reuse suppression, never grants it.
+fn has_dynamic_content(body: &str) -> bool {
+    body.contains("!`")
+        || body.contains("$ARGUMENTS")
+        || body.contains("${CLAUDE_")
+        || body
+            .as_bytes()
+            .windows(2)
+            .any(|pair| pair[0] == b'$' && pair[1].is_ascii_digit())
+}
+
 // --- Frontmatter YAML Parser ---
 
 struct FrontmatterFields {
@@ -292,6 +313,7 @@ struct FrontmatterFields {
     aliases: Vec<String>,
     tags: Vec<String>,
     phases: Vec<String>,
+    forked_context: bool,
 }
 
 impl FrontmatterFields {
@@ -305,6 +327,7 @@ impl FrontmatterFields {
             aliases: Vec::new(),
             tags: Vec::new(),
             phases: Vec::new(),
+            forked_context: false,
         }
     }
 }
@@ -385,6 +408,11 @@ fn parse_yaml_frontmatter(yaml: &str) -> Result<FrontmatterFields, FrontmatterEr
                     "workflow" => UsageKind::Workflow,
                     _ => UsageKind::Unknown,
                 };
+                idx = next_idx;
+            }
+            "context" => {
+                let (val, next_idx) = parse_scalar_or_block(value_after_colon, &lines, idx + 1)?;
+                fields.forked_context = val.trim().eq_ignore_ascii_case("fork");
                 idx = next_idx;
             }
             "aliases" | "alias" => {

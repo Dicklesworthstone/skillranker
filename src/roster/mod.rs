@@ -186,6 +186,11 @@ pub struct SkillRecord {
     pub visibility: Visibility,
     pub restrictions: InvocationRestrictions,
     pub usage_kind: UsageKind,
+    /// Runs in a forked context, so a prior load never leaves it in context.
+    pub forked_context: bool,
+    /// Rendered at invocation time, so equal source bytes do not prove equal
+    /// rendered content.
+    pub dynamic_content: bool,
     pub aliases: Vec<SkillAlias>,
     pub description_full: PrivateText,
     pub description_short: PrivateText,
