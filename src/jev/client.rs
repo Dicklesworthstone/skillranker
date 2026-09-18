@@ -4,6 +4,7 @@
 //! boundary never follows redirects, inherits a proxy, or retries internally.
 
 use super::codec::{CodecError, MAX_RESPONSE_BYTES, Request, Response};
+use super::retry::RetryAfter;
 use super::{EndpointConfig, OriginScopedCredential, SKILLRANKER_USER_AGENT};
 use crate::privacy::{
     CredentialStatus, NetworkConsent, ProviderAdmissionRefusal, admit_provider_attempt,
@@ -32,6 +33,7 @@ pub enum TransportErrorKind {
     Deadline,
     Dns,
     Connect,
+    TransientIo,
     Tls,
     Protocol,
     BodyTooLarge,
@@ -47,6 +49,8 @@ pub enum TransportErrorKind {
 pub struct TransportError {
     pub kind: TransportErrorKind,
     pub http_attempt_started: bool,
+    /// Parsed bounded metadata only; raw headers are never retained.
+    pub retry_after: RetryAfter,
 }
 impl fmt::Display for TransportError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -68,6 +72,9 @@ impl fmt::Debug for JevClient {
 }
 
 impl JevClient {
+    pub fn origin(&self) -> &super::CanonicalOrigin {
+        self.endpoint.origin()
+    }
     /// Uses the native trust roots selected by the pinned Cargo feature graph.
     /// The caller supplies an endpoint from trusted configuration.
     pub fn new(endpoint: EndpointConfig) -> Result<Self, TransportError> {
@@ -118,6 +125,21 @@ impl JevClient {
         cx: &Cx,
         clock: &EntryClock,
     ) -> Result<Response, TransportError> {
+        self.send_accounted(request, credential, consent, cx, clock, || Ok(()))
+            .await
+    }
+
+    /// Call the accounting hook after local validation, immediately before
+    /// entering the HTTP future. The hook cannot perform asynchronous work.
+    pub(crate) async fn send_accounted(
+        &self,
+        request: &Request,
+        credential: Option<&OriginScopedCredential>,
+        consent: NetworkConsent,
+        cx: &Cx,
+        clock: &EntryClock,
+        on_start: impl FnOnce() -> Result<(), TransportError>,
+    ) -> Result<Response, TransportError> {
         admit_provider_attempt(
             consent,
             if credential.is_some() {
@@ -155,16 +177,17 @@ impl JevClient {
             .body(bytes)
             .timeout(timeout)
             .send(cx);
+        on_start()?;
         let response = drive_exchange(exchange, cx, clock).await?;
         budget(cx, clock, true)?;
         if (300..400).contains(&response.status) {
             return Err(failure(TransportErrorKind::Redirect, true));
         }
         if !(200..300).contains(&response.status) {
-            return Err(failure(
-                TransportErrorKind::HttpStatus(response.status),
-                true,
-            ));
+            let mut error = failure(TransportErrorKind::HttpStatus(response.status), true);
+            error.retry_after =
+                RetryAfter::from_headers(&response.headers, std::time::SystemTime::now());
+            return Err(error);
         }
         let mut encoding_seen = false;
         let mut content_type_seen = false;
@@ -204,6 +227,7 @@ fn failure(kind: TransportErrorKind, http_attempt_started: bool) -> TransportErr
     TransportError {
         kind,
         http_attempt_started,
+        retry_after: RetryAfter::Absent,
     }
 }
 fn budget(cx: &Cx, clock: &EntryClock, started: bool) -> Result<(), TransportError> {
@@ -221,6 +245,19 @@ fn client_failure(error: ClientError) -> TransportError {
         ClientError::DeadlineExceeded => TransportErrorKind::Deadline,
         ClientError::DnsError(_) => TransportErrorKind::Dns,
         ClientError::ConnectError(_) => TransportErrorKind::Connect,
+        ClientError::Io(ref e) | ClientError::HttpError(HttpError::Io(ref e))
+            if matches!(
+                e.kind(),
+                std::io::ErrorKind::ConnectionReset
+                    | std::io::ErrorKind::ConnectionAborted
+                    | std::io::ErrorKind::BrokenPipe
+                    | std::io::ErrorKind::TimedOut
+                    | std::io::ErrorKind::UnexpectedEof
+                    | std::io::ErrorKind::Interrupted
+            ) =>
+        {
+            TransportErrorKind::TransientIo
+        }
         ClientError::TlsError(_) => TransportErrorKind::Tls,
         ClientError::HttpError(
             HttpError::BodyTooLarge | HttpError::BodyTooLargeDetailed { .. },

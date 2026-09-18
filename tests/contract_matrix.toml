@@ -368,7 +368,13 @@ member_beads = ["sr-roadmap-l1i.2.9"]
 phase = "P1"
 title = "Implement classified retries and Retry-After within one deadline"
 unit_property_tests = [
-    "tests/transport_contract.rs::retry_after_and_jitter"
+    "tests/jev_retry.rs::retry_schedule_and_http_dates_are_deterministic_bounded_and_overflow_safe",
+    "tests/jev_retry.rs::transient_sequence_then_rerank_uses_exactly_four_admissions",
+    "tests/jev_retry.rs::four_transient_errors_never_send_a_fifth_attempt",
+    "tests/jev_retry.rs::retry_after_honors_delay_and_refuses_unfittable_or_ambiguous_headers",
+    "tests/jev_retry.rs::authentication_validation_and_malformed_answers_do_not_retry",
+    "tests/jev_retry.rs::paid_rerank_timeout_preserves_wide_cost_and_unknown_usage",
+    "tests/jev_retry.rs::different_returned_revisions_invalidate_pair_but_retain_both_costs"
 ]
 e2e_suite = "transport"
 e2e_cases = ["retry-after-delay", "4xx-no-retry"]

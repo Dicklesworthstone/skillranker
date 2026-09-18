@@ -22,6 +22,7 @@ asupersync = { version = "=0.5.0", default-features = false, features = ["runtim
 blake3 = "1.8"
 clap = { version = "4", default-features = false, features = ["std"] }
 directories = "=6.0.0"
+httpdate = "=1.0.3"
 frankensearch-core = { git = "https://github.com/Dicklesworthstone/frankensearch.git", rev = "39047c44c3a92ceb71d25c602913b8b2888e2fe7", default-features = false }
 frankensearch-quill = { git = "https://github.com/Dicklesworthstone/frankensearch.git", rev = "39047c44c3a92ceb71d25c602913b8b2888e2fe7", default-features = false }
 nix = { version = "0.31", default-features = false, features = ["dir", "fs", "process", "signal", "user"] }

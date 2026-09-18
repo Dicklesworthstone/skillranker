@@ -27,8 +27,9 @@ use crate::limits::{DEFAULT_HTTP_ATTEMPTS, DEFAULT_LOGICAL_REQUESTS, LimitError,
 use crate::output::{CliExit, ErrorKind};
 use crate::runtime::EntryClock;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 use std::fmt;
+use std::sync::Arc;
 
 /// Minimum remaining deadline (before cleanup reserve) required to admit a provider attempt.
 pub const DEFAULT_MIN_ATTEMPT_RESERVE_MS: u64 = 50;
@@ -298,6 +299,7 @@ impl std::error::Error for AdmissionRefusal {}
 pub enum AdmissionError {
     PermitAlreadyConsumed,
     AttemptNotActive,
+    UsageOverflow,
     InvalidAttemptId(String),
     InvalidBudget(LimitError),
 }
@@ -308,6 +310,9 @@ impl fmt::Display for AdmissionError {
             Self::PermitAlreadyConsumed => f.write_str("attempt permit was already consumed"),
             Self::AttemptNotActive => {
                 f.write_str("attempt was not found or is no longer in-flight")
+            }
+            Self::UsageOverflow => {
+                f.write_str("provider usage exceeds the invocation counter range")
             }
             Self::InvalidAttemptId(reason) => write!(f, "invalid attempt ID: {reason}"),
             Self::InvalidBudget(err) => write!(f, "invalid attempt budget: {err}"),
@@ -321,8 +326,9 @@ impl std::error::Error for AdmissionError {}
 ///
 /// Binds identity, origin, stage, generation, and deadline.
 /// Consumed at most once via [`AttemptPermit::mark_sent`] or [`AttemptPermit::discard_before_send`].
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 pub struct AttemptPermit {
+    owner: Arc<()>,
     attempt_id: AttemptId,
     stage: RankingStage,
     endpoint: CanonicalOrigin,
@@ -371,6 +377,7 @@ impl AttemptPermit {
         }
         self.consumed = true;
         Ok(SentAttempt {
+            owner: self.owner.clone(),
             attempt_id: self.attempt_id.clone(),
             stage: self.stage,
             sent_at: self.admitted_at,
@@ -384,6 +391,7 @@ impl AttemptPermit {
     pub fn discard_before_send(mut self, reason: impl Into<String>) -> DiscardedAttempt {
         self.consumed = true;
         DiscardedAttempt {
+            owner: self.owner.clone(),
             attempt_id: self.attempt_id.clone(),
             stage: self.stage,
             reason: reason.into(),
@@ -393,7 +401,8 @@ impl AttemptPermit {
 
 impl Drop for AttemptPermit {
     fn drop(&mut self) {
-        // If dropped without mark_sent or discard_before_send, the permit slot is simply released.
+        // A dropped permit never refunds admission. The coordinator deliberately
+        // stays fail-closed until the owner records a discard or terminal result.
         self.consumed = true;
     }
 }
@@ -403,6 +412,7 @@ impl Drop for AttemptPermit {
 /// Must be concluded with either a known response or a terminal failure.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SentAttempt {
+    owner: Arc<()>,
     attempt_id: AttemptId,
     stage: RankingStage,
     sent_at: MonotonicMillis,
@@ -425,6 +435,7 @@ impl SentAttempt {
 /// An attempt that was admitted but cancelled/discarded before bytes reached the wire.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DiscardedAttempt {
+    owner: Arc<()>,
     attempt_id: AttemptId,
     stage: RankingStage,
     reason: String,
@@ -534,14 +545,17 @@ impl Default for CostReceipt {
     }
 }
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum AttemptState {
+    Admitted,
+    Sent,
+    Finished,
+}
+
 /// Invocation-wide coordinator for HTTP attempt admission and cost accounting.
 ///
-/// Implements the single admission seam across all pipeline stages, enforcing:
-/// - Max logical requests and HTTP attempt ceilings.
-/// - Monotonic deadline and cleanup reserve preservation.
-/// - Strict stage ordering (Wide before Rerank).
-/// - Unique attempt IDs and single-use permit tracking.
-/// - Known vs. unknown cost accounting on every completion or terminal failure.
+/// Enforces logical/HTTP attempt ceilings, the entry deadline, stage ordering,
+/// single-use ownership and known versus unknown usage across all stages.
 pub struct AttemptAdmission {
     budget: AttemptBudget,
     clock: EntryClock,
@@ -551,8 +565,9 @@ pub struct AttemptAdmission {
     logical_requests_started: u32,
     current_stage: Option<RankingStage>,
     wide_completed: bool,
-    issued_attempt_ids: BTreeSet<String>,
-    has_active_permit: bool,
+    issued_attempt_ids: BTreeMap<String, AttemptState>,
+    owner: Arc<()>,
+    current_stage_completed: bool,
 }
 
 impl AttemptAdmission {
@@ -577,8 +592,9 @@ impl AttemptAdmission {
             logical_requests_started: 0,
             current_stage: None,
             wide_completed: false,
-            issued_attempt_ids: BTreeSet::new(),
-            has_active_permit: false,
+            issued_attempt_ids: BTreeMap::new(),
+            owner: Arc::new(()),
+            current_stage_completed: false,
         })
     }
 
@@ -624,7 +640,9 @@ impl AttemptAdmission {
     pub const fn can_attempt_rerank(&self) -> bool {
         self.wide_completed
             && self.remaining_http_attempts() > 0
-            && self.remaining_logical_requests() > 0
+            && (self.remaining_logical_requests() > 0
+                || (matches!(self.current_stage, Some(RankingStage::Rerank))
+                    && !self.current_stage_completed))
     }
 
     /// Request admission for a provider HTTP attempt.
@@ -635,6 +653,16 @@ impl AttemptAdmission {
         stage: RankingStage,
         endpoint: &CanonicalOrigin,
     ) -> Result<AttemptPermit, AdmissionRefusal> {
+        if self
+            .issued_attempt_ids
+            .values()
+            .any(|state| *state != AttemptState::Finished)
+        {
+            return Err(AdmissionRefusal::StageOrderingViolation {
+                stage,
+                reason: "a previous attempt is still active",
+            });
+        }
         // 1. Check monotonic entry clock and cleanup reserve
         let now =
             self.clock
@@ -661,18 +689,15 @@ impl AttemptAdmission {
 
         // 3. Logical request tracking
         let is_new_logical_stage = match self.current_stage {
-            Some(curr) => curr != stage,
+            Some(curr) => curr != stage || self.current_stage_completed,
             None => true,
         };
-        if is_new_logical_stage {
-            if self.logical_requests_started >= self.budget.max_logical_requests {
-                return Err(AdmissionRefusal::LogicalRequestsExhausted {
-                    logical_used: self.logical_requests_started,
-                    limit: self.budget.max_logical_requests,
-                });
-            }
-            self.logical_requests_started = self.logical_requests_started.saturating_add(1);
-            self.current_stage = Some(stage);
+        if is_new_logical_stage && self.logical_requests_started >= self.budget.max_logical_requests
+        {
+            return Err(AdmissionRefusal::LogicalRequestsExhausted {
+                logical_used: self.logical_requests_started,
+                limit: self.budget.max_logical_requests,
+            });
         }
 
         // 4. HTTP attempt limit check
@@ -686,19 +711,24 @@ impl AttemptAdmission {
         // 5. Generate and register unique attempt ID
         let sequence = self.receipt.admitted_attempts.saturating_add(1);
         let attempt_id = AttemptId::new_sequential(&self.invocation_id, sequence);
-        if self.issued_attempt_ids.contains(attempt_id.as_str()) {
+        if self.issued_attempt_ids.contains_key(attempt_id.as_str()) {
             return Err(AdmissionRefusal::DuplicateAttemptId {
                 attempt_id: attempt_id.as_str().to_owned(),
             });
         }
         self.issued_attempt_ids
-            .insert(attempt_id.as_str().to_owned());
+            .insert(attempt_id.as_str().to_owned(), AttemptState::Admitted);
 
         // 6. Update accounting
         self.receipt.admitted_attempts = sequence;
-        self.has_active_permit = true;
+        if is_new_logical_stage {
+            self.logical_requests_started += 1;
+            self.current_stage = Some(stage);
+            self.current_stage_completed = false;
+        }
 
         Ok(AttemptPermit {
+            owner: self.owner.clone(),
             attempt_id,
             stage,
             endpoint: endpoint.clone(),
@@ -711,11 +741,15 @@ impl AttemptAdmission {
 
     /// Record that an admitted permit was sent across the wire.
     pub fn record_sent(&mut self, sent: &SentAttempt) -> Result<(), AdmissionError> {
-        if !self.issued_attempt_ids.contains(sent.attempt_id.as_str()) {
+        if !Arc::ptr_eq(&self.owner, &sent.owner)
+            || self.issued_attempt_ids.get(sent.attempt_id.as_str())
+                != Some(&AttemptState::Admitted)
+        {
             return Err(AdmissionError::AttemptNotActive);
         }
         self.receipt.sent_attempts = self.receipt.sent_attempts.saturating_add(1);
-        self.has_active_permit = false;
+        self.issued_attempt_ids
+            .insert(sent.attempt_id.as_str().to_owned(), AttemptState::Sent);
         Ok(())
     }
 
@@ -725,14 +759,36 @@ impl AttemptAdmission {
         sent: &SentAttempt,
         usage: Usage,
     ) -> Result<(), AdmissionError> {
-        if !self.issued_attempt_ids.contains(sent.attempt_id.as_str()) {
+        if !Arc::ptr_eq(&self.owner, &sent.owner)
+            || self.issued_attempt_ids.get(sent.attempt_id.as_str()) != Some(&AttemptState::Sent)
+        {
             return Err(AdmissionError::AttemptNotActive);
+        }
+        let total = self
+            .receipt
+            .known_usage
+            .input_tokens
+            .checked_add(usage.input_tokens)
+            .zip(
+                self.receipt
+                    .known_usage
+                    .output_tokens
+                    .checked_add(usage.output_tokens),
+            )
+            .and_then(|(input, output)| input.checked_add(output));
+        if total.is_none() {
+            // Keep the earlier exact known counts; this attempt remains unknown
+            // rather than silently saturating and advertising an exact total.
+            self.record_terminal_failure(sent, "usage counter overflow")?;
+            return Err(AdmissionError::UsageOverflow);
         }
         self.receipt.record_success(usage);
         if sent.stage.is_wide() {
             self.wide_completed = true;
         }
-        self.has_active_permit = false;
+        self.current_stage_completed = true;
+        self.issued_attempt_ids
+            .insert(sent.attempt_id.as_str().to_owned(), AttemptState::Finished);
         Ok(())
     }
 
@@ -744,29 +800,35 @@ impl AttemptAdmission {
         sent: &SentAttempt,
         _reason: &str,
     ) -> Result<(), AdmissionError> {
-        if !self.issued_attempt_ids.contains(sent.attempt_id.as_str()) {
+        if !Arc::ptr_eq(&self.owner, &sent.owner)
+            || self.issued_attempt_ids.get(sent.attempt_id.as_str()) != Some(&AttemptState::Sent)
+        {
             return Err(AdmissionError::AttemptNotActive);
         }
         self.receipt.record_terminal_error();
-        self.has_active_permit = false;
+        self.issued_attempt_ids
+            .insert(sent.attempt_id.as_str().to_owned(), AttemptState::Finished);
         Ok(())
     }
 
     /// Record an attempt that was admitted but cancelled/discarded before bytes reached the wire.
     pub fn record_discard(&mut self, discarded: &DiscardedAttempt) -> Result<(), AdmissionError> {
-        if !self
-            .issued_attempt_ids
-            .contains(discarded.attempt_id.as_str())
+        if !Arc::ptr_eq(&self.owner, &discarded.owner)
+            || self.issued_attempt_ids.get(discarded.attempt_id.as_str())
+                != Some(&AttemptState::Admitted)
         {
             return Err(AdmissionError::AttemptNotActive);
         }
-        self.has_active_permit = false;
+        self.issued_attempt_ids.insert(
+            discarded.attempt_id.as_str().to_owned(),
+            AttemptState::Finished,
+        );
         Ok(())
     }
 
     /// Record an exact cache hit: zero new attempts and zero new tokens.
     pub fn record_cache_hit(&mut self) {
-        self.receipt = CostReceipt::zero_cost_cache_hit();
+        self.receipt.cache_served = true;
     }
 
     /// Extract final cost receipt.
