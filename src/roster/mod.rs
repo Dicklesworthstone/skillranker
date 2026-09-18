@@ -2,10 +2,17 @@
 //! actual files/invocation rules belong to the selected harness adapter.
 
 pub mod discovery;
+pub mod explicit;
 pub mod frontmatter;
+pub mod import;
 pub mod resolution;
 pub mod retrieval;
 
+pub use explicit::{
+    DirectiveKind, ExplicitResolutionError, ExplicitResolutionRequest, ExplicitResolutionResult,
+    ParsedDirective, ResolvedExplicitSkill, UnresolvedReason, UnresolvedRecord,
+    parse_prompt_directives, resolve_explicit_requirements,
+};
 pub use frontmatter::{
     BODY_EXCERPT_MAX_SCALARS, FrontmatterError, MAX_FRONTMATTER_BYTES, MAX_SKILL_FILE_BYTES,
     ParsedSkillMetadata, RERANK_DESCRIPTION_MAX_SCALARS, WIDE_DESCRIPTION_MAX_SCALARS,

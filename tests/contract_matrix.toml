@@ -529,7 +529,7 @@ e2e_cases = ["explicit-resolved-offline"]
 assertion_ids = ["no_network_needed"]
 platforms = ["linux"]
 features = []
-status = "planned"
+status = "implemented"
 
 [[boundaries]]
 id = "p2_roster_imports"

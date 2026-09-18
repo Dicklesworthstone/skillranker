@@ -419,3 +419,526 @@ fn concurrent_export_race_prevents_clobber() {
         "all other writers must detect target collision"
     );
 }
+
+// -----------------------------------------------------------------------------
+// 3. Boundary: p2_explicit_resolution (sr-roadmap-l1i.3.6)
+// -----------------------------------------------------------------------------
+
+#[test]
+fn local_explicit_resolution() {
+    use skillranker::authorized_read::{AuthorizedRoot, AuthorizedRoots};
+    use skillranker::identity::{LogicalSkillKey, SkillId, SourceId};
+    use skillranker::limits::{
+        DurationMillis, HOOK_STDIN_BYTES, MAX_EXPLICIT_REQUESTS, SKILL_FILE_BYTES,
+    };
+    use skillranker::roster::explicit::*;
+    use skillranker::roster::resolution::{BindingSpec, ResolvedRoster, SkillEntry};
+    use skillranker::roster::{
+        InvocationKind, InvocationName, InvocationRestrictions, Visibility,
+    };
+    use skillranker::runtime::{EntryClock, ProcessInvocation};
+    use std::fs;
+    use std::path::Path;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    // -------------------------------------------------------------------------
+    // Sub-case 1: Prompt Directive Parser: Quotes, Code Blocks, Contractions
+    // -------------------------------------------------------------------------
+    // Quoted directives must be completely ignored
+    let quoted_prompt = format!(
+        "Please read: \"use skill fake-skill-quoted\" and 'require skill single-quoted'. Also {CANARY}"
+    );
+    let dirs = parse_prompt_directives(&quoted_prompt);
+    assert!(
+        dirs.is_empty(),
+        "quoted directives must be ignored, got: {dirs:?}"
+    );
+
+    // Code blocks (fenced and inline) must be completely ignored
+    let code_prompt = "Example in markdown:\n```\nuse skill fenced-code-skill\n```\nAlso see `use skill inline-code-skill`.";
+    let dirs = parse_prompt_directives(code_prompt);
+    assert!(
+        dirs.is_empty(),
+        "code block directives must be ignored, got: {dirs:?}"
+    );
+
+    // Contractions (don't, can't) must NOT be stripped as quotes
+    let contraction_prompt = "Don't use skill bad-tool; user's preference.";
+    let dirs = parse_prompt_directives(contraction_prompt);
+    assert_eq!(
+        dirs,
+        vec![ParsedDirective {
+            target: "bad-tool".into(),
+            kind: DirectiveKind::Exclude,
+        }],
+        "contractions must be preserved for natural negative directives"
+    );
+
+    // Slash commands
+    let slash_prompt = "/use-skill tool-a\n/require-skill tool-b\n/exclude-skill tool-c\n/no-skill tool-d";
+    let dirs = parse_prompt_directives(slash_prompt);
+    assert_eq!(
+        dirs,
+        vec![
+            ParsedDirective {
+                target: "tool-a".into(),
+                kind: DirectiveKind::Require,
+            },
+            ParsedDirective {
+                target: "tool-b".into(),
+                kind: DirectiveKind::Require,
+            },
+            ParsedDirective {
+                target: "tool-c".into(),
+                kind: DirectiveKind::Exclude,
+            },
+            ParsedDirective {
+                target: "tool-d".into(),
+                kind: DirectiveKind::Exclude,
+            },
+        ]
+    );
+
+    // Natural language directives across punctuation
+    let natural_prompt = "Please use skill skill-alpha. Also do not use skill skill-beta.";
+    let dirs = parse_prompt_directives(natural_prompt);
+    assert_eq!(
+        dirs,
+        vec![
+            ParsedDirective {
+                target: "skill-alpha".into(),
+                kind: DirectiveKind::Require,
+            },
+            ParsedDirective {
+                target: "skill-beta".into(),
+                kind: DirectiveKind::Exclude,
+            },
+        ]
+    );
+
+    // -------------------------------------------------------------------------
+    // Setup Roster Fixture
+    // -------------------------------------------------------------------------
+    static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+    let test_dir = std::env::temp_dir().join(format!(
+        "sr-explicit-test-{}-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos(),
+        SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::create_dir_all(&test_dir).unwrap();
+
+    let clock = EntryClock::capture_with(
+        DurationMillis::new("test_total", 30_000, 30_000).unwrap(),
+        DurationMillis::new("test_cleanup", 200, 30_000).unwrap(),
+    )
+    .unwrap();
+    let runtime = ProcessInvocation::from_clock(clock).unwrap();
+    let cx = runtime.request_cx().unwrap();
+
+    fn create_skill_entry(
+        test_dir: &Path,
+        relative: &str,
+        name: &str,
+        source: &str,
+        priority: Option<i32>,
+        restrictions: InvocationRestrictions,
+        visibility: Visibility,
+    ) -> SkillEntry {
+        let roots = AuthorizedRoots::single(AuthorizedRoot::open_absolute(test_dir).unwrap());
+        let file_path = test_dir.join(relative);
+        if let Some(parent) = file_path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        let content = format!("# {name}\n\nSkill documentation for {name}.");
+        fs::write(&file_path, content).unwrap();
+
+        let read = roots
+            .read_bounded(0, Path::new(relative), SKILL_FILE_BYTES)
+            .unwrap();
+
+        SkillEntry::from_read(
+            BindingSpec {
+                source: SourceId::new(source).unwrap(),
+                logical_key: LogicalSkillKey::new(relative).unwrap(),
+                invocation: InvocationName::new(name).unwrap(),
+                priority,
+                visibility,
+                restrictions,
+            },
+            read,
+        )
+        .unwrap()
+    }
+
+    let allow = InvocationRestrictions {
+        agent_invocable: true,
+        user_invocable: true,
+    };
+    let manual_only = InvocationRestrictions {
+        agent_invocable: false,
+        user_invocable: true,
+    };
+    let forbidden = InvocationRestrictions {
+        agent_invocable: false,
+        user_invocable: false,
+    };
+    let verified = Visibility::Verified {
+        contract_version: "test-adapter-v1".into(),
+    };
+
+    let mut entries = Vec::new();
+
+    // 1. Create 35 normal skills to test 32 vs 33 limit
+    for i in 1..=35 {
+        let rel = format!("skills/skill_{i:02}.md");
+        let name = format!("skill-{i:02}");
+        entries.push(create_skill_entry(
+            &test_dir,
+            &rel,
+            &name,
+            "source-main",
+            Some(10),
+            allow,
+            verified.clone(),
+        ));
+    }
+
+    // 2. Manual-only skill
+    entries.push(create_skill_entry(
+        &test_dir,
+        "skills/manual_tool.md",
+        "manual-tool",
+        "source-main",
+        Some(10),
+        manual_only,
+        verified.clone(),
+    ));
+
+    // 3. Forbidden skill
+    entries.push(create_skill_entry(
+        &test_dir,
+        "skills/forbidden_tool.md",
+        "forbidden-tool",
+        "source-main",
+        Some(10),
+        forbidden,
+        verified.clone(),
+    ));
+
+    // 4. Ambiguous colliding skills (same name, equal priority)
+    entries.push(create_skill_entry(
+        &test_dir,
+        "source_a/ambig_tool.md",
+        "ambig-tool",
+        "source-a",
+        None,
+        allow,
+        verified.clone(),
+    ));
+    entries.push(create_skill_entry(
+        &test_dir,
+        "source_b/ambig_tool.md",
+        "ambig-tool",
+        "source-b",
+        None,
+        allow,
+        verified.clone(),
+    ));
+
+    // 5. Shadowed colliding skills (same name, distinct priority)
+    entries.push(create_skill_entry(
+        &test_dir,
+        "source_hi/shadow_tool.md",
+        "shadow-tool",
+        "source-hi",
+        Some(2),
+        allow,
+        verified.clone(),
+    ));
+    entries.push(create_skill_entry(
+        &test_dir,
+        "source_lo/shadow_tool.md",
+        "shadow-tool",
+        "source-lo",
+        Some(1),
+        allow,
+        verified.clone(),
+    ));
+
+    // 6. Unverified skill
+    entries.push(create_skill_entry(
+        &test_dir,
+        "skills/unverified_tool.md",
+        "unverified-tool",
+        "source-main",
+        Some(10),
+        allow,
+        Visibility::Unverified,
+    ));
+
+    let roster = ResolvedRoster::resolve(entries, false, &cx, &clock).unwrap();
+
+    // -------------------------------------------------------------------------
+    // Sub-case 2: Single Valid Skill Resolved Offline (Bypasses Jev / Gating)
+    // -------------------------------------------------------------------------
+    let req = ExplicitResolutionRequest {
+        user_prompt: Some("Please use skill skill-01 to run the test.".into()),
+        ..Default::default()
+    };
+    let res = resolve_explicit_requirements(&req, &roster).expect("must resolve");
+    match res {
+        ExplicitResolutionResult::Resolved {
+            skills,
+            excluded_skills,
+        } => {
+            assert_eq!(skills.len(), 1);
+            assert_eq!(skills[0].invocation.as_str(), "skill-01");
+            assert_eq!(skills[0].kind, InvocationKind::Agent);
+            assert!(!skills[0].manual_only);
+            assert!(excluded_skills.is_empty());
+        }
+        other => panic!("expected Resolved, got {other:?}"),
+    }
+
+    // -------------------------------------------------------------------------
+    // Sub-case 3: Manual-Only Skill Resolves Without Authorizing File-Read Bypass
+    // -------------------------------------------------------------------------
+    let req_manual = ExplicitResolutionRequest {
+        user_prompt: Some("Please run skill manual-tool for this operation.".into()),
+        ..Default::default()
+    };
+    let res_manual = resolve_explicit_requirements(&req_manual, &roster).expect("must resolve");
+    match res_manual {
+        ExplicitResolutionResult::Resolved { skills, .. } => {
+            assert_eq!(skills.len(), 1);
+            assert_eq!(skills[0].invocation.as_str(), "manual-tool");
+            assert_eq!(skills[0].kind, InvocationKind::ManualOnly);
+            assert!(
+                skills[0].manual_only,
+                "manual_only must be true to indicate user execution"
+            );
+        }
+        other => panic!("expected Resolved for manual-only, got {other:?}"),
+    }
+
+    // -------------------------------------------------------------------------
+    // Sub-case 4: Missing Skill Fails All-Actionable Output (Unavailable / Exit 5)
+    // -------------------------------------------------------------------------
+    let req_missing = ExplicitResolutionRequest {
+        user_prompt: Some(format!(
+            "Please use skill nonexistent-ghost-tool. Secret: {CANARY}"
+        )),
+        ..Default::default()
+    };
+    let res_missing = resolve_explicit_requirements(&req_missing, &roster).expect("must return result");
+    match res_missing {
+        ExplicitResolutionResult::Unavailable { unresolved } => {
+            assert_eq!(unresolved.len(), 1);
+            assert_eq!(unresolved[0].target, "nonexistent-ghost-tool");
+            assert_eq!(unresolved[0].reason, UnresolvedReason::Missing);
+            assert_canary_not_leaked(&unresolved[0].diagnostic);
+        }
+        other => panic!("expected Unavailable for missing, got {other:?}"),
+    }
+
+    // -------------------------------------------------------------------------
+    // Sub-case 5: Ambiguous Skill Fails All-Actionable Output
+    // -------------------------------------------------------------------------
+    let req_ambig = ExplicitResolutionRequest {
+        user_prompt: Some("use skill ambig-tool".into()),
+        ..Default::default()
+    };
+    let res_ambig = resolve_explicit_requirements(&req_ambig, &roster).expect("must return result");
+    match res_ambig {
+        ExplicitResolutionResult::Unavailable { unresolved } => {
+            assert_eq!(unresolved.len(), 1);
+            assert_eq!(unresolved[0].target, "ambig-tool");
+            assert_eq!(unresolved[0].reason, UnresolvedReason::Ambiguous);
+        }
+        other => panic!("expected Unavailable for ambiguous, got {other:?}"),
+    }
+
+    // -------------------------------------------------------------------------
+    // Sub-case 6: Shadowed Skill Fails All-Actionable Output
+    // -------------------------------------------------------------------------
+    let shadowed_id = SkillId::from_source(
+        &SourceId::new("source-lo").unwrap(),
+        &LogicalSkillKey::new("source_lo/shadow_tool.md").unwrap(),
+    );
+    let req_shadowed = ExplicitResolutionRequest {
+        context_skill_references: vec![shadowed_id],
+        ..Default::default()
+    };
+    let res_shadowed =
+        resolve_explicit_requirements(&req_shadowed, &roster).expect("must return result");
+    match res_shadowed {
+        ExplicitResolutionResult::Unavailable { unresolved } => {
+            assert_eq!(unresolved.len(), 1);
+            assert_eq!(unresolved[0].reason, UnresolvedReason::Shadowed);
+        }
+        other => panic!("expected Unavailable for shadowed, got {other:?}"),
+    }
+
+    // -------------------------------------------------------------------------
+    // Sub-case 7: Unverified Skill Fails All-Actionable Output
+    // -------------------------------------------------------------------------
+    let unverified_id = SkillId::from_source(
+        &SourceId::new("source-main").unwrap(),
+        &LogicalSkillKey::new("skills/unverified_tool.md").unwrap(),
+    );
+    let req_unverified = ExplicitResolutionRequest {
+        context_skill_references: vec![unverified_id],
+        ..Default::default()
+    };
+    let res_unverified =
+        resolve_explicit_requirements(&req_unverified, &roster).expect("must return result");
+    match res_unverified {
+        ExplicitResolutionResult::Unavailable { unresolved } => {
+            assert_eq!(unresolved.len(), 1);
+            assert_eq!(unresolved[0].reason, UnresolvedReason::Unverified);
+        }
+        other => panic!("expected Unavailable for unverified, got {other:?}"),
+    }
+
+    // -------------------------------------------------------------------------
+    // Sub-case 8: Forbidden Skill Fails All-Actionable Output
+    // -------------------------------------------------------------------------
+    let req_forbidden = ExplicitResolutionRequest {
+        user_prompt: Some("use skill forbidden-tool".into()),
+        ..Default::default()
+    };
+    let res_forbidden =
+        resolve_explicit_requirements(&req_forbidden, &roster).expect("must return result");
+    match res_forbidden {
+        ExplicitResolutionResult::Unavailable { unresolved } => {
+            assert_eq!(unresolved.len(), 1);
+            assert_eq!(unresolved[0].target, "forbidden-tool");
+            assert_eq!(unresolved[0].reason, UnresolvedReason::Forbidden);
+        }
+        other => panic!("expected Unavailable for forbidden, got {other:?}"),
+    }
+
+    // -------------------------------------------------------------------------
+    // Sub-case 9: Conflicting Directives Fail As ConflictingDirective
+    // -------------------------------------------------------------------------
+    // Exact name conflict in prompt
+    let req_conflict_prompt = ExplicitResolutionRequest {
+        user_prompt: Some("use skill skill-01; do not use skill skill-01".into()),
+        ..Default::default()
+    };
+    let res_conflict =
+        resolve_explicit_requirements(&req_conflict_prompt, &roster).expect("must return result");
+    match res_conflict {
+        ExplicitResolutionResult::Unavailable { unresolved } => {
+            assert_eq!(unresolved.len(), 1);
+            assert_eq!(unresolved[0].target, "skill-01");
+            assert_eq!(
+                unresolved[0].reason,
+                UnresolvedReason::ConflictingDirective
+            );
+        }
+        other => panic!("expected Unavailable for conflict, got {other:?}"),
+    }
+
+    // Cross-resolution conflict (name required, ID excluded)
+    let skill02_id = SkillId::from_source(
+        &SourceId::new("source-main").unwrap(),
+        &LogicalSkillKey::new("skills/skill_02.md").unwrap(),
+    );
+    let req_conflict_cross = ExplicitResolutionRequest {
+        cli_required_skills: vec!["skill-02".into()],
+        context_excluded_skills: vec![skill02_id],
+        ..Default::default()
+    };
+    let res_conflict_cross =
+        resolve_explicit_requirements(&req_conflict_cross, &roster).expect("must return result");
+    match res_conflict_cross {
+        ExplicitResolutionResult::Unavailable { unresolved } => {
+            assert_eq!(unresolved.len(), 1);
+            assert_eq!(unresolved[0].target, "skill-02");
+            assert_eq!(
+                unresolved[0].reason,
+                UnresolvedReason::ConflictingDirective
+            );
+        }
+        other => panic!("expected Unavailable for cross conflict, got {other:?}"),
+    }
+
+    // -------------------------------------------------------------------------
+    // Sub-case 10: 32 References Succeed; 33 References Reject (Hard Limit)
+    // -------------------------------------------------------------------------
+    // 32 references -> Ok(Resolved)
+    let req_32 = ExplicitResolutionRequest {
+        cli_required_skills: (1..=32).map(|i| format!("skill-{i:02}")).collect(),
+        ..Default::default()
+    };
+    let res_32 = resolve_explicit_requirements(&req_32, &roster).expect("32 must succeed");
+    match res_32 {
+        ExplicitResolutionResult::Resolved { skills, .. } => {
+            assert_eq!(skills.len(), 32);
+        }
+        other => panic!("expected Resolved for 32, got {other:?}"),
+    }
+
+    // 33 references -> Err(TooManyExplicitReferences)
+    let req_33 = ExplicitResolutionRequest {
+        cli_required_skills: (1..=33).map(|i| format!("skill-{i:02}")).collect(),
+        ..Default::default()
+    };
+    let err_33 = resolve_explicit_requirements(&req_33, &roster).unwrap_err();
+    assert_eq!(
+        err_33,
+        ExplicitResolutionError::TooManyExplicitReferences {
+            count: 33,
+            limit: MAX_EXPLICIT_REQUESTS.max(),
+        }
+    );
+
+    // -------------------------------------------------------------------------
+    // Sub-case 11: Prompt Input Bound Enforcement
+    // -------------------------------------------------------------------------
+    let huge_prompt = "a".repeat(HOOK_STDIN_BYTES.max() + 1);
+    let req_huge = ExplicitResolutionRequest {
+        user_prompt: Some(huge_prompt),
+        ..Default::default()
+    };
+    let err_huge = resolve_explicit_requirements(&req_huge, &roster).unwrap_err();
+    assert!(
+        matches!(err_huge, ExplicitResolutionError::OversizedInput { .. }),
+        "expected OversizedInput, got {err_huge:?}"
+    );
+
+    // -------------------------------------------------------------------------
+    // Sub-case 12: NoneSpecified (No Directives or Exclusions Only)
+    // -------------------------------------------------------------------------
+    let req_empty = ExplicitResolutionRequest {
+        user_prompt: Some("hello world, what are our top skills?".into()),
+        ..Default::default()
+    };
+    let res_empty = resolve_explicit_requirements(&req_empty, &roster).expect("must succeed");
+    match res_empty {
+        ExplicitResolutionResult::NoneSpecified { excluded_skills } => {
+            assert!(excluded_skills.is_empty());
+        }
+        other => panic!("expected NoneSpecified, got {other:?}"),
+    }
+
+    let req_excl_only = ExplicitResolutionRequest {
+        user_prompt: Some("do not use skill skill-01".into()),
+        ..Default::default()
+    };
+    let res_excl_only =
+        resolve_explicit_requirements(&req_excl_only, &roster).expect("must succeed");
+    match res_excl_only {
+        ExplicitResolutionResult::NoneSpecified { excluded_skills } => {
+            assert_eq!(excluded_skills.len(), 1);
+        }
+        other => panic!("expected NoneSpecified with exclusions, got {other:?}"),
+    }
+
+    assert!(runtime.shutdown());
+}
