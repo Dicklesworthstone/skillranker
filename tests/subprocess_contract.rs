@@ -207,15 +207,15 @@ fn descendant_holding_pipes_is_terminated_after_parent_exits() {
         .unwrap()
         .parse()
         .unwrap();
-    // On Linux the killed descendant must not be running: a zombie ('Z')
-    // awaiting the platform reaper or a fully reaped (missing) entry both
-    // prove termination; a sleeping state would mean the group kill missed it.
+    // Linux do_exit closes files before exit_notify publishes EXIT_ZOMBIE
+    // (kernel/exit.c). EOF can therefore precede the final /proc state. Observe
+    // actual termination within the ORIGINAL total bound, not a fresh timeout.
     #[cfg(target_os = "linux")]
-    if let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) {
-        let state = stat.rsplit_once(") ").unwrap().1.as_bytes()[0];
-        assert_ne!(state, b'S', "descendant survived the process-group kill");
-        assert_ne!(state, b'R', "descendant survived the process-group kill");
-    }
+    assert!(
+        terminated_by(pid, start + Duration::from_secs(2)).unwrap(),
+        "descendant survived the process-group kill"
+    );
+    assert!(start.elapsed() < Duration::from_secs(2));
     #[cfg(target_os = "macos")]
     let _ = pid;
     assert!(invocation.shutdown());
@@ -238,4 +238,51 @@ fn explicit_cancellation_terminates_live_child() {
     cancel.join().unwrap();
     assert_eq!(result.unwrap_err(), SubprocessError::Cancelled);
     assert!(invocation.shutdown());
+}
+
+/// A killed descendant is either a zombie awaiting its reaper, dead, or absent.
+/// Other states (including stopped/uninterruptible) are not termination proof.
+#[cfg(target_os = "linux")]
+fn terminated_by(pid: i32, deadline: Instant) -> std::io::Result<bool> {
+    loop {
+        let stat = match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+            Ok(stat) => stat,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(true),
+            Err(error) => return Err(error),
+        };
+        let state = stat
+            .rsplit_once(") ")
+            .and_then(|(_, suffix)| suffix.as_bytes().first())
+            .copied()
+            .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::InvalidData))?;
+        if matches!(state, b'Z' | b'X') {
+            return Ok(true);
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Ok(false);
+        }
+        std::thread::sleep(remaining.min(Duration::from_millis(1)));
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn termination_observer_rejects_a_live_child() {
+    let mut child = std::process::Command::new("/bin/sleep")
+        .env_clear()
+        .arg("10")
+        .spawn()
+        .unwrap();
+    let observation = terminated_by(
+        i32::try_from(child.id()).unwrap(),
+        Instant::now() + Duration::from_millis(20),
+    );
+    // Always clean up the deliberate survivor before asserting the observation.
+    child.kill().unwrap();
+    child.wait().unwrap();
+    assert!(
+        !observation.unwrap(),
+        "live sleeping process was accepted as terminated"
+    );
 }
