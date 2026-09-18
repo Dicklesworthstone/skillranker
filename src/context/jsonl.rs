@@ -12,7 +12,7 @@
 use crate::adapter::{AdapterError, decode_json};
 use crate::blocking::{BlockingLeafKind, run_blocking_leaf};
 use crate::context::{EventKind, NormalizedEvent, PrivateText, Role, ToolEvent, ToolStatus};
-use crate::identity::{EventId, ToolCallId, TurnId};
+use crate::identity::{AgentId, BranchId, EventId, IdentityError, ToolCallId, TurnId};
 use crate::limits::{
     NATIVE_TRANSCRIPT_TAIL_BYTES, NATIVE_TRANSCRIPT_TAIL_RECORDS, OBSERVATION_DELTA_BYTES,
     ONE_TRANSCRIPT_RECORD_BYTES,
@@ -25,7 +25,8 @@ use std::io::{Read, Seek, SeekFrom};
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
-pub const PARSER_VERSION: u32 = 1;
+// Identity validation and attribution changed: rebuild prior cursor state.
+pub const PARSER_VERSION: u32 = 2;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CursorKind {
@@ -291,7 +292,7 @@ fn parse_window(
         let line = &rest[..nl];
         let record_offset = start + offset as u64;
         offset += nl + 1;
-        if events.len() >= record_cap {
+        if events.len() + skipped.len() >= record_cap {
             hit_record_cap = true;
             offset -= nl + 1;
             break;
@@ -370,21 +371,22 @@ fn event_from_value(value: &Value) -> Option<NormalizedEvent> {
     if object.contains_key("role") && object.contains_key("kind") {
         return serde_json::from_value(value.clone()).ok();
     }
-    let event_id = string_field(object, &["event_id", "uuid"]).and_then(|v| EventId::new(v).ok());
-    let parent_id =
-        string_field(object, &["parent_id", "parentUuid"]).and_then(|v| EventId::new(v).ok());
-    let turn_id = string_field(object, &["turn_id"]).and_then(|v| TurnId::new(v).ok());
+    let event_id = native_identity(object, &["event_id", "uuid"], EventId::new)?;
+    let parent_id = native_identity(object, &["parent_id", "parentUuid"], EventId::new)?;
+    let turn_id = native_identity(object, &["turn_id"], TurnId::new)?;
+    let agent_id = native_identity(object, &["agent_id"], AgentId::new)?;
+    let branch_id = native_identity(object, &["branch_id"], BranchId::new)?;
     let native_type = string_field(object, &["type"]).unwrap_or("message");
     let (role, kind) = map_native_type(native_type);
     let text = native_text(object);
-    let tool = native_tool(object, kind);
+    let tool = native_tool(object, kind)?;
     let timestamp_unix_ms = object.get("timestamp_unix_ms").and_then(Value::as_i64);
     Some(NormalizedEvent {
         event_id,
         parent_id,
         turn_id,
-        agent_id: None,
-        branch_id: None,
+        agent_id,
+        branch_id,
         role,
         kind,
         timestamp_unix_ms,
@@ -427,14 +429,16 @@ fn native_text(object: &serde_json::Map<String, Value>) -> String {
     }
 }
 
-fn native_tool(object: &serde_json::Map<String, Value>, kind: EventKind) -> Option<ToolEvent> {
+fn native_tool(
+    object: &serde_json::Map<String, Value>,
+    kind: EventKind,
+) -> Option<Option<ToolEvent>> {
     if !matches!(kind, EventKind::ToolInvocation | EventKind::ToolResult) {
-        return None;
+        return Some(None);
     }
-    let call_id =
-        string_field(object, &["call_id", "tool_use_id"]).and_then(|v| ToolCallId::new(v).ok());
+    let call_id = native_identity(object, &["call_id", "tool_use_id"], ToolCallId::new)?;
     let name = string_field(object, &["name", "tool_name"]).unwrap_or("tool");
-    Some(ToolEvent {
+    Some(Some(ToolEvent {
         call_id,
         name: PrivateText::new(name),
         status: if kind == EventKind::ToolResult {
@@ -444,5 +448,32 @@ fn native_tool(object: &serde_json::Map<String, Value>, kind: EventKind) -> Opti
         },
         arguments: None,
         result: None,
-    })
+    }))
+}
+
+/// Outer None rejects malformed/conflicting declarations; inner None is genuine
+/// absence. Null is an explicit absence and cannot mask a conflicting alias.
+fn native_identity<T: Eq>(
+    object: &serde_json::Map<String, Value>,
+    names: &[&str],
+    construct: impl Fn(String) -> Result<T, IdentityError>,
+) -> Option<Option<T>> {
+    let mut declared: Option<Option<T>> = None;
+    for name in names {
+        if let Some(value) = object.get(*name) {
+            let parsed = if value.is_null() {
+                None
+            } else {
+                Some(construct(value.as_str()?.to_owned()).ok()?)
+            };
+            if declared
+                .as_ref()
+                .is_some_and(|previous| previous != &parsed)
+            {
+                return None;
+            }
+            declared = Some(parsed);
+        }
+    }
+    Some(declared.flatten())
 }
