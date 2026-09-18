@@ -11,6 +11,10 @@
 //! - Worktree identity: distinct canonical worktree IDs for linked worktrees; non-Git and detached HEAD.
 
 use skillranker::adapter::{ClaudeUserPromptSubmit, UnknownFieldPolicy};
+use skillranker::context::anchor::{
+    AnchorDirectiveKind, AnchorError, AnchorProvenance, AnchorResolution, is_terse_continuation,
+    resolve_task_anchor,
+};
 use skillranker::context::branch::{
     ActiveBranch, BranchAdvice, BranchResolutionTarget, LoadedSkillRecord, SkillUsageKind,
     UnresolvedBranchReason, evaluate_loaded_skill_eligibility, resolve_active_branch,
@@ -34,7 +38,9 @@ use skillranker::identity::{
     BranchId, ContentHash, ContextEpoch, EventId, HarnessId, SessionId, SessionIdentity, SkillId,
     SourceProvenance, ToolCallId, TurnId, WorkspaceId,
 };
+use skillranker::limits::HOOK_STDIN_BYTES;
 use skillranker::output::ContextQuality;
+use skillranker::privacy::redaction::Redactor;
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -2063,4 +2069,639 @@ fn bounded_request_rendering() {
         val["latest_user_request"],
         "Please optimize the serialization loop."
     );
+}
+
+// ==============================================================================
+// Unit Property Test: tests/context_contract.rs::task_anchors
+// Boundary: p3_task_anchors (bead sr-roadmap-l1i.4.9)
+// Assertion ID: anchor_intact, E2E Case: task-anchor-preserved
+// ==============================================================================
+
+#[test]
+fn task_anchors() {
+    let redactor = Redactor::default();
+
+    // -------------------------------------------------------------------------
+    // Sub-case 1: Terse continuation classification coverage
+    // -------------------------------------------------------------------------
+    let terse_examples = [
+        "continue",
+        "Continue",
+        "CONTINUE",
+        "continue.",
+        "continue!",
+        "go on",
+        "go ahead",
+        "proceed",
+        "next",
+        "next step",
+        "more",
+        "keep going",
+        "carry on",
+        "yes",
+        "yep",
+        "yeah",
+        "ok",
+        "okay",
+        "sure",
+        "do it",
+        "run it",
+        "apply",
+        "try it",
+        "resume",
+        "  ok;  ",
+    ];
+    for terse in terse_examples {
+        assert!(
+            is_terse_continuation(terse),
+            "expected '{}' to be recognized as terse continuation",
+            terse
+        );
+    }
+
+    let substantive_examples = [
+        "Implement sqlite caching for skill recommendations",
+        "Please fix the build error in src/context/anchor.rs",
+        "continue with the migration of auth tokens",
+        "proceed to deploy to staging after checking tests",
+        "run tests and report failures",
+    ];
+    for substantive in substantive_examples {
+        assert!(
+            !is_terse_continuation(substantive),
+            "expected '{}' to be recognized as substantive instruction",
+            substantive
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // Sub-case 2: Continue with valid historical anchor (Antecedent recovered)
+    // Assertion ID: anchor_intact
+    // -------------------------------------------------------------------------
+    let context_valid = NormalizedContext {
+        schema_version: 1,
+        harness: HarnessId::new("claude_code").unwrap(),
+        producer_id: None,
+        workspace_root: PrivateText::new("/data/projects/skillranker"),
+        session_id: Some(SessionId::new("sess-anchor-01").unwrap()),
+        agent_id: None,
+        branch_id: None,
+        context_epoch: Some(ContextEpoch::new("epoch-1").unwrap()),
+        current_request: CurrentRequest {
+            event_id: Some(EventId::new("ev-req-01").unwrap()),
+            text: PrivateText::new("continue"),
+            attachments_omitted: false,
+            essential_attachment_missing: false,
+        },
+        events: vec![
+            NormalizedEvent {
+                event_id: Some(EventId::new("ev-hist-01").unwrap()),
+                parent_id: None,
+                turn_id: Some(TurnId::new("turn-1").unwrap()),
+                agent_id: None,
+                branch_id: None,
+                role: Role::User,
+                kind: EventKind::Message,
+                timestamp_unix_ms: Some(1000),
+                text: PrivateText::new(
+                    "Implement SQLite caching for next-step skill recommendations",
+                ),
+                tool: None,
+            },
+            NormalizedEvent {
+                event_id: Some(EventId::new("ev-hist-02").unwrap()),
+                parent_id: Some(EventId::new("ev-hist-01").unwrap()),
+                turn_id: Some(TurnId::new("turn-2").unwrap()),
+                agent_id: None,
+                branch_id: None,
+                role: Role::Assistant,
+                kind: EventKind::Message,
+                timestamp_unix_ms: Some(2000),
+                text: PrivateText::new("I will design the SQLite caching schema now."),
+                tool: None,
+            },
+        ],
+        explicit_skill_references: Vec::new(),
+        supplied_loads: Vec::new(),
+    };
+
+    let resolution = resolve_task_anchor(&context_valid, None, &redactor);
+    match resolution {
+        AnchorResolution::Established(ref anchor) => {
+            // Assertion ID: anchor_intact
+            assert_eq!(
+                anchor.text,
+                "Implement SQLite caching for next-step skill recommendations"
+            );
+            assert!(anchor.is_terse);
+            assert_eq!(
+                anchor.source_event_id,
+                Some(EventId::new("ev-hist-01").unwrap())
+            );
+            assert_eq!(
+                anchor.provenance,
+                AnchorProvenance::HistoricalEvent {
+                    event_id: EventId::new("ev-hist-01").unwrap(),
+                }
+            );
+            assert!(anchor.directives.is_empty());
+        }
+        other => panic!("expected Established anchor, got {:?}", other),
+    }
+
+    // -------------------------------------------------------------------------
+    // Sub-case 3: Continue without valid antecedent (Missing context)
+    // Classified as unavailable / missing-task-context
+    // -------------------------------------------------------------------------
+    let context_no_antecedent = NormalizedContext {
+        schema_version: 1,
+        harness: HarnessId::new("claude_code").unwrap(),
+        producer_id: None,
+        workspace_root: PrivateText::new("/data/projects/skillranker"),
+        session_id: Some(SessionId::new("sess-anchor-02").unwrap()),
+        agent_id: None,
+        branch_id: None,
+        context_epoch: Some(ContextEpoch::new("epoch-1").unwrap()),
+        current_request: CurrentRequest {
+            event_id: Some(EventId::new("ev-req-02").unwrap()),
+            text: PrivateText::new("continue"),
+            attachments_omitted: false,
+            essential_attachment_missing: false,
+        },
+        events: vec![
+            // Only assistant message, no user antecedent
+            NormalizedEvent {
+                event_id: Some(EventId::new("ev-hist-03").unwrap()),
+                parent_id: None,
+                turn_id: Some(TurnId::new("turn-1").unwrap()),
+                agent_id: None,
+                branch_id: None,
+                role: Role::Assistant,
+                kind: EventKind::Message,
+                timestamp_unix_ms: Some(1000),
+                text: PrivateText::new("Session initialized."),
+                tool: None,
+            },
+        ],
+        explicit_skill_references: Vec::new(),
+        supplied_loads: Vec::new(),
+    };
+
+    let res_no_antecedent = resolve_task_anchor(&context_no_antecedent, None, &redactor);
+    match res_no_antecedent {
+        AnchorResolution::MissingTaskContext { reason } => {
+            assert!(reason.contains("lacks recoverable substantive antecedent"));
+        }
+        other => panic!("expected MissingTaskContext, got {:?}", other),
+    }
+
+    // -------------------------------------------------------------------------
+    // Sub-case 4: Task boundary stops antecedent lookback
+    // -------------------------------------------------------------------------
+    let context_task_boundary = NormalizedContext {
+        schema_version: 1,
+        harness: HarnessId::new("claude_code").unwrap(),
+        producer_id: None,
+        workspace_root: PrivateText::new("/data/projects/skillranker"),
+        session_id: Some(SessionId::new("sess-anchor-03").unwrap()),
+        agent_id: None,
+        branch_id: None,
+        context_epoch: Some(ContextEpoch::new("epoch-2").unwrap()),
+        current_request: CurrentRequest {
+            event_id: Some(EventId::new("ev-req-03").unwrap()),
+            text: PrivateText::new("proceed"),
+            attachments_omitted: false,
+            essential_attachment_missing: false,
+        },
+        events: vec![
+            NormalizedEvent {
+                event_id: Some(EventId::new("ev-bnd-01").unwrap()),
+                parent_id: None,
+                turn_id: Some(TurnId::new("turn-1").unwrap()),
+                agent_id: None,
+                branch_id: None,
+                role: Role::User,
+                kind: EventKind::Message,
+                timestamp_unix_ms: Some(1000),
+                text: PrivateText::new("Previous task: clean up old temporary logs"),
+                tool: None,
+            },
+            NormalizedEvent {
+                event_id: Some(EventId::new("ev-bnd-02").unwrap()),
+                parent_id: Some(EventId::new("ev-bnd-01").unwrap()),
+                turn_id: Some(TurnId::new("turn-2").unwrap()),
+                agent_id: None,
+                branch_id: None,
+                role: Role::System,
+                kind: EventKind::TaskBoundary,
+                timestamp_unix_ms: Some(2000),
+                text: PrivateText::new("TaskBoundary: completed log cleanup"),
+                tool: None,
+            },
+        ],
+        explicit_skill_references: Vec::new(),
+        supplied_loads: Vec::new(),
+    };
+
+    let res_boundary = resolve_task_anchor(&context_task_boundary, None, &redactor);
+    assert!(
+        matches!(res_boundary, AnchorResolution::MissingTaskContext { .. }),
+        "task boundary must prevent antecedent lookback from preceding task"
+    );
+
+    // -------------------------------------------------------------------------
+    // Sub-case 5: Explicit directives preserved beyond rendered 12-message cutoff
+    // -------------------------------------------------------------------------
+    let mut cutoff_events = Vec::new();
+
+    // Turn 1 (outside 12-message cutoff): User establishes explicit directive
+    cutoff_events.push(NormalizedEvent {
+        event_id: Some(EventId::new("ev-long-01").unwrap()),
+        parent_id: None,
+        turn_id: Some(TurnId::new("turn-1").unwrap()),
+        agent_id: None,
+        branch_id: None,
+        role: Role::User,
+        kind: EventKind::Message,
+        timestamp_unix_ms: Some(1000),
+        text: PrivateText::new("/use-skill rust-cargo-basics"),
+        tool: None,
+    });
+    cutoff_events.push(NormalizedEvent {
+        event_id: Some(EventId::new("ev-long-02").unwrap()),
+        parent_id: Some(EventId::new("ev-long-01").unwrap()),
+        turn_id: Some(TurnId::new("turn-2").unwrap()),
+        agent_id: None,
+        branch_id: None,
+        role: Role::Assistant,
+        kind: EventKind::Message,
+        timestamp_unix_ms: Some(2000),
+        text: PrivateText::new("Acknowledged, rust-cargo-basics will be used."),
+        tool: None,
+    });
+
+    // Turns 3..18: Intermediate conversation turns pushing Turn 1 past the 12-message window
+    for i in 3..=18 {
+        let role = if i % 2 == 1 {
+            Role::User
+        } else {
+            Role::Assistant
+        };
+        cutoff_events.push(NormalizedEvent {
+            event_id: Some(EventId::new(format!("ev-long-{i:02}")).unwrap()),
+            parent_id: Some(EventId::new(format!("ev-long-{:02}", i - 1)).unwrap()),
+            turn_id: Some(TurnId::new(format!("turn-{i}")).unwrap()),
+            agent_id: None,
+            branch_id: None,
+            role,
+            kind: EventKind::Message,
+            timestamp_unix_ms: Some(1000 * i as i64),
+            text: PrivateText::new(format!("Step {i} in progress")),
+            tool: None,
+        });
+    }
+
+    let context_cutoff = NormalizedContext {
+        schema_version: 1,
+        harness: HarnessId::new("claude_code").unwrap(),
+        producer_id: None,
+        workspace_root: PrivateText::new("/data/projects/skillranker"),
+        session_id: Some(SessionId::new("sess-anchor-cutoff").unwrap()),
+        agent_id: None,
+        branch_id: None,
+        context_epoch: Some(ContextEpoch::new("epoch-1").unwrap()),
+        current_request: CurrentRequest {
+            event_id: Some(EventId::new("ev-req-cutoff").unwrap()),
+            text: PrivateText::new("ok, next step"),
+            attachments_omitted: false,
+            essential_attachment_missing: false,
+        },
+        events: cutoff_events,
+        explicit_skill_references: Vec::new(),
+        supplied_loads: Vec::new(),
+    };
+
+    // Verify that render_context would drop Turn 1 from recent_messages
+    let rendered = render_context(&context_cutoff, &RenderContextOptions::default())
+        .expect("render must succeed");
+    assert_eq!(rendered.recent_messages.len(), 12);
+    // Recent messages start at Turn 7, so Turn 1 is dropped from rendered context
+    assert!(!rendered.recent_messages.iter().any(|m| {
+        m.text
+            .as_deref()
+            .unwrap_or("")
+            .contains("rust-cargo-basics")
+    }));
+
+    // But resolve_task_anchor preserves the directive extracted before windowing!
+    let res_cutoff = resolve_task_anchor(&context_cutoff, None, &redactor);
+    match res_cutoff {
+        AnchorResolution::Established(ref anchor) => {
+            assert!(anchor.is_terse);
+            assert_eq!(anchor.directives.len(), 1);
+            assert_eq!(anchor.directives[0].target, "rust-cargo-basics");
+            assert_eq!(anchor.directives[0].kind, AnchorDirectiveKind::Require);
+            // Antecedent recovered is the latest substantive user message
+            assert_eq!(anchor.text, "Step 17 in progress");
+        }
+        other => panic!(
+            "expected Established anchor with preserved directive, got {:?}",
+            other
+        ),
+    }
+
+    // -------------------------------------------------------------------------
+    // Sub-case 6: Supplied summary with verifiable provenance accepted
+    // -------------------------------------------------------------------------
+    let context_supplied = NormalizedContext {
+        schema_version: 1,
+        harness: HarnessId::new("claude_code").unwrap(),
+        producer_id: None,
+        workspace_root: PrivateText::new("/data/projects/skillranker"),
+        session_id: Some(SessionId::new("sess-anchor-supplied").unwrap()),
+        agent_id: None,
+        branch_id: None,
+        context_epoch: Some(ContextEpoch::new("epoch-3").unwrap()),
+        current_request: CurrentRequest {
+            event_id: Some(EventId::new("ev-req-sup").unwrap()),
+            text: PrivateText::new("continue"),
+            attachments_omitted: false,
+            essential_attachment_missing: false,
+        },
+        events: Vec::new(),
+        explicit_skill_references: Vec::new(),
+        supplied_loads: Vec::new(),
+    };
+
+    let res_supplied = resolve_task_anchor(
+        &context_supplied,
+        Some((
+            "Refactor storage ledger to support atomic commits",
+            "session-compaction-v3",
+        )),
+        &redactor,
+    );
+    match res_supplied {
+        AnchorResolution::Established(ref anchor) => {
+            assert_eq!(
+                anchor.text,
+                "Refactor storage ledger to support atomic commits"
+            );
+            assert!(anchor.is_terse);
+            assert_eq!(
+                anchor.provenance,
+                AnchorProvenance::SuppliedSummary {
+                    provenance: "session-compaction-v3".to_string(),
+                }
+            );
+        }
+        other => panic!(
+            "expected Established from supplied summary, got {:?}",
+            other
+        ),
+    }
+
+    // -------------------------------------------------------------------------
+    // Sub-case 7: Supplied summary with empty/whitespace provenance rejected
+    // -------------------------------------------------------------------------
+    let res_unverified_prov = resolve_task_anchor(
+        &context_supplied,
+        Some(("Refactor storage ledger to support atomic commits", "   ")),
+        &redactor,
+    );
+    assert!(
+        matches!(
+            res_unverified_prov,
+            AnchorResolution::MissingTaskContext { .. }
+        ),
+        "supplied summary with empty provenance must be rejected as unverified"
+    );
+
+    // -------------------------------------------------------------------------
+    // Sub-case 8: Oversized uninspectable request rejected (>1 MiB)
+    // -------------------------------------------------------------------------
+    let oversized_len = HOOK_STDIN_BYTES.max() + 1;
+    let oversized_text = "A".repeat(oversized_len);
+    let context_oversized = NormalizedContext {
+        schema_version: 1,
+        harness: HarnessId::new("claude_code").unwrap(),
+        producer_id: None,
+        workspace_root: PrivateText::new("/data/projects/skillranker"),
+        session_id: Some(SessionId::new("sess-anchor-oversized").unwrap()),
+        agent_id: None,
+        branch_id: None,
+        context_epoch: Some(ContextEpoch::new("epoch-1").unwrap()),
+        current_request: CurrentRequest {
+            event_id: Some(EventId::new("ev-req-big").unwrap()),
+            text: PrivateText::new(oversized_text),
+            attachments_omitted: false,
+            essential_attachment_missing: false,
+        },
+        events: Vec::new(),
+        explicit_skill_references: Vec::new(),
+        supplied_loads: Vec::new(),
+    };
+
+    let res_oversized = resolve_task_anchor(&context_oversized, None, &redactor);
+    let err = res_oversized.clone().into_result().unwrap_err();
+    match err {
+        AnchorError::OversizedInput { bytes, max } => {
+            assert_eq!(bytes, oversized_len);
+            assert_eq!(max, HOOK_STDIN_BYTES.max());
+        }
+        other => panic!("expected OversizedInput error, got {:?}", other),
+    }
+
+    // -------------------------------------------------------------------------
+    // Sub-case 9: Contradictory directives across turns detected
+    // -------------------------------------------------------------------------
+    let context_conflict = NormalizedContext {
+        schema_version: 1,
+        harness: HarnessId::new("claude_code").unwrap(),
+        producer_id: None,
+        workspace_root: PrivateText::new("/data/projects/skillranker"),
+        session_id: Some(SessionId::new("sess-anchor-conflict").unwrap()),
+        agent_id: None,
+        branch_id: None,
+        context_epoch: Some(ContextEpoch::new("epoch-1").unwrap()),
+        current_request: CurrentRequest {
+            event_id: Some(EventId::new("ev-req-conf").unwrap()),
+            text: PrivateText::new("continue"),
+            attachments_omitted: false,
+            essential_attachment_missing: false,
+        },
+        events: vec![
+            NormalizedEvent {
+                event_id: Some(EventId::new("ev-c-01").unwrap()),
+                parent_id: None,
+                turn_id: Some(TurnId::new("turn-1").unwrap()),
+                agent_id: None,
+                branch_id: None,
+                role: Role::User,
+                kind: EventKind::Message,
+                timestamp_unix_ms: Some(1000),
+                text: PrivateText::new("/use-skill docker-deploy"),
+                tool: None,
+            },
+            NormalizedEvent {
+                event_id: Some(EventId::new("ev-c-02").unwrap()),
+                parent_id: Some(EventId::new("ev-c-01").unwrap()),
+                turn_id: Some(TurnId::new("turn-2").unwrap()),
+                agent_id: None,
+                branch_id: None,
+                role: Role::Assistant,
+                kind: EventKind::Message,
+                timestamp_unix_ms: Some(2000),
+                text: PrivateText::new("Understood."),
+                tool: None,
+            },
+            NormalizedEvent {
+                event_id: Some(EventId::new("ev-c-03").unwrap()),
+                parent_id: Some(EventId::new("ev-c-02").unwrap()),
+                turn_id: Some(TurnId::new("turn-3").unwrap()),
+                agent_id: None,
+                branch_id: None,
+                role: Role::User,
+                kind: EventKind::Message,
+                timestamp_unix_ms: Some(3000),
+                text: PrivateText::new("/exclude-skill docker-deploy"),
+                tool: None,
+            },
+        ],
+        explicit_skill_references: Vec::new(),
+        supplied_loads: Vec::new(),
+    };
+
+    let res_conflict = resolve_task_anchor(&context_conflict, None, &redactor);
+    match res_conflict {
+        AnchorResolution::ConflictingDirectives { detail } => {
+            assert!(detail.contains("docker-deploy"));
+        }
+        other => panic!(
+            "expected ConflictingDirectives across turns, got {:?}",
+            other
+        ),
+    }
+
+    // -------------------------------------------------------------------------
+    // Sub-case 10: Contradictory directives in current prompt detected
+    // -------------------------------------------------------------------------
+    let context_prompt_conflict = NormalizedContext {
+        schema_version: 1,
+        harness: HarnessId::new("claude_code").unwrap(),
+        producer_id: None,
+        workspace_root: PrivateText::new("/data/projects/skillranker"),
+        session_id: Some(SessionId::new("sess-anchor-pconf").unwrap()),
+        agent_id: None,
+        branch_id: None,
+        context_epoch: Some(ContextEpoch::new("epoch-1").unwrap()),
+        current_request: CurrentRequest {
+            event_id: Some(EventId::new("ev-req-pconf").unwrap()),
+            text: PrivateText::new("/use-skill k8s-helper\n/exclude-skill k8s-helper"),
+            attachments_omitted: false,
+            essential_attachment_missing: false,
+        },
+        events: Vec::new(),
+        explicit_skill_references: Vec::new(),
+        supplied_loads: Vec::new(),
+    };
+
+    let res_pconflict = resolve_task_anchor(&context_prompt_conflict, None, &redactor);
+    match res_pconflict {
+        AnchorResolution::ConflictingDirectives { detail } => {
+            assert!(detail.contains("k8s-helper"));
+        }
+        other => panic!(
+            "expected ConflictingDirectives within prompt, got {:?}",
+            other
+        ),
+    }
+
+    // -------------------------------------------------------------------------
+    // Sub-case 11: Substantive prompt establishes CurrentRequest provenance
+    // -------------------------------------------------------------------------
+    let context_substantive = NormalizedContext {
+        schema_version: 1,
+        harness: HarnessId::new("claude_code").unwrap(),
+        producer_id: None,
+        workspace_root: PrivateText::new("/data/projects/skillranker"),
+        session_id: Some(SessionId::new("sess-anchor-sub").unwrap()),
+        agent_id: None,
+        branch_id: None,
+        context_epoch: Some(ContextEpoch::new("epoch-1").unwrap()),
+        current_request: CurrentRequest {
+            event_id: Some(EventId::new("ev-req-sub").unwrap()),
+            text: PrivateText::new("Add property tests for task anchor resolution"),
+            attachments_omitted: false,
+            essential_attachment_missing: false,
+        },
+        events: Vec::new(),
+        explicit_skill_references: Vec::new(),
+        supplied_loads: Vec::new(),
+    };
+
+    let res_sub = resolve_task_anchor(&context_substantive, None, &redactor);
+    match res_sub {
+        AnchorResolution::Established(ref anchor) => {
+            assert_eq!(anchor.text, "Add property tests for task anchor resolution");
+            assert!(!anchor.is_terse);
+            assert_eq!(
+                anchor.source_event_id,
+                Some(EventId::new("ev-req-sub").unwrap())
+            );
+            assert_eq!(anchor.provenance, AnchorProvenance::CurrentRequest);
+        }
+        other => panic!(
+            "expected Established CurrentRequest anchor, got {:?}",
+            other
+        ),
+    }
+
+    // -------------------------------------------------------------------------
+    // Sub-case 12: Sensitive secret redaction on recovered anchor text
+    // -------------------------------------------------------------------------
+    let context_secret = NormalizedContext {
+        schema_version: 1,
+        harness: HarnessId::new("claude_code").unwrap(),
+        producer_id: None,
+        workspace_root: PrivateText::new("/data/projects/skillranker"),
+        session_id: Some(SessionId::new("sess-anchor-secret").unwrap()),
+        agent_id: None,
+        branch_id: None,
+        context_epoch: Some(ContextEpoch::new("epoch-1").unwrap()),
+        current_request: CurrentRequest {
+            event_id: Some(EventId::new("ev-req-sec").unwrap()),
+            text: PrivateText::new("continue"),
+            attachments_omitted: false,
+            essential_attachment_missing: false,
+        },
+        events: vec![NormalizedEvent {
+            event_id: Some(EventId::new("ev-sec-01").unwrap()),
+            parent_id: None,
+            turn_id: Some(TurnId::new("turn-1").unwrap()),
+            agent_id: None,
+            branch_id: None,
+            role: Role::User,
+            kind: EventKind::Message,
+            timestamp_unix_ms: Some(1000),
+            text: PrivateText::new("Deploy service with token=AKIAIOSFODNN7EXAMPLE to production"),
+            tool: None,
+        }],
+        explicit_skill_references: Vec::new(),
+        supplied_loads: Vec::new(),
+    };
+
+    let res_sec = resolve_task_anchor(&context_secret, None, &redactor);
+    match res_sec {
+        AnchorResolution::Established(ref anchor) => {
+            assert!(!anchor.text.contains("AKIAIOSFODNN7EXAMPLE"));
+            assert!(anchor.text.contains("[REDACTED]"));
+            assert!(anchor.text.contains("Deploy service with token="));
+            assert!(anchor.text.contains("to production"));
+        }
+        other => panic!(
+            "expected Established anchor with redacted secret, got {:?}",
+            other
+        ),
+    }
 }

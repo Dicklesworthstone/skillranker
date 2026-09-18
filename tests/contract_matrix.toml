@@ -855,7 +855,7 @@ e2e_cases = ["task-anchor-preserved"]
 assertion_ids = ["anchor_intact"]
 platforms = ["linux"]
 features = []
-status = "planned"
+status = "implemented"
 
 [[boundaries]]
 id = "p3_project_signals"

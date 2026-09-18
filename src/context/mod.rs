@@ -2,6 +2,7 @@
 //! payload. Decoding, byte/depth limits and native adapter conformance live at
 //! the input boundary; serializing this entire envelope to a provider is invalid.
 
+pub mod anchor;
 pub mod branch;
 #[cfg(unix)]
 pub mod cass;
@@ -12,6 +13,10 @@ pub mod signals;
 pub mod source;
 pub mod tool;
 
+pub use anchor::{
+    AnchorDirective, AnchorDirectiveKind, AnchorError, AnchorProvenance, AnchorResolution,
+    TaskAnchor, is_terse_continuation, resolve_task_anchor,
+};
 pub use branch::{
     ActiveBranch, BranchAdvice, BranchResolution, BranchResolutionTarget, LoadedSkillRecord,
     ResolvedWorktree, SkillSuppressionVerdict, SkillUsageKind, UnresolvedBranchReason,
