@@ -19,11 +19,17 @@ struct Home {
 impl Home {
     // Intentionally retained: repository policy forbids automatic tree deletion.
     fn new() -> Self {
+        // Trees are retained, so a reused PID must never reuse an old tree.
         let root = std::env::temp_dir().join(format!(
-            "sr-doctor-{}-{}",
+            "sr-doctor-{}-{}-{}",
             std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
+        std::fs::create_dir(&root).unwrap();
         for dir in ["workspace/.claude/skills", "home/.claude/skills", "user/sr"] {
             std::fs::create_dir_all(root.join(dir)).unwrap();
         }

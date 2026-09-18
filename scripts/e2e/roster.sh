@@ -19,13 +19,24 @@ RCH_REQUIRE_REMOTE=1 rch --json exec -- cargo test --locked -j 2 \
     --test roster_failures --test roster_cli --test roster_snapshot \
     --test roster_retrieval --test roster_revalidation --test roster_contract \
     --test roster_discovery --test roster_resolution --test roster_import \
-    --test roster_evidence --test quill_contract \
+    --test roster_evidence --test quill_contract --test quill_query \
     --test authorized_read_contract --test redaction_contract \
+    --test cli_config --test p2_gate \
     -- --nocapture > "$artifact_dir/remote-result.json" 2> "$artifact_dir/tests.log" || result=$?
 cat "$artifact_dir/remote-result.json"
 cat "$artifact_dir/tests.log" >&2
 if [ "$result" -ne 0 ]; then
     printf '%s\n' '{"schema_version":1,"suite":"roster","status":"failed","product_gate":"not-accepted"}'
     exit "$result"
+fi
+# Each contract-matrix case passes only if every real test mapped to it ran
+# and passed in this log, and the whole run was complete.
+cases=0
+python3 -I -B scripts/e2e/product_cases.py evaluate scripts/e2e/product/roster.json \
+    "$artifact_dir/tests.log" > "$artifact_dir/cases.jsonl" || cases=$?
+cat "$artifact_dir/cases.jsonl"
+if [ "$cases" -ne 0 ]; then
+    printf '%s\n' '{"schema_version":1,"suite":"roster","status":"failed","product_gate":"not-accepted","reason":"case-evidence"}'
+    exit 1
 fi
 printf '%s\n' '{"schema_version":1,"suite":"roster","status":"passed","scope":"local-filesystem-cli-quill","live_provider":false,"native_harness":false}'

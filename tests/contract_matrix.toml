@@ -461,7 +461,7 @@ member_beads = ["sr-roadmap-l1i.3.2"]
 phase = "P2"
 title = "Adapt standalone secret scanning and whole-payload redaction"
 unit_property_tests = [
-    "tests/privacy_contract.rs::redaction_before_truncation"
+    "tests/redaction_contract.rs::redaction_before_truncation", "tests/redaction_contract.rs::secret_families_remove_complete_values_preserving_neighbors", "tests/redaction_contract.rs::final_payload_checks_all_nested_fields_and_decodes_escapes"
 ]
 e2e_suite = "roster"
 e2e_cases = ["planted-secret-redacted", "split-boundary-redacted"]
@@ -511,7 +511,7 @@ member_beads = ["sr-roadmap-l1i.3.5"]
 phase = "P2"
 title = "Resolve stable IDs, aliases, collisions and invocation restrictions"
 unit_property_tests = [
-    "tests/roster_contract.rs::stable_id_and_collision_checks"
+    "tests/roster_resolution.rs::stable_identity_changes_content_hash_and_detects_inconsistent_alias_reads", "tests/roster_resolution.rs::collision_requires_comparable_known_unique_precedence"
 ]
 e2e_suite = "roster"
 e2e_cases = ["collision-detected-and-excluded"]
@@ -546,7 +546,7 @@ unit_property_tests = [
     "tests/roster_import.rs::escaped_and_unauthorized_paths_are_refused",
     "tests/roster_import.rs::false_identity_content_and_eligibility_claims_are_rejected",
     "tests/roster_import.rs::verified_inventory_replaces_discovery_with_discovery_identities",
-    "tests/roster_import.rs::synthetic_text_supports_evaluation_but_not_live_resolution"
+    "tests/roster_import.rs::synthetic_text_supports_evaluation_but_not_live_resolution", "tests/roster_import.rs::importing_a_roster_mutates_nothing"
 ]
 e2e_suite = "roster"
 e2e_cases = ["dry-run-import-clean"]
@@ -562,7 +562,7 @@ member_beads = ["sr-roadmap-l1i.3.8"]
 phase = "P2"
 title = "Integrate the narrow Quill crate and feature denylist"
 unit_property_tests = [
-    "tests/quill_contract.rs::quill_lexical_search"
+    "tests/quill_contract.rs::shipping_schema_searches_titles_and_content_but_not_stored_metadata", "tests/quill_contract.rs::fuel_exhaustion_is_a_typed_failure_not_an_empty_success", "tests/quill_contract.rs::zero_resource_budgets_are_refused_before_index_creation"
 ]
 e2e_suite = "roster"
 e2e_cases = ["in-memory-quill-commit"]
@@ -578,7 +578,7 @@ member_beads = ["sr-roadmap-l1i.3.9"]
 phase = "P2"
 title = "Compile bounded literal disjunction queries for overflow"
 unit_property_tests = [
-    "tests/quill_contract.rs::literal_disjunction_queries"
+    "tests/quill_query.rs::boolean_field_range_wildcard_and_phrase_text_cannot_supply_operators", "tests/quill_query.rs::terms_are_deduplicated_and_disjoined_across_context_sources", "tests/quill_query.rs::scalar_cap_counts_quotes_separators_and_unicode_scalars_exactly"
 ]
 e2e_suite = "roster"
 e2e_cases = ["escaped-disjunction-queries"]
@@ -594,7 +594,7 @@ member_beads = ["sr-roadmap-l1i.3.10"]
 phase = "P2"
 title = "Build deterministic in-memory roster retrieval"
 unit_property_tests = [
-    "tests/quill_contract.rs::deterministic_shortlist"
+    "tests/roster_retrieval.rs::zero_one_and_254_bypass_the_lexical_filter", "tests/roster_retrieval.rs::overflow_and_thousand_rosters_preserve_cutoff_ties_and_input_order_independence", "tests/roster_retrieval.rs::operational_failures_do_not_masquerade_as_empty_matches"
 ]
 e2e_suite = "roster"
 e2e_cases = ["deterministic-tie-breaking"]
@@ -610,7 +610,7 @@ member_beads = ["sr-roadmap-l1i.3.11"]
 phase = "P2"
 title = "Revalidate every roster dependency before publication"
 unit_property_tests = [
-    "tests/roster_contract.rs::roster_revalidation"
+    "tests/roster_revalidation.rs::a_changed_wide_candidate_outside_the_shortlist_invalidates", "tests/roster_revalidation.rs::a_new_overflow_candidate_invalidates", "tests/roster_revalidation.rs::an_unreadable_scope_is_incomplete_not_changed"
 ]
 e2e_suite = "roster"
 e2e_cases = ["changed-shortlist-invalidated"]
@@ -626,7 +626,7 @@ member_beads = ["sr-roadmap-l1i.3.12"]
 phase = "P2"
 title = "Expose typed discovery and exclusion evidence"
 unit_property_tests = [
-    "tests/roster_contract.rs::exclusion_reason_codes"
+    "tests/roster_evidence.rs::each_reason_is_traced_with_a_success_counterpart", "tests/roster_evidence.rs::unrun_or_failed_stages_are_not_evaluated_rather_than_misses", "tests/roster_evidence.rs::reason_stage_and_hint_codes_are_stable"
 ]
 e2e_suite = "roster"
 e2e_cases = ["exclusion-evidence-reported"]
@@ -642,7 +642,7 @@ member_beads = ["sr-roadmap-l1i.3.13"]
 phase = "P2"
 title = "Ship local roster inspection and snapshot-bound pagination"
 unit_property_tests = [
-    "tests/roster_cli.rs::roster_inspection"
+    "tests/roster_cli.rs::records_report_status_counts_and_partial_sources_without_a_key", "tests/roster_cli.rs::concatenated_pages_equal_the_whole_snapshot", "tests/roster_cli.rs::a_change_between_pages_requires_a_restart"
 ]
 e2e_suite = "roster"
 e2e_cases = ["roster-json-pagination"]
@@ -674,7 +674,7 @@ member_beads = ["sr-roadmap-l1i.3.15"]
 phase = "P2"
 title = "Implement roster snapshot and authorized drift comparison"
 unit_property_tests = [
-    "tests/roster_contract.rs::snapshot_delta_computation"
+    "tests/roster_snapshot.rs::a_diff_reports_renames_replacements_restrictions_additions_and_removals", "tests/roster_snapshot.rs::an_unreadable_root_makes_removals_unconfirmed", "tests/roster_snapshot.rs::a_snapshot_is_owner_only_path_free_and_never_overwrites"
 ]
 e2e_suite = "roster"
 e2e_cases = ["snapshot-diff-accurate"]
@@ -706,7 +706,7 @@ member_beads = ["sr-roadmap-l1i.3.17"]
 phase = "P2"
 title = "Accept roster, redaction, snapshot and Quill foundation"
 unit_property_tests = [
-    "tests/p2_gate.rs::all_p2_invariants_verified"
+    "tests/p2_gate.rs::eligible_output_maps_to_currently_authorized_local_records", "tests/p2_gate.rs::unreadable_or_malformed_records_leave_no_eligible_output"
 ]
 e2e_suite = "roster"
 e2e_cases = ["full-roster-suite"]

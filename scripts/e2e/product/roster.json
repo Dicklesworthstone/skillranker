@@ -1,0 +1,237 @@
+{
+  "schema_version": 1,
+  "suite": "roster",
+  "tier": "rust-product-integration",
+  "targets": [
+    "authorized_read_contract",
+    "cli_config",
+    "p2_gate",
+    "quill_contract",
+    "quill_query",
+    "redaction_contract",
+    "roster_cli",
+    "roster_contract",
+    "roster_discovery",
+    "roster_evidence",
+    "roster_failures",
+    "roster_import",
+    "roster_resolution",
+    "roster_retrieval",
+    "roster_revalidation",
+    "roster_snapshot"
+  ],
+  "cases": [
+    {
+      "id": "safe-descriptor-walk",
+      "assertions": ["no_symlink_escape"],
+      "tests": [
+        "authorized_read_contract::replacing_a_component_after_the_root_opens_cannot_redirect_reads",
+        "authorized_read_contract::requested_paths_cannot_climb_out_and_missing_files_are_reported",
+        "authorized_read_contract::only_regular_files_are_read"
+      ]
+    },
+    {
+      "id": "symlink-escape-blocked",
+      "assertions": ["no_symlink_escape"],
+      "tests": [
+        "authorized_read_contract::symlinks_resolve_only_inside_authorized_roots",
+        "authorized_read_contract::concurrent_component_swaps_never_return_content_from_outside",
+        "roster_discovery::symlinked_directories_are_skipped_and_symlinked_skill_files_are_flagged"
+      ]
+    },
+    {
+      "id": "planted-secret-redacted",
+      "assertions": ["zero_secret_leak"],
+      "tests": [
+        "redaction_contract::secret_families_remove_complete_values_preserving_neighbors",
+        "redaction_contract::final_payload_checks_all_nested_fields_and_decodes_escapes",
+        "roster_contract::parser_errors_never_echo_raw_yaml_or_canary_secrets"
+      ]
+    },
+    {
+      "id": "split-boundary-redacted",
+      "assertions": ["zero_secret_leak"],
+      "tests": [
+        "redaction_contract::redaction_before_truncation",
+        "redaction_contract::incomplete_quoted_values_and_numeric_credentials_are_private"
+      ]
+    },
+    {
+      "id": "oversized-frontmatter-rejected",
+      "assertions": ["frontmatter_bounded"],
+      "tests": [
+        "roster_contract::frontmatter_limits_and_fallbacks",
+        "roster_contract::duplicate_keys_are_strictly_rejected",
+        "roster_contract::yaml_anchors_and_aliases_are_forbidden"
+      ]
+    },
+    {
+      "id": "valid-frontmatter-parsed",
+      "assertions": ["frontmatter_bounded"],
+      "tests": [
+        "roster_contract::frontmatter_limits_and_fallbacks",
+        "roster_contract::folded_and_literal_multiline_descriptions",
+        "roster_contract::utf8_bom_and_crlf_handling"
+      ]
+    },
+    {
+      "id": "shadowing-precedence-honored",
+      "assertions": ["correct_shadowing"],
+      "tests": [
+        "roster_resolution::actual_claude_roots_resolve_personal_winner_and_directory_invocation",
+        "roster_resolution::collision_requires_comparable_known_unique_precedence",
+        "roster_discovery::documented_claude_roots_are_enumerated_without_unrelated_harness_roots"
+      ]
+    },
+    {
+      "id": "collision-detected-and-excluded",
+      "assertions": ["unique_ids"],
+      "tests": [
+        "roster_resolution::collision_requires_comparable_known_unique_precedence",
+        "roster_resolution::mixed_contracts_are_ambiguous_and_unverified_singletons_stay_unverified",
+        "roster_resolution::stable_identity_changes_content_hash_and_detects_inconsistent_alias_reads"
+      ]
+    },
+    {
+      "id": "explicit-resolved-offline",
+      "assertions": ["no_network_needed"],
+      "tests": [
+        "roster_contract::local_explicit_resolution"
+      ]
+    },
+    {
+      "id": "dry-run-import-clean",
+      "assertions": ["zero_mutation"],
+      "tests": [
+        "roster_import::importing_a_roster_mutates_nothing",
+        "roster_import::roster_file_reads_are_bounded_regular_files"
+      ]
+    },
+    {
+      "id": "in-memory-quill-commit",
+      "assertions": ["quill_bounded"],
+      "tests": [
+        "quill_contract::shipping_schema_searches_titles_and_content_but_not_stored_metadata",
+        "quill_contract::zero_resource_budgets_are_refused_before_index_creation",
+        "quill_contract::fuel_exhaustion_is_a_typed_failure_not_an_empty_success"
+      ]
+    },
+    {
+      "id": "escaped-disjunction-queries",
+      "assertions": ["disjunction_exact"],
+      "tests": [
+        "quill_query::boolean_field_range_wildcard_and_phrase_text_cannot_supply_operators",
+        "quill_query::terms_are_deduplicated_and_disjoined_across_context_sources",
+        "quill_contract::shipping_title_boost_and_generated_disjunction_have_expected_results"
+      ]
+    },
+    {
+      "id": "deterministic-tie-breaking",
+      "assertions": ["deterministic_ordering"],
+      "tests": [
+        "roster_retrieval::overflow_and_thousand_rosters_preserve_cutoff_ties_and_input_order_independence",
+        "roster_retrieval::segment_sealing_does_not_change_equal_score_cutoff",
+        "quill_contract::stable_id_ingest_preserves_ties_at_the_254_hit_cutoff"
+      ]
+    },
+    {
+      "id": "changed-shortlist-invalidated",
+      "assertions": ["revalidation_clean"],
+      "tests": [
+        "roster_revalidation::a_changed_wide_candidate_outside_the_shortlist_invalidates",
+        "roster_revalidation::a_changed_restriction_on_a_removed_shortlist_candidate_invalidates",
+        "roster_revalidation::an_unchanged_partial_scope_revalidates"
+      ]
+    },
+    {
+      "id": "exclusion-evidence-reported",
+      "assertions": ["typed_reasons"],
+      "tests": [
+        "roster_evidence::each_reason_is_traced_with_a_success_counterpart",
+        "roster_evidence::reason_stage_and_hint_codes_are_stable",
+        "roster_evidence::partial_sources_and_excluded_records_are_counted_by_cause"
+      ]
+    },
+    {
+      "id": "roster-json-pagination",
+      "assertions": ["pagination_stable"],
+      "tests": [
+        "roster_cli::concatenated_pages_equal_the_whole_snapshot",
+        "roster_cli::a_change_between_pages_requires_a_restart",
+        "roster_cli::bad_limits_and_cursors_are_usage_errors_on_clean_streams"
+      ]
+    },
+    {
+      "id": "atomic-rename-permissions-0600",
+      "assertions": ["owner_only_permissions"],
+      "tests": [
+        "roster_contract::atomic_private_exports",
+        "roster_contract::concurrent_export_race_prevents_clobber",
+        "roster_snapshot::a_snapshot_is_owner_only_path_free_and_never_overwrites"
+      ]
+    },
+    {
+      "id": "snapshot-diff-accurate",
+      "assertions": ["delta_exact"],
+      "tests": [
+        "roster_snapshot::a_diff_reports_renames_replacements_restrictions_additions_and_removals",
+        "roster_snapshot::an_unreadable_root_makes_removals_unconfirmed",
+        "roster_snapshot::a_different_workspace_or_home_is_an_incompatible_namespace"
+      ]
+    },
+    {
+      "id": "0-skills",
+      "assertions": ["all_scale_invariants_pass"],
+      "tests": [
+        "roster_failures::roster_failure_cases",
+        "roster_retrieval::zero_one_and_254_bypass_the_lexical_filter"
+      ]
+    },
+    {
+      "id": "1-skill",
+      "assertions": ["all_scale_invariants_pass"],
+      "tests": [
+        "roster_failures::roster_failure_cases",
+        "roster_retrieval::zero_one_and_254_bypass_the_lexical_filter"
+      ]
+    },
+    {
+      "id": "254-skills",
+      "assertions": ["all_scale_invariants_pass"],
+      "tests": [
+        "roster_failures::roster_failure_cases",
+        "roster_retrieval::zero_one_and_254_bypass_the_lexical_filter"
+      ]
+    },
+    {
+      "id": "255-skills",
+      "assertions": ["all_scale_invariants_pass"],
+      "tests": [
+        "roster_failures::roster_failure_cases",
+        "roster_retrieval::overflow_and_thousand_rosters_preserve_cutoff_ties_and_input_order_independence"
+      ]
+    },
+    {
+      "id": "1000-skills",
+      "assertions": ["all_scale_invariants_pass"],
+      "tests": [
+        "roster_failures::roster_failure_cases",
+        "roster_retrieval::overflow_and_thousand_rosters_preserve_cutoff_ties_and_input_order_independence"
+      ]
+    },
+    {
+      "id": "full-roster-suite",
+      "assertions": ["p2_gate_passed"],
+      "tests": "all"
+    },
+    {
+      "id": "local-inspection-config",
+      "assertions": ["authority_preserved"],
+      "tests": [
+        "cli_config::local_inspection_creates_no_effects_and_observer_detects_them",
+        "cli_config::project_symlink_escape_is_refused",
+        "cli_config::malformed_and_forbidden_configuration_never_echoes_private_input"
+      ]
+    }
+  ]
+}

@@ -655,3 +655,74 @@ fn cancellation_stops_import_before_reading() {
     assert_eq!(error, ImportError::Cancelled);
     assert_eq!(error.kind(), None);
 }
+
+/// Every path under `root` with its type, size, mode, modification time and
+/// bytes. Access times are excluded: reading may update them.
+fn tree_state(root: &Path) -> BTreeMap<PathBuf, (u32, u64, i64, i64, ContentHash)> {
+    use std::os::unix::fs::MetadataExt;
+    let mut state = BTreeMap::new();
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(path) = pending.pop() {
+        let meta = fs::symlink_metadata(&path).unwrap();
+        let bytes = if meta.is_file() {
+            fs::read(&path).unwrap()
+        } else {
+            Vec::new()
+        };
+        if meta.is_dir() {
+            for entry in fs::read_dir(&path).unwrap() {
+                pending.push(entry.unwrap().path());
+            }
+        }
+        state.insert(
+            path.strip_prefix(root).unwrap().to_path_buf(),
+            (
+                meta.mode(),
+                meta.len(),
+                meta.mtime(),
+                meta.mtime_nsec(),
+                ContentHash::from_bytes(&bytes),
+            ),
+        );
+    }
+    state
+}
+
+#[test]
+fn importing_a_roster_mutates_nothing() {
+    let f = Fixture::new();
+    f.project("review/SKILL.md", &skill("review", ""));
+    f.user("deploy/SKILL.md", &skill("deploy", ""));
+    let manifest_dir = tree();
+    let manifest = files(json!([
+        record(PROJECT, "review/SKILL.md"),
+        record(USER, "deploy/SKILL.md"),
+    ]));
+    let manifest_path = manifest_dir.join("roster.json");
+    fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+    let before = (
+        tree_state(&f.workspace),
+        tree_state(&f.home),
+        tree_state(&manifest_dir),
+    );
+    let bytes = read_roster_file(&manifest_path).unwrap();
+    let (clock, _runtime, cx) = invocation();
+    let roster = import_authorized(&bytes, &f.plan(), &BTreeMap::new(), &cx, &clock).unwrap();
+    assert_eq!(roster.skills().len(), 2);
+    // A refused import and a synthetic import are equally read-only.
+    let refused = files(json!([record(PROJECT, "../escape/SKILL.md")]));
+    assert!(f.import(&refused).is_err());
+    let synthetic = texts(json!([
+        {"invocation": "text", "text": skill("text", "")}
+    ]));
+    import_synthetic(&serde_json::to_vec(&synthetic).unwrap(), &claude()).unwrap();
+    let after = (
+        tree_state(&f.workspace),
+        tree_state(&f.home),
+        tree_state(&manifest_dir),
+    );
+    assert_eq!(before, after, "an import changed the filesystem");
+    // Positive twin: the observer does see a real change.
+    f.project("review/SKILL.md", &skill("review", "usage: workflow\n"));
+    assert_ne!(tree_state(&f.workspace), after.0);
+}

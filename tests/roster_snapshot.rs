@@ -13,11 +13,17 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
+        // Trees are retained, so a reused PID must never reuse an old tree.
         let root = std::fs::canonicalize("/tmp").unwrap().join(format!(
-            "sr-roster-snapshot-{}-{}",
+            "sr-roster-snapshot-{}-{}-{}",
             std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
+        std::fs::create_dir(&root).unwrap();
         std::fs::create_dir_all(root.join("workspace/.claude/skills")).unwrap();
         std::fs::create_dir_all(root.join("home/.claude/skills")).unwrap();
         // Snapshot targets must sit in a private directory, whatever the umask.
