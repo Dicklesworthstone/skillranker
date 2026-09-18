@@ -205,6 +205,8 @@ pub struct RenderedMessage {
 #[serde(deny_unknown_fields)]
 pub struct RenderedContextPayload {
     pub schema_version: u32,
+    #[serde(default)]
+    pub context_profile: ContextProfile,
     pub harness: String,
     pub context_quality: ContextQuality,
     pub project_signals: RenderedProjectSignals,
@@ -232,6 +234,11 @@ impl RenderedContextPayload {
         self.context_quality == ContextQuality::Insufficient
     }
 
+    /// Returns the total size of the serialized payload in bytes.
+    pub fn disclosed_bytes(&self) -> usize {
+        serde_json::to_vec(self).map(|v| v.len()).unwrap_or(0)
+    }
+
     /// Total Unicode scalar count across latest request and all recent messages.
     pub fn total_message_scalars(&self) -> usize {
         let req_scalars = self.latest_user_request.chars().count();
@@ -249,10 +256,13 @@ impl RenderedContextPayload {
     }
 }
 
+use crate::privacy::{ContextProfile, is_essential_tool_reference};
+
 /// Options controlling context windowing, budget, redaction, and tool filtering.
 #[derive(Clone, Debug)]
 pub struct RenderContextOptions<'a> {
     pub no_tools: bool,
+    pub context_profile: ContextProfile,
     pub max_messages: usize,
     pub max_total_scalars: usize,
     pub tool_excerpt_chars: usize,
@@ -262,12 +272,14 @@ pub struct RenderContextOptions<'a> {
     pub loaded_state: String,
     pub explicit_exclusions: Vec<String>,
     pub fail_on_unsupported_context: bool,
+    pub essential_tool_missing: bool,
 }
 
 impl<'a> Default for RenderContextOptions<'a> {
     fn default() -> Self {
         Self {
             no_tools: false,
+            context_profile: ContextProfile::Standard,
             max_messages: RECENT_NORMALIZED_MESSAGES.max(),
             max_total_scalars: RENDERED_CONTEXT_SCALARS.max(),
             tool_excerpt_chars: DEFAULT_TOOL_EXCERPT_CHARS,
@@ -277,6 +289,7 @@ impl<'a> Default for RenderContextOptions<'a> {
             loaded_state: "observed".to_string(),
             explicit_exclusions: Vec::new(),
             fail_on_unsupported_context: false,
+            essential_tool_missing: false,
         }
     }
 }
@@ -340,12 +353,26 @@ pub fn render_context(
 ) -> Result<RenderedContextPayload, RenderContextError> {
     let redactor = options.redactor;
 
-    // 1. Check essential attachments
-    let essential_missing = context.current_request.essential_attachment_missing;
+    // 1. Check essential attachments and tool results
+    let tool_bodies_omitted =
+        options.no_tools || options.context_profile == ContextProfile::Minimal;
+    let had_tool_events = context
+        .events
+        .iter()
+        .any(|e| matches!(e.kind, EventKind::ToolInvocation | EventKind::ToolResult));
+    let essential_tool_indicated = options.essential_tool_missing
+        || (had_tool_events && is_essential_tool_reference(context.current_request.text.as_str()));
+    let essential_tool_omitted = essential_tool_indicated && tool_bodies_omitted;
+    let essential_missing =
+        context.current_request.essential_attachment_missing || essential_tool_omitted;
+
     if essential_missing && options.fail_on_unsupported_context {
-        return Err(RenderContextError::UnsupportedContext(
-            "request meaning depends on omitted attachment".to_string(),
-        ));
+        let reason = if context.current_request.essential_attachment_missing {
+            "request meaning depends on omitted attachment"
+        } else {
+            "request meaning depends on omitted tool result"
+        };
+        return Err(RenderContextError::UnsupportedContext(reason.to_string()));
     }
 
     // 2. Redact full latest request text before any truncation
@@ -371,108 +398,111 @@ pub fn render_context(
     let latest_event_id = context.current_request.event_id.as_ref();
     let mut candidates: Vec<RenderedMessage> = Vec::new();
 
-    for event in &context.events {
-        // Do not duplicate latest request in recent_messages
-        if let (Some(ev_id), Some(cur_id)) = (&event.event_id, latest_event_id)
-            && ev_id == cur_id
-        {
-            continue;
-        }
+    // In Minimal profile, optional history and tool bodies are omitted entirely
+    if options.context_profile != ContextProfile::Minimal {
+        for event in &context.events {
+            // Do not duplicate latest request in recent_messages
+            if let (Some(ev_id), Some(cur_id)) = (&event.event_id, latest_event_id)
+                && ev_id == cur_id
+            {
+                continue;
+            }
 
-        match event.kind {
-            EventKind::ToolInvocation | EventKind::ToolResult => {
-                if options.no_tools {
-                    continue;
+            match event.kind {
+                EventKind::ToolInvocation | EventKind::ToolResult => {
+                    if options.no_tools {
+                        continue;
+                    }
+                    if let Some(tool_ev) = &event.tool {
+                        let tool_name = tool_ev.name.as_str().to_string();
+                        let status_str = match tool_ev.status {
+                            crate::context::ToolStatus::Succeeded => "succeeded",
+                            crate::context::ToolStatus::Failed => "failed",
+                            crate::context::ToolStatus::Attempted => "attempted",
+                            crate::context::ToolStatus::Unknown => "unknown",
+                        };
+
+                        let mut summary_parts = Vec::new();
+                        if let Some(args) = &tool_ev.arguments {
+                            let redacted_args = redactor.redact_field(args.as_str())?.into_string();
+                            let arg_summary = summarize_tool_arguments(
+                                &redacted_args,
+                                options.tool_excerpt_chars / 2,
+                            );
+                            if !arg_summary.is_empty() && arg_summary != "{}" {
+                                summary_parts.push(arg_summary);
+                            }
+                        }
+                        if let Some(res) = &tool_ev.result {
+                            let sanitized_res = sanitize_media_data(res.as_str());
+                            let redacted_res = redactor.redact_field(&sanitized_res)?.into_string();
+                            let (res_summary, _error_lines) =
+                                summarize_tool_result(&redacted_res, options.tool_excerpt_chars);
+                            if !res_summary.is_empty() {
+                                summary_parts.push(res_summary);
+                            }
+                        }
+
+                        let summary = if summary_parts.is_empty() {
+                            None
+                        } else {
+                            Some(summary_parts.join(": "))
+                        };
+
+                        candidates.push(RenderedMessage {
+                            role: "tool".to_string(),
+                            tool: Some(tool_name),
+                            status: Some(status_str.to_string()),
+                            summary,
+                            text: None,
+                        });
+                    }
                 }
-                if let Some(tool_ev) = &event.tool {
-                    let tool_name = tool_ev.name.as_str().to_string();
-                    let status_str = match tool_ev.status {
-                        crate::context::ToolStatus::Succeeded => "succeeded",
-                        crate::context::ToolStatus::Failed => "failed",
-                        crate::context::ToolStatus::Attempted => "attempted",
-                        crate::context::ToolStatus::Unknown => "unknown",
+                EventKind::Message => {
+                    let role_str = match event.role {
+                        Role::User => "user",
+                        Role::Assistant => "assistant",
+                        Role::Tool => {
+                            if options.no_tools {
+                                continue;
+                            }
+                            "tool"
+                        }
+                        Role::System => "system",
                     };
 
-                    let mut summary_parts = Vec::new();
-                    if let Some(args) = &tool_ev.arguments {
-                        let redacted_args = redactor.redact_field(args.as_str())?.into_string();
-                        let arg_summary = summarize_tool_arguments(
-                            &redacted_args,
-                            options.tool_excerpt_chars / 2,
-                        );
-                        if !arg_summary.is_empty() && arg_summary != "{}" {
-                            summary_parts.push(arg_summary);
-                        }
-                    }
-                    if let Some(res) = &tool_ev.result {
-                        let sanitized_res = sanitize_media_data(res.as_str());
-                        let redacted_res = redactor.redact_field(&sanitized_res)?.into_string();
-                        let (res_summary, _error_lines) =
-                            summarize_tool_result(&redacted_res, options.tool_excerpt_chars);
-                        if !res_summary.is_empty() {
-                            summary_parts.push(res_summary);
-                        }
-                    }
-
-                    let summary = if summary_parts.is_empty() {
-                        None
+                    // Strip thinking/reasoning blocks for assistant/system
+                    let cleaned_text = if event.role != Role::User {
+                        let no_thinking = strip_thinking_blocks(event.text.as_str());
+                        strip_advisory_from_non_user(event.role, &no_thinking)
                     } else {
-                        Some(summary_parts.join(": "))
+                        event.text.as_str().to_string()
                     };
+
+                    let media_clean = sanitize_media_data(&cleaned_text);
+                    if media_clean.is_empty() {
+                        continue;
+                    }
+
+                    let redacted_text = redactor.redact_field(&media_clean)?.into_string();
+                    if redacted_text.is_empty() {
+                        continue;
+                    }
 
                     candidates.push(RenderedMessage {
-                        role: "tool".to_string(),
-                        tool: Some(tool_name),
-                        status: Some(status_str.to_string()),
-                        summary,
-                        text: None,
+                        role: role_str.to_string(),
+                        tool: None,
+                        status: None,
+                        summary: None,
+                        text: Some(redacted_text),
                     });
                 }
-            }
-            EventKind::Message => {
-                let role_str = match event.role {
-                    Role::User => "user",
-                    Role::Assistant => "assistant",
-                    Role::Tool => {
-                        if options.no_tools {
-                            continue;
-                        }
-                        "tool"
-                    }
-                    Role::System => "system",
-                };
-
-                // Strip thinking/reasoning blocks for assistant/system
-                let cleaned_text = if event.role != Role::User {
-                    let no_thinking = strip_thinking_blocks(event.text.as_str());
-                    strip_advisory_from_non_user(event.role, &no_thinking)
-                } else {
-                    event.text.as_str().to_string()
-                };
-
-                let media_clean = sanitize_media_data(&cleaned_text);
-                if media_clean.is_empty() {
-                    continue;
+                EventKind::TaskBoundary
+                | EventKind::Compaction
+                | EventKind::Resume
+                | EventKind::SessionEnd => {
+                    // Non-message lifecycle events are not rendered in provider prompt context
                 }
-
-                let redacted_text = redactor.redact_field(&media_clean)?.into_string();
-                if redacted_text.is_empty() {
-                    continue;
-                }
-
-                candidates.push(RenderedMessage {
-                    role: role_str.to_string(),
-                    tool: None,
-                    status: None,
-                    summary: None,
-                    text: Some(redacted_text),
-                });
-            }
-            EventKind::TaskBoundary
-            | EventKind::Compaction
-            | EventKind::Resume
-            | EventKind::SessionEnd => {
-                // Non-message lifecycle events are not rendered in provider prompt context
             }
         }
     }
@@ -535,16 +565,19 @@ pub fn render_context(
             .iter()
             .map(|s| s.to_string())
             .collect();
-        let (dirty_paths, dirty_paths_truncated) = if let Some(dp) = &signals.dirty_paths {
-            let mut sanitized_paths = Vec::new();
-            for p in &dp.paths {
-                let redacted = redactor.redact_field(p.as_str())?.into_string();
-                sanitized_paths.push(redacted);
-            }
-            (sanitized_paths, dp.truncated)
-        } else {
-            (Vec::new(), false)
-        };
+        let (dirty_paths, dirty_paths_truncated) =
+            if options.context_profile == ContextProfile::Minimal {
+                (Vec::new(), false)
+            } else if let Some(dp) = &signals.dirty_paths {
+                let mut sanitized_paths = Vec::new();
+                for p in &dp.paths {
+                    let redacted = redactor.redact_field(p.as_str())?.into_string();
+                    sanitized_paths.push(redacted);
+                }
+                (sanitized_paths, dp.truncated)
+            } else {
+                (Vec::new(), false)
+            };
 
         RenderedProjectSignals {
             languages,
@@ -564,6 +597,7 @@ pub fn render_context(
 
     let payload = RenderedContextPayload {
         schema_version: 1,
+        context_profile: options.context_profile,
         harness: context.harness.as_str().to_string(),
         context_quality,
         project_signals,

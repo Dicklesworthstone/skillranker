@@ -6,9 +6,17 @@
 //! checks (symlink targets, file types, origin canonicalization) remain with
 //! the boundaries that perform those effects.
 
+pub mod profile;
 pub mod redaction;
+
+pub use profile::{
+    ProfileDisclosedFields, ProfileTrustError, count_disclosed_bytes, is_essential_tool_reference,
+    resolve_context_profile, validate_project_profile,
+};
+
 use crate::identity::forbidden_identity_character;
 use crate::output::ErrorKind;
+use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::path::{Component, Path, PathBuf};
 
@@ -300,9 +308,11 @@ pub fn admit_provider_attempt(
 }
 
 /// Ordered by disclosure: `Minimal < Standard`.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ContextProfile {
     Minimal,
+    #[default]
     Standard,
 }
 
@@ -320,6 +330,12 @@ impl ContextProfile {
             "standard" => Some(Self::Standard),
             _ => None,
         }
+    }
+}
+
+impl fmt::Display for ContextProfile {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
     }
 }
 

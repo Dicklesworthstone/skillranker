@@ -887,7 +887,7 @@ e2e_cases = ["minimal-profile-drops-tools"]
 assertion_ids = ["profile_respected"]
 platforms = ["linux"]
 features = []
-status = "planned"
+status = "implemented"
 
 [[boundaries]]
 id = "p3_disclosure_receipts"
