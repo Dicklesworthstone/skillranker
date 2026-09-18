@@ -9,6 +9,7 @@ pub mod jsonl;
 pub mod overlay;
 pub mod signals;
 pub mod source;
+pub mod tool;
 
 pub use branch::{
     ActiveBranch, BranchAdvice, BranchResolution, BranchResolutionTarget, LoadedSkillRecord,
@@ -17,6 +18,11 @@ pub use branch::{
 };
 pub use overlay::{
     ClaudeOverlayRequest, ClaudeOverlayResult, OverlayError, apply_claude_prompt_overlay,
+};
+pub use tool::{
+    AssociatedToolCall, DEFAULT_TOOL_EXCERPT_CHARS, SimpleSkillResolver, SkillEvidenceResolver,
+    SkillMatch, associate_tool_events, extract_load_observations, extract_loaded_skill_records,
+    filter_events_for_provider, head_tail_truncate, summarize_tool_arguments, summarize_tool_result,
 };
 
 use crate::identity::{

@@ -20,10 +20,13 @@ use skillranker::context::overlay::{
     ClaudeOverlayRequest, OverlayError, apply_claude_prompt_overlay,
 };
 use skillranker::context::{
-    ContextError, EventKind, NormalizedEvent, PrivateText, Role, parse_normalized_context,
+    ContextError, EventKind, LoadState, NormalizedEvent, PrivateText, Role, SimpleSkillResolver,
+    SkillMatch, ToolEvent, ToolStatus, associate_tool_events, extract_load_observations,
+    extract_loaded_skill_records, filter_events_for_provider, parse_normalized_context,
 };
 use skillranker::identity::{
-    BranchId, ContentHash, ContextEpoch, EventId, SkillId, SourceProvenance, TurnId, WorkspaceId,
+    BranchId, ContentHash, ContextEpoch, EventId, HarnessId, SessionId, SessionIdentity, SkillId,
+    SourceProvenance, ToolCallId, TurnId, WorkspaceId,
 };
 use skillranker::output::ContextQuality;
 use std::fs::{self, File};
@@ -1064,3 +1067,435 @@ fn normalized_envelopes() {
         "PrivateText Debug must show length only"
     );
 }
+
+#[test]
+fn tool_associations() {
+    let base_session = SessionIdentity {
+        source: SourceProvenance::Normalized {
+            producer: None,
+            harness: HarnessId::new("claude_code").unwrap(),
+            schema_version: 1,
+        },
+        workspace: Some(WorkspaceId::new("ws-test").unwrap()),
+        session: Some(SessionId::new("sess-1").unwrap()),
+        agent: None,
+        branch: Some(BranchId::new("main").unwrap()),
+        epoch: Some(ContextEpoch::new("epoch-0").unwrap()),
+    };
+
+    let mut resolver = SimpleSkillResolver::new();
+    let skill_cargo = SkillId::new("skill-cargo-test").unwrap();
+    let skill_deploy = SkillId::new("skill-deploy").unwrap();
+    let skill_refactor = SkillId::new("skill-refactor").unwrap();
+    let skill_forked = SkillId::new("skill-git-rebase").unwrap();
+    let skill_path_only = SkillId::new("skill-file-read").unwrap();
+
+    let known_digest = ContentHash::parse(
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    )
+    .unwrap();
+
+    resolver.register_tool(
+        "cargo_test",
+        SkillMatch {
+            skill_id: skill_cargo.clone(),
+            usage_kind: SkillUsageKind::Reference,
+            source_content: Some(known_digest.clone()),
+            rendered_content: Some(known_digest.clone()),
+            has_dynamic_arguments: false,
+            turn_scoped: false,
+        },
+    );
+    resolver.register_tool(
+        "deploy_tool",
+        SkillMatch {
+            skill_id: skill_deploy.clone(),
+            usage_kind: SkillUsageKind::Workflow,
+            source_content: None,
+            rendered_content: None,
+            has_dynamic_arguments: true,
+            turn_scoped: false,
+        },
+    );
+    resolver.register_tool(
+        "refactor_tool",
+        SkillMatch {
+            skill_id: skill_refactor.clone(),
+            usage_kind: SkillUsageKind::Workflow,
+            source_content: None,
+            rendered_content: None,
+            has_dynamic_arguments: false,
+            turn_scoped: false,
+        },
+    );
+    resolver.register_tool(
+        "fork_tool",
+        SkillMatch {
+            skill_id: skill_forked.clone(),
+            usage_kind: SkillUsageKind::Workflow,
+            source_content: None,
+            rendered_content: None,
+            has_dynamic_arguments: false,
+            turn_scoped: false,
+        },
+    );
+
+    let test_dir = temp_dir("tool-assoc");
+    let skill_file_path = test_dir.join("SKILL.md");
+    fs::write(&skill_file_path, "skill documentation content on disk").unwrap();
+    let path_str = skill_file_path.to_str().unwrap().to_string();
+
+    resolver.register_path(
+        &path_str,
+        SkillMatch {
+            skill_id: skill_path_only.clone(),
+            usage_kind: SkillUsageKind::Reference,
+            source_content: None, // Path-only: unknown version
+            rendered_content: None,
+            has_dynamic_arguments: false,
+            turn_scoped: false,
+        },
+    );
+
+    // Build event stream
+    let branch_main = BranchId::new("main").unwrap();
+    let branch_fork = BranchId::new("fork-feature").unwrap();
+
+    let events = vec![
+        // 1. Matched tool event (Success)
+        NormalizedEvent {
+            event_id: Some(EventId::new("ev_call_1").unwrap()),
+            parent_id: None,
+            turn_id: Some(TurnId::new("turn_1").unwrap()),
+            agent_id: None,
+            branch_id: Some(branch_main.clone()),
+            role: Role::Assistant,
+            kind: EventKind::ToolInvocation,
+            timestamp_unix_ms: Some(100),
+            text: PrivateText::new("Running cargo test"),
+            tool: Some(ToolEvent {
+                call_id: Some(ToolCallId::new("call_match").unwrap()),
+                name: PrivateText::new("cargo_test"),
+                status: ToolStatus::Attempted,
+                arguments: Some(PrivateText::new(
+                    r#"{"command": "test", "secret_key": "sk-hidden"}"#,
+                )),
+                result: None,
+            }),
+        },
+        NormalizedEvent {
+            event_id: Some(EventId::new("ev_res_1").unwrap()),
+            parent_id: Some(EventId::new("ev_call_1").unwrap()),
+            turn_id: Some(TurnId::new("turn_1").unwrap()),
+            agent_id: None,
+            branch_id: Some(branch_main.clone()),
+            role: Role::Tool,
+            kind: EventKind::ToolResult,
+            timestamp_unix_ms: Some(105),
+            text: PrivateText::new("cargo test: ok"),
+            tool: Some(ToolEvent {
+                call_id: Some(ToolCallId::new("call_match").unwrap()),
+                name: PrivateText::new("cargo_test"),
+                status: ToolStatus::Succeeded,
+                arguments: None,
+                result: Some(PrivateText::new("test result: ok. 42 passed; 0 failed")),
+            }),
+        },
+        // 2. Failed tool event
+        NormalizedEvent {
+            event_id: Some(EventId::new("ev_call_2").unwrap()),
+            parent_id: Some(EventId::new("ev_res_1").unwrap()),
+            turn_id: Some(TurnId::new("turn_2").unwrap()),
+            agent_id: None,
+            branch_id: Some(branch_main.clone()),
+            role: Role::Assistant,
+            kind: EventKind::ToolInvocation,
+            timestamp_unix_ms: Some(200),
+            text: PrivateText::new("Deploying to staging"),
+            tool: Some(ToolEvent {
+                call_id: Some(ToolCallId::new("call_fail").unwrap()),
+                name: PrivateText::new("deploy_tool"),
+                status: ToolStatus::Attempted,
+                arguments: Some(PrivateText::new(r#"{"target": "staging"}"#)),
+                result: None,
+            }),
+        },
+        NormalizedEvent {
+            event_id: Some(EventId::new("ev_res_2").unwrap()),
+            parent_id: Some(EventId::new("ev_call_2").unwrap()),
+            turn_id: Some(TurnId::new("turn_2").unwrap()),
+            agent_id: None,
+            branch_id: Some(branch_main.clone()),
+            role: Role::Tool,
+            kind: EventKind::ToolResult,
+            timestamp_unix_ms: Some(205),
+            text: PrivateText::new("deploy failed"),
+            tool: Some(ToolEvent {
+                call_id: Some(ToolCallId::new("call_fail").unwrap()),
+                name: PrivateText::new("deploy_tool"),
+                status: ToolStatus::Failed,
+                arguments: None,
+                result: Some(PrivateText::new(
+                    "fatal: connection refused\nerror: deploy aborted",
+                )),
+            }),
+        },
+        // 3. Missing-result tool event
+        NormalizedEvent {
+            event_id: Some(EventId::new("ev_call_3").unwrap()),
+            parent_id: Some(EventId::new("ev_res_2").unwrap()),
+            turn_id: Some(TurnId::new("turn_3").unwrap()),
+            agent_id: None,
+            branch_id: Some(branch_main.clone()),
+            role: Role::Assistant,
+            kind: EventKind::ToolInvocation,
+            timestamp_unix_ms: Some(300),
+            text: PrivateText::new("Starting refactor tool"),
+            tool: Some(ToolEvent {
+                call_id: Some(ToolCallId::new("call_missing").unwrap()),
+                name: PrivateText::new("refactor_tool"),
+                status: ToolStatus::Attempted,
+                arguments: Some(PrivateText::new(r#"{"query": "ast_walk"}"#)),
+                result: None,
+            }),
+        },
+        // 4. Forked tool event on sibling branch
+        NormalizedEvent {
+            event_id: Some(EventId::new("ev_call_fork").unwrap()),
+            parent_id: None,
+            turn_id: Some(TurnId::new("turn_f").unwrap()),
+            agent_id: None,
+            branch_id: Some(branch_fork.clone()),
+            role: Role::Assistant,
+            kind: EventKind::ToolInvocation,
+            timestamp_unix_ms: Some(400),
+            text: PrivateText::new("Forked branch rebase"),
+            tool: Some(ToolEvent {
+                call_id: Some(ToolCallId::new("call_fork").unwrap()),
+                name: PrivateText::new("fork_tool"),
+                status: ToolStatus::Succeeded,
+                arguments: Some(PrivateText::new("{}")),
+                result: Some(PrivateText::new("fork succeeded")),
+            }),
+        },
+        // 5. Path-only file read success
+        NormalizedEvent {
+            event_id: Some(EventId::new("ev_call_path").unwrap()),
+            parent_id: Some(EventId::new("ev_call_3").unwrap()),
+            turn_id: Some(TurnId::new("turn_4").unwrap()),
+            agent_id: None,
+            branch_id: Some(branch_main.clone()),
+            role: Role::Assistant,
+            kind: EventKind::ToolInvocation,
+            timestamp_unix_ms: Some(500),
+            text: PrivateText::new("Reading skill file"),
+            tool: Some(ToolEvent {
+                call_id: Some(ToolCallId::new("call_path").unwrap()),
+                name: PrivateText::new("read_file"),
+                status: ToolStatus::Succeeded,
+                arguments: Some(PrivateText::new(format!(r#"{{"path": "{}"}}"#, path_str))),
+                result: Some(PrivateText::new("file contents loaded")),
+            }),
+        },
+        // 6. Duplicate delivery of ev_call_1 (should be deduplicated)
+        NormalizedEvent {
+            event_id: Some(EventId::new("ev_call_1").unwrap()),
+            parent_id: None,
+            turn_id: Some(TurnId::new("turn_1").unwrap()),
+            agent_id: None,
+            branch_id: Some(branch_main.clone()),
+            role: Role::Assistant,
+            kind: EventKind::ToolInvocation,
+            timestamp_unix_ms: Some(100),
+            text: PrivateText::new("Duplicate delivery of cargo test"),
+            tool: Some(ToolEvent {
+                call_id: Some(ToolCallId::new("call_match").unwrap()),
+                name: PrivateText::new("cargo_test"),
+                status: ToolStatus::Attempted,
+                arguments: Some(PrivateText::new(r#"{"command": "test"}"#)),
+                result: None,
+            }),
+        },
+    ];
+
+    // Setup active branch for branch_main
+    let active_branch = ActiveBranch {
+        branch_id: Some(branch_main.clone()),
+        leaf_event_id: Some(EventId::new("ev_call_path").unwrap()),
+        events: events
+            .iter()
+            .filter(|e| e.branch_id.as_ref() == Some(&branch_main))
+            .cloned()
+            .collect(),
+        current_epoch: ContextEpoch::new("epoch-0").unwrap(),
+        compaction_count: 0,
+        task_boundary_count: 0,
+        ancestor_chain_truncated: false,
+    };
+
+    // Test 1: Associate tool events
+    let associated = associate_tool_events(&events, 200);
+    assert_eq!(associated.len(), 5); // 5 unique tool calls (duplicate ev_call_1 ignored)
+
+    // Check matched call
+    let matched_call = associated
+        .iter()
+        .find(|c| c.call_id.as_ref().map(|id| id.as_str()) == Some("call_match"))
+        .unwrap();
+    assert_eq!(matched_call.status, ToolStatus::Succeeded);
+    assert_eq!(
+        matched_call
+            .invocation_event_id
+            .as_ref()
+            .unwrap()
+            .as_str(),
+        "ev_call_1"
+    );
+    assert_eq!(
+        matched_call.result_event_id.as_ref().unwrap().as_str(),
+        "ev_res_1"
+    );
+    assert!(
+        matched_call
+            .arguments_summary
+            .as_ref()
+            .unwrap()
+            .as_str()
+            .contains(r#""secret_key":"<omitted>""#)
+    );
+
+    // Check failed call and error lines
+    let failed_call = associated
+        .iter()
+        .find(|c| c.call_id.as_ref().map(|id| id.as_str()) == Some("call_fail"))
+        .unwrap();
+    assert_eq!(failed_call.status, ToolStatus::Failed);
+    assert!(!failed_call.error_lines.is_empty());
+    assert!(
+        failed_call
+            .error_lines
+            .iter()
+            .any(|l| l.contains("fatal: connection refused"))
+    );
+
+    // Check missing-result call
+    let missing_call = associated
+        .iter()
+        .find(|c| c.call_id.as_ref().map(|id| id.as_str()) == Some("call_missing"))
+        .unwrap();
+    assert_eq!(missing_call.status, ToolStatus::Attempted);
+    assert!(missing_call.result_event_id.is_none());
+
+    // Test 2: Extract load observations with active branch isolation
+    let observations = extract_load_observations(
+        &events,
+        &base_session,
+        &resolver,
+        Some(&active_branch),
+    );
+
+    // Must NOT contain the forked branch load
+    assert!(
+        !observations.iter().any(|o| o.skill_id == skill_forked),
+        "Sibling fork skill must NOT appear in active branch observations"
+    );
+
+    // Check cargo test -> ObservedLoaded with known content digest
+    let cargo_obs = observations
+        .iter()
+        .find(|o| o.skill_id == skill_cargo)
+        .unwrap();
+    assert_eq!(cargo_obs.state, LoadState::ObservedLoaded);
+    assert_eq!(cargo_obs.source_content.as_ref(), Some(&known_digest));
+
+    // Check deploy tool -> Attempted (due to failure)
+    let deploy_obs = observations
+        .iter()
+        .find(|o| o.skill_id == skill_deploy)
+        .unwrap();
+    assert_eq!(deploy_obs.state, LoadState::Attempted);
+
+    // Check refactor tool -> Attempted (due to missing result)
+    let refactor_obs = observations
+        .iter()
+        .find(|o| o.skill_id == skill_refactor)
+        .unwrap();
+    assert_eq!(refactor_obs.state, LoadState::Attempted);
+
+    // Check path-only read -> ObservedLoaded with None version
+    let path_obs = observations
+        .iter()
+        .find(|o| o.skill_id == skill_path_only)
+        .unwrap();
+    assert_eq!(path_obs.state, LoadState::ObservedLoaded);
+    assert!(
+        path_obs.source_content.is_none(),
+        "Path-only read must have None source_content"
+    );
+    assert!(
+        path_obs.rendered_content.is_none(),
+        "Path-only read must have None rendered_content"
+    );
+
+    // Invariant check: ensure file on disk was NOT hashed to fabricate historical version
+    let disk_content = fs::read(&skill_file_path).unwrap();
+    let disk_hash = ContentHash::from_bytes(&disk_content);
+    assert_ne!(
+        path_obs.source_content.as_ref().map(|h| h.as_str()),
+        Some(disk_hash.as_str()),
+        "Current file on disk must NEVER become historical version"
+    );
+
+    // Test 3: Extract loaded skill records
+    let current_epoch = ContextEpoch::new("epoch-0").unwrap();
+    let records = extract_loaded_skill_records(
+        &events,
+        &resolver,
+        Some(&active_branch),
+        &current_epoch,
+    );
+
+    // Only successful calls without error lines qualify as LoadedSkillRecord
+    assert!(records.iter().any(|r| r.skill_id == skill_cargo));
+    assert!(records.iter().any(|r| r.skill_id == skill_path_only));
+    assert!(
+        !records.iter().any(|r| r.skill_id == skill_deploy),
+        "Failed tool must NOT create LoadedSkillRecord"
+    );
+    assert!(
+        !records.iter().any(|r| r.skill_id == skill_refactor),
+        "Incomplete tool must NOT create LoadedSkillRecord"
+    );
+    assert!(
+        !records.iter().any(|r| r.skill_id == skill_forked),
+        "Sibling fork tool must NOT create LoadedSkillRecord"
+    );
+
+    // Test 4: Provider filtering with --no-tools
+    let provider_events = filter_events_for_provider(&events, true, 200);
+    for pe in &provider_events {
+        if let Some(tool) = &pe.tool {
+            assert!(
+                tool.arguments.is_none(),
+                "no_tools must strip tool arguments"
+            );
+            assert!(tool.result.is_none(), "no_tools must strip tool result");
+        }
+        if pe.role == Role::Tool {
+            assert!(
+                pe.text.as_str().is_empty(),
+                "no_tools must strip Tool role text"
+            );
+        }
+    }
+
+    // Crucial invariant: local observations can be extracted from raw events even when no_tools is used
+    assert_eq!(
+        observations.len(),
+        4,
+        "Local observations must retain 4 skill observations"
+    );
+
+    let _ = fs::remove_dir_all(&test_dir);
+}
+
