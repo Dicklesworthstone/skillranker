@@ -442,7 +442,10 @@ member_beads = ["sr-roadmap-l1i.3.1"]
 phase = "P2"
 title = "Implement authorized descriptor-based skill reads"
 unit_property_tests = [
-    "tests/roster_contract.rs::descriptor_reads"
+    "tests/authorized_read_contract.rs::symlinks_resolve_only_inside_authorized_roots",
+    "tests/authorized_read_contract.rs::concurrent_component_swaps_never_return_content_from_outside",
+    "tests/authorized_read_contract.rs::only_regular_files_are_read",
+    "tests/authorized_read_contract.rs::reads_stop_at_the_byte_cap_and_hash_only_returned_bytes"
 ]
 e2e_suite = "roster"
 e2e_cases = ["safe-descriptor-walk", "symlink-escape-blocked"]
@@ -490,7 +493,9 @@ member_beads = ["sr-roadmap-l1i.3.4"]
 phase = "P2"
 title = "Discover harness-visible roots and source precedence"
 unit_property_tests = [
-    "tests/roster_contract.rs::root_precedence_and_shadowing"
+    "tests/roster_discovery.rs::documented_claude_roots_are_enumerated_without_unrelated_harness_roots",
+    "tests/roster_discovery.rs::unenumerated_sources_keep_the_roster_partial",
+    "tests/roster_discovery.rs::symlinked_directories_are_skipped_and_symlinked_skill_files_are_flagged"
 ]
 e2e_suite = "roster"
 e2e_cases = ["shadowing-precedence-honored"]
@@ -538,7 +543,10 @@ member_beads = ["sr-roadmap-l1i.3.7"]
 phase = "P2"
 title = "Validate explicit roster imports without granting authority"
 unit_property_tests = [
-    "tests/roster_contract.rs::roster_import_validation"
+    "tests/roster_import.rs::escaped_and_unauthorized_paths_are_refused",
+    "tests/roster_import.rs::false_identity_content_and_eligibility_claims_are_rejected",
+    "tests/roster_import.rs::verified_inventory_replaces_discovery_with_discovery_identities",
+    "tests/roster_import.rs::synthetic_text_supports_evaluation_but_not_live_resolution"
 ]
 e2e_suite = "roster"
 e2e_cases = ["dry-run-import-clean"]
