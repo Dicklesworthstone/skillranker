@@ -15,6 +15,7 @@ pub mod output;
 pub mod privacy;
 pub mod roster;
 pub mod runtime;
+pub mod scoring;
 #[cfg(target_os = "linux")]
 pub mod storage;
 pub mod subprocess;
