@@ -10,6 +10,12 @@
   declaration validation remains distinct from an execution receipt.
 
 ### Added
+- Central `effects::EffectGate`. One validated set of effect flags now derives
+  the context source policy, response-cache, ledger and runtime-state access,
+  history availability, network consent and a printable effective-mode
+  receipt. A disabled ledger reports history as withheld (unknown), not empty.
+  Tests observe cache files, cass child starts and loopback provider sockets
+  for every valid flag combination. No shipped command consumes the gate yet.
 - Shared bounded configuration loading and effective-policy file refresh through
   `cli::ConfigFiles`, retaining invocation CLI/environment overrides and typed
   receipt comparisons. CLI precedence and real-file refresh cases are exercised;
