@@ -10,6 +10,14 @@
   declaration validation remains distinct from an execution receipt.
 
 ### Added
+- `sr doctor` readiness report: configuration validity with a policy
+  fingerprint, roster counts and causes, key presence (never "verified"),
+  network consent, transport evidence state, ledger and hook mode. Each is
+  reported separately, with one next step per failed check and no request,
+  installation, migration or state write. `sr doctor --config` now includes the
+  policy fingerprint. Only a valid configuration has one. Historical transport
+  evidence is invalidated by any change in version, runtime, endpoint, model or
+  timeout. No live check writes it yet.
 - Central `effects::EffectGate`. One validated set of effect flags now derives
   the context source policy, response-cache, ledger and runtime-state access,
   history availability, network consent and a printable effective-mode

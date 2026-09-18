@@ -12,7 +12,7 @@ use std::ffi::OsString;
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
-const HELP: &str = "SkillRanker — powered by TypeSafe.ai Jev\n\nUsage: sr doctor --config [--json | --table] [--top N] [--shortlist N]\n       sr roster [--json] [--limit N] [--cursor TOKEN]\n       sr roster --snapshot FILE | --diff FILE\n       sr --help | --version\n\nLocal configuration and roster inspection only. Ranking requires your own TypeSafe\nAPI key and trusted network consent; ranking is not available here.\n";
+const HELP: &str = "SkillRanker — powered by TypeSafe.ai Jev\n\nUsage: sr doctor [--json | --table] [--offline | --allow-network]\n       sr doctor --config [--json | --table] [--top N] [--shortlist N]\n       sr roster [--json] [--limit N] [--cursor TOKEN]\n       sr roster --snapshot FILE | --diff FILE\n       sr --help | --version\n\nLocal readiness, configuration and roster inspection only. Ranking requires your own\nTypeSafe API key and trusted network consent; ranking is not available here.\n";
 
 fn command() -> Command {
     let mut doctor = Command::new("doctor")
@@ -23,12 +23,7 @@ fn command() -> Command {
                 .short('h')
                 .action(ArgAction::SetTrue),
         )
-        .arg(
-            Arg::new("config")
-                .long("config")
-                .required_unless_present("help")
-                .action(ArgAction::SetTrue),
-        )
+        .arg(Arg::new("config").long("config").action(ArgAction::SetTrue))
         .arg(
             Arg::new("json")
                 .long("json")
@@ -181,12 +176,15 @@ fn execute(clock: &EntryClock, args: Vec<OsString>) -> Result<String, Failure> {
         no_persist: false,
         save_case: false,
     };
-    let _effects = crate::privacy::EffectPolicy::from_flags(flags).map_err(|conflicts| {
-        let first = conflicts
-            .first()
-            .expect("from_flags reports at least one conflict on error");
-        (2u8, "invalid-usage", first.to_string())
-    })?;
+    // Doctor never sends a request; the gate reports what ranking would permit.
+    let gate = crate::effects::EffectGate::new(flags, crate::effects::Scope::Rank).map_err(
+        |conflicts| {
+            let first = conflicts
+                .first()
+                .expect("from_flags reports at least one conflict on error");
+            (2u8, "invalid-usage", first.to_string())
+        },
+    )?;
     let mut sources = ConfigSources::default();
     for key in SettingKey::ALL {
         let Some(flag) = key.spec().cli_flag else {
@@ -232,11 +230,16 @@ fn execute(clock: &EntryClock, args: Vec<OsString>) -> Result<String, Failure> {
     timely(clock)?;
     // The current directory is the exact workspace. Never run Git or search ancestors.
     let workspace = std::env::current_dir().map_err(|_| invalid("Workspace is unavailable"))?;
-    let files = ConfigFiles::new(workspace, user_config_root()?);
+    let files = ConfigFiles::new(workspace.clone(), user_config_root()?);
     let resolved = files.load(clock, sources)?;
     timely(clock)?;
+    let json_output =
+        doctor.get_flag("json") || (!doctor.get_flag("table") && !io::stdout().is_terminal());
+    if !doctor.get_flag("config") {
+        return readiness(clock, &workspace, &resolved, gate, json_output);
+    }
     let report = config_report(&resolved);
-    if doctor.get_flag("json") || (!doctor.get_flag("table") && !io::stdout().is_terminal()) {
+    if json_output {
         Ok(format!("{report}\n"))
     } else {
         let mut output = String::from("SETTING\tVALUE\tSOURCE\n");
@@ -439,6 +442,60 @@ fn flatten_table(
     Ok(())
 }
 
+/// `sr doctor`: independent local readiness checks. Configuration is already
+/// valid here; an invalid policy fails before any discovery.
+fn readiness(
+    clock: &EntryClock,
+    workspace: &Path,
+    config: &ResolvedConfig,
+    gate: crate::effects::EffectGate,
+    json_output: bool,
+) -> Result<String, Failure> {
+    use crate::readiness::{Inputs, RosterCheck, TransportIdentity, assess_transport, report};
+    let home = std::env::var_os("HOME")
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from);
+    let resolved = resolve_workspace_roster(clock, workspace, home.as_deref());
+    let listing = resolved.as_ref().ok().map(crate::roster::inspect::listing);
+    let roster = match (&resolved, &listing) {
+        (Ok(_), Some(listing)) => RosterCheck::Resolved(listing.evidence()),
+        (Err((6, _, _)), _) => RosterCheck::Timeout,
+        _ => RosterCheck::Unusable,
+    };
+    timely(clock)?;
+    let origin = match config.effective().endpoint() {
+        Some(endpoint) => crate::jev::CanonicalOrigin::from_override(endpoint)
+            .map_err(|_| invalid("The endpoint override is not a valid origin"))?,
+        None => crate::jev::CanonicalOrigin::production(),
+    };
+    // No live check writes transport evidence in this build, so none is read.
+    let transport = assess_transport(
+        None,
+        &TransportIdentity::current(config, origin.as_str()),
+        0,
+    );
+    let value = report(&Inputs {
+        config,
+        gate,
+        roster,
+        transport,
+    });
+    timely(clock)?;
+    if json_output {
+        return Ok(format!("{value}\n"));
+    }
+    let mut output = String::from("CHECK\tSTATE\tNEXT STEP\n");
+    for (check, entry) in value["checks"].as_object().expect("report checks object") {
+        let state = entry["state"]
+            .as_str()
+            .or_else(|| entry["mode"].as_str())
+            .unwrap_or("-");
+        let next = entry["next_step"].as_str().unwrap_or("-");
+        output.push_str(&format!("{check}\t{state}\t{next}\n"));
+    }
+    Ok(output)
+}
+
 fn config_report(config: &ResolvedConfig) -> Value {
     let effective = config.effective();
     let mut settings = serde_json::Map::new();
@@ -478,7 +535,8 @@ fn config_report(config: &ResolvedConfig) -> Value {
         };
         settings.insert(key.path().into(), json!({"value":value,"sources":sources}));
     }
-    json!({"schema_version":1,"command":"doctor-config","scope":"local-configuration-only","settings":settings})
+    json!({"schema_version":1,"command":"doctor-config","scope":"local-configuration-only",
+        "policy_fingerprint":config.effective().policy_fingerprint().as_str(),"settings":settings})
 }
 
 /// `sr roster`: inspect, snapshot or compare the Claude roots of the current

@@ -947,6 +947,78 @@ impl EffectiveConfig {
         &self.roster_roots
     }
 
+    /// Digest of every effective value under this schema version. Values, not
+    /// their sources, identify the policy. Credentials are held elsewhere and
+    /// never enter it. Only a fully valid resolution yields an
+    /// `EffectiveConfig`, so an invalid policy has no fingerprint.
+    pub fn policy_fingerprint(&self) -> ContentHash {
+        let mut bytes = b"skillranker.policy-fingerprint.v1".to_vec();
+        let mut field = |name: &str, value: &[u8]| {
+            for part in [name.as_bytes(), value] {
+                bytes.extend_from_slice(&(part.len() as u64).to_le_bytes());
+                bytes.extend_from_slice(part);
+            }
+        };
+        // Validated values are finite; -0.0 and 0.0 are one policy value.
+        let float = |value: f64| (if value == 0.0 { 0.0f64 } else { value }).to_le_bytes();
+        field("schema", &CONFIG_SCHEMA_VERSION.to_le_bytes());
+        field("network.enabled", &[u8::from(self.network_enabled)]);
+        match &self.endpoint {
+            Some(endpoint) => field("typesafe.endpoint", endpoint.as_str().as_bytes()),
+            None => field("typesafe.endpoint.default", &[]),
+        }
+        field("provider.model", self.model.as_str().as_bytes());
+        field("hook.mode", self.hook_mode.as_str().as_bytes());
+        field("context.profile", self.context_profile.as_str().as_bytes());
+        field("context.no_tools", &[u8::from(self.no_tools)]);
+        field("context.messages", &self.messages.to_le_bytes());
+        field("context.budget_chars", &self.budget_chars.to_le_bytes());
+        field(
+            "context.transcript_roots",
+            &(self.transcript_roots.len() as u64).to_le_bytes(),
+        );
+        // Lists are sets: the same members in another layer order are one policy.
+        let mut transcript_roots: Vec<_> = self.transcript_roots.iter().collect();
+        transcript_roots.sort();
+        for root in transcript_roots {
+            field("root", root.as_path().as_os_str().as_encoded_bytes());
+        }
+        field("ranking.top", &self.top.to_le_bytes());
+        field("ranking.shortlist", &self.shortlist.to_le_bytes());
+        field("ranking.gate", &float(self.gate));
+        field("ranking.fits", &float(self.fits));
+        field("ranking.w_fit", &float(self.w_fit));
+        field("ranking.w_prior", &float(self.w_prior));
+        field("ranking.w_phase", &float(self.w_phase));
+        field("ranking.timeout_ms", &self.timeout_ms.to_le_bytes());
+        field(
+            "ranking.exclude_skills",
+            &(self.exclude_skills.len() as u64).to_le_bytes(),
+        );
+        let mut exclude_skills: Vec<_> = self.exclude_skills.iter().collect();
+        exclude_skills.sort();
+        for skill in exclude_skills {
+            field("skill", skill.as_str().as_bytes());
+        }
+        field(
+            "roster.roots",
+            &(self.roster_roots.len() as u64).to_le_bytes(),
+        );
+        let mut roster_roots: Vec<_> = self.roster_roots.iter().collect();
+        roster_roots.sort();
+        for root in roster_roots {
+            match root {
+                SkillRoot::WorkspaceRelative(root) => {
+                    field("relative", root.as_path().as_os_str().as_encoded_bytes());
+                }
+                SkillRoot::TrustedAbsolute(root) => {
+                    field("absolute", root.as_path().as_os_str().as_encoded_bytes());
+                }
+            }
+        }
+        ContentHash::from_bytes(&bytes)
+    }
+
     /// True when `value` would allow more disclosure or authority than the
     /// current value. Only keys with a `RestrictOnly` layer are ordered.
     fn widens(&self, key: SettingKey, value: &TypedValue) -> bool {
