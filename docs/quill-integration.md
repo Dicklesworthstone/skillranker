@@ -2,7 +2,8 @@
 
 `sr-roadmap-l1i.3.8` qualifies the shipping Quill API and enforces its dependency
 boundary. `sr-roadmap-l1i.3.9` adds the bounded literal query compiler described
-below. Roster retrieval (`.3.10`) and a working rank command remain separate work.
+below. The [roster retrieval adapter](roster-retrieval.md) connects these APIs to
+resolved skills. A working rank command remains a separate integration boundary.
 
 The manifest pins `frankensearch-quill` and `frankensearch-core` to
 `39047c44c3a92ceb71d25c602913b8b2888e2fe7`, both with default features disabled.
