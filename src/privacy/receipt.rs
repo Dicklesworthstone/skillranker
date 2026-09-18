@@ -70,6 +70,8 @@ pub struct DisclosureReceipt {
 /// Errors detected during receipt verification against payload.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ReceiptVerificationError {
+    InvalidCategoryInventory,
+    CountOverflow,
     ProfileMismatch {
         receipt: ContextProfile,
         payload: ContextProfile,
@@ -100,6 +102,13 @@ pub enum ReceiptVerificationError {
 impl fmt::Display for ReceiptVerificationError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::InvalidCategoryInventory => {
+                write!(
+                    f,
+                    "receipt must contain each disclosure category exactly once"
+                )
+            }
+            Self::CountOverflow => write!(f, "receipt category counts overflow"),
             Self::ProfileMismatch { receipt, payload } => {
                 write!(
                     f,
@@ -157,6 +166,26 @@ impl DisclosureReceipt {
         &self,
         payload: &RenderedContextPayload,
     ) -> Result<(), ReceiptVerificationError> {
+        // Missing categories must not bypass the payload comparisons below.
+        // Check cardinality first so hostile inventories require bounded work.
+        let expected_categories = [
+            SourceCategory::UserRequest,
+            SourceCategory::MessageHistory,
+            SourceCategory::ToolEvents,
+            SourceCategory::ProjectSignals,
+            SourceCategory::SessionState,
+        ];
+        if self.categories.len() != expected_categories.len()
+            || expected_categories.iter().any(|expected| {
+                self.categories
+                    .iter()
+                    .filter(|entry| entry.category == *expected)
+                    .count()
+                    != 1
+            })
+        {
+            return Err(ReceiptVerificationError::InvalidCategoryInventory);
+        }
         if self.context_profile != payload.context_profile {
             return Err(ReceiptVerificationError::ProfileMismatch {
                 receipt: self.context_profile,
@@ -183,28 +212,28 @@ impl DisclosureReceipt {
         }
 
         // Verify total sums match category sums
-        let sum_included: usize = self.categories.iter().map(|c| c.included_count).sum();
+        let sum_included = self.checked_total(|c| c.included_count)?;
         if sum_included != self.total_included {
             return Err(ReceiptVerificationError::TotalsInconsistent {
                 expected: self.total_included,
                 sum: sum_included,
             });
         }
-        let sum_omitted: usize = self.categories.iter().map(|c| c.omitted_count).sum();
+        let sum_omitted = self.checked_total(|c| c.omitted_count)?;
         if sum_omitted != self.total_omitted {
             return Err(ReceiptVerificationError::TotalsInconsistent {
                 expected: self.total_omitted,
                 sum: sum_omitted,
             });
         }
-        let sum_truncated: usize = self.categories.iter().map(|c| c.truncated_count).sum();
+        let sum_truncated = self.checked_total(|c| c.truncated_count)?;
         if sum_truncated != self.total_truncated {
             return Err(ReceiptVerificationError::TotalsInconsistent {
                 expected: self.total_truncated,
                 sum: sum_truncated,
             });
         }
-        let sum_redactions: usize = self.categories.iter().map(|c| c.redaction_count).sum();
+        let sum_redactions = self.checked_total(|c| c.redaction_count)?;
         if sum_redactions != self.total_redactions {
             return Err(ReceiptVerificationError::TotalsInconsistent {
                 expected: self.total_redactions,
@@ -288,5 +317,15 @@ impl DisclosureReceipt {
         }
 
         Ok(())
+    }
+
+    fn checked_total(
+        &self,
+        count: impl Fn(&CategoryReceipt) -> usize,
+    ) -> Result<usize, ReceiptVerificationError> {
+        self.categories.iter().try_fold(0usize, |sum, category| {
+            sum.checked_add(count(category))
+                .ok_or(ReceiptVerificationError::CountOverflow)
+        })
     }
 }
