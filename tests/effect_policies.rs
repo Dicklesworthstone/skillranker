@@ -91,7 +91,7 @@ impl Drop for TempWorkspace {
 }
 
 /// 1. Verifies the full 128-state matrix of effect flags, ensuring exact conflict detection
-/// and proper restriction propagation across all valid states.
+///    and proper restriction propagation across all valid states.
 #[test]
 fn effect_policy_matrix_128_combinations() {
     let mut valid_count = 0;
@@ -243,7 +243,7 @@ fn persistence_controls_prevent_disk_store_creation() {
 }
 
 /// 3. Verifies that ordinary configuration reads remain permitted in every mode,
-/// including --no-persist and --dry-run.
+///    including --no-persist and --dry-run.
 #[test]
 fn ordinary_config_reads_permitted_in_all_modes() {
     let ws = TempWorkspace::new("config-reads");
@@ -349,7 +349,7 @@ fn network_admission_and_refusal_matrix() {
 }
 
 /// 5. Verifies that explicitly selecting Cass source in offline or dry-run mode returns
-/// exit code 7 (ErrorKind::UnsupportedSourceMode) with an actionable hint.
+///    exit code 7 (ErrorKind::UnsupportedSourceMode) with an actionable hint.
 #[test]
 fn offline_and_dry_run_cass_restriction_yields_error_7() {
     let ws = WorkspaceId::new("ws-cass-effect").unwrap();
