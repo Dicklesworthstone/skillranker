@@ -41,9 +41,26 @@ class EvaluateTests(unittest.TestCase):
             text = log("test one ... ok", f"test two ... {status}")
             self.assertEqual(statuses(text)["first"], "failed", status)
 
-    def test_a_duplicated_name_cannot_be_attributed(self):
-        text = log("test one ... ok", "test one ... ok", "test two ... ok")
-        self.assertEqual(statuses(text), {"first": "missing", "whole": "failed"})
+    def test_a_tests_own_exact_child_run_is_not_a_target(self):
+        # A test re-runs its binary with --exact; the child's lines join the log.
+        child = "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 14 filtered out"
+        text = log("test one ... ok", child, "test one ... ok", "test two ... ok")
+        records = {r["case"]: r for r in product_cases.evaluate(CATALOG, text)}
+        self.assertEqual(records["first"]["status"], "passed")
+        self.assertEqual(records["whole"]["status"], "passed")
+        self.assertEqual(records["whole"]["nested_child_runs"], 1)
+        # The worst status wins: a failing parent is not rescued by its child.
+        text = log("test one ... ok", child, "test one ... FAILED", "test two ... ok")
+        self.assertEqual(statuses(text), {"first": "failed", "whole": "failed"})
+
+    def test_a_filtered_target_run_leaves_the_target_count_short(self):
+        filtered = "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out"
+        text = "test one ... ok\ntest two ... ok\n" + SUMMARY.format(n=1) + "\n" + filtered + "\n"
+        self.assertEqual(statuses(text), {"first": "failed", "whole": "failed"})
+
+    def test_ignore_reasons_are_parsed(self):
+        results, _, _ = product_cases.parse_log("test live ... ignored, needs a live binary\n")
+        self.assertEqual(results, {"live": "ignored"})
 
     def test_an_incomplete_run_fails_every_case(self):
         # One target never reported, even though the mapped tests passed.
@@ -53,15 +70,44 @@ class EvaluateTests(unittest.TestCase):
         text = "test one ... ok\ntest two ... ok\n" + SUMMARY.format(n=1) + "\n" + filtered + "\n"
         self.assertEqual(statuses(text)["whole"], "failed")
 
+    def test_only_declared_opt_in_tests_may_be_ignored(self):
+        ignored = "test result: ok. 1 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out"
+        text = "test one ... ok\ntest two ... ok\ntest live ... ignored\n" + SUMMARY.format(n=1) + "\n" + ignored + "\n"
+        self.assertEqual(statuses(text)["whole"], "failed")
+        declared = dict(CATALOG, allowed_ignored=[{"test": "beta::live", "reason": "needs a live binary"}])
+        records = {r["case"]: r for r in product_cases.evaluate(declared, text)}
+        self.assertEqual(records["whole"]["status"], "passed")
+        self.assertEqual(records["whole"]["ignored"], ["live"])
+        # A count without a matching ignored line is not complete.
+        hidden = "test one ... ok\ntest two ... ok\n" + SUMMARY.format(n=1) + "\n" + ignored + "\n"
+        self.assertEqual(product_cases.evaluate(declared, hidden)[1]["status"], "failed")
+
     def test_an_empty_run_does_not_pass(self):
         text = "\n".join(["test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out"] * 2)
         self.assertEqual(statuses(text), {"first": "missing", "whole": "failed"})
 
 
 class CatalogTests(unittest.TestCase):
-    def test_the_roster_catalog_matches_sources_and_the_matrix(self):
+    def test_every_product_catalog_matches_sources_and_the_matrix(self):
+        for path in sorted((Path(__file__).parent / "product").glob("*.json")):
+            catalog = product_cases.load_catalog(path)
+            self.assertEqual(product_cases.check(catalog), [], path.name)
+
+    def test_a_declared_ignored_test_must_really_be_ignored_and_cannot_back_a_case(self):
         catalog = product_cases.load_catalog(Path(__file__).parent / "product/roster.json")
-        self.assertEqual(product_cases.check(catalog), [])
+        live = "cass_adapter::actual_installed_cass_exports_synthetic_session"
+        declared = dict(catalog, targets=catalog["targets"] + ["cass_adapter"],
+                        allowed_ignored=[{"test": live, "reason": "needs an installed cass"}])
+        self.assertEqual(product_cases.check(declared), [])
+        wrong = dict(declared, allowed_ignored=[{"test": "roster_cli::concatenated_pages_equal_the_whole_snapshot",
+                                                 "reason": "x"}])
+        self.assertTrue(any("is not an #[ignore] test" in p for p in product_cases.check(wrong)))
+        unexplained = dict(declared, allowed_ignored=[{"test": live, "reason": ""}])
+        self.assertTrue(any("needs a reason" in p for p in product_cases.check(unexplained)))
+        cases = [dict(case) for case in declared["cases"]]
+        cases[0]["tests"] = cases[0]["tests"] + [live]
+        problems = product_cases.check(dict(declared, cases=cases))
+        self.assertTrue(any("cannot establish a case" in p for p in problems))
 
     def test_stale_names_unknown_targets_and_uncatalogued_cases_are_reported(self):
         catalog = product_cases.load_catalog(Path(__file__).parent / "product/roster.json")

@@ -20,6 +20,11 @@
   declaration validation remains distinct from an execution receipt.
 
 ### Added
+- A catalog-driven product e2e runner, `scripts/e2e/product.sh`, runs any
+  suite in `scripts/e2e/product/`. A complete run may leave ignored only opt-in
+  tests the catalog declares with a reason. A test's own `--exact` child run
+  neither counts as a target nor rescues a failure. The roster suite now uses
+  the same runner.
 - Product e2e case evidence. `scripts/e2e/product/roster.json` maps each P2
   e2e case to the real Rust tests that establish it. `scripts/e2e/product_cases.py`
   checks the mapping against the sources and the contract matrix, and evaluates
