@@ -1,24 +1,22 @@
 //! Bounded owner-only export publication with atomic no-clobber guarantees.
 //!
-//! # Embedded Invariants (sr-roadmap-l1i.3.14 / p2_atomic_export)
-//! - Atomicity: Uses `renameat2(..., RENAME_NOREPLACE)` on Linux or atomic `hard_link`
-//!   fallback to guarantee that an existing target is NEVER clobbered, even in the
-//!   presence of filesystem races.
-//! - Permissions: Files are created exclusively owner-only (`0o600` / `-rw-------`).
-//! - Directory Validation: The destination directory must exist, be a directory, and
-//!   satisfy safe ownership/permissions (owner-controlled or sticky `/tmp`).
-//! - Durability: File contents are flushed (`sync_all`) before publication, and the
-//!   parent directory is flushed after publication.
-//! - Identifiable Partial Files: Temporary partial files use the pattern
-//!   `.<target>.sr-partial-<pid>-<nanos>` and are deleted automatically on error.
-//! - Bounded: Strictly enforces size limits before and during writes.
+//! All destination components are checked through no-follow directory descriptors.
+//! Creation, publication and cleanup use one held parent descriptor. File data
+//! and the parent directory are both flushed; a post-publication failure is an
+//! error even though the destination may already exist. Same-user hostile file
+//! mutation is outside the owner-controlled directory boundary.
 
 use crate::output::{CliExit, ErrorKind};
+use nix::errno::Errno;
+use nix::fcntl::{AtFlags, OFlag, open, openat};
+use nix::sys::stat::{FileStat, Mode, SFlag, fchmod, fstat, fstatat};
+use nix::unistd::{UnlinkatFlags, linkat, unlinkat};
+use std::ffi::OsStr;
 use std::fmt;
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::io::Write;
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Default maximum export size for roster snapshots (32 MiB).
 pub const DEFAULT_MAX_SNAPSHOT_BYTES: usize = 32 * crate::limits::MIB;
@@ -70,6 +68,8 @@ pub enum ExportError {
     Oversized { len: usize, max: usize },
     /// Standard I/O failure.
     Io(std::io::Error),
+    /// Publication occurred, but its directory durability was not confirmed.
+    Durability(std::io::Error),
 }
 
 impl ExportError {
@@ -104,222 +104,339 @@ impl fmt::Display for ExportError {
                 )
             }
             Self::Io(e) => write!(f, "export I/O error: {e}"),
+            Self::Durability(e) => write!(
+                f,
+                "export published but directory durability was not confirmed: {e}"
+            ),
         }
     }
 }
 
 impl std::error::Error for ExportError {}
 
-/// Scope guard ensuring that partial/uncompleted temporary files are cleaned up on failure.
+/// Cleanup stays bound to the directory that received our temporary file.
 struct PartialFileGuard<'a> {
-    path: &'a Path,
+    directory: &'a File,
+    name: &'a OsStr,
     active: bool,
-}
-
-impl<'a> PartialFileGuard<'a> {
-    fn new(path: &'a Path) -> Self {
-        Self { path, active: true }
-    }
-
-    fn disarm(&mut self) {
-        self.active = false;
-    }
 }
 
 impl Drop for PartialFileGuard<'_> {
     fn drop(&mut self) {
         if self.active {
-            let _ = std::fs::remove_file(self.path);
+            let _ = unlinkat(self.directory, self.name, UnlinkatFlags::NoRemoveDir);
         }
     }
 }
 
-/// Atomically publish private data to `target_path` without clobbering existing files.
+fn io_error(error: Errno) -> ExportError {
+    ExportError::Io(std::io::Error::from_raw_os_error(error as i32))
+}
+
+/// Publish owner-only data without replacing any existing destination.
 ///
-/// # Guarantees
-/// - If `target_path` exists (as regular file, directory, or symlink), returns `Err(ExportError::TargetAlreadyExists)`.
-/// - If a file is raced into place concurrently, the atomic publication operation detects
-///   the collision and safely aborts without overwriting.
-/// - The published file has permissions `0o600` (owner read/write only).
-/// - File data is flushed (`sync_all`) before publication, and the parent directory is flushed after.
-/// - Unfinished partial files are cleaned up on failure.
+/// The full parent chain must contain real, trusted directories, with no
+/// symlinks. Root-owned sticky directories are permitted. Size checks precede
+/// filesystem effects. A successful return confirms file and directory flushes.
+/// An error after publication can leave the destination in place: inspect it
+/// before retrying; never remove or overwrite it as rollback.
 pub fn export_private_atomic(
     target_path: &Path,
     content: &[u8],
     config: ExportConfig,
 ) -> Result<(), ExportError> {
-    // 1. Bound size check before any filesystem operations
     if content.len() > config.max_bytes {
         return Err(ExportError::Oversized {
             len: content.len(),
             max: config.max_bytes,
         });
     }
-
-    // 2. Validate destination directory
+    if target_path.as_os_str().len() > 4096 {
+        return Err(ExportError::InvalidDirectory(
+            "destination path exceeds bounds".into(),
+        ));
+    }
+    let name = target_path
+        .file_name()
+        .ok_or_else(|| ExportError::InvalidDirectory("invalid target filename".into()))?;
     let parent = target_path
         .parent()
-        .ok_or_else(|| ExportError::InvalidDirectory("path has no parent directory".into()))?;
-
-    // If parent is empty string, use current directory
-    let parent = if parent.as_os_str().is_empty() {
-        Path::new(".")
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let parent_path = if parent.is_absolute() {
+        parent.to_path_buf()
     } else {
-        parent
+        std::env::current_dir()
+            .map_err(ExportError::Io)?
+            .join(parent)
     };
-
-    validate_destination_directory(parent)?;
-
-    // 3. Preflight check for existing target or symlink
-    // Using symlink_metadata prevents following dangling/broken symlinks
-    if std::fs::symlink_metadata(target_path).is_ok() {
-        return Err(ExportError::TargetAlreadyExists(target_path.to_path_buf()));
+    let directory = open_destination_directory(&parent_path)?;
+    match fstatat(&directory, name, AtFlags::AT_SYMLINK_NOFOLLOW) {
+        Ok(_) => return Err(ExportError::TargetAlreadyExists(target_path.to_owned())),
+        Err(Errno::ENOENT) => {}
+        Err(error) => return Err(io_error(error)),
     }
 
-    // 4. Create identifiable private partial file in the same directory (same filesystem)
-    let pid = std::process::id();
+    // Do not copy the target filename: even a valid NAME_MAX-length target
+    // needs a short temporary name. Exclusive creation is the collision guard.
+    static NEXT: AtomicU64 = AtomicU64::new(0);
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
-
-    let target_file_name = target_path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .ok_or_else(|| ExportError::InvalidDirectory("invalid target filename".into()))?;
-
-    let tmp_name = format!(".{target_file_name}.sr-partial-{pid}-{nanos}");
-    let tmp_path = parent.join(&tmp_name);
-
-    // Open exclusively with mode 0o600 (owner-only)
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(&tmp_path)
-        .map_err(ExportError::Io)?;
-
-    let mut guard = PartialFileGuard::new(&tmp_path);
-
-    // 5. Write content and flush to disk
+    let temporary = format!(
+        ".sr-partial-{}-{nanos}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    );
+    let temporary = OsStr::new(&temporary);
+    let fd = openat(
+        &directory,
+        temporary,
+        OFlag::O_WRONLY | OFlag::O_CREAT | OFlag::O_EXCL | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC,
+        Mode::from_bits_truncate(0o600),
+    )
+    .map_err(io_error)?;
+    let mut guard = PartialFileGuard {
+        directory: &directory,
+        name: temporary,
+        active: true,
+    };
+    // Apply exact permissions to our held file, never to a target pathname
+    // that another publisher could replace. This also handles restrictive umask.
+    fchmod(&fd, Mode::from_bits_truncate(0o600)).map_err(io_error)?;
+    let mut file = File::from(fd);
     file.write_all(content).map_err(ExportError::Io)?;
     file.sync_all().map_err(ExportError::Io)?;
-    drop(file);
-
-    // 6. Atomic no-clobber rename into destination
-    atomic_no_clobber_publish(&tmp_path, target_path)?;
-    guard.disarm();
-
-    // 7. Ensure permissions are strictly 0o600
-    if let Ok(meta) = std::fs::metadata(target_path)
-        && meta.mode() & 0o777 != 0o600
-    {
-        let _ = std::fs::set_permissions(target_path, std::fs::Permissions::from_mode(0o600));
-    }
-
-    // 8. Flush parent directory to persist directory entry durability
-    if let Ok(dir_file) = File::open(parent) {
-        let _ = dir_file.sync_all();
-    }
-
+    revalidate_directory(&directory, &parent_path)?;
+    atomic_no_clobber_publish(&directory, temporary, name, target_path)?;
+    guard.active = false;
+    sync_directory(&directory)?;
+    revalidate_directory(&directory, &parent_path)?;
     Ok(())
 }
 
-fn validate_destination_directory(dir: &Path) -> Result<(), ExportError> {
-    let meta = match std::fs::symlink_metadata(dir) {
-        Ok(m) => m,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return Err(ExportError::InvalidDirectory(
-                "directory does not exist".into(),
-            ));
-        }
-        Err(e) => return Err(ExportError::Io(e)),
-    };
-
-    if !meta.is_dir() {
+fn validate_directory(stat: &FileStat, leaf: bool) -> Result<(), ExportError> {
+    if SFlag::from_bits_truncate(stat.st_mode) & SFlag::S_IFMT != SFlag::S_IFDIR {
         return Err(ExportError::InvalidDirectory(
-            "destination parent path is not a directory".into(),
+            "destination component is not a directory".into(),
         ));
     }
-
-    // Ownership and permission check on Unix
     let uid = nix::unistd::geteuid().as_raw();
-    let dir_uid = meta.uid();
-    let mode = meta.mode();
-
-    let is_owner = dir_uid == uid;
-    let is_root_sticky = dir_uid == 0 && (mode & 0o1000 != 0);
-
-    if !is_owner && !is_root_sticky {
+    let root_sticky = stat.st_uid == 0 && stat.st_mode & 0o1000 != 0;
+    if (stat.st_uid != uid && !(stat.st_uid == 0 && (!leaf || root_sticky)))
+        || (stat.st_mode & 0o022 != 0 && !root_sticky)
+    {
         return Err(ExportError::Permissions(
-            "destination directory is not owned by current user or root sticky".into(),
+            "destination component is not owner-controlled".into(),
         ));
     }
-
-    // Reject world/group-writable directory unless root-owned sticky (/tmp)
-    if mode & 0o022 != 0 && !is_root_sticky {
-        return Err(ExportError::Permissions(
-            "destination directory has unsafe group/world write permissions".into(),
-        ));
-    }
-
     Ok(())
 }
 
-fn atomic_no_clobber_publish(from: &Path, to: &Path) -> Result<(), ExportError> {
-    // Fast path on Linux GNU: renameat2 with RENAME_NOREPLACE
+fn open_destination_directory(path: &Path) -> Result<File, ExportError> {
+    if !path.is_absolute() || path.as_os_str().len() > 4096 {
+        return Err(ExportError::InvalidDirectory(
+            "destination path exceeds bounds".into(),
+        ));
+    }
+    let components: Vec<_> = path.components().take(129).collect();
+    if components.len() > 128 {
+        return Err(ExportError::InvalidDirectory(
+            "destination path exceeds bounds".into(),
+        ));
+    }
+    let flags = OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC;
+    let mut handle = open(Path::new("/"), flags, Mode::empty()).map_err(directory_open_error)?;
+    validate_directory(&fstat(&handle).map_err(io_error)?, components.len() == 1)?;
+    for (index, component) in components.iter().enumerate().skip(1) {
+        let name = match component {
+            Component::Normal(name) => *name,
+            Component::ParentDir => OsStr::new(".."),
+            Component::CurDir => continue,
+            _ => {
+                return Err(ExportError::InvalidDirectory(
+                    "invalid destination component".into(),
+                ));
+            }
+        };
+        handle = openat(&handle, name, flags, Mode::empty()).map_err(directory_open_error)?;
+        validate_directory(
+            &fstat(&handle).map_err(io_error)?,
+            index + 1 == components.len(),
+        )?;
+    }
+    Ok(handle.into())
+}
+
+fn directory_open_error(error: Errno) -> ExportError {
+    match error {
+        Errno::ENOENT | Errno::ENOTDIR | Errno::ELOOP => ExportError::InvalidDirectory(
+            "destination directory is missing, symlinked, or not a directory".into(),
+        ),
+        _ => io_error(error),
+    }
+}
+
+fn revalidate_directory(directory: &File, path: &Path) -> Result<(), ExportError> {
+    let current = open_destination_directory(path)?;
+    let before = fstat(directory).map_err(io_error)?;
+    let after = fstat(&current).map_err(io_error)?;
+    if (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino) {
+        return Err(ExportError::InvalidDirectory(
+            "destination changed during export".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn sync_directory(directory: &File) -> Result<(), ExportError> {
+    directory.sync_all().map_err(ExportError::Durability)
+}
+
+fn atomic_no_clobber_publish(
+    directory: &File,
+    from: &OsStr,
+    to: &OsStr,
+    target_path: &Path,
+) -> Result<(), ExportError> {
     #[cfg(all(target_os = "linux", target_env = "gnu"))]
     {
         use nix::fcntl::{RenameFlags, renameat2};
-        use std::os::fd::AsFd;
-
-        let parent = to
-            .parent()
-            .map(|p| {
-                if p.as_os_str().is_empty() {
-                    Path::new(".")
-                } else {
-                    p
-                }
-            })
-            .unwrap_or_else(|| Path::new("."));
-
-        if let Ok(dir_file) = File::open(parent) {
-            let from_name = from.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            let to_name = to.file_name().and_then(|n| n.to_str()).unwrap_or("");
-
-            if !from_name.is_empty() && !to_name.is_empty() {
-                match renameat2(
-                    dir_file.as_fd(),
-                    from_name,
-                    dir_file.as_fd(),
-                    to_name,
-                    RenameFlags::RENAME_NOREPLACE,
-                ) {
-                    Ok(()) => return Ok(()),
-                    Err(nix::errno::Errno::EEXIST) => {
-                        return Err(ExportError::TargetAlreadyExists(to.to_path_buf()));
-                    }
-                    Err(nix::errno::Errno::EINVAL | nix::errno::Errno::ENOSYS) => {
-                        // Fall through to hard link fallback
-                    }
-                    Err(e) => {
-                        return Err(ExportError::Io(std::io::Error::from_raw_os_error(e as i32)));
-                    }
-                }
+        match renameat2(
+            directory,
+            from,
+            directory,
+            to,
+            RenameFlags::RENAME_NOREPLACE,
+        ) {
+            Ok(()) => return Ok(()),
+            Err(Errno::EEXIST) => {
+                return Err(ExportError::TargetAlreadyExists(target_path.to_owned()));
             }
+            Err(Errno::EINVAL | Errno::ENOSYS) => {}
+            Err(error) => return Err(io_error(error)),
         }
     }
+    link_no_clobber_publish(directory, from, to, target_path)
+}
 
-    // Portable atomic no-clobber fallback: hard_link + remove_file
-    match std::fs::hard_link(from, to) {
-        Ok(()) => {
-            let _ = std::fs::remove_file(from);
-            Ok(())
+fn link_no_clobber_publish(
+    directory: &File,
+    from: &OsStr,
+    to: &OsStr,
+    target_path: &Path,
+) -> Result<(), ExportError> {
+    match linkat(directory, from, directory, to, AtFlags::empty()) {
+        Ok(()) => unlinkat(directory, from, UnlinkatFlags::NoRemoveDir).map_err(io_error),
+        Err(Errno::EEXIST) => Err(ExportError::TargetAlreadyExists(target_path.to_owned())),
+        Err(error) => Err(io_error(error)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn directory_flush_propagates_real_descriptor_errors() {
+        let valid = File::open("/tmp").unwrap();
+        assert!(sync_directory(&valid).is_ok());
+        // A real pipe cannot be fsynced. Exercise the production flush boundary
+        // without replacing the syscall or injecting a pretend filesystem.
+        let (_read, write) = nix::unistd::pipe().unwrap();
+        let invalid = File::from(write);
+        assert!(matches!(
+            sync_directory(&invalid),
+            Err(ExportError::Durability(_))
+        ));
+    }
+
+    fn directory_tree() -> PathBuf {
+        use std::os::unix::fs::DirBuilderExt;
+        let path = Path::new("/tmp").join(format!(
+            "sr-export-descriptors-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&path)
+            .unwrap();
+        path
+    }
+
+    #[test]
+    fn held_parent_prevents_redirected_publication_and_cleanup() {
+        use std::os::unix::fs::{DirBuilderExt, symlink};
+        let root = directory_tree();
+        let parent = root.join("parent");
+        let moved = root.join("moved");
+        let outside = root.join("outside");
+        for path in [&parent, &outside] {
+            std::fs::DirBuilder::new().mode(0o700).create(path).unwrap();
         }
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-            Err(ExportError::TargetAlreadyExists(to.to_path_buf()))
-        }
-        Err(e) => Err(ExportError::Io(e)),
+        let directory = open_destination_directory(&parent).unwrap();
+        std::fs::write(parent.join("temporary"), b"authorized content").unwrap();
+        std::fs::write(parent.join("cleanup"), b"owned partial").unwrap();
+        std::fs::write(outside.join("cleanup"), b"unrelated file").unwrap();
+        // Simulate replacement between validation and publication, using real
+        // filesystem operations and the actual production publication helper.
+        std::fs::rename(&parent, &moved).unwrap();
+        symlink(&outside, &parent).unwrap();
+        atomic_no_clobber_publish(
+            &directory,
+            OsStr::new("temporary"),
+            OsStr::new("result"),
+            &parent.join("result"),
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::read(moved.join("result")).unwrap(),
+            b"authorized content"
+        );
+        assert!(!outside.join("result").exists());
+        assert!(revalidate_directory(&directory, &parent).is_err());
+        drop(PartialFileGuard {
+            directory: &directory,
+            name: OsStr::new("cleanup"),
+            active: true,
+        });
+        assert!(!moved.join("cleanup").exists());
+        assert_eq!(
+            std::fs::read(outside.join("cleanup")).unwrap(),
+            b"unrelated file"
+        );
+    }
+
+    #[test]
+    fn real_hard_link_fallback_preserves_existing_targets() {
+        let root = directory_tree();
+        let directory = open_destination_directory(&root).unwrap();
+        std::fs::write(root.join("first"), b"winner").unwrap();
+        link_no_clobber_publish(
+            &directory,
+            OsStr::new("first"),
+            OsStr::new("result"),
+            &root.join("result"),
+        )
+        .unwrap();
+        assert!(!root.join("first").exists());
+        assert_eq!(std::fs::read(root.join("result")).unwrap(), b"winner");
+        std::fs::write(root.join("second"), b"loser").unwrap();
+        assert!(matches!(
+            link_no_clobber_publish(
+                &directory,
+                OsStr::new("second"),
+                OsStr::new("result"),
+                &root.join("result")
+            ),
+            Err(ExportError::TargetAlreadyExists(_))
+        ));
+        assert_eq!(std::fs::read(root.join("result")).unwrap(), b"winner");
+        assert_eq!(std::fs::read(root.join("second")).unwrap(), b"loser");
     }
 }

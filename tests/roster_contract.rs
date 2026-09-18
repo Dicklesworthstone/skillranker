@@ -284,7 +284,7 @@ fn atomic_private_exports() {
     use std::fs::{self, DirBuilder};
     use std::os::unix::fs::{DirBuilderExt, MetadataExt};
 
-    let test_dir = std::env::temp_dir().join(format!(
+    let test_dir = std::fs::canonicalize("/tmp").unwrap().join(format!(
         "sr-export-test-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
@@ -378,7 +378,7 @@ fn concurrent_export_race_prevents_clobber() {
     use std::sync::Arc;
     use std::thread;
 
-    let test_dir = std::env::temp_dir().join(format!(
+    let test_dir = std::fs::canonicalize("/tmp").unwrap().join(format!(
         "sr-race-test-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
@@ -519,7 +519,7 @@ fn local_explicit_resolution() {
     // Setup Roster Fixture
     // -------------------------------------------------------------------------
     static SEQUENCE: AtomicU64 = AtomicU64::new(0);
-    let test_dir = std::env::temp_dir().join(format!(
+    let test_dir = std::fs::canonicalize("/tmp").unwrap().join(format!(
         "sr-explicit-test-{}-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()

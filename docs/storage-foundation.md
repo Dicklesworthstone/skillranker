@@ -135,3 +135,34 @@ and public engine identifiers; no private paths or database contents. Test trees
 are retained under Linux `/tmp` (RCH's `TMPDIR` can have shared ancestors) to comply with
 the repository's deletion policy. Record the exact source/lockfile and remote
 worker alongside logs; an unexecuted gate is not a pass.
+
+## Private export publication
+
+`storage::export::export_private_atomic` validates every destination-directory
+component with no-follow descriptor opens. Ancestors must be owned by the caller
+or root and must not be group/world writable, except for root-owned sticky
+directories such as `/tmp`. The final directory must be caller-owned or
+root-owned sticky. Symlinked ancestors are refused, including a symlink leading
+to an otherwise safe final directory. Relative paths and `..` retain their normal
+filesystem meaning subject to the same checks. Paths are bounded to 4,096 bytes
+and 128 components.
+
+The exporter creates a short exclusive temporary name in the held parent,
+applies mode `0600` to its descriptor, writes and flushes the file, then publishes
+without replacing any existing target. Publication and temporary-file cleanup
+use that same parent descriptor. The directory is flushed and its pathname is
+revalidated before success. A valid long target name does not lengthen the
+temporary name. No post-publication chmod follows a target pathname.
+
+Errors after publication can leave a complete destination file in place.
+`ExportError::Durability` specifically means the parent flush failed; it does
+not mean publication rolled back. Inspect the destination before retrying, and
+never remove a raced-in or already published file as compensation. As with the
+cache opener, this does not protect against hostile same-user mutation or
+privileged mount replacement, and validation cannot freeze paths after return.
+
+`tests/export_contract.rs`, the export unit tests, and the existing roster
+export/race tests exercise this Linux boundary. The unit flush failure uses a
+real pipe descriptor, and the replacement test operates on real directories;
+neither establishes an actual power-loss experiment. macOS storage/export
+qualification remains separate and is not established by these Linux results.
