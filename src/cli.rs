@@ -683,6 +683,9 @@ fn export_snapshot(
                 "The snapshot directory is missing or not private enough"
             }
             ExportError::Io(_) => "The snapshot could not be written",
+            ExportError::Durability(_) => {
+                "The snapshot was published, but durability could not be confirmed; inspect the target before retrying"
+            }
         };
         let kind = error.kind();
         (kind.exit_code() as u8, kind.as_str(), message.to_owned())

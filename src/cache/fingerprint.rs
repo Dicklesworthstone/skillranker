@@ -8,6 +8,7 @@ use crate::identity::{
     AdapterId, AdapterVersion, BranchId, ContentHash, ContextEpoch, HarnessId, SessionId, SkillId,
     WorkspaceId,
 };
+use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::io::Read;
 
@@ -70,7 +71,7 @@ impl fmt::Debug for CacheKey {
 }
 
 /// Request stage discriminator.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub enum RequestStage {
     Wide,
     Rerank,
@@ -165,7 +166,7 @@ pub struct CandidateDigest {
 }
 
 /// Request fingerprint representing a canonical provider call.
-#[derive(Clone, Copy, Eq, PartialEq, Hash)]
+#[derive(Clone, Copy, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub struct RequestFingerprint([u8; 32]);
 
 impl RequestFingerprint {
@@ -311,7 +312,7 @@ impl RankingPolicySnapshot {
 }
 
 /// Decision fingerprint representing the output recommendation context.
-#[derive(Clone, Copy, Eq, PartialEq, Hash)]
+#[derive(Clone, Copy, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub struct DecisionFingerprint([u8; 32]);
 
 impl DecisionFingerprint {
