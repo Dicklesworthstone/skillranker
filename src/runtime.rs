@@ -20,6 +20,7 @@ pub enum RuntimeError {
     LateResultSuppressed,
     Cancelled,
     StdinTimeout,
+    StdinIo,
     UnboundedLeaf,
     BlockingPoolUnavailable,
 }
@@ -34,6 +35,7 @@ impl std::fmt::Display for RuntimeError {
             }
             Self::Cancelled => f.write_str("invocation cancelled"),
             Self::StdinTimeout => f.write_str("stdin read reached the cleanup reserve"),
+            Self::StdinIo => f.write_str("stdin read I/O error"),
             Self::UnboundedLeaf => {
                 f.write_str("uninterruptible blocking leaf is not admitted on the hook path")
             }
@@ -199,10 +201,12 @@ impl ProcessInvocation {
     }
 }
 
-/// Bound a stdin read by the remaining work window. Partial reads that stop
-/// because the cleanup reserve arrived are reported as timeout, not as a
-/// complete document.
-pub fn read_stdin_before_cleanup<R: Read>(
+/// Pure bounded decoder from a generic synchronous reader bounded by the clock's
+/// work deadline and `max_bytes`.
+///
+/// Validates admission before and after reading, ensures completion time before
+/// returning `Ok(())`, and validates EOF when exactly `max_bytes` have been read.
+pub fn decode_bounded<R: Read>(
     clock: &EntryClock,
     reader: &mut R,
     max_bytes: usize,
@@ -212,28 +216,254 @@ pub fn read_stdin_before_cleanup<R: Read>(
         .admit_new_work()
         .map_err(|_| RuntimeError::StdinTimeout)?;
     buf.clear();
+
+    if max_bytes == 0 {
+        let mut probe = [0u8; 1];
+        loop {
+            clock
+                .admit_new_work()
+                .map_err(|_| RuntimeError::StdinTimeout)?;
+            match reader.read(&mut probe) {
+                Ok(0) => {
+                    clock
+                        .admit_new_work()
+                        .map_err(|_| RuntimeError::StdinTimeout)?;
+                    return Ok(());
+                }
+                Ok(_) => {
+                    return Err(LimitError::AboveLimit {
+                        name: "hook_stdin",
+                        observed: 1,
+                        limit: 0,
+                        unit: crate::limits::LimitUnit::Bytes,
+                    }
+                    .into());
+                }
+                Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
+                Err(err) if err.kind() == io::ErrorKind::TimedOut => {
+                    return Err(RuntimeError::StdinTimeout);
+                }
+                Err(_) => return Err(RuntimeError::StdinIo),
+            }
+        }
+    }
+
     let mut chunk = [0_u8; 8 * 1024];
     loop {
         clock
             .admit_new_work()
             .map_err(|_| RuntimeError::StdinTimeout)?;
-        if buf.len() >= max_bytes {
+
+        if buf.len() == max_bytes {
+            let mut probe = [0u8; 1];
+            loop {
+                clock
+                    .admit_new_work()
+                    .map_err(|_| RuntimeError::StdinTimeout)?;
+                match reader.read(&mut probe) {
+                    Ok(0) => {
+                        clock
+                            .admit_new_work()
+                            .map_err(|_| RuntimeError::StdinTimeout)?;
+                        return Ok(());
+                    }
+                    Ok(n) => {
+                        return Err(LimitError::AboveLimit {
+                            name: "hook_stdin",
+                            observed: (max_bytes + n) as u128,
+                            limit: max_bytes as u128,
+                            unit: crate::limits::LimitUnit::Bytes,
+                        }
+                        .into());
+                    }
+                    Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
+                    Err(err) if err.kind() == io::ErrorKind::TimedOut => {
+                        return Err(RuntimeError::StdinTimeout);
+                    }
+                    Err(_) => return Err(RuntimeError::StdinIo),
+                }
+            }
+        }
+
+        let want = chunk.len().min(max_bytes.saturating_sub(buf.len()));
+        match reader.read(&mut chunk[..want]) {
+            Ok(0) => {
+                clock
+                    .admit_new_work()
+                    .map_err(|_| RuntimeError::StdinTimeout)?;
+                return Ok(());
+            }
+            Ok(n) => {
+                clock
+                    .admit_new_work()
+                    .map_err(|_| RuntimeError::StdinTimeout)?;
+                buf.extend_from_slice(&chunk[..n]);
+            }
+            Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
+            Err(err) if err.kind() == io::ErrorKind::TimedOut => {
+                return Err(RuntimeError::StdinTimeout);
+            }
+            Err(_) => return Err(RuntimeError::StdinIo),
+        }
+    }
+}
+
+/// Bound a stdin read by the remaining work window. Partial reads that stop
+/// because the cleanup reserve arrived are reported as timeout, not as a
+/// complete document.
+pub fn read_stdin_before_cleanup<R: Read>(
+    clock: &EntryClock,
+    reader: &mut R,
+    max_bytes: usize,
+    buf: &mut Vec<u8>,
+) -> Result<(), RuntimeError> {
+    decode_bounded(clock, reader, max_bytes, buf)
+}
+
+/// Read from an owned or borrowed Unix file descriptor (like stdin or a pipe),
+/// polling for readability bounded by the remaining work deadline before each read
+/// so that waits can be interrupted and never exceed the cleanup reserve.
+#[cfg(unix)]
+pub fn read_fd_before_cleanup<F: std::os::fd::AsFd>(
+    clock: &EntryClock,
+    fd: F,
+    max_bytes: usize,
+    buf: &mut Vec<u8>,
+) -> Result<(), RuntimeError> {
+    use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
+    use nix::unistd::read;
+
+    clock
+        .admit_new_work()
+        .map_err(|_| RuntimeError::StdinTimeout)?;
+    buf.clear();
+
+    let raw_fd = fd.as_fd();
+
+    let poll_readable = |clock: &EntryClock| -> Result<(), RuntimeError> {
+        loop {
+            clock
+                .admit_new_work()
+                .map_err(|_| RuntimeError::StdinTimeout)?;
+            let remaining_ms = clock.remaining_before_cleanup().as_millis();
+            if remaining_ms == 0 {
+                return Err(RuntimeError::StdinTimeout);
+            }
+            let timeout_ms = u64::min(remaining_ms, i32::MAX as u64) as i32;
+            let timeout =
+                PollTimeout::try_from(timeout_ms).map_err(|_| RuntimeError::StdinTimeout)?;
+            let mut pfd = PollFd::new(
+                raw_fd,
+                PollFlags::POLLIN | PollFlags::POLLHUP | PollFlags::POLLERR,
+            );
+            match poll(std::slice::from_mut(&mut pfd), timeout) {
+                Ok(0) => return Err(RuntimeError::StdinTimeout),
+                Ok(_) => {
+                    clock
+                        .admit_new_work()
+                        .map_err(|_| RuntimeError::StdinTimeout)?;
+                    return Ok(());
+                }
+                Err(nix::errno::Errno::EINTR) => continue,
+                Err(_) => return Err(RuntimeError::StdinIo),
+            }
+        }
+    };
+
+    if max_bytes == 0 {
+        poll_readable(clock)?;
+        let mut probe = [0u8; 1];
+        let n = loop {
+            match read(raw_fd, &mut probe) {
+                Ok(n) => break n,
+                Err(nix::errno::Errno::EINTR) => continue,
+                Err(_) => return Err(RuntimeError::StdinIo),
+            }
+        };
+        clock
+            .admit_new_work()
+            .map_err(|_| RuntimeError::StdinTimeout)?;
+        if n == 0 {
+            return Ok(());
+        } else {
             return Err(LimitError::AboveLimit {
                 name: "hook_stdin",
-                observed: buf.len() as u128 + 1,
-                limit: max_bytes as u128,
+                observed: 1,
+                limit: 0,
                 unit: crate::limits::LimitUnit::Bytes,
             }
             .into());
         }
-        let want = chunk.len().min(max_bytes.saturating_sub(buf.len()));
-        match reader.read(&mut chunk[..want]) {
-            Ok(0) => return Ok(()),
-            Ok(n) => buf.extend_from_slice(&chunk[..n]),
-            Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
-            Err(_) => return Err(RuntimeError::StdinTimeout),
-        }
     }
+
+    let mut chunk = [0_u8; 8 * 1024];
+    loop {
+        clock
+            .admit_new_work()
+            .map_err(|_| RuntimeError::StdinTimeout)?;
+
+        if buf.len() == max_bytes {
+            poll_readable(clock)?;
+            let mut probe = [0u8; 1];
+            let n = loop {
+                match read(raw_fd, &mut probe) {
+                    Ok(n) => break n,
+                    Err(nix::errno::Errno::EINTR) => continue,
+                    Err(_) => return Err(RuntimeError::StdinIo),
+                }
+            };
+            clock
+                .admit_new_work()
+                .map_err(|_| RuntimeError::StdinTimeout)?;
+            if n == 0 {
+                return Ok(());
+            } else {
+                return Err(LimitError::AboveLimit {
+                    name: "hook_stdin",
+                    observed: (max_bytes + n) as u128,
+                    limit: max_bytes as u128,
+                    unit: crate::limits::LimitUnit::Bytes,
+                }
+                .into());
+            }
+        }
+
+        poll_readable(clock)?;
+        let want = chunk.len().min(max_bytes.saturating_sub(buf.len()));
+        let n = loop {
+            match read(raw_fd, &mut chunk[..want]) {
+                Ok(n) => break n,
+                Err(nix::errno::Errno::EINTR) => continue,
+                Err(_) => return Err(RuntimeError::StdinIo),
+            }
+        };
+        clock
+            .admit_new_work()
+            .map_err(|_| RuntimeError::StdinTimeout)?;
+        if n == 0 {
+            return Ok(());
+        }
+        buf.extend_from_slice(&chunk[..n]);
+    }
+}
+
+/// Read from standard input on supported Unix platforms with deadline-bounded polling.
+#[cfg(unix)]
+pub fn read_stdin_platform_before_cleanup(
+    clock: &EntryClock,
+    max_bytes: usize,
+    buf: &mut Vec<u8>,
+) -> Result<(), RuntimeError> {
+    read_fd_before_cleanup(clock, io::stdin(), max_bytes, buf)
+}
+
+#[cfg(not(unix))]
+pub fn read_stdin_platform_before_cleanup(
+    _clock: &EntryClock,
+    _max_bytes: usize,
+    _buf: &mut Vec<u8>,
+) -> Result<(), RuntimeError> {
+    Err(RuntimeError::UnboundedLeaf)
 }
 
 pub const fn default_deadline_ms() -> u64 {
