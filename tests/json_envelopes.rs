@@ -321,7 +321,7 @@ fn test_cli_binary_failure_envelopes() {
 
     let out_empty = Command::new(env!("CARGO_BIN_EXE_sr"))
         .current_dir(&empty_workspace)
-        .args(&["rank", "--context", empty_ctx.to_str().unwrap(), "--offline", "--json"])
+        .args(["rank", "--context", empty_ctx.to_str().unwrap(), "--offline", "--json"])
         .output()
         .expect("run binary");
     assert_eq!(out_empty.status.code(), Some(5));

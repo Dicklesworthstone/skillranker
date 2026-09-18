@@ -588,47 +588,7 @@ fn rank_command(
             serde_json::to_string(output_doc.as_value()).unwrap()
         ))
     } else {
-        match output_doc.kind() {
-            crate::output::OutputKind::Decision(crate::output::Decision::Ranked) => {
-                let val = output_doc.as_value();
-                let mut out = String::from("RANK\tSKILL\tSCORE\tPROBABILITY\tFIT\tNAME\n");
-                if let Some(skills) = val["skills"].as_array() {
-                    for s in skills {
-                        let rank = s["rank"].as_u64().unwrap_or(0);
-                        let id = s["skill_id"].as_str().unwrap_or("");
-                        let score = s["rank_score"].as_f64().unwrap_or(0.0);
-                        let prob = s["rerank_probability"].as_f64().unwrap_or(0.0);
-                        let fit = s["fits"].as_f64().unwrap_or(0.0);
-                        let name = s["name"].as_str().unwrap_or("");
-                        out.push_str(&format!(
-                            "{rank}\t{id}\t{score:.6}\t{prob:.6}\t{fit:.6}\t{name}\n"
-                        ));
-                    }
-                }
-                Ok(out)
-            }
-            crate::output::OutputKind::Decision(crate::output::Decision::Explicit) => {
-                let val = output_doc.as_value();
-                let mut out = String::from("EXPLICIT SKILL\n");
-                if let Some(skills) = val["skills"].as_array() {
-                    for s in skills {
-                        let id = s["skill_id"].as_str().unwrap_or("");
-                        let name = s["name"].as_str().unwrap_or("");
-                        out.push_str(&format!("Selected: {id} ({name})\n"));
-                    }
-                }
-                Ok(out)
-            }
-            crate::output::OutputKind::Decision(crate::output::Decision::Abstain) => {
-                let val = output_doc.as_value();
-                let reason = val["reason"].as_str().unwrap_or("unknown");
-                Ok(format!("ABSTAIN: {reason}\n"))
-            }
-            _ => Ok(format!(
-                "{}\n",
-                serde_json::to_string(output_doc.as_value()).unwrap()
-            )),
-        }
+        Ok(output_doc.render_table())
     }
 }
 

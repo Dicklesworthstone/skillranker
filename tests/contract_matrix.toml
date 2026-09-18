@@ -1010,6 +1010,27 @@ features = []
 status = "executed"
 
 [[boundaries]]
+id = "p4_table_and_decision_views"
+owner_bead = "sr-roadmap-l1i.5.13"
+member_beads = ["sr-roadmap-l1i.5.13"]
+phase = "P4"
+title = "Render safe readable tables and explicit decision views"
+unit_property_tests = [
+    "tests/table_views.rs::test_narrow_and_wide_unicode_display_cells",
+    "tests/table_views.rs::test_malicious_ansi_and_control_sequence_sanitization",
+    "tests/table_views.rs::test_ranked_table_rendering",
+    "tests/table_views.rs::test_explicit_directive_decision_view",
+    "tests/table_views.rs::test_abstain_and_unavailable_decision_views",
+    "tests/table_views.rs::test_cli_format_dispatch_table_vs_json"
+]
+e2e_suite = "core-cli"
+e2e_cases = ["table-and-decision-views"]
+assertion_ids = ["safe_readable_tables_verified"]
+platforms = ["linux"]
+features = []
+status = "executed"
+
+[[boundaries]]
 id = "p4_dry_run"
 owner_bead = "sr-roadmap-l1i.5.15"
 member_beads = ["sr-roadmap-l1i.5.15"]

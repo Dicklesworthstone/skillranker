@@ -13,6 +13,8 @@ use std::collections::BTreeSet;
 use std::fmt;
 use std::io::{self, Write};
 
+pub mod table;
+
 pub const SCHEMA_VERSION: u64 = 1;
 pub const MAX_OUTPUT_BYTES: usize = 2 * crate::limits::MIB;
 pub const MAX_OUTPUT_DEPTH: usize = 64;
@@ -241,6 +243,10 @@ impl OutputDocument {
     }
     pub fn to_json(&self) -> Result<Vec<u8>, ContractError> {
         encode(&self.value)
+    }
+    /// Renders the document into an aligned, sanitized terminal table view.
+    pub fn render_table(&self) -> String {
+        table::render_table(self)
     }
 
     /// Construct a minimal failure with fixed diagnostics, not raw provider text.
