@@ -15,15 +15,20 @@
 //!   directories, FIFOs, character/block devices, and unauthorized symlinks are rejected.
 //! - Session and branch identifiers must match; cross-session reads are forbidden.
 
-use crate::adapter::ClaudeUserPromptSubmit;
+use crate::adapter::{ClaudeUserPromptSubmit, decode_json};
+use crate::authorized_read::{AuthorizedRoot, AuthorizedRoots, FileKind, ReadError};
 use crate::context::branch::{ActiveBranch, BranchResolutionTarget, resolve_active_branch};
 use crate::context::jsonl::{SkipKind, parse_line};
 use crate::context::{CurrentRequest, EventKind, NormalizedEvent, Role};
 use crate::identity::{BranchId, SessionId};
+use crate::limits::{
+    NATIVE_TRANSCRIPT_TAIL_BYTES, NATIVE_TRANSCRIPT_TAIL_RECORDS, ONE_TRANSCRIPT_RECORD_BYTES,
+};
 use crate::output::ContextQuality;
+use crate::runtime::EntryClock;
+use std::collections::BTreeSet;
 use std::fmt;
-use std::fs;
-use std::os::unix::fs::FileTypeExt;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 /// Error encountered during Claude prompt overlay processing.
@@ -40,6 +45,8 @@ pub enum OverlayError {
         transcript_session: SessionId,
     },
     CrossSessionReadForbidden,
+    AmbiguousBranch,
+    Deadline,
 }
 
 impl fmt::Display for OverlayError {
@@ -50,25 +57,16 @@ impl fmt::Display for OverlayError {
             Self::TranscriptPathForbidden(reason) => {
                 write!(f, "transcript path is forbidden: {reason}")
             }
-            Self::TranscriptIsDirectory(p) => {
-                write!(f, "transcript path is a directory: {}", p.display())
-            }
-            Self::TranscriptIsDeviceOrFifo(p) => {
-                write!(f, "transcript path is a device or FIFO: {}", p.display())
-            }
+            Self::TranscriptIsDirectory(_) => f.write_str("transcript path is a directory"),
+            Self::TranscriptIsDeviceOrFifo(_) => f.write_str("transcript path is a device or FIFO"),
             Self::MalformedTranscript(err) => {
                 write!(f, "existing transcript file is malformed: {err}")
             }
-            Self::SessionMismatch {
-                hook_session,
-                transcript_session,
-            } => {
-                write!(
-                    f,
-                    "session ID mismatch: hook={:?}, transcript={:?}",
-                    hook_session, transcript_session
-                )
+            Self::SessionMismatch { .. } => {
+                f.write_str("transcript session does not match hook session")
             }
+            Self::AmbiguousBranch => f.write_str("transcript branch cannot be resolved"),
+            Self::Deadline => f.write_str("transcript overlay deadline exhausted"),
             Self::CrossSessionReadForbidden => {
                 f.write_str("cross-session transcript read is forbidden")
             }
@@ -110,6 +108,17 @@ pub struct ClaudeOverlayResult {
 pub fn apply_claude_prompt_overlay(
     request: &ClaudeOverlayRequest,
 ) -> Result<ClaudeOverlayResult, OverlayError> {
+    let clock = EntryClock::capture().map_err(|_| OverlayError::Deadline)?;
+    apply_claude_prompt_overlay_before(request, &clock)
+}
+
+/// Shared-deadline variant for invocation orchestration. Filesystem syscalls
+/// remain cooperative; no late result is returned as timely completion.
+pub fn apply_claude_prompt_overlay_before(
+    request: &ClaudeOverlayRequest,
+    clock: &EntryClock,
+) -> Result<ClaudeOverlayResult, OverlayError> {
+    checkpoint(clock)?;
     let hook = &request.hook_input;
     let prompt_text = hook.prompt.as_str().trim();
     if prompt_text.is_empty() {
@@ -158,11 +167,9 @@ pub fn apply_claude_prompt_overlay(
         });
     };
 
-    // 1. Verify transcript path safety
-    validate_transcript_path(&raw_path, request.authorized_root.as_deref())?;
-
-    // Check if the file exists on disk
-    if !raw_path.exists() {
+    let opened = open_transcript(&raw_path, request.authorized_root.as_deref())?;
+    checkpoint(clock)?;
+    if opened.is_none() {
         // First turn of a new session: transcript does not yet exist!
         // Authorized prompt-only ranking with empty history.
         let current_request = CurrentRequest {
@@ -195,48 +202,92 @@ pub fn apply_claude_prompt_overlay(
         });
     }
 
-    // 2. Read and parse existing transcript
-    let file_bytes = fs::read(&raw_path).map_err(|e| {
-        OverlayError::MalformedTranscript(format!("failed to read transcript: {e}"))
-    })?;
-
-    let mut parsed_events = Vec::new();
-    let mut offset = 0usize;
-
-    while offset < file_bytes.len() {
-        let rest = &file_bytes[offset..];
-        let Some(nl) = rest.iter().position(|&b| b == b'\n') else {
-            // Trailing non-newline bytes at the end of an existing file
-            break;
-        };
-        let line = &rest[..nl];
-        offset += nl + 1;
-
-        if line.is_empty() {
-            continue;
-        }
-
-        match parse_line(line) {
-            Ok(event) => parsed_events.push(event),
-            Err(skip_kind) => match skip_kind {
-                SkipKind::Corrupt => {
-                    return Err(OverlayError::MalformedTranscript(
-                        "corrupt transcript JSON record".into(),
-                    ));
-                }
-                SkipKind::DuplicateKey => {
-                    return Err(OverlayError::MalformedTranscript(
-                        "duplicate key in transcript record".into(),
-                    ));
-                }
-                SkipKind::Oversize => {
-                    return Err(OverlayError::MalformedTranscript(
-                        "transcript record exceeds byte limit".into(),
-                    ));
-                }
-            },
-        }
+    // Read only a fixed-length tail from the descriptor whose authority/type
+    // was checked. Never reopen a path after checking it.
+    let mut file = opened.ok_or_else(|| malformed("missing opened transcript"))?;
+    let before = file
+        .metadata()
+        .map_err(|_| malformed("cannot inspect transcript"))?;
+    let length = before.len();
+    let start = length.saturating_sub(NATIVE_TRANSCRIPT_TAIL_BYTES.max() as u64);
+    file.seek(SeekFrom::Start(start))
+        .map_err(|_| malformed("cannot seek transcript"))?;
+    let mut file_bytes = vec![0; (length - start) as usize];
+    file.read_exact(&mut file_bytes)
+        .map_err(|_| malformed("transcript changed during read"))?;
+    let after = file
+        .metadata()
+        .map_err(|_| malformed("cannot inspect transcript"))?;
+    if after.len() < length
+        || (after.len() == length && before.modified().ok() != after.modified().ok())
+    {
+        return Err(malformed("transcript changed during read"));
     }
+    checkpoint(clock)?;
+    let mut partial = start > 0 || (!file_bytes.is_empty() && !file_bytes.ends_with(b"\n"));
+    let aligned = if start == 0 {
+        0
+    } else {
+        file_bytes
+            .iter()
+            .position(|b| *b == b'\n')
+            .map_or(file_bytes.len(), |p| p + 1)
+    };
+    let complete_end = file_bytes
+        .iter()
+        .rposition(|b| *b == b'\n')
+        .map_or(aligned, |p| p + 1);
+    let complete = &file_bytes[aligned..complete_end.max(aligned)];
+    let mut records = complete
+        .rsplit(|b| *b == b'\n')
+        .filter(|line| !line.is_empty());
+    let mut lines = records
+        .by_ref()
+        .take(NATIVE_TRANSCRIPT_TAIL_RECORDS.max())
+        .collect::<Vec<_>>();
+    partial |= records.next().is_some();
+    lines.reverse();
+    let mut parsed_events = Vec::with_capacity(lines.len());
+    let mut event_ids = BTreeSet::new();
+    let mut native_lineage = false;
+    for line in lines {
+        checkpoint(clock)?;
+        let event = parse_line(line).map_err(|kind| match kind {
+            SkipKind::Corrupt => malformed("corrupt transcript JSON record"),
+            SkipKind::DuplicateKey => malformed("duplicate key in transcript record"),
+            SkipKind::Oversize => malformed("transcript record exceeds byte limit"),
+        })?;
+        let value = decode_json(line, ONE_TRANSCRIPT_RECORD_BYTES.max())
+            .map_err(|_| malformed("corrupt, duplicate or oversized transcript record"))?;
+        native_lineage |= value.get("parentUuid").is_some();
+        for key in ["sessionId", "session_id"] {
+            if let Some(observed) = value.get(key) {
+                let observed = observed
+                    .as_str()
+                    .and_then(|v| SessionId::new(v).ok())
+                    .ok_or_else(|| malformed("invalid transcript session identity"))?;
+                if let Some(expected) = hook_session_id.as_ref() {
+                    if expected != &observed {
+                        return Err(OverlayError::SessionMismatch {
+                            hook_session: expected.clone(),
+                            transcript_session: observed,
+                        });
+                    }
+                } else {
+                    return Err(OverlayError::CrossSessionReadForbidden);
+                }
+            }
+        }
+        if let Some(id) = &event.event_id
+            && !event_ids.insert(id.clone())
+        {
+            return Err(malformed("duplicate transcript event identity"));
+        }
+        parsed_events.push(event);
+    }
+
+    let had_parent_links =
+        native_lineage || parsed_events.iter().any(|event| event.parent_id.is_some());
 
     // 3. Overlay the authoritative prompt
     // Check if the prompt event is already present in the transcript by event ID
@@ -254,6 +305,10 @@ pub fn apply_claude_prompt_overlay(
     }
 
     if let Some(idx) = matched_index {
+        // Event identity cannot turn an assistant/tool record into a user turn.
+        if parsed_events[idx].role != Role::User || parsed_events[idx].kind != EventKind::Message {
+            return Err(malformed("prompt identity refers to a non-user message"));
+        }
         // Prompt is already recorded in the transcript; overlay the authoritative prompt text
         parsed_events[idx].text = hook.prompt.clone();
         parsed_events[idx].role = Role::User;
@@ -262,7 +317,25 @@ pub fn apply_claude_prompt_overlay(
         // Prompt not yet in transcript.
         // Even if an earlier turn has identical prompt text, do NOT deduplicate by text:
         // repeated identical user messages are distinct turns!
-        let parent_id = parsed_events.iter().rev().find_map(|e| e.event_id.clone());
+        let parent_id = if had_parent_links {
+            let branch = resolve_active_branch(
+                &parsed_events,
+                &BranchResolutionTarget {
+                    target_event_id: None,
+                    target_branch_id: None,
+                    target_agent_id: None,
+                },
+            );
+            branch
+                .active_branch()
+                .ok_or(OverlayError::AmbiguousBranch)?
+                .leaf_event_id
+                .clone()
+        } else {
+            // Legacy linear normalized records have no parent links. This
+            // fallback never resolves an explicit fork by physical file order.
+            parsed_events.iter().rev().find_map(|e| e.event_id.clone())
+        };
 
         let new_event = NormalizedEvent {
             event_id: prompt_event_id.clone(),
@@ -292,9 +365,28 @@ pub fn apply_claude_prompt_overlay(
         target_branch_id: None,
         target_agent_id: None,
     };
+    // A pending prompt without an event ID is not a node in the native DAG.
+    // Resolve the historical lineage first, then append that prompt exactly once.
+    let anonymous_prompt = if had_parent_links && branch_target.target_event_id.is_none() {
+        parsed_events.pop()
+    } else {
+        None
+    };
     let branch_res = resolve_active_branch(&parsed_events, &branch_target);
-    let active_branch = branch_res.active_branch().cloned();
+    let mut active_branch = branch_res.active_branch().cloned();
+    if let (Some(branch), Some(prompt)) = (active_branch.as_mut(), anonymous_prompt) {
+        branch.events.push(prompt);
+        branch.leaf_event_id = None;
+    }
     let branch_id = active_branch.as_ref().and_then(|b| b.branch_id.clone());
+    if had_parent_links {
+        let branch = active_branch
+            .as_ref()
+            .ok_or(OverlayError::AmbiguousBranch)?;
+        partial |= branch.ancestor_chain_truncated;
+        parsed_events = branch.events.clone();
+    }
+    checkpoint(clock)?;
 
     Ok(ClaudeOverlayResult {
         session_id: hook_session_id,
@@ -302,86 +394,52 @@ pub fn apply_claude_prompt_overlay(
         current_request,
         events: parsed_events,
         active_branch,
-        context_quality: ContextQuality::Complete,
+        context_quality: if partial {
+            ContextQuality::Partial
+        } else {
+            ContextQuality::Complete
+        },
         prompt_overlaid: true,
         deduplicated_by_event_id,
     })
 }
 
-/// Validate that the transcript path is an authorized regular file and not a device/FIFO/directory.
-fn validate_transcript_path(
+fn checkpoint(clock: &EntryClock) -> Result<(), OverlayError> {
+    clock
+        .admit_new_work()
+        .map(|_| ())
+        .map_err(|_| OverlayError::Deadline)
+}
+fn malformed(detail: &str) -> OverlayError {
+    OverlayError::MalformedTranscript(detail.to_owned())
+}
+
+fn open_transcript(
     path: &Path,
-    authorized_root: Option<&Path>,
-) -> Result<(), OverlayError> {
-    let symlink_meta = match fs::symlink_metadata(path) {
-        Ok(m) => m,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            // File does not exist yet: safe for new session first turn
-            return Ok(());
-        }
-        Err(e) => {
-            return Err(OverlayError::TranscriptPathForbidden(format!(
-                "cannot inspect path: {e}"
-            )));
-        }
-    };
-
-    let file_type = symlink_meta.file_type();
-
-    // Reject directories
-    if file_type.is_dir() {
-        return Err(OverlayError::TranscriptIsDirectory(path.to_path_buf()));
+    root: Option<&Path>,
+) -> Result<Option<std::fs::File>, OverlayError> {
+    if !path.is_absolute() {
+        return Err(OverlayError::TranscriptPathForbidden(
+            "absolute path required".into(),
+        ));
     }
-
-    // Reject FIFOs, sockets, block devices, and character devices
-    if file_type.is_fifo()
-        || file_type.is_char_device()
-        || file_type.is_block_device()
-        || file_type.is_socket()
-    {
-        return Err(OverlayError::TranscriptIsDeviceOrFifo(path.to_path_buf()));
-    }
-
-    // If it's a symlink, check the target
-    if file_type.is_symlink() {
-        let target_meta = match fs::metadata(path) {
-            Ok(m) => m,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return Err(OverlayError::TranscriptPathForbidden(
-                    "broken symlink".into(),
-                ));
-            }
-            Err(e) => {
-                return Err(OverlayError::TranscriptPathForbidden(format!(
-                    "cannot inspect symlink target: {e}"
-                )));
-            }
-        };
-        let target_type = target_meta.file_type();
-        if target_type.is_dir() {
-            return Err(OverlayError::TranscriptIsDirectory(path.to_path_buf()));
+    let root = root
+        .or_else(|| path.parent())
+        .ok_or(OverlayError::CrossSessionReadForbidden)?;
+    let authority = AuthorizedRoot::open_absolute(root)
+        .map_err(|_| OverlayError::TranscriptPathForbidden("authorized root unavailable".into()))?;
+    match AuthorizedRoots::single(authority).open_absolute_file(path) {
+        Ok(file) => Ok(Some(file)),
+        Err(ReadError::NotFound) => Ok(None),
+        Err(ReadError::NotRegularFile(FileKind::Directory)) => {
+            Err(OverlayError::TranscriptIsDirectory(path.to_path_buf()))
         }
-        if target_type.is_fifo()
-            || target_type.is_char_device()
-            || target_type.is_block_device()
-            || target_type.is_socket()
-        {
-            return Err(OverlayError::TranscriptIsDeviceOrFifo(path.to_path_buf()));
+        Err(ReadError::NotRegularFile(_)) => {
+            Err(OverlayError::TranscriptIsDeviceOrFifo(path.to_path_buf()))
         }
+        Err(ReadError::EscapesAuthorizedRoots) => Err(OverlayError::CrossSessionReadForbidden),
+        Err(_) => Err(OverlayError::TranscriptPathForbidden(
+            "cannot open authorized transcript".into(),
+        )),
     }
-
-    // If authorized root is specified, canonical path must be inside authorized root
-    if let Some(root) = authorized_root {
-        let canonical_root = root.canonicalize().map_err(|e| {
-            OverlayError::TranscriptPathForbidden(format!("cannot resolve authorized root: {e}"))
-        })?;
-        let canonical_path = path.canonicalize().map_err(|e| {
-            OverlayError::TranscriptPathForbidden(format!("cannot resolve transcript path: {e}"))
-        })?;
-        if !canonical_path.starts_with(&canonical_root) {
-            return Err(OverlayError::CrossSessionReadForbidden);
-        }
-    }
-
-    Ok(())
 }

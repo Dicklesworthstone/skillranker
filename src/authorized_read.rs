@@ -307,6 +307,25 @@ impl AuthorizedRoots {
         read_opened(resolved, limit)
     }
 
+    /// Open an authorized regular file for a caller that performs bounded tail
+    /// reads. The returned descriptor is the object checked by the safe walk;
+    /// callers must not reopen its path after authorization.
+    pub(crate) fn open_absolute_file(&self, absolute: &Path) -> Result<File, ReadError> {
+        if !absolute.is_absolute() {
+            return Err(ReadError::InvalidRelativePath);
+        }
+        let (index, components) = self
+            .locate(absolute)
+            .ok_or(ReadError::EscapesAuthorizedRoots)?;
+        if components.is_empty() {
+            return Err(ReadError::NotRegularFile(FileKind::Directory));
+        }
+        let mut walk = Walk::new(self, index)?;
+        walk.require_existing_link_targets = true;
+        let resolved = walk.resolve(components, Want::File)?;
+        Ok(File::from(resolved.descriptor))
+    }
+
     /// Read a bounded regular file named by an absolute path that must lie
     /// within an authorized root.
     pub fn read_absolute(
@@ -409,6 +428,7 @@ struct Walk<'a> {
     stack: Vec<OwnedFd>,
     names: Vec<OsString>,
     hops: u32,
+    require_existing_link_targets: bool,
     steps: usize,
 }
 
@@ -425,6 +445,7 @@ impl<'a> Walk<'a> {
             ],
             names: Vec::new(),
             hops: 0,
+            require_existing_link_targets: false,
             steps: 0,
         })
     }
@@ -499,6 +520,12 @@ impl<'a> Walk<'a> {
                             Ok(stat) if FileKind::of(&stat) == FileKind::Symlink
                         );
                     if !is_link {
+                        if errno == Errno::ENOENT
+                            && self.hops > 0
+                            && self.require_existing_link_targets
+                        {
+                            return Err(ReadError::InvalidRelativePath);
+                        }
                         return Err(map_errno(errno));
                     }
                     let target = self.follow(name.as_os_str())?;
