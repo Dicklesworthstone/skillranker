@@ -7,12 +7,14 @@
 //! the boundaries that perform those effects.
 
 pub mod profile;
+pub mod receipt;
 pub mod redaction;
 
 pub use profile::{
     ProfileDisclosedFields, ProfileTrustError, count_disclosed_bytes, is_essential_tool_reference,
     resolve_context_profile, validate_project_profile,
 };
+pub use receipt::{CategoryReceipt, DisclosureReceipt, ReceiptVerificationError, SourceCategory};
 
 use crate::identity::forbidden_identity_character;
 use crate::output::ErrorKind;

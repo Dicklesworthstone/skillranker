@@ -256,7 +256,9 @@ impl RenderedContextPayload {
     }
 }
 
-use crate::privacy::{ContextProfile, is_essential_tool_reference};
+use crate::privacy::{
+    CategoryReceipt, ContextProfile, DisclosureReceipt, SourceCategory, is_essential_tool_reference,
+};
 
 /// Options controlling context windowing, budget, redaction, and tool filtering.
 #[derive(Clone, Debug)]
@@ -327,7 +329,8 @@ impl From<RedactionError> for RenderContextError {
     }
 }
 
-/// Renders a bounded, redacted, request-first context payload from normalized input.
+/// Renders a bounded, redacted, request-first context payload from normalized input,
+/// along with a bounded field-level disclosure receipt.
 ///
 /// Steps:
 /// 1. Validate whether essential attachments are missing. If so, flags `Insufficient` context
@@ -347,10 +350,11 @@ impl From<RedactionError> for RenderContextError {
 ///    applying deterministic head/tail truncation where appropriate.
 /// 7. Determines final `ContextQuality`.
 /// 8. Assembles and runs full-payload secret inspection.
-pub fn render_context(
+/// 9. Computes field-level category receipts and payload verification totals.
+pub fn render_context_and_receipt(
     context: &NormalizedContext,
     options: &RenderContextOptions<'_>,
-) -> Result<RenderedContextPayload, RenderContextError> {
+) -> Result<(RenderedContextPayload, DisclosureReceipt), RenderContextError> {
     let redactor = options.redactor;
 
     // 1. Check essential attachments and tool results
@@ -379,6 +383,7 @@ pub fn render_context(
     let raw_req = context.current_request.text.as_str();
     let sanitized_req = sanitize_media_data(raw_req);
     let redacted_req = redactor.redact_field(&sanitized_req)?;
+    let req_redactions = redacted_req.redaction_count();
     let mut req_text = redacted_req.into_string();
 
     let mut history_truncated = false;
@@ -394,8 +399,34 @@ pub fn render_context(
         options.max_total_scalars - req_scalars
     };
 
-    // 4. Process older events into candidate RenderedMessage items
     let latest_event_id = context.current_request.event_id.as_ref();
+    let mut total_messages_seen: usize = 0;
+    let mut total_tools_seen: usize = 0;
+    for event in &context.events {
+        if let (Some(ev_id), Some(cur_id)) = (&event.event_id, latest_event_id)
+            && ev_id == cur_id
+        {
+            continue;
+        }
+        match event.kind {
+            EventKind::ToolInvocation | EventKind::ToolResult => total_tools_seen += 1,
+            EventKind::Message => {
+                if event.role == Role::Tool {
+                    total_tools_seen += 1;
+                } else {
+                    total_messages_seen += 1;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut history_redactions = 0;
+    let mut tool_redactions = 0;
+    let mut tool_truncations = 0;
+    let mut history_truncations = 0;
+
+    // 4. Process older events into candidate RenderedMessage items
     let mut candidates: Vec<RenderedMessage> = Vec::new();
 
     // In Minimal profile, optional history and tool bodies are omitted entirely
@@ -424,20 +455,30 @@ pub fn render_context(
 
                         let mut summary_parts = Vec::new();
                         if let Some(args) = &tool_ev.arguments {
-                            let redacted_args = redactor.redact_field(args.as_str())?.into_string();
+                            let redacted_args = redactor.redact_field(args.as_str())?;
+                            tool_redactions += redacted_args.redaction_count();
+                            let raw_args_str = redacted_args.into_string();
                             let arg_summary = summarize_tool_arguments(
-                                &redacted_args,
+                                &raw_args_str,
                                 options.tool_excerpt_chars / 2,
                             );
+                            if raw_args_str.chars().count() > options.tool_excerpt_chars / 2 {
+                                tool_truncations += 1;
+                            }
                             if !arg_summary.is_empty() && arg_summary != "{}" {
                                 summary_parts.push(arg_summary);
                             }
                         }
                         if let Some(res) = &tool_ev.result {
                             let sanitized_res = sanitize_media_data(res.as_str());
-                            let redacted_res = redactor.redact_field(&sanitized_res)?.into_string();
+                            let redacted_res = redactor.redact_field(&sanitized_res)?;
+                            tool_redactions += redacted_res.redaction_count();
+                            let raw_res_str = redacted_res.into_string();
                             let (res_summary, _error_lines) =
-                                summarize_tool_result(&redacted_res, options.tool_excerpt_chars);
+                                summarize_tool_result(&raw_res_str, options.tool_excerpt_chars);
+                            if raw_res_str.chars().count() > options.tool_excerpt_chars {
+                                tool_truncations += 1;
+                            }
                             if !res_summary.is_empty() {
                                 summary_parts.push(res_summary);
                             }
@@ -484,8 +525,10 @@ pub fn render_context(
                         continue;
                     }
 
-                    let redacted_text = redactor.redact_field(&media_clean)?.into_string();
-                    if redacted_text.is_empty() {
+                    let redacted_text = redactor.redact_field(&media_clean)?;
+                    history_redactions += redacted_text.redaction_count();
+                    let redacted_str = redacted_text.into_string();
+                    if redacted_str.is_empty() {
                         continue;
                     }
 
@@ -494,7 +537,7 @@ pub fn render_context(
                         tool: None,
                         status: None,
                         summary: None,
-                        text: Some(redacted_text),
+                        text: Some(redacted_str),
                     });
                 }
                 EventKind::TaskBoundary
@@ -532,8 +575,10 @@ pub fn render_context(
             let mut truncated_msg = msg;
             if let Some(txt) = truncated_msg.text.take() {
                 truncated_msg.text = Some(head_tail_truncate(&txt, budget_left));
+                history_truncations += 1;
             } else if let Some(sum) = truncated_msg.summary.take() {
                 truncated_msg.summary = Some(head_tail_truncate(&sum, budget_left));
+                tool_truncations += 1;
             }
             selected_messages.push(truncated_msg);
             history_truncated = true;
@@ -558,6 +603,9 @@ pub fn render_context(
     };
 
     // Build project signals
+    let mut signals_redactions = 0;
+    let mut signals_omitted_dirty_paths = 0;
+
     let project_signals = if let Some(signals) = options.project_signals {
         let languages = detect_languages_from_markers(&signals.filenames);
         let tools_on_path = signals
@@ -567,12 +615,16 @@ pub fn render_context(
             .collect();
         let (dirty_paths, dirty_paths_truncated) =
             if options.context_profile == ContextProfile::Minimal {
+                if let Some(dp) = &signals.dirty_paths {
+                    signals_omitted_dirty_paths = dp.paths.len();
+                }
                 (Vec::new(), false)
             } else if let Some(dp) = &signals.dirty_paths {
                 let mut sanitized_paths = Vec::new();
                 for p in &dp.paths {
-                    let redacted = redactor.redact_field(p.as_str())?.into_string();
-                    sanitized_paths.push(redacted);
+                    let redacted = redactor.redact_field(p.as_str())?;
+                    signals_redactions += redacted.redaction_count();
+                    sanitized_paths.push(redacted.into_string());
                 }
                 (sanitized_paths, dp.truncated)
             } else {
@@ -611,5 +663,117 @@ pub fn render_context(
         .map_err(|e| RenderContextError::Serialization(e.to_string()))?;
     redactor.inspect_payload(&serialized)?;
 
-    Ok(payload)
+    // 9. Build DisclosureReceipt
+    let messages_included = payload
+        .recent_messages
+        .iter()
+        .filter(|m| m.role != "tool")
+        .count();
+    let tools_included = payload
+        .recent_messages
+        .iter()
+        .filter(|m| m.role == "tool")
+        .count();
+    let messages_omitted = total_messages_seen.saturating_sub(messages_included);
+    let tools_omitted = total_tools_seen.saturating_sub(tools_included);
+
+    let signals_included = payload.project_signals.languages.len()
+        + payload.project_signals.tools_on_path.len()
+        + payload.project_signals.dirty_paths.len();
+    let signals_truncated = if payload.project_signals.dirty_paths_truncated {
+        1
+    } else {
+        0
+    };
+
+    let session_included = payload.session_state.loaded_references.len()
+        + payload.session_state.explicit_exclusions.len();
+
+    let req_included = if payload.latest_user_request.is_empty() {
+        0
+    } else {
+        1
+    };
+    let req_omitted = if context.current_request.essential_attachment_missing {
+        1
+    } else {
+        0
+    };
+    let req_truncated_count = if req_truncated { 1 } else { 0 };
+
+    let cat_request = CategoryReceipt {
+        category: SourceCategory::UserRequest,
+        included_count: req_included,
+        omitted_count: req_omitted,
+        truncated_count: req_truncated_count,
+        redaction_count: req_redactions,
+    };
+    let cat_history = CategoryReceipt {
+        category: SourceCategory::MessageHistory,
+        included_count: messages_included,
+        omitted_count: messages_omitted,
+        truncated_count: history_truncations,
+        redaction_count: history_redactions,
+    };
+    let cat_tools = CategoryReceipt {
+        category: SourceCategory::ToolEvents,
+        included_count: tools_included,
+        omitted_count: tools_omitted,
+        truncated_count: tool_truncations,
+        redaction_count: tool_redactions,
+    };
+    let cat_signals = CategoryReceipt {
+        category: SourceCategory::ProjectSignals,
+        included_count: signals_included,
+        omitted_count: signals_omitted_dirty_paths,
+        truncated_count: signals_truncated,
+        redaction_count: signals_redactions,
+    };
+    let cat_session = CategoryReceipt {
+        category: SourceCategory::SessionState,
+        included_count: session_included,
+        omitted_count: 0,
+        truncated_count: 0,
+        redaction_count: 0,
+    };
+
+    let categories = vec![
+        cat_request,
+        cat_history,
+        cat_tools,
+        cat_signals,
+        cat_session,
+    ];
+
+    let total_included = categories.iter().map(|c| c.included_count).sum();
+    let total_omitted = categories.iter().map(|c| c.omitted_count).sum();
+    let total_truncated = categories.iter().map(|c| c.truncated_count).sum();
+    let total_redactions = categories.iter().map(|c| c.redaction_count).sum();
+
+    let receipt = DisclosureReceipt {
+        schema_version: 1,
+        context_profile: options.context_profile,
+        context_quality,
+        no_tools: options.no_tools,
+        categories,
+        total_included,
+        total_omitted,
+        total_truncated,
+        total_redactions,
+        disclosed_bytes: payload.disclosed_bytes(),
+        disclosed_scalars: payload.total_message_scalars(),
+    };
+
+    Ok((payload, receipt))
+}
+
+/// Renders a bounded, redacted, request-first context payload from normalized input.
+///
+/// Convenience wrapper delegating to [`render_context_and_receipt`] and returning
+/// solely the payload.
+pub fn render_context(
+    context: &NormalizedContext,
+    options: &RenderContextOptions<'_>,
+) -> Result<RenderedContextPayload, RenderContextError> {
+    render_context_and_receipt(context, options).map(|(payload, _)| payload)
 }

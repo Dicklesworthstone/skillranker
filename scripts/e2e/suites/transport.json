@@ -45,6 +45,16 @@
       "require_fault": false
     },
     {
+      "id": "consented-live-smoke",
+      "mode": "pass",
+      "timeout_ms": 5000,
+      "output_bytes": 8192,
+      "expected_exit": 0,
+      "expected_outcome": "ok",
+      "assertions": ["smoke_valid"],
+      "require_fault": false
+    },
+    {
       "id": "full-transport-suite",
       "mode": "pass",
       "timeout_ms": 5000,

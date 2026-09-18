@@ -56,6 +56,8 @@ elif mode == "isolation":
 assertion_id = (
     "p1_gate_passed"
     if case == "full-transport-suite"
+    else "smoke_valid"
+    if case == "consented-live-smoke"
     else "safe_error_reporting"
     if case in {"stalled-dns", "handshake-timeout", "429-backoff", "success-twin"}
     else "behavior"

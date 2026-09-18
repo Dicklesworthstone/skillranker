@@ -19,6 +19,7 @@
 use skillranker::context::branch::SkillUsageKind;
 use skillranker::context::render::{
     RenderContextError, RenderContextOptions, RenderedLoadedReference, render_context,
+    render_context_and_receipt,
 };
 use skillranker::context::signals::{DirtyPaths, ProjectSignals};
 use skillranker::context::{
@@ -32,8 +33,9 @@ use skillranker::identity::{
 use skillranker::output::ContextQuality;
 use skillranker::privacy::redaction::Redactor;
 use skillranker::privacy::{
-    ContextProfile, ProfileDisclosedFields, ProfileTrustError, count_disclosed_bytes,
-    is_essential_tool_reference, resolve_context_profile, validate_project_profile,
+    ContextProfile, DisclosureReceipt, ProfileDisclosedFields, ProfileTrustError,
+    ReceiptVerificationError, SourceCategory, count_disclosed_bytes, is_essential_tool_reference,
+    resolve_context_profile, validate_project_profile,
 };
 
 /// Creates a standard test session context containing user messages, assistant messages,
@@ -608,4 +610,276 @@ fn disclosure_profiles() {
     redactor
         .inspect_payload(&min_json)
         .expect("minimal payload contains no unredacted secrets");
+}
+
+#[test]
+fn disclosure_receipts() {
+    let signals = make_test_signals();
+    let loaded_refs = vec![RenderedLoadedReference {
+        name: "git-commit-helper".to_string(),
+        summary: "Git commit message generator".to_string(),
+    }];
+    let exclusions = vec!["deprecated-skill".to_string()];
+
+    // -------------------------------------------------------------------------
+    // Sub-case 1: Standard profile receipt generation and exact payload parity
+    // -------------------------------------------------------------------------
+    let context = make_test_context("Please create a unit test for the auth model", false);
+    let standard_options = RenderContextOptions {
+        context_profile: ContextProfile::Standard,
+        no_tools: false,
+        project_signals: Some(&signals),
+        loaded_references: loaded_refs.clone(),
+        explicit_exclusions: exclusions.clone(),
+        ..RenderContextOptions::default()
+    };
+
+    let (standard_payload, standard_receipt) =
+        render_context_and_receipt(&context, &standard_options)
+            .expect("rendering standard context with receipt should succeed");
+
+    // Exact parity check (assertion_id: receipt_accurate)
+    standard_receipt
+        .verify_against_payload(&standard_payload)
+        .expect("receipt must verify against payload");
+
+    assert_eq!(standard_receipt.schema_version, 1);
+    assert_eq!(standard_receipt.context_profile, ContextProfile::Standard);
+    assert_eq!(standard_receipt.context_quality, ContextQuality::Complete);
+    assert!(!standard_receipt.no_tools);
+
+    // Check categories
+    let req_cat = standard_receipt
+        .category(SourceCategory::UserRequest)
+        .unwrap();
+    assert_eq!(req_cat.included_count, 1);
+    assert_eq!(req_cat.omitted_count, 0);
+
+    let hist_cat = standard_receipt
+        .category(SourceCategory::MessageHistory)
+        .unwrap();
+    assert_eq!(hist_cat.included_count, 2); // 2 non-tool messages (ev-01, ev-02)
+    assert_eq!(hist_cat.omitted_count, 0);
+
+    let tool_cat = standard_receipt
+        .category(SourceCategory::ToolEvents)
+        .unwrap();
+    assert_eq!(tool_cat.included_count, 2); // 2 tool message candidates (ev-03, ev-04)
+    assert_eq!(tool_cat.omitted_count, 0);
+
+    let sig_cat = standard_receipt
+        .category(SourceCategory::ProjectSignals)
+        .unwrap();
+    assert_eq!(
+        sig_cat.included_count,
+        standard_payload.project_signals.languages.len()
+            + standard_payload.project_signals.tools_on_path.len()
+            + standard_payload.project_signals.dirty_paths.len()
+    );
+    assert_eq!(sig_cat.omitted_count, 0);
+
+    let sess_cat = standard_receipt
+        .category(SourceCategory::SessionState)
+        .unwrap();
+    assert_eq!(sess_cat.included_count, 2); // 1 loaded reference + 1 exclusion
+    assert_eq!(sess_cat.omitted_count, 0);
+
+    // Verify totals
+    assert_eq!(
+        standard_receipt.disclosed_bytes,
+        standard_payload.disclosed_bytes()
+    );
+    assert_eq!(
+        standard_receipt.disclosed_scalars,
+        standard_payload.total_message_scalars()
+    );
+
+    // -------------------------------------------------------------------------
+    // Sub-case 2: Minimal profile receipt reflects omissions
+    // -------------------------------------------------------------------------
+    let minimal_options = RenderContextOptions {
+        context_profile: ContextProfile::Minimal,
+        no_tools: false,
+        project_signals: Some(&signals),
+        loaded_references: loaded_refs.clone(),
+        explicit_exclusions: exclusions.clone(),
+        ..RenderContextOptions::default()
+    };
+
+    let (minimal_payload, minimal_receipt) = render_context_and_receipt(&context, &minimal_options)
+        .expect("rendering minimal context with receipt should succeed");
+
+    minimal_receipt
+        .verify_against_payload(&minimal_payload)
+        .expect("minimal receipt must verify against payload");
+
+    assert_eq!(minimal_receipt.context_profile, ContextProfile::Minimal);
+    let min_hist = minimal_receipt
+        .category(SourceCategory::MessageHistory)
+        .unwrap();
+    assert_eq!(min_hist.included_count, 0);
+    assert_eq!(min_hist.omitted_count, 2); // 2 messages omitted
+
+    let min_tools = minimal_receipt
+        .category(SourceCategory::ToolEvents)
+        .unwrap();
+    assert_eq!(min_tools.included_count, 0);
+    assert_eq!(min_tools.omitted_count, 2); // 2 tool events omitted
+
+    let min_signals = minimal_receipt
+        .category(SourceCategory::ProjectSignals)
+        .unwrap();
+    assert_eq!(min_signals.omitted_count, 2); // 2 dirty paths omitted
+    assert_eq!(minimal_payload.project_signals.dirty_paths.len(), 0);
+
+    // -------------------------------------------------------------------------
+    // Sub-case 3: --no-tools receipt reflection across Standard profile
+    // -------------------------------------------------------------------------
+    let no_tools_options = RenderContextOptions {
+        context_profile: ContextProfile::Standard,
+        no_tools: true,
+        project_signals: Some(&signals),
+        ..RenderContextOptions::default()
+    };
+
+    let (no_tools_payload, no_tools_receipt) =
+        render_context_and_receipt(&context, &no_tools_options)
+            .expect("rendering no-tools context with receipt should succeed");
+
+    no_tools_receipt
+        .verify_against_payload(&no_tools_payload)
+        .expect("no-tools receipt must verify against payload");
+
+    assert!(no_tools_receipt.no_tools);
+    let nt_tools = no_tools_receipt
+        .category(SourceCategory::ToolEvents)
+        .unwrap();
+    assert_eq!(nt_tools.included_count, 0);
+    assert_eq!(nt_tools.omitted_count, 2); // all tool events omitted
+
+    let nt_hist = no_tools_receipt
+        .category(SourceCategory::MessageHistory)
+        .unwrap();
+    assert_eq!(nt_hist.included_count, 2); // non-tool messages still included
+
+    // -------------------------------------------------------------------------
+    // Sub-case 4: Redaction tracking in receipt and zero secret fragments
+    // -------------------------------------------------------------------------
+    let mut secret_context = context.clone();
+    secret_context.current_request.text =
+        PrivateText::new("Connect with ghp_123456789012345678901234567890123456");
+    secret_context.events[0].text =
+        PrivateText::new("Authorization: Bearer my-secret-token-abcdef123456");
+    secret_context.events[2].tool = Some(ToolEvent {
+        call_id: None,
+        name: PrivateText::new("bash"),
+        status: ToolStatus::Attempted,
+        arguments: Some(PrivateText::new(r#"api_key="AKIAIOSFODNN7EXAMPLE1""#)),
+        result: None,
+    });
+    secret_context.events[3].tool = Some(ToolEvent {
+        call_id: None,
+        name: PrivateText::new("bash"),
+        status: ToolStatus::Succeeded,
+        arguments: None,
+        result: Some(PrivateText::new(
+            r#"token="ghp_abcdefghijklmnopqrstuvwxyz1234567890""#,
+        )),
+    });
+
+    let (secret_payload, secret_receipt) =
+        render_context_and_receipt(&secret_context, &standard_options)
+            .expect("rendering secret context with receipt should succeed");
+
+    secret_receipt
+        .verify_against_payload(&secret_payload)
+        .expect("secret receipt must verify against payload");
+
+    assert!(
+        secret_receipt.total_redactions >= 4,
+        "receipt must track all redactions across fields (actual: {})",
+        secret_receipt.total_redactions
+    );
+    assert!(
+        secret_receipt
+            .category(SourceCategory::UserRequest)
+            .unwrap()
+            .redaction_count
+            >= 1
+    );
+    assert!(
+        secret_receipt
+            .category(SourceCategory::MessageHistory)
+            .unwrap()
+            .redaction_count
+            >= 1
+    );
+    assert!(
+        secret_receipt
+            .category(SourceCategory::ToolEvents)
+            .unwrap()
+            .redaction_count
+            >= 2
+    );
+
+    // Invariant: receipt JSON serialization contains ZERO secret fragments
+    let receipt_json = serde_json::to_string(&secret_receipt).expect("serialize receipt to JSON");
+    assert!(!receipt_json.contains("ghp_"));
+    assert!(!receipt_json.contains("AKIA"));
+    assert!(!receipt_json.contains("my-secret-token"));
+    assert!(!receipt_json.contains("abcdefghijklmnopqrstuvwxyz"));
+
+    // -------------------------------------------------------------------------
+    // Sub-case 5: Truncation tracking in receipt
+    // -------------------------------------------------------------------------
+    let budget_options = RenderContextOptions {
+        max_total_scalars: 80, // tight budget forces truncation
+        ..standard_options.clone()
+    };
+
+    let (truncated_payload, truncated_receipt) =
+        render_context_and_receipt(&context, &budget_options)
+            .expect("rendering with tight budget should succeed");
+
+    truncated_receipt
+        .verify_against_payload(&truncated_payload)
+        .expect("truncated receipt must verify against payload");
+
+    assert!(
+        truncated_receipt.total_truncated > 0,
+        "receipt must track truncation events under tight scalar budget"
+    );
+
+    // -------------------------------------------------------------------------
+    // Sub-case 6: Category totals consistency and tampering detection
+    // -------------------------------------------------------------------------
+    let mut tampered_receipt = standard_receipt.clone();
+    tampered_receipt.total_included += 1;
+    let err_totals = tampered_receipt
+        .verify_against_payload(&standard_payload)
+        .expect_err("tampered totals must be detected");
+    assert!(matches!(
+        err_totals,
+        ReceiptVerificationError::TotalsInconsistent { .. }
+    ));
+
+    let mut tampered_item = standard_receipt.clone();
+    tampered_item.categories[0].included_count += 5;
+    tampered_item.total_included += 5;
+    let err_item = tampered_item
+        .verify_against_payload(&standard_payload)
+        .expect_err("tampered item count must be detected");
+    assert!(matches!(
+        err_item,
+        ReceiptVerificationError::ItemCountMismatch { .. }
+    ));
+
+    // -------------------------------------------------------------------------
+    // Sub-case 7: E2E Case & Assertion ID: receipt_accurate
+    //              Round-trip serialization & schema conformance
+    // -------------------------------------------------------------------------
+    let serialized_receipt = serde_json::to_string(&standard_receipt).expect("serialize receipt");
+    let deserialized: DisclosureReceipt =
+        serde_json::from_str(&serialized_receipt).expect("deserialize receipt");
+    assert_eq!(standard_receipt, deserialized);
 }

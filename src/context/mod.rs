@@ -29,7 +29,8 @@ pub use render::{
     IMAGE_OMISSION_MARKER, MEDIA_OMISSION_MARKER, RenderContextError, RenderContextOptions,
     RenderedContextPayload, RenderedLoadedReference, RenderedMessage, RenderedProjectSignals,
     RenderedSessionState, detect_languages_from_markers, is_sr_advisory_text, render_context,
-    sanitize_media_data, strip_advisory_from_non_user, strip_thinking_blocks,
+    render_context_and_receipt, sanitize_media_data, strip_advisory_from_non_user,
+    strip_thinking_blocks,
 };
 pub use tool::{
     AssociatedToolCall, DEFAULT_TOOL_EXCERPT_CHARS, SimpleSkillResolver, SkillEvidenceResolver,

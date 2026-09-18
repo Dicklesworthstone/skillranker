@@ -903,7 +903,7 @@ e2e_cases = ["disclosure-receipt-matches-payload"]
 assertion_ids = ["receipt_accurate"]
 platforms = ["linux"]
 features = []
-status = "planned"
+status = "implemented"
 
 [[boundaries]]
 id = "p3_conformance_matrix"
