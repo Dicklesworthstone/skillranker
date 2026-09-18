@@ -3,6 +3,7 @@
 
 pub mod discovery;
 pub mod frontmatter;
+pub mod resolution;
 pub mod retrieval;
 
 pub use frontmatter::{

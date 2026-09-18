@@ -37,8 +37,9 @@ pub const CLAUDE_USER_SOURCE: &str = "claude_code.user";
 /// roster honestly partial instead of implying a complete inventory.
 pub const CLAUDE_UNENUMERATED_SOURCES: &[&str] = &["claude_code.plugin", "claude_code.managed"];
 
-const CLAUDE_PROJECT_PRIORITY: i32 = 100;
-const CLAUDE_USER_PRIORITY: i32 = 50;
+// Claude's documented root precedence is enterprise > personal > project.
+const CLAUDE_PROJECT_PRIORITY: i32 = 50;
+const CLAUDE_USER_PRIORITY: i32 = 100;
 const MAX_FILE_NAME_BYTES: usize = 255;
 
 /// Which documented source a root represents.

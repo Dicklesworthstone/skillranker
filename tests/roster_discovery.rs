@@ -88,11 +88,11 @@ fn documented_claude_roots_are_enumerated_without_unrelated_harness_roots() {
     assert_eq!(
         found,
         vec![
+            "user-one/SKILL.md".to_owned(),
             "alpha/SKILL.md".to_owned(),
-            "nested/beta/SKILL.md".to_owned(),
-            "user-one/SKILL.md".to_owned()
+            "nested/beta/SKILL.md".to_owned()
         ],
-        "only documented Claude roots, project before user"
+        "only documented Claude roots, personal before project"
     );
     assert!(
         discovery
@@ -101,7 +101,7 @@ fn documented_claude_roots_are_enumerated_without_unrelated_harness_roots() {
             .all(|candidate| !candidate.path().as_path().starts_with(tree.join(".codex"))),
         "no Codex roots"
     );
-    // Project candidates outrank user candidates.
+    // Personal candidates outrank project candidates.
     let sources: Vec<&str> = discovery
         .candidates()
         .iter()
@@ -110,9 +110,9 @@ fn documented_claude_roots_are_enumerated_without_unrelated_harness_roots() {
     assert_eq!(
         sources,
         vec![
+            CLAUDE_USER_SOURCE,
             CLAUDE_PROJECT_SOURCE,
-            CLAUDE_PROJECT_SOURCE,
-            CLAUDE_USER_SOURCE
+            CLAUDE_PROJECT_SOURCE
         ]
     );
     assert!(discovery.candidates()[0].priority() > discovery.candidates()[2].priority());
