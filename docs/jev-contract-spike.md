@@ -1,121 +1,148 @@
-# TypeSafe Jev Provider Contract Spike Evidence (`sr-roadmap-l1i.2.10`)
+# Jev contract qualification (`sr-roadmap-l1i.2.10`)
 
-## 1. Executive Summary
+## Scope and remaining gate
 
-This document records the exact results, schema shapes, token usage, and runtime limits observed during the bounded TypeSafe Jev contract spike (`sr-roadmap-l1i.2.10`, contract boundary `p1_jev_contract_smoke`).
+Qualification is incomplete. The live smoke test exercises one synthetic request
+through the production Asupersync HTTPS client: a three-option Choice including
+`__none__`, plus one Noul question. It does not establish the provider's maximum
+context, criteria length, question count, or response size. The application caps
+of 96 KiB/request, 2 MiB/decoded response and 255 Choice options are local limits,
+not measurements of the service's capacity. P1 acceptance remains open until its
+full live and transport requirements have revision-bound evidence.
 
-The spike validates:
-1. Public WebPKI TLS 1.3 handshake and endpoint canonicalization to `https://api.typesafe.ai/v1/systemone`.
-2. Model alias resolution: requested alias `jev-latest` resolved to returned identifier `jev-1.13.0`.
-3. Strict wire codec contracts: Choice questions with `__none__` sentinel and Noul questions.
-4. Bounded byte and token accounting: request payload within 96 KiB budget, response within 2 MiB budget, and exact returned token usage (`input_tokens`, `output_tokens`).
-5. Fail-closed admission: requests lacking explicit network consent (`NetworkConsent::NotAuthorized` or `NetworkConsent::Blocked`) or missing `TYPESAFE_API_KEY` are rejected before any network attempt or connection initiation.
+Earlier versions of this document presented a response, token counts (361/58),
+680 ms latency, TLS 1.3, and model `jev-1.13.0` as verified by this test. No
+revision-bound execution receipt accompanied those claims. They are withdrawn as
+qualification evidence. The separately recorded September 17 fixture has its own
+provenance and does not certify this Asupersync transport.
 
----
+## Explicit live execution
 
-## 2. Test Execution & Environment
+`budgeted_live_contract_smoke` is ignored in ordinary Rust test runs. Selecting it
+explicitly requires `SKILLRANKER_LIVE_CONSENT=1` (or exactly `true`) and an exported
+`TYPESAFE_API_KEY`. Missing prerequisites fail the selected test; they never turn
+an unexecuted request into a passing live check. Consent is checked before the
+credential lookup. The test never reads `.env` itself.
 
-- **Host Platform:** Linux (`x86_64`)
-- **Endpoint Origin:** `https://api.typesafe.ai` (canonicalized to `/v1/systemone`)
-- **TLS Version:** TLSv1.3 with public trust anchors (`/etc/ssl/certs/ca-certificates.crt`)
-- **Runtime:** Asupersync owned task runtime with `EntryClock` and monotonic deadlines
-- **HTTP Client:** Asupersync `HttpClient` (`no_redirects()`, `no_retries()`, `no_proxy()`, `max_connections_per_host(1)`)
-
----
-
-## 3. Wire Protocol & Answer Shapes
-
-### 3.1 Synthetic Request Payload (Sanitized)
-
-```json
-{
-  "model": "jev-latest",
-  "state": {
-    "task": "bounded_contract_spike",
-    "context": "Synthetic qualification probe. An apple is a fruit; a carrot is a vegetable. No real session data."
-  },
-  "questions": {
-    "food_class": {
-      "type": "choice",
-      "instructions": "Which candidate is described as a fruit?",
-      "criteria": {
-        "apple": "An apple, sweet edible fruit produced by an apple tree",
-        "carrot": "A carrot, root vegetable usually orange in color",
-        "__none__": "Neither listed candidate fits the description"
-      }
-    },
-    "fruit_health": {
-      "type": "noul",
-      "instructions": "Is an apple considered a healthy food?"
-    }
-  }
-}
-```
-
-### 3.2 Live Response (Sanitized)
-
-```json
-{
-  "model": "jev-1.13.0",
-  "answers": {
-    "food_class": {
-      "type": "choice",
-      "choice": "apple",
-      "confidence": 1.0,
-      "probabilities": {
-        "apple": 1.0,
-        "carrot": 0.0,
-        "__none__": 0.0
-      }
-    },
-    "fruit_health": {
-      "type": "noul",
-      "noul": 0.93
-    }
-  },
-  "usage": {
-    "input_tokens": 361,
-    "output_tokens": 58
-  }
-}
-```
-
-### 3.3 Validated Invariants
-
-- **Model Separation:** `requested_model` (`jev-latest`) vs `returned_model` (`jev-1.13.0`).
-- **Choice Answer Structure:**
-  - `choice` matches argmax of probabilities (`apple`).
-  - `confidence` is finite within $[0.0, 1.0]$ (`1.0`).
-  - Probability distribution sums to $1.0$ within $\pm 10^{-4}$ tolerance.
-  - Criteria keys match exactly with no foreign or omitted options.
-- **Noul Answer Structure:**
-  - `noul` is finite within $[0.0, 1.0]$ (`0.93`).
-- **Usage Accounting:**
-  - Non-zero token usage recorded: `input_tokens: 361`, `output_tokens: 58`, `total_tokens: 419`.
-  - Latency: ~680ms under production TLS.
-
----
-
-## 4. Boundary Tests
-
-The test suite in `tests/jev_smoke.rs` exercises 4 cases:
-1. `budgeted_live_contract_smoke`: Live consented call against TypeSafe Jev API when credentials and consent are present; verifies fail-closed admission when absent.
-2. `request_size_and_limits_bounded`: Verifies that requests exceeding `MAX_REQUEST_BYTES` (96 KiB) fail during construction with `CodecError::TooLarge`.
-3. `choice_options_limit_and_none_sentinel`: Verifies that Choice questions permit up to 255 options (`MAX_CHOICE_OPTIONS`) and reject 256 options with `CodecError::InvalidRequest`.
-4. `unauthorized_attempt_refused_without_network`: Verifies that `NetworkConsent::Blocked(NetworkBlock::Offline)` prevents HTTP attempt from starting (`!http_attempt_started`), returning `ProviderAdmissionRefusal::Offline`.
-
----
-
-## 5. Verification Commands
+Build with RCH. Do not forward maintainer credentials to a build worker. Retrieve
+the test executable and run it on the credential host after explicitly loading
+the local credential as described in AGENTS.md. With tracing disabled and the
+credential already exported, execute the retrieved binary:
 
 ```bash
-# Unit / Property Test Suite
-rch exec -- cargo test --test jev_smoke
-
-# Formatting and Clippy
-cargo fmt --check -- tests/jev_smoke.rs
-rch exec -- cargo clippy --locked --all-targets -- -D warnings
-
-# Transport E2E Suite (includes consented-live-smoke)
-scripts/e2e/run.sh --suite transport --artifacts /data/tmp/test-artifacts
+SKILLRANKER_LIVE_CONSENT=1 /absolute/path/to/jev_smoke-test-binary \
+  --ignored --exact budgeted_live_contract_smoke --nocapture
 ```
+
+This reserves a single-use permit under a one-request/one-attempt allowance and
+performs one direct request, with transport retries disabled, to
+`https://api.typesafe.ai/v1/systemone`. It sends only the synthetic apple/carrot
+example embedded in the test, never live session data. The test budget is
+10,000 ms total with 500 ms reserved for cleanup; this is not the CLI default
+of 3,000 ms with a 200 ms reserve. A successful receipt is printed only after
+response assertions and runtime shutdown succeed.
+
+The receipt records requested alias, a BLAKE3 digest of the returned model
+identifier, request byte count and BLAKE3 digest, token usage, attempt count and
+elapsed send time. Failed attempted calls preserve unknown usage. Hashing the returned
+identifier avoids printing arbitrary provider-controlled text. Neither a model
+alias nor a digest proves an immutable provider revision. The test does not
+inspect the negotiated TLS version and makes no such claim.
+
+## Offline regression coverage
+
+The ordinary suite exercises six tests: lazy consent-before-credential lookup;
+actual subprocess selection without consent or a key; missing-consent and
+missing-key provider admission; oversized request rejection; Choice option
+bounds; and offline admission. The live seventh test remains visibly ignored.
+The subprocess regression requires failure with a static prerequisite diagnostic
+and checks that a synthetic credential canary is absent from both output streams.
+
+Run the ordinary suite without live credentials:
+
+```bash
+RCH_REQUIRE_REMOTE=1 rch exec -- cargo test --locked --test jev_smoke
+```
+
+An ordinary suite pass proves these local regressions, not live availability.
+The real local TLS suite is `tests/jev_transport.rs`; runner-mechanics fixtures
+in `scripts/e2e/suites/transport.json` are not provider qualification.
+
+## Current execution evidence
+
+On September 18, 2026, the final test executable passed both the ordinary suite
+and one explicitly selected live request on the maintainer host. These are
+self-executed checks, not independent review.
+
+Source and executable identity:
+
+- Base: `21f0b16336aa3b7fda58fedfa3ed14143d5c76a7`, with only
+  `tests/jev_smoke.rs` overlaid by RCH; no peers' working changes included.
+- RCH overlay fingerprint:
+  `556f9ca918632095e639f5a30fc5fa23d4bf29a8d0435057ad94a757f1b4b468`.
+- Smoke source SHA-256:
+  `d4dca27e0d6044075a236503949dd30811644b4af6c37d211c6664c0cd3ef5bc`.
+- Cargo.lock SHA-256:
+  `fb5ede7791d786efb342afb33dacf073f303b7d91ce08ee1ad8e4009ec4032ea`.
+- Retrieved Linux x86_64 executable SHA-256:
+  `fb458631d441a89eb70ccb5df697227b14a61204d14fc84d8f1a14e913afa311`.
+- Toolchain: `nightly-2026-08-31`; default Cargo features (empty), with the
+  pinned Asupersync runtime/native-runtime/native-roots dependency features.
+
+Remote `cargo test --offline --locked -j 1 --test jev_smoke`: **6 passed,
+0 failed, 1 ignored, 0 filtered**. The retrieved executable repeated those six
+ordinary tests locally with credentials and consent removed from its environment.
+The explicit live selection then ran **1 passed, 0 failed, 0 ignored, 6 filtered**.
+The six filtered tests are the ordinary tests, not missing live cases.
+Remote `cargo clippy --offline --locked -j 1 --all-targets -- -D warnings` passed
+on the same frozen source, as did `cargo check --offline --locked -j 1 --all-targets`.
+
+The sanitized live receipt was:
+
+```json
+{
+  "schema_version": 1,
+  "kind": "synthetic-live-jev-smoke",
+  "requested_model": "jev-latest",
+  "returned_model_blake3": "852a1ee4113f64c6c68f982a6f528147eb6dcbd0cad8472774a34110c55ba5b5",
+  "request_blake3": "bf7a416bd0dece8080d6d76fb075fd41e84d9d9fd48dfb872b2516731ce990f5",
+  "request_bytes": 562,
+  "questions": 2,
+  "choice_options": 3,
+  "admitted_attempts": 1,
+  "http_attempts": 1,
+  "input_tokens": 401,
+  "output_tokens": 61,
+  "elapsed_ms": 653,
+  "provider_capacity_qualified": false
+}
+```
+
+This single observation is not a latency percentile, quality result, full CLI
+ranking run, TLS-version measurement, or provider-capacity guarantee. No session
+content was sent and the credential remained on the maintainer host. Raw provider
+bodies and credentials were not recorded. The original capacity requirements
+remain on `.2.10`; `.2.12` and P1 remain open.
+
+Maintainer run logs: `/data/tmp/sr-live-spike-final-tests.log`,
+`/data/tmp/sr-live-spike-live.log`, and `/data/tmp/sr-live-spike-clippy.log`.
+
+
+## Broader verification boundary
+
+The full frozen-source offline test run exited 101 at `tests/roster_snapshot.rs`:
+five snapshot cases returned storage failure. Its fixture makes the workspace
+private but leaves its ancestor root subject to the worker umask; a writable
+ancestor is refused by the production export policy. Inspection of all six retained
+fixture trees confirmed ancestor mode 0775 and workspace mode 0700. This has been handed to the
+owner of `sr-roadmap-l1i.3.17`; the security checks and assertions were not relaxed.
+The full suite is **not passed**, and cases after the first failing test binary
+were not executed. Log: `/data/tmp/sr-live-spike-full-tests.log`.
+
+UBS static analysis of the edited test reports expected test panic/assert/unwrap
+sites and two bounded test-data allocation loops (11 critical, 68 warnings).
+These were reviewed as test-harness operations; no assertions were removed or
+scanner suppressions added. UBS's Cargo phases were disabled to enforce remote
+compilation; the actual check/Clippy/test results above are separate evidence.
+Repository-wide formatting encountered peers' in-progress changes; the edited
+smoke file and owned diff pass formatting/whitespace checks.

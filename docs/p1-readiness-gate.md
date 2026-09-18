@@ -1,10 +1,17 @@
 # Phase P1 Acceptance Gate: Transport & Runtime Readiness (`sr-roadmap-l1i.2.12`)
 
-## 1. Overview & Acceptance Declaration
+## 1. Acceptance is pending
 
-This document records the completed verification and formal acceptance of Phase P1 (**Asupersync Transport and Typed Jev Contract**, boundary `p1_acceptance_gate`, bead `sr-roadmap-l1i.2.12`).
+The September 18 reality check reopened `sr-roadmap-l1i.2.10`,
+`sr-roadmap-l1i.2.12`, and their P1 parent. The original acceptance declaration
+exceeded the available evidence: an ordinary smoke test could pass without making
+a live request, and the recorded three-option example did not qualify provider
+capacity. See [the corrected live qualification scope](jev-contract-spike.md).
 
-All Phase P1 deliverables and embedded invariants have been implemented, verified, and integrated into the SkillRanker codebase under Rust 2024 without Tokio, reqwest, or transparent ureq fallbacks.
+The component tests below remain useful evidence at their individual boundaries.
+Their existence and prior pass summaries do not establish every embedded
+invariant or the full P1 gate. `tests/p1_gate.rs` checks selected local contracts;
+its name is not proof of live provider readiness.
 
 ---
 
@@ -12,26 +19,26 @@ All Phase P1 deliverables and embedded invariants have been implemented, verifie
 
 | Roadmap ID | Boundary / Component | Test Suite / Artifact | Status |
 |---|---|---|---|
-| `sr-roadmap-l1i.2.1` | Asupersync owned runtime & monotonic deadlines | `tests/runtime_contract.rs` | Accepted |
-| `sr-roadmap-l1i.2.2` | Bounded blocking leaves & cancellation | `tests/blocking_contract.rs` | Accepted |
-| `sr-roadmap-l1i.2.3` | Trusted bounded subprocess execution | `tests/subprocess_contract.rs` | Accepted |
-| `sr-roadmap-l1i.2.4` | Origin-scoped HTTPS endpoint canonicalization | `tests/endpoint_contract.rs` | Accepted |
-| `sr-roadmap-l1i.2.5` | Strict wire codec (96 KiB req, 2 MiB resp) | `tests/jev_codec.rs` | Accepted |
-| `sr-roadmap-l1i.2.6` | Distribution & argmax validation | `tests/jev_contract.rs` | Accepted |
-| `sr-roadmap-l1i.2.7` | Transport security & public WebPKI roots | `tests/jev_transport.rs` | Accepted |
-| `sr-roadmap-l1i.2.8` | Attempt budget accounting & single-use permits | `tests/jev_admission.rs` | Accepted |
-| `sr-roadmap-l1i.2.9` | Classified retries & deadline-bound backoff | `tests/jev_retry.rs` | Accepted |
-| `sr-roadmap-l1i.2.10` | Separately consented live Jev contract spike | `tests/jev_smoke.rs`, `docs/jev-contract-spike.md` | Accepted |
-| `sr-roadmap-l1i.2.11` | End-to-end transport failure & shutdown matrix | `tests/transport_failures.rs`, `scripts/e2e/suites/transport.json` | Accepted |
-| `sr-roadmap-l1i.2.12` | Phase P1 comprehensive acceptance gate | `tests/p1_gate.rs` | Accepted |
+| `sr-roadmap-l1i.2.1` | Asupersync owned runtime & monotonic deadlines | `tests/runtime_contract.rs` | Focused suite; prior result requires source-bound receipt |
+| `sr-roadmap-l1i.2.2` | Bounded blocking leaves & cancellation | `tests/blocking_contract.rs` | Focused suite; prior result requires source-bound receipt |
+| `sr-roadmap-l1i.2.3` | Trusted bounded subprocess execution | `tests/subprocess_contract.rs` | Focused suite; prior result requires source-bound receipt |
+| `sr-roadmap-l1i.2.4` | Origin-scoped HTTPS endpoint canonicalization | `tests/endpoint_contract.rs` | Focused suite; prior result requires source-bound receipt |
+| `sr-roadmap-l1i.2.5` | Strict wire codec (96 KiB req, 2 MiB resp) | `tests/jev_codec.rs` | Focused suite; prior result requires source-bound receipt |
+| `sr-roadmap-l1i.2.6` | Distribution & argmax validation | `tests/jev_contract.rs` | Focused suite; prior result requires source-bound receipt |
+| `sr-roadmap-l1i.2.7` | Transport security & public WebPKI roots | `tests/jev_transport.rs` | Focused suite; prior result requires source-bound receipt |
+| `sr-roadmap-l1i.2.8` | Attempt budget accounting & single-use permits | `tests/jev_admission.rs` | Focused suite; prior result requires source-bound receipt |
+| `sr-roadmap-l1i.2.9` | Classified retries & deadline-bound backoff | `tests/jev_retry.rs` | Focused suite; prior result requires source-bound receipt |
+| `sr-roadmap-l1i.2.10` | Separately consented live Jev contract spike | `tests/jev_smoke.rs`, `docs/jev-contract-spike.md` | Open: bounded live and capacity qualification |
+| `sr-roadmap-l1i.2.11` | End-to-end transport failure & shutdown matrix | `tests/transport_failures.rs`, `scripts/e2e/suites/transport.json` | Focused suite; prior result requires source-bound receipt |
+| `sr-roadmap-l1i.2.12` | Phase P1 comprehensive acceptance gate | `tests/p1_gate.rs` | Open: local assertions alone cannot accept P1 |
 
 ---
 
-## 3. Core Invariants Verified
+## 3. Contract boundaries exercised by component tests
 
 1. **Owned Runtime & Monotonic Clock (`EntryClock`):**
    - Entry deadline tracked monotonically from process startup.
-   - Usable work budget strictly excludes the 500ms cleanup reserve.
+   - Usable work budget excludes cleanup reserve: 200 ms by default; the gate test configures 500 ms.
    - Process invocation terminates and shuts down cleanly within the deadline.
 2. **Endpoint Security & Routing:**
    - Canonical base origin joining `/v1/systemone` exactly once.
@@ -51,14 +58,20 @@ All Phase P1 deliverables and embedded invariants have been implemented, verifie
 6. **Classified Retries:**
    - 429, 529, 503 classified as retryable; 400, 401, 403, 404 classified as non-retryable.
    - `Retry-After` bounded by remaining deadline.
-7. **Live Provider Contract:**
-   - Live TLS 1.3 handshake with WebPKI trust anchors against `https://api.typesafe.ai`.
-   - Alias `jev-latest` correctly resolved to versioned identifier `jev-1.13.0`.
-   - Exact token usage accounting recorded.
+7. **Live Provider Contract — incomplete:**
+   - Explicitly selected smoke execution requires consent and an exported key.
+   - A small successful request can establish that request's HTTPS and answer shape.
+   - Provider capacity, negotiated TLS version, and an immutable model revision
+     must not be inferred from local assertions or client configuration.
 
 ---
 
-## 4. Verification Receipts
+## 4. Historical command summaries (not current qualification receipts)
+
+These earlier summaries lack exact source identity and do not certify the current
+revision. In particular, the old smoke count cannot distinguish a live response
+from its former no-key success branch. The E2E runner explicitly reports its
+product gate as not applicable.
 
 ```bash
 # Phase P1 Acceptance Gate Test
