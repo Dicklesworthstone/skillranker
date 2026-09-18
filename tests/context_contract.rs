@@ -17,12 +17,10 @@ use skillranker::context::branch::{
     resolve_worktree,
 };
 use skillranker::context::overlay::{
-    ClaudeOverlayRequest, ClaudeOverlayResult, OverlayError, apply_claude_prompt_overlay,
+    ClaudeOverlayRequest, OverlayError, apply_claude_prompt_overlay,
 };
 use skillranker::context::{EventKind, NormalizedEvent, PrivateText, Role};
-use skillranker::identity::{
-    BranchId, ContentHash, ContextEpoch, EventId, SessionId, SkillId, TurnId,
-};
+use skillranker::identity::{BranchId, ContentHash, ContextEpoch, EventId, SkillId, TurnId};
 use skillranker::output::ContextQuality;
 use std::fs::{self, File};
 use std::io::Write;
