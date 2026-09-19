@@ -1127,6 +1127,35 @@ async fn rank_once(
     if let Some(epoch) = &normalized_context.context_epoch {
         cache_ns = cache_ns.with_context_epoch(epoch.clone());
     }
+    // Where the context came from and whose it is. A normalized import never
+    // joins a native namespace, and producers, agents and native forks with
+    // identical redacted requests never share a response or a lease.
+    cache_ns = cache_ns.with_source_kind(match source_selection.target() {
+        SourceTarget::NormalizedFile(_) | SourceTarget::NormalizedStdin => {
+            crate::cache::SourceKind::Normalized
+        }
+        SourceTarget::CassSession(_) => crate::cache::SourceKind::Cass,
+        SourceTarget::ClaudeTranscript(_) | SourceTarget::ClaudeHookStdin => {
+            crate::cache::SourceKind::Native
+        }
+    });
+    if let SourceTarget::ClaudeTranscript(_) = source_selection.target()
+        && let (Ok(adapter), Ok(version)) = (
+            crate::identity::AdapterId::new(crate::adapter::CLAUDE_CODE_ID),
+            crate::identity::AdapterVersion::new(crate::adapter::CONTRACT_VERSION.to_string()),
+        )
+    {
+        cache_ns = cache_ns.with_adapter(adapter, version);
+    }
+    if let Some(id) = &normalized_context.producer_id {
+        cache_ns = cache_ns.with_producer(id.clone());
+    }
+    if let Some(id) = &normalized_context.agent_id {
+        cache_ns = cache_ns.with_agent(id.clone());
+    }
+    if let Some(leaf) = active_branch.and_then(|branch| branch.leaf_event_id.clone()) {
+        cache_ns = cache_ns.with_leaf_event(leaf);
+    }
     let namespace = MemoryResponseCache::namespace_hash(&cache_key, &cache_ns);
 
     let candidate_ids: Vec<SkillId> = candidate_skills

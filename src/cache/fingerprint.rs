@@ -5,8 +5,8 @@
 //! cache lookup, namespace separation, and duplicate delivery tracking.
 
 use crate::identity::{
-    AdapterId, AdapterVersion, BranchId, ContentHash, ContextEpoch, HarnessId, SessionId, SkillId,
-    WorkspaceId,
+    AdapterId, AdapterVersion, AgentId, BranchId, ContentHash, ContextEpoch, EventId, HarnessId,
+    ProducerId, SessionId, SkillId, WorkspaceId,
 };
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -101,6 +101,31 @@ pub struct CacheNamespace {
     pub adapter_version: Option<AdapterVersion>,
     pub harness_id: HarnessId,
     pub key_generation: u64,
+    /// Where the context came from. A normalized import never shares a
+    /// namespace with a native source, even when it claims the same IDs.
+    pub source_kind: Option<SourceKind>,
+    pub producer_id: Option<ProducerId>,
+    pub agent_id: Option<AgentId>,
+    /// The resolved native branch leaf, so forks of one session stay apart.
+    pub leaf_event_id: Option<EventId>,
+}
+
+/// The kind of source a context was read from.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub enum SourceKind {
+    Native,
+    Normalized,
+    Cass,
+}
+
+impl SourceKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Native => "native",
+            Self::Normalized => "normalized",
+            Self::Cass => "cass",
+        }
+    }
 }
 
 impl CacheNamespace {
@@ -114,6 +139,10 @@ impl CacheNamespace {
             adapter_version: None,
             harness_id,
             key_generation,
+            source_kind: None,
+            producer_id: None,
+            agent_id: None,
+            leaf_event_id: None,
         }
     }
 
@@ -143,6 +172,26 @@ impl CacheNamespace {
         self
     }
 
+    pub fn with_source_kind(mut self, kind: SourceKind) -> Self {
+        self.source_kind = Some(kind);
+        self
+    }
+
+    pub fn with_producer(mut self, id: ProducerId) -> Self {
+        self.producer_id = Some(id);
+        self
+    }
+
+    pub fn with_agent(mut self, id: AgentId) -> Self {
+        self.agent_id = Some(id);
+        self
+    }
+
+    pub fn with_leaf_event(mut self, id: EventId) -> Self {
+        self.leaf_event_id = Some(id);
+        self
+    }
+
     /// Serializes namespace into the hasher using length framing.
     pub(super) fn feed_into(&self, hasher: &mut blake3::Hasher) {
         feed_length_prefixed(hasher, self.harness_id.as_str().as_bytes());
@@ -154,6 +203,10 @@ impl CacheNamespace {
         feed_opt_id(hasher, self.context_epoch.as_ref().map(|id| id.as_str()));
         feed_opt_id(hasher, self.adapter_id.as_ref().map(|id| id.as_str()));
         feed_opt_id(hasher, self.adapter_version.as_ref().map(|id| id.as_str()));
+        feed_opt_id(hasher, self.source_kind.map(SourceKind::as_str));
+        feed_opt_id(hasher, self.producer_id.as_ref().map(|id| id.as_str()));
+        feed_opt_id(hasher, self.agent_id.as_ref().map(|id| id.as_str()));
+        feed_opt_id(hasher, self.leaf_event_id.as_ref().map(|id| id.as_str()));
     }
 }
 

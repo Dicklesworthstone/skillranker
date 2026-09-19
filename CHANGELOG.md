@@ -4,6 +4,12 @@
 
 ### Fixed
 
+- The response cache and single-flight leases now also key on where a
+  session came from (native transcript, normalized import or cass), its
+  producer, its agent and the active native branch. Identical redacted
+  requests from different producers, agents or forks of one session could
+  share a cached answer; a normalized import can no longer join a native
+  session's cache by reusing its IDs.
 - `sr rank` accepts Jev Choice distributions whose total is within 0.1 of
   one and renormalizes them, keeping the raw values. The live provider
   returns totals such as 0.99 for large Choices, and the previous 1e-4 bound

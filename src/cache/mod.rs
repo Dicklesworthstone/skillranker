@@ -19,7 +19,7 @@ pub use fingerprint::{
     CacheKey, CacheNamespace, CandidateDigest, DecisionFingerprint, DecisionFingerprintInput,
     EventDeliveryInput, EventDeliveryKey, FingerprintError, LoadedReferenceDigest,
     RankingPolicySnapshot, RequestFingerprint, RequestFingerprintInput, RequestStage, SnoozeDigest,
-    compute_decision_fingerprint, compute_delivery_key, compute_request_fingerprint,
+    SourceKind, compute_decision_fingerprint, compute_delivery_key, compute_request_fingerprint,
 };
 pub use response::{
     CacheError, CacheLookupQuery, CacheLookupResult, CacheStorageKey, CacheStorageMap,
