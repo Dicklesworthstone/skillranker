@@ -15,7 +15,7 @@ struct Fixture {
 impl Fixture {
     fn new() -> Self {
         // Trees are retained, so a reused PID must never reuse an old tree.
-        let root = std::env::temp_dir().join(format!(
+        let root = std::fs::canonicalize("/tmp").unwrap().join(format!(
             "sr-roster-cli-{}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
@@ -24,7 +24,11 @@ impl Fixture {
                 .as_nanos(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
-        std::fs::create_dir(&root).unwrap();
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&root)
+            .unwrap();
         std::fs::create_dir_all(root.join("workspace/.claude/skills")).unwrap();
         std::fs::create_dir_all(root.join("home/.claude/skills")).unwrap();
         Self { root }
@@ -237,4 +241,119 @@ fn an_empty_workspace_lists_nothing_and_help_needs_no_discovery() {
     let help = f.run(&["roster", "--help"], &[]);
     assert_eq!(help.status.code(), Some(0));
     assert!(String::from_utf8_lossy(&help.stdout).contains("sr roster"));
+}
+
+fn custom_skill(f: &Fixture, root: &str, name: &str) {
+    let directory = f.root.join(root).join(name);
+    std::fs::create_dir_all(&directory).unwrap();
+    std::fs::write(
+        directory.join("SKILL.md"),
+        format!("---\nname: {name}\ndescription: Custom local skill.\n---\nBody.\n"),
+    )
+    .unwrap();
+}
+
+fn project_roots(f: &Fixture, text: &str) {
+    std::fs::create_dir_all(f.root.join("workspace/.sr")).unwrap();
+    std::fs::write(f.root.join("workspace/.sr/config.toml"), text).unwrap();
+}
+
+#[test]
+fn configured_project_and_user_roots_reach_roster_doctor_and_snapshot() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = Fixture::new();
+    std::fs::set_permissions(&f.root, std::fs::Permissions::from_mode(0o700)).unwrap();
+    std::fs::set_permissions(
+        f.root.join("workspace"),
+        std::fs::Permissions::from_mode(0o700),
+    )
+    .unwrap();
+    f.project("default", "");
+    custom_skill(&f, "workspace/custom", "local-extra");
+    custom_skill(&f, "external", "user-extra");
+    project_roots(&f, "[roster]\nroots=['custom', '.claude/skills']\n");
+    std::fs::create_dir_all(f.root.join("home/.config/sr")).unwrap();
+    std::fs::write(
+        f.root.join("home/.config/sr/config.toml"),
+        format!(
+            "[roster]\nroots=['{}']\n",
+            f.root.join("external").display()
+        ),
+    )
+    .unwrap();
+    let page = f.json(&["roster", "--json"]);
+    assert_eq!(
+        names(&page).into_iter().collect::<BTreeSet<_>>(),
+        BTreeSet::from(["default".into(), "local-extra".into(), "user-extra".into()])
+    );
+    assert_eq!(
+        page["counts"]["bindings"], 3,
+        "default root alias must not add a binding"
+    );
+    assert!(
+        page["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|r| r["status"] == "unverified")
+    );
+    assert!(!page.to_string().contains(f.root.to_str().unwrap()));
+    let doctor = f.json(&["doctor", "--json"]);
+    assert_eq!(doctor["checks"]["roster"]["skills"], 3);
+    assert_eq!(doctor["checks"]["roster"]["advisory"], 0);
+    project_roots(&f, "[roster]\nroots=['.claude/skills', 'custom']\n");
+    let reordered = f.json(&["roster", "--json"]);
+    assert_eq!(page["snapshot"], reordered["snapshot"]);
+    assert_eq!(page["records"], reordered["records"]);
+    let snapshot = f.run(&["roster", "--snapshot", "configured.json"], &[]);
+    assert_eq!(
+        snapshot.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&snapshot.stderr)
+    );
+    let saved: Value =
+        serde_json::from_slice(&std::fs::read(f.root.join("workspace/configured.json")).unwrap())
+            .unwrap();
+    assert!(saved.to_string().contains("local-extra"));
+    let comparison = f.run(&["roster", "--diff", "configured.json"], &[]);
+    assert_eq!(comparison.status.code(), Some(0));
+}
+
+#[test]
+fn project_root_symlink_cannot_grant_external_reads_but_contained_root_works() {
+    use std::os::unix::fs::symlink;
+    let f = Fixture::new();
+    custom_skill(&f, "external", "must-not-be-read");
+    custom_skill(&f, "workspace/inside", "allowed");
+    symlink(f.root.join("external"), f.root.join("workspace/escape")).unwrap();
+    symlink("inside", f.root.join("workspace/alias")).unwrap();
+    project_roots(&f, "[roster]\nroots=['escape', 'alias']\n");
+    let page = f.json(&["roster", "--json"]);
+    assert_eq!(names(&page), vec!["allowed"]);
+    assert!(!page.to_string().contains("must-not-be-read"));
+    assert_eq!(page["partial"], true);
+    assert!(
+        page["source_causes"]["root-unreadable"]
+            .as_u64()
+            .unwrap_or(0)
+            > 0
+    );
+}
+
+#[test]
+fn roster_validates_configuration_instead_of_silently_ignoring_it() {
+    let f = Fixture::new();
+    f.project("default", "");
+    for text in [
+        "[roster]\nroots=['../external']\n",
+        "[roster]\nroots=['/external']\n",
+        "[network]\nenabled=true\n",
+    ] {
+        project_roots(&f, text);
+        let output = f.run(&["roster", "--json"], &[]);
+        assert_eq!(output.status.code(), Some(2));
+        let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(value["decision"], "unavailable");
+    }
 }

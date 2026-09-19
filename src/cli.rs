@@ -964,7 +964,12 @@ fn readiness(
     let home = std::env::var_os("HOME")
         .filter(|path| !path.is_empty())
         .map(PathBuf::from);
-    let resolved = resolve_workspace_roster(clock, workspace, home.as_deref());
+    let resolved = resolve_workspace_roster(
+        clock,
+        workspace,
+        home.as_deref(),
+        config.effective().roster_roots(),
+    );
     let listing = resolved.as_ref().ok().map(crate::roster::inspect::listing);
     let roster = match (&resolved, &listing) {
         (Ok(_), Some(listing)) => RosterCheck::Resolved(listing.evidence()),
@@ -1071,7 +1076,25 @@ fn roster_listing(clock: &EntryClock, matches: &clap::ArgMatches) -> Result<Stri
     let home = std::env::var_os("HOME")
         .filter(|path| !path.is_empty())
         .map(PathBuf::from);
-    let roster = resolve_workspace_roster(clock, &workspace, home.as_deref())?;
+    let mut sources = ConfigSources::default();
+    for (name, value) in std::env::vars_os() {
+        if name.as_encoded_bytes().starts_with(b"SR_")
+            || name == "TYPESAFE_API_KEY"
+            || name == "TYPESAFE_ENDPOINT"
+        {
+            if sources.environment.len() == MAX_LAYER_ENTRIES {
+                return Err(invalid("Too many environment settings"));
+            }
+            sources.environment.push((name, value));
+        }
+    }
+    let config = ConfigFiles::new(workspace.clone(), user_config_root()?).load(clock, sources)?;
+    let roster = resolve_workspace_roster(
+        clock,
+        &workspace,
+        home.as_deref(),
+        config.effective().roster_roots(),
+    )?;
     if let Some(target) = matches.get_one::<String>("snapshot") {
         let fresh = workspace_snapshot(&roster, &workspace, home.as_deref());
         timely(clock)?;
@@ -1112,12 +1135,14 @@ fn resolve_workspace_roster(
     clock: &EntryClock,
     workspace: &Path,
     home: Option<&Path>,
+    configured: &[crate::privacy::SkillRoot],
 ) -> Result<crate::roster::resolution::ResolvedRoster, Failure> {
     let unusable = |message: &str| (5u8, "unusable-roster", message.to_owned());
-    let plan = crate::roster::discovery::claude_code_plan(
+    let plan = crate::roster::discovery::claude_code_plan_with_roots(
         workspace,
         home,
         crate::roster::Visibility::Unverified,
+        configured,
     )
     .map_err(|_| unusable("The documented skill roots could not be planned"))?;
     let invocation = crate::runtime::ProcessInvocation::from_clock(*clock)

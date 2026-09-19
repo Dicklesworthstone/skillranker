@@ -622,3 +622,78 @@ pub fn claude_code_plan(
     }
     Ok(plan)
 }
+
+/// Add effective configured skill roots to local Claude-layout inspection.
+/// Configuration grants read access, not a verified harness load/precedence
+/// contract: additional bindings always remain unverified. Project-relative
+/// paths are opened beneath the workspace descriptor, including symlinks.
+pub fn claude_code_plan_with_roots(
+    workspace: &Path,
+    user_home: Option<&Path>,
+    visibility: Visibility,
+    configured: &[crate::privacy::SkillRoot],
+) -> Result<DiscoveryPlan, DiscoveryError> {
+    use crate::privacy::SkillRoot;
+    // At most 32 roots in each of the trusted-user and project layers.
+    if configured.len() > 64 {
+        return Err(DiscoveryError::InvalidRootPath);
+    }
+    let mut plan = claude_code_plan(workspace, user_home, visibility)?;
+    if configured.is_empty() {
+        return Ok(plan);
+    }
+    let workspace_root =
+        AuthorizedRoot::open_absolute(workspace).map_err(|_| DiscoveryError::InvalidRootPath)?;
+    let mut ordered: Vec<_> = configured.iter().collect();
+    ordered.sort();
+    ordered.dedup();
+    for configured_root in ordered {
+        let (declared, kind, opened) = match configured_root {
+            SkillRoot::WorkspaceRelative(relative) => (
+                workspace.join(relative.as_path()),
+                SourceKind::Project,
+                workspace_root.open_workspace_relative(relative),
+            ),
+            SkillRoot::TrustedAbsolute(absolute) => (
+                absolute.as_path().to_path_buf(),
+                SourceKind::User,
+                AuthorizedRoot::open_trusted(absolute),
+            ),
+        };
+        if let Ok(root) = &opened
+            && plan
+                .roots
+                .iter()
+                .filter_map(|r| r.root())
+                .any(|r| r.identity() == root.identity())
+        {
+            continue;
+        }
+        let source = SourceId::new(format!(
+            "configured.{}",
+            blake3::hash(declared.as_os_str().as_bytes()).to_hex()
+        ))
+        .map_err(DiscoveryError::Identity)?;
+        let spec = RootSpec::new(
+            source.clone(),
+            kind,
+            0,
+            Visibility::Unverified,
+            CLAUDE_SKILL_FILE,
+        )?;
+        match opened {
+            Ok(root) => plan.push_root(PlannedRoot {
+                spec,
+                root: Some(root),
+                declared,
+            }),
+            Err(ReadError::NotFound) => plan.note_missing(source),
+            Err(_) => plan.push_root(PlannedRoot {
+                spec,
+                root: None,
+                declared,
+            }),
+        }
+    }
+    Ok(plan)
+}
