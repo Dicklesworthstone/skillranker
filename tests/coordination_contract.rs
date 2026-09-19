@@ -30,6 +30,7 @@ use std::fs::DirBuilder;
 use std::io::Read;
 use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
@@ -1162,3 +1163,437 @@ fn private_bounded_sqlite_qualifications() {
     assert!(SqliteLeaseCoordinator::open(dot_path).is_err());
     assert!(SqliteResponseCache::open(dot_path).is_err());
 }
+
+#[test]
+fn stalled_owner_a_refused_without_replacing_successor_b_body_sqlite() {
+    let tree = private_tree("stalled-a-b-sqlite");
+    let db_path = tree.join("coordination.sqlite3");
+    let key = test_key();
+    let ns = test_namespace("stalled-owner-sqlite");
+    let fp = sample_request_fingerprint(&key, &ns);
+
+    let policy = CoordinationPolicy {
+        cache_enabled: true,
+        cross_process_allowed: true,
+        lease_ttl_ms: 200,
+    };
+    let coordinator = SingleFlightCoordinator::new(policy, Some(&db_path)).unwrap();
+    let cache = SqliteResponseCache::open(&db_path).unwrap();
+
+    let t0 = 1_000_000u64;
+    let clock = Arc::new(AtomicU64::new(t0));
+    let clock_clone = clock.clone();
+
+    let query = CoordinateRequestQuery {
+        key: &key,
+        namespace: &ns,
+        stage: RequestStage::Wide,
+        request_fingerprint: &fp,
+        deadline_unix_ms: t0 + 10_000,
+        active_model: "jev-1",
+        active_revision: Some("rev-1"),
+    };
+
+    // Owner A begins at t0. In its provider callback, Owner A stalls past lease TTL.
+    // While A is stalled, Owner B arrives, reacquires with bumped generation, and publishes response B.
+    // When A returns from provider, its attempt to publish must be refused with quiet fallback,
+    // and response B in the cache must NOT be replaced!
+    let coordinator_b = SingleFlightCoordinator::new(policy, Some(&db_path)).unwrap();
+    let cache_b = SqliteResponseCache::open(&db_path).unwrap();
+
+    let res_a = coordinator.coordinate_request(
+        &query,
+        &cache,
+        || clock.load(Ordering::Relaxed),
+        |attempt_a| {
+            // A acquired lease at t0 (expires at t0 + 200).
+            // A now stalls until t0 + 250 (past lease expiration).
+            clock_clone.store(t0 + 250, Ordering::Relaxed);
+
+            // B enters while A is stalled:
+            let res_b = coordinator_b
+                .coordinate_request(
+                    &query,
+                    &cache_b,
+                    || clock_clone.load(Ordering::Relaxed),
+                    |attempt_b| {
+                        let entry = CachedResponseEntry {
+                            stage: RequestStage::Wide,
+                            request_fingerprint: fp,
+                            response_bytes: b"{\"winner\":\"B\"}".to_vec(),
+                            received_at_unix_ms: t0 + 250,
+                            ttl_seconds: DEFAULT_CACHE_TTL_SECS,
+                            model: "jev-1".to_string(),
+                            model_revision: Some("rev-1".to_string()),
+                            original_usage: Usage {
+                                input_tokens: 20,
+                                output_tokens: 10,
+                            },
+                            attempt_id: Some(attempt_b.to_string()),
+                        };
+                        Ok((
+                            entry,
+                            Usage {
+                                input_tokens: 20,
+                                output_tokens: 10,
+                            },
+                        ))
+                    },
+                )
+                .expect("Owner B must succeed in reacquiring and publishing");
+
+            assert!(!res_b.is_follower, "B must lead");
+            assert_eq!(res_b.new_requests, 1);
+            assert_eq!(res_b.entry.response_bytes, b"{\"winner\":\"B\"}");
+
+            // Now Owner A returns response A at t0 + 260:
+            clock_clone.store(t0 + 260, Ordering::Relaxed);
+            let entry_a = CachedResponseEntry {
+                stage: RequestStage::Wide,
+                request_fingerprint: fp,
+                response_bytes: b"{\"loser\":\"A\"}".to_vec(),
+                received_at_unix_ms: t0 + 260,
+                ttl_seconds: DEFAULT_CACHE_TTL_SECS,
+                model: "jev-1".to_string(),
+                model_revision: Some("rev-1".to_string()),
+                original_usage: Usage {
+                    input_tokens: 15,
+                    output_tokens: 8,
+                },
+                attempt_id: Some(attempt_a.to_string()),
+            };
+            Ok((
+                entry_a,
+                Usage {
+                    input_tokens: 15,
+                    output_tokens: 8,
+                },
+            ))
+        },
+    );
+
+    // 1. Stalled Owner A must be refused publication
+    assert!(res_a.is_err(), "stalled owner A must fail with quiet fallback");
+    let err_msg = res_a.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("superseded") || err_msg.contains("quiet fallback"),
+        "error must indicate superseded leader: {err_msg}"
+    );
+
+    // 2. Body preservation: response B must remain authoritative in cache!
+    let lookup = cache
+        .get(&skillranker::cache::CacheLookupQuery {
+            key: &key,
+            namespace: &ns,
+            stage: RequestStage::Wide,
+            fingerprint: &fp,
+            now_unix_ms: t0 + 270,
+            active_model: "jev-1",
+            active_revision: Some("rev-1"),
+        })
+        .unwrap();
+    let fresh = lookup.fresh_entry().expect("response B must be cached");
+    assert_eq!(
+        fresh.response_bytes, b"{\"winner\":\"B\"}",
+        "Owner A must NOT overwrite Owner B's response body in cache"
+    );
+
+    // 3. Follower twin: subsequent caller reuses B without new provider call
+    let res_c = coordinator
+        .coordinate_request(
+            &query,
+            &cache,
+            || t0 + 280,
+            |_att| panic!("provider must not be called when B's body is cached"),
+        )
+        .unwrap();
+    assert!(res_c.served_from_cache);
+    assert_eq!(res_c.new_requests, 0);
+    assert_eq!(res_c.entry.response_bytes, b"{\"winner\":\"B\"}");
+
+    // 4. Honest owner twin: un-stalled leader completes and publishes successfully
+    let fp_honest = sample_stage_request_fingerprint(&key, &ns, RequestStage::Rerank);
+    let query_honest = CoordinateRequestQuery {
+        key: &key,
+        namespace: &ns,
+        stage: RequestStage::Rerank,
+        request_fingerprint: &fp_honest,
+        deadline_unix_ms: t0 + 10_000,
+        active_model: "jev-1",
+        active_revision: Some("rev-1"),
+    };
+    let res_d = coordinator
+        .coordinate_request(
+            &query_honest,
+            &cache,
+            || t0 + 300,
+            |attempt_d| {
+                let entry = CachedResponseEntry {
+                    stage: RequestStage::Rerank,
+                    request_fingerprint: fp_honest,
+                    response_bytes: b"{\"honest\":\"D\"}".to_vec(),
+                    received_at_unix_ms: t0 + 300,
+                    ttl_seconds: DEFAULT_CACHE_TTL_SECS,
+                    model: "jev-1".to_string(),
+                    model_revision: Some("rev-1".to_string()),
+                    original_usage: Usage {
+                        input_tokens: 5,
+                        output_tokens: 3,
+                    },
+                    attempt_id: Some(attempt_d.to_string()),
+                };
+                Ok((
+                    entry,
+                    Usage {
+                        input_tokens: 5,
+                        output_tokens: 3,
+                    },
+                ))
+            },
+        )
+        .unwrap();
+    assert!(!res_d.is_follower);
+    assert_eq!(res_d.new_requests, 1);
+    assert_eq!(res_d.entry.response_bytes, b"{\"honest\":\"D\"}");
+}
+
+#[test]
+fn stalled_owner_a_refused_without_replacing_successor_b_body_memory() {
+    let key = test_key();
+    let ns = test_namespace("stalled-owner-mem");
+    let fp = sample_request_fingerprint(&key, &ns);
+
+    let policy = CoordinationPolicy {
+        cache_enabled: true,
+        cross_process_allowed: false,
+        lease_ttl_ms: 200,
+    };
+    let coordinator = SingleFlightCoordinator::memory_only(policy);
+    let cache = MemoryResponseCache::new();
+
+    let t0 = 1_000_000u64;
+    let clock = Arc::new(AtomicU64::new(t0));
+    let clock_clone = clock.clone();
+
+    let query = CoordinateRequestQuery {
+        key: &key,
+        namespace: &ns,
+        stage: RequestStage::Wide,
+        request_fingerprint: &fp,
+        deadline_unix_ms: t0 + 10_000,
+        active_model: "jev-1",
+        active_revision: Some("rev-1"),
+    };
+
+    let cache_b = cache.clone();
+    let res_a = coordinator.coordinate_request(
+        &query,
+        &cache,
+        || clock.load(Ordering::Relaxed),
+        |attempt_a| {
+            // A stalls past lease TTL:
+            clock_clone.store(t0 + 250, Ordering::Relaxed);
+
+            // B enters while A is stalled:
+            let res_b = coordinator
+                .coordinate_request(
+                    &query,
+                    &cache_b,
+                    || clock_clone.load(Ordering::Relaxed),
+                    |attempt_b| {
+                        let entry = CachedResponseEntry {
+                            stage: RequestStage::Wide,
+                            request_fingerprint: fp,
+                            response_bytes: b"{\"winner\":\"mem_B\"}".to_vec(),
+                            received_at_unix_ms: t0 + 250,
+                            ttl_seconds: DEFAULT_CACHE_TTL_SECS,
+                            model: "jev-1".to_string(),
+                            model_revision: Some("rev-1".to_string()),
+                            original_usage: Usage {
+                                input_tokens: 20,
+                                output_tokens: 10,
+                            },
+                            attempt_id: Some(attempt_b.to_string()),
+                        };
+                        Ok((
+                            entry,
+                            Usage {
+                                input_tokens: 20,
+                                output_tokens: 10,
+                            },
+                        ))
+                    },
+                )
+                .expect("Owner B must succeed in reacquiring and publishing in memory");
+
+            assert!(!res_b.is_follower, "B must lead in memory");
+            assert_eq!(res_b.entry.response_bytes, b"{\"winner\":\"mem_B\"}");
+
+            // A returns response A at t0 + 260:
+            clock_clone.store(t0 + 260, Ordering::Relaxed);
+            let entry_a = CachedResponseEntry {
+                stage: RequestStage::Wide,
+                request_fingerprint: fp,
+                response_bytes: b"{\"loser\":\"mem_A\"}".to_vec(),
+                received_at_unix_ms: t0 + 260,
+                ttl_seconds: DEFAULT_CACHE_TTL_SECS,
+                model: "jev-1".to_string(),
+                model_revision: Some("rev-1".to_string()),
+                original_usage: Usage {
+                    input_tokens: 15,
+                    output_tokens: 8,
+                },
+                attempt_id: Some(attempt_a.to_string()),
+            };
+            Ok((
+                entry_a,
+                Usage {
+                    input_tokens: 15,
+                    output_tokens: 8,
+                },
+            ))
+        },
+    );
+
+    // Stalled Owner A must be refused
+    assert!(res_a.is_err(), "stalled owner A in memory must fail");
+    let err_msg = res_a.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("superseded") || err_msg.contains("quiet fallback"),
+        "error must indicate superseded leader: {err_msg}"
+    );
+
+    // Body preservation: response B must remain in memory cache
+    let lookup = cache
+        .get(&skillranker::cache::CacheLookupQuery {
+            key: &key,
+            namespace: &ns,
+            stage: RequestStage::Wide,
+            fingerprint: &fp,
+            now_unix_ms: t0 + 270,
+            active_model: "jev-1",
+            active_revision: Some("rev-1"),
+        })
+        .unwrap();
+    let fresh = lookup.fresh_entry().expect("response B must be cached in memory");
+    assert_eq!(
+        fresh.response_bytes, b"{\"winner\":\"mem_B\"}",
+        "Owner A must NOT overwrite Owner B's response body in memory cache"
+    );
+
+    // Follower twin:
+    let res_c = coordinator
+        .coordinate_request(
+            &query,
+            &cache,
+            || t0 + 280,
+            |_att| panic!("provider must not be called when B is in memory cache"),
+        )
+        .unwrap();
+    assert!(res_c.served_from_cache);
+    assert_eq!(res_c.new_requests, 0);
+    assert_eq!(res_c.entry.response_bytes, b"{\"winner\":\"mem_B\"}");
+}
+
+#[test]
+fn raced_cache_miss_force_reacquire_follows_active_leader() {
+    let tree = private_tree("raced-reacquire");
+    let db_path = tree.join("coordination.sqlite3");
+    let key = test_key();
+    let ns = test_namespace("raced-reacquire");
+    let fp = sample_request_fingerprint(&key, &ns);
+
+    let policy = CoordinationPolicy::default();
+    let coordinator = SingleFlightCoordinator::new(policy, Some(&db_path)).unwrap();
+    let cache = SqliteResponseCache::open(&db_path).unwrap();
+
+    let t0 = 1_000_000u64;
+    let query = CoordinateRequestQuery {
+        key: &key,
+        namespace: &ns,
+        stage: RequestStage::Wide,
+        request_fingerprint: &fp,
+        deadline_unix_ms: t0 + 10_000,
+        active_model: "jev-1",
+        active_revision: Some("rev-1"),
+    };
+
+    // 1. Initial request completes and publishes
+    let res1 = coordinator
+        .coordinate_request(
+            &query,
+            &cache,
+            || t0,
+            |attempt_id| {
+                let entry = CachedResponseEntry {
+                    stage: RequestStage::Wide,
+                    request_fingerprint: fp,
+                    response_bytes: b"{\"val\":\"initial\"}".to_vec(),
+                    received_at_unix_ms: t0,
+                    ttl_seconds: DEFAULT_CACHE_TTL_SECS,
+                    model: "jev-1".to_string(),
+                    model_revision: Some("rev-1".to_string()),
+                    original_usage: Usage {
+                        input_tokens: 10,
+                        output_tokens: 5,
+                    },
+                    attempt_id: Some(attempt_id.to_string()),
+                };
+                Ok((
+                    entry,
+                    Usage {
+                        input_tokens: 10,
+                        output_tokens: 5,
+                    },
+                ))
+            },
+        )
+        .unwrap();
+    assert!(!res1.is_follower);
+
+    // 2. Cache entry is lost / evicted
+    cache.evict_namespace(&key, &ns).unwrap();
+
+    // 3. Concurrent racers: Racer 1 and Racer 2 both see AlreadyCompleted and miss cache.
+    // Racer 1 force_reacquires first and starts refreshing.
+    // Racer 2 force_reacquires concurrently while Racer 1 is leading.
+    // Racer 2 must become a Follower of Racer 1 rather than unconditionally preempting it!
+    let coord_key = CoordinationKey::compute(&key, &ns, &fp);
+    let reacquired_1 = coordinator
+        .force_reacquire(coord_key, t0 + 200, &policy)
+        .unwrap();
+
+    let leader_1 = match reacquired_1 {
+        LeaseAcquisition::Leading(l) => l,
+        other => panic!("Racer 1 must lead, got {other:?}"),
+    };
+    assert_eq!(leader_1.fencing_generation, FencingGeneration(2));
+
+    // While Racer 1 is actively leading (is_completed = 0, unexpired at t0 + 250):
+    let reacquired_2 = coordinator
+        .force_reacquire(coord_key, t0 + 250, &policy)
+        .unwrap();
+
+    // Racer 2 must detect active refresh leader and become Following!
+    let follower_2 = match reacquired_2 {
+        LeaseAcquisition::Following(f) => f,
+        other => panic!("Racer 2 must follow active refresh leader, got {other:?}"),
+    };
+    assert_eq!(
+        follower_2.leader_generation,
+        FencingGeneration(2),
+        "Racer 2 must follow Racer 1's generation"
+    );
+
+    // Racer 1 finishes and publishes fresh response
+    let publish_outcome = coordinator
+        .complete(
+            coord_key,
+            leader_1.owner_token,
+            leader_1.fencing_generation,
+            t0 + 300,
+        )
+        .unwrap();
+    assert_eq!(publish_outcome, PublishOutcome::Published);
+}
+

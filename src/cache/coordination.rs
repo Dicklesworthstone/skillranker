@@ -10,7 +10,7 @@
 //! 6. Coordination state stores NO response bodies; `--no-cache` disables cross-process response sharing.
 //! 7. Request owner alone records provider attempts/usage; followers incur zero new requests and zero new tokens.
 //! 8. Stage-aware coordination distinguishes Wide and Rerank stages.
-//! 9. Responses are put in cache before lease completion is marked, eliminating completion/body races.
+//! 9. Responses are published atomically with lease completion, eliminating completion/body races and preventing stale overwrite.
 //! 10. Expired or lost cache entries can reacquire leadership for fresh retrieval.
 //! 11. SQLite connection opening is verified against qualified engine version and safe directory permissions.
 
@@ -274,13 +274,14 @@ pub trait LeaseCoordinator: Send + Sync {
         policy: &CoordinationPolicy,
     ) -> Result<LeaseAcquisition, CoordinationError>;
 
-    /// Reacquires leadership for a key, bumping the fencing generation.
+    /// Reacquires leadership for a key, bumping the fencing generation,
+    /// or returns Following if an active unexpired leader is already refreshing the key.
     fn force_reacquire(
         &self,
         key: CoordinationKey,
         now_unix_ms: u64,
         policy: &CoordinationPolicy,
-    ) -> Result<LeaderContext, CoordinationError>;
+    ) -> Result<LeaseAcquisition, CoordinationError>;
 
     /// Completes and releases a lease if the fencing generation and owner match.
     fn complete(
@@ -308,6 +309,56 @@ impl MemoryCoordinator {
             leases: Arc::new(RwLock::new(BTreeMap::new())),
             notify: Arc::new((Mutex::new(()), Condvar::new())),
         }
+    }
+
+    /// Atomically verifies lease ownership/fencing before executing the publication closure and marking the lease completed.
+    ///
+    /// If the leader was superseded or expired, `publish` is NEVER invoked and `PublishOutcome::Superseded` is returned.
+    pub fn complete_and_publish<F>(
+        &self,
+        key: CoordinationKey,
+        owner_token: OwnerToken,
+        generation: FencingGeneration,
+        now_unix_ms: u64,
+        publish: F,
+    ) -> Result<PublishOutcome, CoordinationError>
+    where
+        F: FnOnce() -> Result<(), CoordinationError>,
+    {
+        let mut map = self
+            .leases
+            .write()
+            .map_err(|_| CoordinationError::LockPoisoned)?;
+
+        let Some(existing) = map.get_mut(&key) else {
+            return Ok(PublishOutcome::Superseded {
+                expected_generation: generation,
+                current_generation: None,
+            });
+        };
+
+        if existing.owner_token != owner_token || existing.fencing_generation != generation {
+            return Ok(PublishOutcome::Superseded {
+                expected_generation: generation,
+                current_generation: Some(existing.fencing_generation),
+            });
+        }
+
+        if now_unix_ms > existing.expires_at_unix_ms {
+            return Ok(PublishOutcome::Superseded {
+                expected_generation: generation,
+                current_generation: Some(existing.fencing_generation),
+            });
+        }
+
+        publish()?;
+        existing.is_completed = true;
+
+        // Wake waiting followers
+        let (_, cvar) = &*self.notify;
+        cvar.notify_all();
+
+        Ok(PublishOutcome::Published)
     }
 }
 
@@ -394,27 +445,58 @@ impl LeaseCoordinator for MemoryCoordinator {
         key: CoordinationKey,
         now_unix_ms: u64,
         policy: &CoordinationPolicy,
-    ) -> Result<LeaderContext, CoordinationError> {
+    ) -> Result<LeaseAcquisition, CoordinationError> {
         let mut map = self
             .leases
             .write()
             .map_err(|_| CoordinationError::LockPoisoned)?;
 
-        let cur_gen = map
-            .get(&key)
-            .map(|r| r.fencing_generation)
-            .unwrap_or_else(FencingGeneration::initial);
-        let new_gen = cur_gen.next();
-        let new_token =
+        if let Some(existing) = map.get_mut(&key) {
+            // If another leader already reacquired to refresh and is currently unexpired, follow them
+            if !existing.is_completed && now_unix_ms < existing.expires_at_unix_ms {
+                return Ok(LeaseAcquisition::Following(FollowerContext {
+                    key,
+                    leader_generation: existing.fencing_generation,
+                    lease_expires_at_unix_ms: existing.expires_at_unix_ms,
+                }));
+            }
+
+            let new_gen = existing.fencing_generation.next();
+            let new_token =
+                OwnerToken::generate().map_err(|e| CoordinationError::StorageError(e.to_string()))?;
+            let expires_at = now_unix_ms.saturating_add(policy.lease_ttl_ms);
+            let attempt_id = format!("att-inmem-{}", new_gen.as_u64());
+
+            *existing = LeaseRecord {
+                owner_token: new_token,
+                fencing_generation: new_gen,
+                acquired_at_unix_ms: now_unix_ms,
+                expires_at_unix_ms: expires_at,
+                attempt_id: attempt_id.clone(),
+                is_completed: false,
+            };
+
+            return Ok(LeaseAcquisition::Leading(LeaderContext {
+                key,
+                owner_token: new_token,
+                fencing_generation: new_gen,
+                lease_expires_at_unix_ms: expires_at,
+                attempt_id,
+            }));
+        }
+
+        // New lease
+        let token =
             OwnerToken::generate().map_err(|e| CoordinationError::StorageError(e.to_string()))?;
+        let fence_gen = FencingGeneration::initial();
         let expires_at = now_unix_ms.saturating_add(policy.lease_ttl_ms);
-        let attempt_id = format!("att-inmem-{}", new_gen.as_u64());
+        let attempt_id = format!("att-inmem-{}", fence_gen.as_u64());
 
         map.insert(
             key,
             LeaseRecord {
-                owner_token: new_token,
-                fencing_generation: new_gen,
+                owner_token: token,
+                fencing_generation: fence_gen,
                 acquired_at_unix_ms: now_unix_ms,
                 expires_at_unix_ms: expires_at,
                 attempt_id: attempt_id.clone(),
@@ -422,13 +504,13 @@ impl LeaseCoordinator for MemoryCoordinator {
             },
         );
 
-        Ok(LeaderContext {
+        Ok(LeaseAcquisition::Leading(LeaderContext {
             key,
-            owner_token: new_token,
-            fencing_generation: new_gen,
+            owner_token: token,
+            fencing_generation: fence_gen,
             lease_expires_at_unix_ms: expires_at,
             attempt_id,
-        })
+        }))
     }
 
     fn complete(
@@ -438,39 +520,7 @@ impl LeaseCoordinator for MemoryCoordinator {
         generation: FencingGeneration,
         now_unix_ms: u64,
     ) -> Result<PublishOutcome, CoordinationError> {
-        let mut map = self
-            .leases
-            .write()
-            .map_err(|_| CoordinationError::LockPoisoned)?;
-
-        let Some(existing) = map.get_mut(&key) else {
-            return Ok(PublishOutcome::Superseded {
-                expected_generation: generation,
-                current_generation: None,
-            });
-        };
-
-        if existing.owner_token != owner_token || existing.fencing_generation != generation {
-            return Ok(PublishOutcome::Superseded {
-                expected_generation: generation,
-                current_generation: Some(existing.fencing_generation),
-            });
-        }
-
-        if now_unix_ms > existing.expires_at_unix_ms {
-            return Ok(PublishOutcome::Superseded {
-                expected_generation: generation,
-                current_generation: Some(existing.fencing_generation),
-            });
-        }
-
-        existing.is_completed = true;
-
-        // Wake waiting followers
-        let (_, cvar) = &*self.notify;
-        cvar.notify_all();
-
-        Ok(PublishOutcome::Published)
+        self.complete_and_publish(key, owner_token, generation, now_unix_ms, || Ok(()))
     }
 
     fn check_lease(&self, key: CoordinationKey) -> Result<Option<LeaseRecord>, CoordinationError> {
@@ -663,6 +713,20 @@ impl SqliteLeaseCoordinator {
                  expires_at_unix_ms INTEGER NOT NULL,
                  attempt_id TEXT NOT NULL,
                  is_completed INTEGER NOT NULL CHECK(is_completed IN (0, 1))
+             ) STRICT;
+             CREATE TABLE IF NOT EXISTS sr_response_cache (
+                 namespace_hash BLOB NOT NULL CHECK(length(namespace_hash) = 32),
+                 stage TEXT NOT NULL CHECK(stage IN ('wide', 'rerank')),
+                 request_fingerprint BLOB NOT NULL CHECK(length(request_fingerprint) = 32),
+                 response_bytes BLOB NOT NULL,
+                 received_at_unix_ms INTEGER NOT NULL,
+                 ttl_seconds INTEGER NOT NULL,
+                 model TEXT NOT NULL,
+                 model_revision TEXT,
+                 input_tokens INTEGER NOT NULL,
+                 output_tokens INTEGER NOT NULL,
+                 attempt_id TEXT,
+                 PRIMARY KEY (namespace_hash, stage, request_fingerprint)
              ) STRICT;",
         )?;
         Ok(Self { db_path })
@@ -670,6 +734,102 @@ impl SqliteLeaseCoordinator {
 
     pub fn db_path(&self) -> &Path {
         &self.db_path
+    }
+
+    /// Atomically verifies lease ownership/fencing, optionally publishes response bytes into `sr_response_cache`,
+    /// and marks the lease completed within a single immediate SQLite transaction.
+    ///
+    /// If the leader was superseded or expired, `sr_response_cache` is NEVER modified and `PublishOutcome::Superseded` is returned.
+    pub fn complete_and_publish(
+        &self,
+        key: CoordinationKey,
+        owner_token: OwnerToken,
+        generation: FencingGeneration,
+        now_unix_ms: u64,
+        cache_entry: Option<(&CacheKey, &CacheNamespace, &CachedResponseEntry)>,
+    ) -> Result<PublishOutcome, CoordinationError> {
+        let mut conn = open_qualified_connection(&self.db_path)?;
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+
+        let row: Option<(Vec<u8>, i64, i64, i64)> = tx
+            .query_row(
+                "SELECT owner_token, fencing_generation, expires_at_unix_ms, is_completed
+                 FROM sr_coordination_leases WHERE coordination_key = ?1",
+                params![key.as_bytes()],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .optional()?;
+
+        let Some((cur_token, cur_gen_i64, exp_i64, _completed)) = row else {
+            tx.commit()?;
+            return Ok(PublishOutcome::Superseded {
+                expected_generation: generation,
+                current_generation: None,
+            });
+        };
+
+        let cur_gen = FencingGeneration(cur_gen_i64 as u64);
+        let expires_at = exp_i64 as u64;
+
+        if cur_token.as_slice() != owner_token.as_bytes() || cur_gen != generation {
+            tx.commit()?;
+            return Ok(PublishOutcome::Superseded {
+                expected_generation: generation,
+                current_generation: Some(cur_gen),
+            });
+        }
+
+        if now_unix_ms > expires_at {
+            tx.commit()?;
+            return Ok(PublishOutcome::Superseded {
+                expected_generation: generation,
+                current_generation: Some(cur_gen),
+            });
+        }
+
+        if let Some((cache_key, cache_ns, entry)) = cache_entry {
+            let ns_hash = MemoryResponseCache::namespace_hash(cache_key, cache_ns);
+            let stage_str = entry.stage.as_str();
+            let fp_bytes = entry.request_fingerprint.as_bytes();
+
+            tx.execute(
+                "INSERT INTO sr_response_cache (
+                    namespace_hash, stage, request_fingerprint, response_bytes,
+                    received_at_unix_ms, ttl_seconds, model, model_revision,
+                    input_tokens, output_tokens, attempt_id
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                 ON CONFLICT(namespace_hash, stage, request_fingerprint) DO UPDATE SET
+                    response_bytes = excluded.response_bytes,
+                    received_at_unix_ms = excluded.received_at_unix_ms,
+                    ttl_seconds = excluded.ttl_seconds,
+                    model = excluded.model,
+                    model_revision = excluded.model_revision,
+                    input_tokens = excluded.input_tokens,
+                    output_tokens = excluded.output_tokens,
+                    attempt_id = excluded.attempt_id",
+                params![
+                    &ns_hash[..],
+                    stage_str,
+                    &fp_bytes[..],
+                    &entry.response_bytes[..],
+                    entry.received_at_unix_ms as i64,
+                    entry.ttl_seconds as i64,
+                    &entry.model,
+                    &entry.model_revision,
+                    entry.original_usage.input_tokens as i64,
+                    entry.original_usage.output_tokens as i64,
+                    &entry.attempt_id
+                ],
+            )?;
+        }
+
+        tx.execute(
+            "UPDATE sr_coordination_leases SET is_completed = 1 WHERE coordination_key = ?1",
+            params![key.as_bytes()],
+        )?;
+        tx.commit()?;
+
+        Ok(PublishOutcome::Published)
     }
 }
 
@@ -782,42 +942,83 @@ impl LeaseCoordinator for SqliteLeaseCoordinator {
         key: CoordinationKey,
         now_unix_ms: u64,
         policy: &CoordinationPolicy,
-    ) -> Result<LeaderContext, CoordinationError> {
+    ) -> Result<LeaseAcquisition, CoordinationError> {
         let mut conn = open_qualified_connection(&self.db_path)?;
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
 
-        let cur_gen_i64: Option<i64> = tx
+        let row: Option<(Vec<u8>, i64, i64, i64, String, i64)> = tx
             .query_row(
-                "SELECT fencing_generation FROM sr_coordination_leases WHERE coordination_key = ?1",
+                "SELECT owner_token, fencing_generation, acquired_at_unix_ms, expires_at_unix_ms, attempt_id, is_completed
+                 FROM sr_coordination_leases WHERE coordination_key = ?1",
                 params![key.as_bytes()],
-                |r| r.get(0),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
             )
             .optional()?;
 
-        let cur_gen = cur_gen_i64
-            .map(|g| FencingGeneration(g as u64))
-            .unwrap_or_else(FencingGeneration::initial);
-        let new_gen = cur_gen.next();
+        if let Some((_raw_token, gen_i64, _acq, exp_i64, _att, completed_i64)) = row {
+            let cur_fence_gen = FencingGeneration(gen_i64 as u64);
+            let expires_at = exp_i64 as u64;
+            let is_completed = completed_i64 == 1;
+
+            // If another leader already reacquired to refresh and is currently unexpired, follow them
+            if !is_completed && now_unix_ms < expires_at {
+                tx.commit()?;
+                return Ok(LeaseAcquisition::Following(FollowerContext {
+                    key,
+                    leader_generation: cur_fence_gen,
+                    lease_expires_at_unix_ms: expires_at,
+                }));
+            }
+
+            let new_gen = cur_fence_gen.next();
+            let new_token = OwnerToken::generate()
+                .map_err(|e| CoordinationError::StorageError(e.to_string()))?;
+            let new_expires_at = now_unix_ms.saturating_add(policy.lease_ttl_ms);
+            let new_attempt_id = format!("att-proc-{}", new_gen.as_u64());
+
+            tx.execute(
+                "UPDATE sr_coordination_leases SET
+                    owner_token = ?1,
+                    fencing_generation = ?2,
+                    acquired_at_unix_ms = ?3,
+                    expires_at_unix_ms = ?4,
+                    attempt_id = ?5,
+                    is_completed = 0
+                 WHERE coordination_key = ?6",
+                params![
+                    new_token.as_bytes(),
+                    new_gen.as_u64() as i64,
+                    now_unix_ms as i64,
+                    new_expires_at as i64,
+                    new_attempt_id,
+                    key.as_bytes()
+                ],
+            )?;
+            tx.commit()?;
+
+            return Ok(LeaseAcquisition::Leading(LeaderContext {
+                key,
+                owner_token: new_token,
+                fencing_generation: new_gen,
+                lease_expires_at_unix_ms: new_expires_at,
+                attempt_id: new_attempt_id,
+            }));
+        }
+
         let new_token =
             OwnerToken::generate().map_err(|e| CoordinationError::StorageError(e.to_string()))?;
+        let init_gen = FencingGeneration::initial();
         let new_expires_at = now_unix_ms.saturating_add(policy.lease_ttl_ms);
-        let new_attempt_id = format!("att-proc-{}", new_gen.as_u64());
+        let new_attempt_id = format!("att-proc-{}", init_gen.as_u64());
 
         tx.execute(
             "INSERT INTO sr_coordination_leases (
                 coordination_key, owner_token, fencing_generation, acquired_at_unix_ms, expires_at_unix_ms, attempt_id, is_completed
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0)
-             ON CONFLICT(coordination_key) DO UPDATE SET
-                owner_token = excluded.owner_token,
-                fencing_generation = excluded.fencing_generation,
-                acquired_at_unix_ms = excluded.acquired_at_unix_ms,
-                expires_at_unix_ms = excluded.expires_at_unix_ms,
-                attempt_id = excluded.attempt_id,
-                is_completed = 0",
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0)",
             params![
                 key.as_bytes(),
                 new_token.as_bytes(),
-                new_gen.as_u64() as i64,
+                init_gen.as_u64() as i64,
                 now_unix_ms as i64,
                 new_expires_at as i64,
                 new_attempt_id
@@ -825,13 +1026,13 @@ impl LeaseCoordinator for SqliteLeaseCoordinator {
         )?;
         tx.commit()?;
 
-        Ok(LeaderContext {
+        Ok(LeaseAcquisition::Leading(LeaderContext {
             key,
             owner_token: new_token,
-            fencing_generation: new_gen,
+            fencing_generation: init_gen,
             lease_expires_at_unix_ms: new_expires_at,
             attempt_id: new_attempt_id,
-        })
+        }))
     }
 
     fn complete(
@@ -841,52 +1042,7 @@ impl LeaseCoordinator for SqliteLeaseCoordinator {
         generation: FencingGeneration,
         now_unix_ms: u64,
     ) -> Result<PublishOutcome, CoordinationError> {
-        let mut conn = open_qualified_connection(&self.db_path)?;
-        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-
-        let row: Option<(Vec<u8>, i64, i64, i64)> = tx
-            .query_row(
-                "SELECT owner_token, fencing_generation, expires_at_unix_ms, is_completed
-                 FROM sr_coordination_leases WHERE coordination_key = ?1",
-                params![key.as_bytes()],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-            )
-            .optional()?;
-
-        let Some((cur_token, cur_gen_i64, exp_i64, _completed)) = row else {
-            tx.commit()?;
-            return Ok(PublishOutcome::Superseded {
-                expected_generation: generation,
-                current_generation: None,
-            });
-        };
-
-        let cur_gen = FencingGeneration(cur_gen_i64 as u64);
-        let expires_at = exp_i64 as u64;
-
-        if cur_token.as_slice() != owner_token.as_bytes() || cur_gen != generation {
-            tx.commit()?;
-            return Ok(PublishOutcome::Superseded {
-                expected_generation: generation,
-                current_generation: Some(cur_gen),
-            });
-        }
-
-        if now_unix_ms > expires_at {
-            tx.commit()?;
-            return Ok(PublishOutcome::Superseded {
-                expected_generation: generation,
-                current_generation: Some(cur_gen),
-            });
-        }
-
-        tx.execute(
-            "UPDATE sr_coordination_leases SET is_completed = 1 WHERE coordination_key = ?1",
-            params![key.as_bytes()],
-        )?;
-        tx.commit()?;
-
-        Ok(PublishOutcome::Published)
+        self.complete_and_publish(key, owner_token, generation, now_unix_ms, None)
     }
 
     fn check_lease(&self, key: CoordinationKey) -> Result<Option<LeaseRecord>, CoordinationError> {
@@ -1221,7 +1377,7 @@ impl LeaseCoordinator for SingleFlightCoordinator {
         key: CoordinationKey,
         now_unix_ms: u64,
         policy: &CoordinationPolicy,
-    ) -> Result<LeaderContext, CoordinationError> {
+    ) -> Result<LeaseAcquisition, CoordinationError> {
         if let Some(sql) = &self.sqlite {
             sql.force_reacquire(key, now_unix_ms, policy)
         } else {
@@ -1299,34 +1455,48 @@ impl SingleFlightCoordinator {
         F: FnOnce(&str) -> Result<(CachedResponseEntry, Usage), String>,
     {
         check_request_deadline(query, now_fn())?;
-        let coordinator: &dyn LeaseCoordinator = if let Some(sql) = &self.sqlite {
-            sql
-        } else {
-            &self.memory
-        };
 
         let attempt_id = leader.attempt_id.clone();
         let (response_entry, usage) = execute_provider(&attempt_id).map_err(|e| {
             CoordinationError::StorageError(format!("provider execution failed: {e}"))
         })?;
 
-        check_request_deadline(query, now_fn())?;
-
-        // Put in cache BEFORE marking completed to eliminate completion/body race
-        if self.policy.cache_enabled {
-            cache
-                .put(query.key, query.namespace, response_entry.clone())
-                .map_err(CoordinationError::CacheError)?;
-        }
-
         let finish_now = now_fn();
         check_request_deadline(query, finish_now)?;
-        let outcome = coordinator.complete(
-            coord_key,
-            leader.owner_token,
-            leader.fencing_generation,
-            finish_now,
-        )?;
+
+        let outcome = if let Some(sql) = &self.sqlite {
+            let cache_entry = if self.policy.cache_enabled {
+                Some((query.key, query.namespace, &response_entry))
+            } else {
+                None
+            };
+            let outcome = sql.complete_and_publish(
+                coord_key,
+                leader.owner_token,
+                leader.fencing_generation,
+                finish_now,
+                cache_entry,
+            )?;
+            if outcome == PublishOutcome::Published && self.policy.cache_enabled {
+                let _ = cache.put(query.key, query.namespace, response_entry.clone());
+            }
+            outcome
+        } else {
+            self.memory.complete_and_publish(
+                coord_key,
+                leader.owner_token,
+                leader.fencing_generation,
+                finish_now,
+                || {
+                    if self.policy.cache_enabled {
+                        cache
+                            .put(query.key, query.namespace, response_entry.clone())
+                            .map_err(CoordinationError::CacheError)?;
+                    }
+                    Ok(())
+                },
+            )?
+        };
 
         check_request_deadline(query, now_fn())?;
 
@@ -1346,6 +1516,86 @@ impl SingleFlightCoordinator {
                 "leader superseded (gen {:?}, current {:?}); quiet fallback",
                 expected_generation, current_generation
             ))),
+        }
+    }
+
+    fn wait_as_follower<C>(
+        &self,
+        query: &CoordinateRequestQuery<'_>,
+        coord_key: CoordinationKey,
+        cache: &C,
+        now_fn: &impl Fn() -> u64,
+    ) -> Result<CoordinatedResponse, CoordinationError>
+    where
+        C: ResponseCache + ?Sized,
+    {
+        if !self.policy.cache_enabled {
+            // With cache disabled, cross-process response sharing is forbidden
+            return Err(CoordinationError::StorageError(
+                "--no-cache disables response sharing; coordination stores no bodies".to_string(),
+            ));
+        }
+
+        // Follower wait loop
+        let resolution = if let Some(sql) = &self.sqlite {
+            sql.wait_for_completion(
+                coord_key,
+                now_fn,
+                query.deadline_unix_ms,
+                Duration::from_millis(15),
+            )?
+        } else {
+            self.memory
+                .wait_for_completion(coord_key, now_fn, query.deadline_unix_ms)
+        };
+
+        match resolution {
+            FollowerResolution::Completed => {
+                let lookup = cache.get(&CacheLookupQuery {
+                    key: query.key,
+                    namespace: query.namespace,
+                    stage: query.stage,
+                    fingerprint: query.request_fingerprint,
+                    now_unix_ms: now_fn(),
+                    active_model: query.active_model,
+                    active_revision: query.active_revision,
+                })?;
+                check_request_deadline(query, now_fn())?;
+                if let CacheLookupResult::Hit { entry, .. } = lookup {
+                    Ok(CoordinatedResponse {
+                        entry,
+                        served_from_cache: true,
+                        new_requests: 0,
+                        new_tokens: 0,
+                        attempt_id: None,
+                        is_follower: true,
+                    })
+                } else {
+                    Err(CoordinationError::StorageError(
+                        "leader completed but no cached response found".to_string(),
+                    ))
+                }
+            }
+            FollowerResolution::DeadlineExceeded => Err(CoordinationError::StorageError(
+                "follower deadline exceeded; quiet fallback".to_string(),
+            )),
+            FollowerResolution::LeaseExpired => Err(CoordinationError::StorageError(
+                "leader lease expired without completion".to_string(),
+            )),
+            FollowerResolution::CacheDisabled => Err(CoordinationError::StorageError(
+                "cache disabled; cannot read response body".to_string(),
+            )),
+            FollowerResolution::LeaderFailed => Err(CoordinationError::StorageError(
+                "leader failed or cancelled without completing".to_string(),
+            )),
+            FollowerResolution::Reused(entry) => Ok(CoordinatedResponse {
+                entry,
+                served_from_cache: true,
+                new_requests: 0,
+                new_tokens: 0,
+                attempt_id: None,
+                is_follower: true,
+            }),
         }
     }
 
@@ -1429,95 +1679,61 @@ impl SingleFlightCoordinator {
                     }
 
                     // Cache entry missing or stale despite completed lease flag.
-                    // Force reacquisition so the request can be refreshed!
-                    let leader = coordinator.force_reacquire(coord_key, now_fn(), &self.policy)?;
-                    return self.execute_as_leader(
-                        query,
-                        coord_key,
-                        leader,
-                        cache,
-                        &now_fn,
-                        execute_provider,
-                    );
+                    // Reacquire or follow without preemption storm!
+                    let reacquired =
+                        coordinator.force_reacquire(coord_key, now_fn(), &self.policy)?;
+                    match reacquired {
+                        LeaseAcquisition::Leading(leader) => self.execute_as_leader(
+                            query,
+                            coord_key,
+                            leader,
+                            cache,
+                            &now_fn,
+                            execute_provider,
+                        ),
+                        LeaseAcquisition::Following(_follower) => {
+                            self.wait_as_follower(query, coord_key, cache, &now_fn)
+                        }
+                        LeaseAcquisition::AlreadyCompleted => {
+                            let lookup2 = cache.get(&CacheLookupQuery {
+                                key: query.key,
+                                namespace: query.namespace,
+                                stage: query.stage,
+                                fingerprint: query.request_fingerprint,
+                                now_unix_ms: now_fn(),
+                                active_model: query.active_model,
+                                active_revision: query.active_revision,
+                            })?;
+                            check_request_deadline(query, now_fn())?;
+                            if let CacheLookupResult::Hit { entry, .. } = lookup2 {
+                                Ok(CoordinatedResponse {
+                                    entry,
+                                    served_from_cache: true,
+                                    new_requests: 0,
+                                    new_tokens: 0,
+                                    attempt_id: None,
+                                    is_follower: true,
+                                })
+                            } else {
+                                Err(CoordinationError::StorageError(
+                                    "completed lease missing cache entry; quiet fallback"
+                                        .to_string(),
+                                ))
+                            }
+                        }
+                    }
+                } else {
+                    // If cache disabled, cannot read shared body
+                    Err(CoordinationError::StorageError(
+                        "cache disabled; cannot share response body".to_string(),
+                    ))
                 }
-                // If cache disabled, cannot read shared body
-                Err(CoordinationError::StorageError(
-                    "cache disabled; cannot share response body".to_string(),
-                ))
             }
             LeaseAcquisition::Leading(leader) => {
                 self.execute_as_leader(query, coord_key, leader, cache, &now_fn, execute_provider)
             }
             LeaseAcquisition::Following(_follower) => {
-                if !self.policy.cache_enabled {
-                    // With cache disabled, cross-process response sharing is forbidden
-                    return Err(CoordinationError::StorageError(
-                        "--no-cache disables response sharing; coordination stores no bodies"
-                            .to_string(),
-                    ));
-                }
-
-                // Follower wait loop
-                let resolution = if let Some(sql) = &self.sqlite {
-                    sql.wait_for_completion(
-                        coord_key,
-                        &now_fn,
-                        query.deadline_unix_ms,
-                        Duration::from_millis(15),
-                    )?
-                } else {
-                    self.memory
-                        .wait_for_completion(coord_key, &now_fn, query.deadline_unix_ms)
-                };
-
-                match resolution {
-                    FollowerResolution::Completed => {
-                        let lookup = cache.get(&CacheLookupQuery {
-                            key: query.key,
-                            namespace: query.namespace,
-                            stage: query.stage,
-                            fingerprint: query.request_fingerprint,
-                            now_unix_ms: now_fn(),
-                            active_model: query.active_model,
-                            active_revision: query.active_revision,
-                        })?;
-                        check_request_deadline(query, now_fn())?;
-                        if let CacheLookupResult::Hit { entry, .. } = lookup {
-                            Ok(CoordinatedResponse {
-                                entry,
-                                served_from_cache: true,
-                                new_requests: 0,
-                                new_tokens: 0,
-                                attempt_id: None,
-                                is_follower: true,
-                            })
-                        } else {
-                            Err(CoordinationError::StorageError(
-                                "leader completed but no cached response found".to_string(),
-                            ))
-                        }
-                    }
-                    FollowerResolution::DeadlineExceeded => Err(CoordinationError::StorageError(
-                        "follower deadline exceeded; quiet fallback".to_string(),
-                    )),
-                    FollowerResolution::LeaseExpired => Err(CoordinationError::StorageError(
-                        "leader lease expired without completion".to_string(),
-                    )),
-                    FollowerResolution::CacheDisabled => Err(CoordinationError::StorageError(
-                        "cache disabled; cannot read response body".to_string(),
-                    )),
-                    FollowerResolution::LeaderFailed => Err(CoordinationError::StorageError(
-                        "leader failed or cancelled without completing".to_string(),
-                    )),
-                    FollowerResolution::Reused(entry) => Ok(CoordinatedResponse {
-                        entry,
-                        served_from_cache: true,
-                        new_requests: 0,
-                        new_tokens: 0,
-                        attempt_id: None,
-                        is_follower: true,
-                    }),
-                }
+                self.wait_as_follower(query, coord_key, cache, &now_fn)
             }
         }
     }
