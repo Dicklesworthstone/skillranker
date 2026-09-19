@@ -1031,6 +1031,27 @@ features = []
 status = "executed"
 
 [[boundaries]]
+id = "p4_explain_exclusion_stages"
+owner_bead = "sr-roadmap-l1i.5.14"
+member_beads = ["sr-roadmap-l1i.5.14"]
+phase = "P4"
+title = "Explain exclusion stages without changing evaluation"
+unit_property_tests = [
+    "tests/stage_trace.rs::test_paired_runs_identical_evaluation_with_and_without_explain",
+    "tests/stage_trace.rs::test_unknown_skill_id_produces_not_in_snapshot_without_broadening_discovery",
+    "tests/stage_trace.rs::test_early_exclusion_marks_subsequent_stages_not_evaluated",
+    "tests/stage_trace.rs::test_every_exclusion_reason_with_success_twin",
+    "tests/stage_trace.rs::test_stage_trace_contract_and_round_trip",
+    "tests/stage_trace.rs::test_table_view_trace_rendering_and_recovery_hints"
+]
+e2e_suite = "core-cli"
+e2e_cases = ["stage-trace-and-why-not"]
+assertion_ids = ["exclusion_stages_explained"]
+platforms = ["linux"]
+features = []
+status = "executed"
+
+[[boundaries]]
 id = "p4_dry_run"
 owner_bead = "sr-roadmap-l1i.5.15"
 member_beads = ["sr-roadmap-l1i.5.15"]
@@ -1053,7 +1074,7 @@ member_beads = ["sr-roadmap-l1i.5.16"]
 phase = "P4"
 title = "Ship four private-session-free offline demonstrations"
 unit_property_tests = [
-    "tests/cli_contract.rs::offline_demo"
+    "tests/demo_contract.rs::offline_demo"
 ]
 e2e_suite = "core-cli"
 e2e_cases = ["demo-inert-envelope"]

@@ -25,27 +25,33 @@ use crate::context::render::{RenderContextOptions, render_context_and_receipt};
 use crate::context::source::{SelectionOutcome, SourceOptions, SourcePolicy, SourceTarget};
 use crate::context::{CurrentRequest, NormalizedContext, PrivateText, parse_normalized_context};
 use crate::effects::EffectGate;
-use crate::eligibility::{Eligible, LoadedState, Verdict, admit, after_rerank};
-use crate::identity::{EventId, HarnessId, SessionId, SkillId, WorkspaceId};
+use crate::eligibility::{Eligible, Evaluation, LoadedState, Verdict, admit, after_rerank};
+use crate::identity::{ContentHash, EventId, HarnessId, SessionId, SkillId, WorkspaceId};
 use crate::jev::client::{JevClient, TransportError, TransportErrorKind};
 use crate::jev::codec::{Request, Response};
 use crate::jev::endpoint::EndpointConfig;
 use crate::jev::rerank::{RerankOutcome, RerankRequest};
 use crate::jev::wide::{Sizes, WideDecision, WideOutcome, WideRequest};
 use crate::jev::{OriginScopedCredential, rerank, wide};
-use crate::output::{ErrorKind, OutputDocument, SCHEMA_VERSION};
+use crate::output::trace::{StageTrace, TraceEntry, TraceStage};
+use crate::output::{ErrorKind, OutputDocument, SCHEMA_VERSION, TraceCursor};
 use crate::privacy::redaction::Redactor;
 use crate::privacy::{ContextProfile, NetworkConsent};
 use crate::roster::discovery::claude_code_plan;
+use crate::roster::evidence::{PolicyView, RetrievalView};
 use crate::roster::explicit::{
     ExplicitResolutionRequest, ExplicitResolutionResult, ResolvedExplicitSkill,
     resolve_explicit_requirements,
 };
 use crate::roster::import::import_authorized;
-use crate::roster::resolution::{AdvisorySkill, ResolvedRoster, resolve_claude_plan};
-use crate::roster::retrieval::{QueryInput, RetrievalBudget, RetrievalError, retrieve};
+use crate::roster::resolution::{
+    AdvisorySkill, ExactResolution, ResolvedRoster, resolve_claude_plan,
+};
+use crate::roster::retrieval::{
+    QueryInput, RetrievalBudget, RetrievalError, RetrievalMethod, retrieve,
+};
 use crate::roster::revalidation::{RevalidationError, capture, revalidate_claude};
-use crate::roster::{LoadTarget, Visibility};
+use crate::roster::{InvocationKind, LoadTarget, Visibility};
 use crate::runtime::{EntryClock, ProcessInvocation, admit_publication};
 use crate::scoring::{Input as ScoringInput, Ranking, Weights, rank};
 
@@ -124,13 +130,17 @@ pub async fn execute_pipeline(
     args: RankArgs,
     transport: Option<&dyn JevTransport>,
 ) -> Result<OutputDocument, PipelineFailure> {
-    clock
-        .admit_new_work()
-        .map_err(|_| failure(6, "timeout", "Invocation deadline exceeded before ranking start"))?;
+    clock.admit_new_work().map_err(|_| {
+        failure(
+            6,
+            "timeout",
+            "Invocation deadline exceeded before ranking start",
+        )
+    })?;
 
     // 1. Initial configuration loading and policy receipt capture
     let config_files = ConfigFiles::new(args.workspace.clone(), args.user_config_root.clone());
-    let resolved_config = config_files.load(clock, args.sources)?;
+    let resolved_config = config_files.load(clock, args.sources.clone())?;
     let mut current_receipt = resolved_config.receipt(args.gate.policy());
 
     let effective = resolved_config.effective();
@@ -155,25 +165,28 @@ pub async fn execute_pipeline(
         local_only: args.gate.policy().flags().offline,
         allow_network: args.gate.policy().flags().allow_network,
     };
-    let workspace_id = WorkspaceId::new(args.workspace.to_string_lossy().as_ref()).map_err(|_| {
-        failure(
-            2,
-            "invalid-configuration",
-            "Invalid workspace root path",
-        )
-    })?;
+    let workspace_id = WorkspaceId::new(args.workspace.to_string_lossy().as_ref())
+        .map_err(|_| failure(2, "invalid-configuration", "Invalid workspace root path"))?;
 
-    let selection_outcome = args.source_options.clone().resolve(
-        workspace_id.clone(),
-        source_policy,
-        false, // non-interactive by default
-        |_, _| {
-            // Inventory discovery fallback if needed
-            Ok(crate::context::source::SessionInventory::default())
-        },
-    ).map_err(|err| {
-        failure(err.kind().exit_code() as u8, err.kind().as_str(), err.to_string())
-    })?;
+    let selection_outcome = args
+        .source_options
+        .clone()
+        .resolve(
+            workspace_id.clone(),
+            source_policy,
+            false, // non-interactive by default
+            |_, _| {
+                // Inventory discovery fallback if needed
+                Ok(crate::context::source::SessionInventory::default())
+            },
+        )
+        .map_err(|err| {
+            failure(
+                err.kind().exit_code() as u8,
+                err.kind().as_str(),
+                err.to_string(),
+            )
+        })?;
 
     let source_selection = match selection_outcome {
         SelectionOutcome::Selected(sel) => sel,
@@ -190,37 +203,57 @@ pub async fn execute_pipeline(
     let normalized_context = match source_selection.target() {
         SourceTarget::NormalizedFile(path) => {
             let bytes = std::fs::read(path.as_path()).map_err(|e| {
-                failure(7, "malformed-input", format!("Failed to read context file: {e}"))
+                failure(
+                    7,
+                    "malformed-input",
+                    format!("Failed to read context file: {e}"),
+                )
             })?;
             parse_normalized_context(&bytes).map_err(|e| {
-                failure(7, "malformed-input", format!("Invalid normalized context: {e}"))
+                failure(
+                    7,
+                    "malformed-input",
+                    format!("Invalid normalized context: {e}"),
+                )
             })?
         }
         SourceTarget::NormalizedStdin => {
             let mut bytes = Vec::new();
             std::io::Read::read_to_end(&mut std::io::stdin().lock(), &mut bytes).map_err(|e| {
-                failure(7, "malformed-input", format!("Failed to read context from stdin: {e}"))
+                failure(
+                    7,
+                    "malformed-input",
+                    format!("Failed to read context from stdin: {e}"),
+                )
             })?;
             parse_normalized_context(&bytes).map_err(|e| {
-                failure(7, "malformed-input", format!("Invalid normalized context: {e}"))
+                failure(
+                    7,
+                    "malformed-input",
+                    format!("Invalid normalized context: {e}"),
+                )
             })?
         }
         SourceTarget::ClaudeTranscript(path) => {
             // Snapshot JSONL transcript
-            let invocation = ProcessInvocation::from_clock(*clock).map_err(|_| {
-                failure(6, "timeout", "Deadline exceeded creating runtime")
-            })?;
-            let req_cx = invocation.request_cx().map_err(|_| {
-                failure(6, "timeout", "Deadline exceeded creating context")
-            })?;
+            let invocation = ProcessInvocation::from_clock(*clock)
+                .map_err(|_| failure(6, "timeout", "Deadline exceeded creating runtime"))?;
+            let req_cx = invocation
+                .request_cx()
+                .map_err(|_| failure(6, "timeout", "Deadline exceeded creating context"))?;
             let snapshot = snapshot_jsonl(
                 &invocation,
                 &req_cx,
                 path.as_path(),
                 None,
                 CursorKind::Ranking,
-            ).map_err(|e| {
-                failure(7, "malformed-input", format!("Transcript snapshot failed: {e}"))
+            )
+            .map_err(|e| {
+                failure(
+                    7,
+                    "malformed-input",
+                    format!("Transcript snapshot failed: {e}"),
+                )
             })?;
 
             let events = snapshot.events;
@@ -292,12 +325,11 @@ pub async fn execute_pipeline(
     }
     if let crate::context::anchor::AnchorResolution::Established(ref a) = anchor_res {
         for directive in &a.directives {
-            if directive.kind == crate::context::anchor::AnchorDirectiveKind::Require {
-                if let Ok(id) = SkillId::new(&directive.target) {
-                    if !explicit_directives.contains(&id) {
-                        explicit_directives.push(id);
-                    }
-                }
+            if directive.kind == crate::context::anchor::AnchorDirectiveKind::Require
+                && let Ok(id) = SkillId::new(&directive.target)
+                && !explicit_directives.contains(&id)
+            {
+                explicit_directives.push(id);
             }
         }
     }
@@ -309,22 +341,50 @@ pub async fn execute_pipeline(
     let overrides = BTreeMap::new();
     let roster = if let Some(roster_path) = &args.roster_file {
         let bytes = std::fs::read(roster_path).map_err(|e| {
-            failure(5, "unusable-roster", format!("Failed to read roster file: {e}"))
+            failure(
+                5,
+                "unusable-roster",
+                format!("Failed to read roster file: {e}"),
+            )
         })?;
-        let plan = claude_code_plan(&args.workspace, args.user_config_root.as_deref(), visibility.clone())
-            .map_err(|e| {
-                failure(5, "unusable-roster", format!("Failed to create discovery plan: {e}"))
-            })?;
+        let plan = claude_code_plan(
+            &args.workspace,
+            args.user_config_root.as_deref(),
+            visibility.clone(),
+        )
+        .map_err(|e| {
+            failure(
+                5,
+                "unusable-roster",
+                format!("Failed to create discovery plan: {e}"),
+            )
+        })?;
         import_authorized(&bytes, &plan, &overrides, cx, clock).map_err(|e| {
-            failure(5, "unusable-roster", format!("Failed to import roster: {e:?}"))
+            failure(
+                5,
+                "unusable-roster",
+                format!("Failed to import roster: {e:?}"),
+            )
         })?
     } else {
-        let plan = claude_code_plan(&args.workspace, args.user_config_root.as_deref(), visibility.clone())
-            .map_err(|e| {
-                failure(5, "unusable-roster", format!("Failed to create discovery plan: {e}"))
-            })?;
+        let plan = claude_code_plan(
+            &args.workspace,
+            args.user_config_root.as_deref(),
+            visibility.clone(),
+        )
+        .map_err(|e| {
+            failure(
+                5,
+                "unusable-roster",
+                format!("Failed to create discovery plan: {e}"),
+            )
+        })?;
         resolve_claude_plan(&plan, &overrides, cx, clock).map_err(|e| {
-            failure(5, "unusable-roster", format!("Failed to resolve discovery plan: {e}"))
+            failure(
+                5,
+                "unusable-roster",
+                format!("Failed to resolve discovery plan: {e}"),
+            )
         })?
     };
 
@@ -340,13 +400,19 @@ pub async fn execute_pipeline(
             context_excluded_skills: Vec::new(),
             user_prompt: Some(normalized_context.current_request.text.as_str().to_string()),
         };
-        let explicit_result = resolve_explicit_requirements(&explicit_req, &roster)
-            .map_err(|e| failure(2, "invalid-usage", format!("Explicit resolution error: {e}")))?;
+        let explicit_result =
+            resolve_explicit_requirements(&explicit_req, &roster).map_err(|e| {
+                failure(
+                    2,
+                    "invalid-usage",
+                    format!("Explicit resolution error: {e}"),
+                )
+            })?;
 
         match explicit_result {
             ExplicitResolutionResult::Resolved { skills, .. } => {
                 // Revalidate policy receipt before publication of explicit result
-                let (refreshed, reval) = config_files.refresh(
+                let (_refreshed, reval) = config_files.refresh(
                     clock,
                     &resolved_config,
                     &current_receipt,
@@ -366,14 +432,34 @@ pub async fn execute_pipeline(
                         "Configuration became invalid before publication",
                     ));
                 }
-                let _ = refreshed;
-
-                let doc = build_explicit_document(
+                let mut doc = build_explicit_document(
                     &skills,
                     &normalized_context,
                     &roster,
                     clock.now().as_millis(),
                 );
+                if let Some(trace_val) = generate_trace(
+                    &args,
+                    &roster,
+                    &normalized_context,
+                    None,
+                    &RetrievalView::NotEvaluated,
+                    None,
+                    gate_threshold,
+                    None,
+                    fits_threshold,
+                    None,
+                    None,
+                    true,
+                ) {
+                    doc = doc.with_trace(trace_val).map_err(|e| {
+                        failure(
+                            5,
+                            "contract-violation",
+                            format!("Trace contract error: {e:?}"),
+                        )
+                    })?;
+                }
                 return Ok(doc);
             }
             ExplicitResolutionResult::Unavailable { unresolved } => {
@@ -413,9 +499,7 @@ pub async fn execute_pipeline(
                     false,
                 )
                 .with_unresolved(unresolved_refs)
-                .map_err(|e| {
-                    failure(5, "unresolved-explicit", format!("Contract error: {e:?}"))
-                })?;
+                .map_err(|e| failure(5, "unresolved-explicit", format!("Contract error: {e:?}")))?;
                 return Ok(doc);
             }
             ExplicitResolutionResult::NoneSpecified { .. } => {}
@@ -434,8 +518,26 @@ pub async fn execute_pipeline(
         if let Ok(id) = SkillId::new(ex.as_str()) {
             excluded_skills.insert(id);
         }
+        for skill in roster.skills() {
+            if skill.record().display_name.as_str() == ex.as_str()
+                || skill
+                    .bindings()
+                    .iter()
+                    .any(|b| b.invocation.as_str() == ex.as_str())
+            {
+                excluded_skills.insert(skill.record().id.clone());
+                for b in skill.bindings() {
+                    excluded_skills.insert(b.id.clone());
+                }
+            }
+        }
     }
     let excluded_refs: BTreeSet<&SkillId> = excluded_skills.iter().collect();
+    let loaded_refs: BTreeSet<&SkillId> = BTreeSet::new();
+    let policy_view = PolicyView {
+        excluded: &excluded_refs,
+        already_loaded: &loaded_refs,
+    };
 
     // Roster skills as AdvisorySkills
     let mut initial_advisory: Vec<AdvisorySkill> = Vec::new();
@@ -465,13 +567,35 @@ pub async fn execute_pipeline(
     if let Some(verdict) = admission.verdict {
         match verdict {
             Verdict::Abstain(reason) => {
-                let doc = build_abstain_document(
+                let mut doc = build_abstain_document(
                     reason.as_str(),
                     &normalized_context,
                     &roster,
                     clock.now().as_millis(),
                     None,
                 );
+                if let Some(trace_val) = generate_trace(
+                    &args,
+                    &roster,
+                    &normalized_context,
+                    Some(&policy_view),
+                    &RetrievalView::NotEvaluated,
+                    None,
+                    gate_threshold,
+                    None,
+                    fits_threshold,
+                    None,
+                    None,
+                    false,
+                ) {
+                    doc = doc.with_trace(trace_val).map_err(|e| {
+                        failure(
+                            5,
+                            "contract-violation",
+                            format!("Trace contract error: {e:?}"),
+                        )
+                    })?;
+                }
                 return Ok(doc);
             }
             Verdict::Unavailable(reason) => {
@@ -487,7 +611,9 @@ pub async fn execute_pipeline(
     }
 
     // 7. Bounded Quill retrieval if > 254 candidates
-    let candidate_skills = if admission.admitted.len() > wide::MAX_REAL_OPTIONS {
+    let (candidate_skills, ran_quill, quill_method) = if admission.admitted.len()
+        > wide::MAX_REAL_OPTIONS
+    {
         let query_input = QueryInput {
             latest_request: normalized_context.current_request.text.as_str(),
             active_task: task_anchor_text,
@@ -497,23 +623,57 @@ pub async fn execute_pipeline(
         let selection = retrieve(&roster, &excluded_skills, query_input, budget, cx, clock)
             .await
             .map_err(|err| match err.kind {
-                RetrievalError::RetrievalEmpty => failure(5, "retrieval-empty", "Quill retrieval yielded 0 matches"),
+                RetrievalError::RetrievalEmpty => {
+                    failure(5, "retrieval-empty", "Quill retrieval yielded 0 matches")
+                }
                 RetrievalError::Deadline => failure(6, "timeout", "Retrieval exceeded deadline"),
                 _ => failure(5, "retrieval-failure", format!("Retrieval error: {err}")),
             })?;
-        selection.candidates
+        (selection.candidates, true, selection.diagnostics.method)
     } else {
-        admission.admitted
+        (admission.admitted, false, None)
+    };
+
+    let admitted_ids: BTreeSet<&SkillId> = candidate_skills.iter().map(|s| &s.binding.id).collect();
+    let retrieval_view = if ran_quill {
+        RetrievalView::Admitted {
+            method: quill_method.unwrap_or(RetrievalMethod::FullRoster),
+            ids: admitted_ids,
+        }
+    } else {
+        RetrievalView::NotEvaluated
     };
 
     if candidate_skills.is_empty() {
-        let doc = build_abstain_document(
+        let mut doc = build_abstain_document(
             "no-shortlist-match",
             &normalized_context,
             &roster,
             clock.now().as_millis(),
             None,
         );
+        if let Some(trace_val) = generate_trace(
+            &args,
+            &roster,
+            &normalized_context,
+            Some(&policy_view),
+            &retrieval_view,
+            None,
+            gate_threshold,
+            None,
+            fits_threshold,
+            None,
+            None,
+            false,
+        ) {
+            doc = doc.with_trace(trace_val).map_err(|e| {
+                failure(
+                    5,
+                    "contract-violation",
+                    format!("Trace contract error: {e:?}"),
+                )
+            })?;
+        }
         return Ok(doc);
     }
 
@@ -523,7 +683,11 @@ pub async fn execute_pipeline(
         content_scope.insert(candidate.binding.id.clone());
     }
     let dependencies = capture(&roster, &content_scope, clock).map_err(|e| {
-        failure(5, "unusable-roster", format!("Failed to capture dependencies: {e:?}"))
+        failure(
+            5,
+            "unusable-roster",
+            format!("Failed to capture dependencies: {e:?}"),
+        )
     })?;
 
     // 9. Render context payload for Jev
@@ -532,11 +696,12 @@ pub async fn execute_pipeline(
         context_profile: ContextProfile::Standard,
         max_messages: effective.messages() as usize,
         max_total_scalars: effective.budget_chars() as usize,
-        redactor: redactor.clone(),
+        redactor,
         ..Default::default()
     };
-    let (rendered_context, _receipt) = render_context_and_receipt(&normalized_context, &render_opts)
-        .map_err(|e| failure(7, "oversized-input", format!("Context render error: {e:?}")))?;
+    let (rendered_context, _receipt) =
+        render_context_and_receipt(&normalized_context, &render_opts)
+            .map_err(|e| failure(7, "oversized-input", format!("Context render error: {e:?}")))?;
 
     // 10. Cache check for Wide Stage
     let cache_key = CacheKey::from_bytes([42u8; 32]);
@@ -546,7 +711,10 @@ pub async fn execute_pipeline(
     )
     .with_workspace(workspace_id.clone());
 
-    let candidate_ids: Vec<SkillId> = candidate_skills.iter().map(|s| s.binding.id.clone()).collect();
+    let candidate_ids: Vec<SkillId> = candidate_skills
+        .iter()
+        .map(|s| s.binding.id.clone())
+        .collect();
     let candidate_digests: Vec<CandidateDigest> = candidate_skills
         .iter()
         .map(|s| CandidateDigest {
@@ -583,7 +751,14 @@ pub async fn execute_pipeline(
         &rendered_context,
         effective.model().as_str(),
         false, // include_stuck
-    ).map_err(|e| failure(e.kind().exit_code() as u8, e.kind().as_str(), format!("Wide build failed: {e:?}")))?;
+    )
+    .map_err(|e| {
+        failure(
+            e.kind().exit_code() as u8,
+            e.kind().as_str(),
+            format!("Wide build failed: {e:?}"),
+        )
+    })?;
 
     // Check dry-run
     if args.dry_run {
@@ -600,13 +775,35 @@ pub async fn execute_pipeline(
                 "redactions": wide_builder.trimming().redactions,
             }
         });
-        let doc = build_abstain_document(
+        let mut doc = build_abstain_document(
             "dry-run-preview",
             &normalized_context,
             &roster,
             clock.now().as_millis(),
             Some(dry_run_json),
         );
+        if let Some(trace_val) = generate_trace(
+            &args,
+            &roster,
+            &normalized_context,
+            Some(&policy_view),
+            &retrieval_view,
+            None,
+            gate_threshold,
+            None,
+            fits_threshold,
+            None,
+            None,
+            false,
+        ) {
+            doc = doc.with_trace(trace_val).map_err(|e| {
+                failure(
+                    5,
+                    "contract-violation",
+                    format!("Trace contract error: {e:?}"),
+                )
+            })?;
+        }
         return Ok(doc);
     }
 
@@ -624,9 +821,16 @@ pub async fn execute_pipeline(
             Ok(CacheLookupResult::Hit { entry, .. }) => {
                 metrics.wide_hit = true;
                 metrics.cache_hit = true;
-                wide_builder.request().decode_response(&entry.response_bytes).map_err(|e| {
-                    failure(10, "invalid-provider-response", format!("Corrupt cached wide response: {e:?}"))
-                })?
+                wide_builder
+                    .request()
+                    .decode_response(&entry.response_bytes)
+                    .map_err(|e| {
+                        failure(
+                            10,
+                            "invalid-provider-response",
+                            format!("Corrupt cached wide response: {e:?}"),
+                        )
+                    })?
             }
             _ => {
                 // Cache miss: execute provider attempt
@@ -640,7 +844,8 @@ pub async fn execute_pipeline(
                     &wide_builder,
                     transport,
                     &mut metrics,
-                ).await?
+                )
+                .await?
             }
         }
     } else {
@@ -654,13 +859,19 @@ pub async fn execute_pipeline(
             &wide_builder,
             transport,
             &mut metrics,
-        ).await?
+        )
+        .await?
     };
 
     // Evaluate Wide Response
-    let wide_outcome = wide::evaluate(&wide_builder, &wide_response, gate_threshold, sizes).map_err(|e| {
-        failure(10, "invalid-provider-response", format!("Wide evaluation failed: {e:?}"))
-    })?;
+    let wide_outcome = wide::evaluate(&wide_builder, &wide_response, gate_threshold, sizes)
+        .map_err(|e| {
+            failure(
+                10,
+                "invalid-provider-response",
+                format!("Wide evaluation failed: {e:?}"),
+            )
+        })?;
 
     let shortlisted = match &wide_outcome.decision {
         WideDecision::LowNeed => {
@@ -687,19 +898,44 @@ pub async fn execute_pipeline(
             }
             let _ = refreshed;
 
-            let doc = build_abstain_document(
+            let mut doc = build_abstain_document(
                 "low-need",
                 &normalized_context,
                 &roster,
                 clock.now().as_millis(),
                 None,
             );
+            if let Some(trace_val) = generate_trace(
+                &args,
+                &roster,
+                &normalized_context,
+                Some(&policy_view),
+                &retrieval_view,
+                Some(&wide_outcome),
+                gate_threshold,
+                None,
+                fits_threshold,
+                None,
+                None,
+                false,
+            ) {
+                doc = doc.with_trace(trace_val).map_err(|e| {
+                    failure(
+                        5,
+                        "contract-violation",
+                        format!("Trace contract error: {e:?}"),
+                    )
+                })?;
+            }
             return Ok(doc);
         }
         WideDecision::Shortlist(list) => list.clone(),
     };
 
-    let shortlist_ids: Vec<SkillId> = shortlisted.iter().map(|s| s.skill.binding.id.clone()).collect();
+    let shortlist_ids: Vec<SkillId> = shortlisted
+        .iter()
+        .map(|s| s.skill.binding.id.clone())
+        .collect();
 
     // 12. Stage 2 (Rerank)
     let rerank_builder = rerank::build(
@@ -707,7 +943,14 @@ pub async fn execute_pipeline(
         &shortlist_ids,
         &rendered_context,
         effective.model().as_str(),
-    ).map_err(|e| failure(e.kind().exit_code() as u8, e.kind().as_str(), format!("Rerank build failed: {e:?}")))?;
+    )
+    .map_err(|e| {
+        failure(
+            e.kind().exit_code() as u8,
+            e.kind().as_str(),
+            format!("Rerank build failed: {e:?}"),
+        )
+    })?;
 
     let rerank_response = execute_provider_rerank(
         clock,
@@ -719,10 +962,15 @@ pub async fn execute_pipeline(
         &rerank_builder,
         transport,
         &mut metrics,
-    ).await?;
+    )
+    .await?;
 
     let rerank_outcome = rerank::evaluate(&rerank_builder, &rerank_response).map_err(|e| {
-        failure(10, "invalid-provider-response", format!("Rerank evaluation failed: {e:?}"))
+        failure(
+            10,
+            "invalid-provider-response",
+            format!("Rerank evaluation failed: {e:?}"),
+        )
     })?;
 
     // 13. Local Eligibility & Fit Filtering after Rerank
@@ -741,13 +989,35 @@ pub async fn execute_pipeline(
     if let Some(verdict) = evaluation.verdict {
         match verdict {
             Verdict::Abstain(reason) => {
-                let doc = build_abstain_document(
+                let mut doc = build_abstain_document(
                     reason.as_str(),
                     &normalized_context,
                     &roster,
                     clock.now().as_millis(),
                     None,
                 );
+                if let Some(trace_val) = generate_trace(
+                    &args,
+                    &roster,
+                    &normalized_context,
+                    Some(&policy_view),
+                    &retrieval_view,
+                    Some(&wide_outcome),
+                    gate_threshold,
+                    Some(&rerank_outcome),
+                    fits_threshold,
+                    Some(&evaluation),
+                    None,
+                    false,
+                ) {
+                    doc = doc.with_trace(trace_val).map_err(|e| {
+                        failure(
+                            5,
+                            "contract-violation",
+                            format!("Trace contract error: {e:?}"),
+                        )
+                    })?;
+                }
                 return Ok(doc);
             }
             Verdict::Unavailable(reason) => {
@@ -771,7 +1041,11 @@ pub async fn execute_pipeline(
 
     let weights = Weights::DEFAULT;
     let scored_ranking = rank(&scoring_inputs, weights, top).map_err(|e| {
-        failure(10, "invalid-provider-response", format!("Scoring failed: {e:?}"))
+        failure(
+            10,
+            "invalid-provider-response",
+            format!("Scoring failed: {e:?}"),
+        )
     })?;
 
     // 15. Final Revalidation Before Publication
@@ -788,16 +1062,32 @@ pub async fn execute_pipeline(
     match reval_outcome {
         Ok(_) => {}
         Err(RevalidationError::Changed) => {
-            return Err(failure(5, "roster-changed", "Roster changed during ranking"));
+            return Err(failure(
+                5,
+                "roster-changed",
+                "Roster changed during ranking",
+            ));
         }
         Err(RevalidationError::Incomplete) => {
-            return Err(failure(5, "incomplete-roster", "Roster scope incomplete during revalidation"));
+            return Err(failure(
+                5,
+                "incomplete-roster",
+                "Roster scope incomplete during revalidation",
+            ));
         }
         Err(RevalidationError::Deadline) => {
-            return Err(failure(6, "timeout", "Deadline exceeded during revalidation"));
+            return Err(failure(
+                6,
+                "timeout",
+                "Deadline exceeded during revalidation",
+            ));
         }
         Err(e) => {
-            return Err(failure(5, "unusable-roster", format!("Revalidation failed: {e:?}")));
+            return Err(failure(
+                5,
+                "unusable-roster",
+                format!("Revalidation failed: {e:?}"),
+            ));
         }
     }
 
@@ -825,12 +1115,11 @@ pub async fn execute_pipeline(
     let _ = refreshed;
 
     // Check runtime publication admission (deadline cleanup reserve check)
-    admit_publication(clock.deadline(), clock.now(), clock.now()).map_err(|e| {
-        failure(6, "timeout", format!("Runtime suppressed late result: {e}"))
-    })?;
+    admit_publication(clock.deadline(), clock.now(), clock.now())
+        .map_err(|e| failure(6, "timeout", format!("Runtime suppressed late result: {e}")))?;
 
     // 16. Build Ranked OutputDocument
-    let doc = build_ranked_document(
+    let mut doc = build_ranked_document(
         &evaluation.eligible,
         &scored_ranking,
         &shortlisted,
@@ -843,9 +1132,33 @@ pub async fn execute_pipeline(
         clock.now().as_millis(),
     )?;
 
+    if let Some(trace_val) = generate_trace(
+        &args,
+        &roster,
+        &normalized_context,
+        Some(&policy_view),
+        &retrieval_view,
+        Some(&wide_outcome),
+        gate_threshold,
+        Some(&rerank_outcome),
+        fits_threshold,
+        Some(&evaluation),
+        Some(&scored_ranking),
+        true,
+    ) {
+        doc = doc.with_trace(trace_val).map_err(|e| {
+            failure(
+                5,
+                "contract-violation",
+                format!("Trace contract error: {e:?}"),
+            )
+        })?;
+    }
+
     Ok(doc)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn execute_provider_wide(
     clock: &EntryClock,
     cx: &Cx,
@@ -882,7 +1195,11 @@ async fn execute_provider_wide(
 
     let consent = receipt.network_consent();
     if !matches!(consent, NetworkConsent::Authorized(_)) {
-        return Err(failure(8, "network-denied", "Network transmission is not authorized"));
+        return Err(failure(
+            8,
+            "network-denied",
+            "Network transmission is not authorized",
+        ));
     }
 
     let credential = resolved_config.credential();
@@ -899,14 +1216,25 @@ async fn execute_provider_wide(
             .map_err(map_transport_error)?
     } else {
         let endpoint_config = match resolved_config.effective().endpoint() {
-            Some(ep) => EndpointConfig::from_override(ep)
-                .map_err(|e| failure(2, "invalid-configuration", format!("Invalid endpoint: {e:?}")))?,
+            Some(ep) => EndpointConfig::from_override(ep).map_err(|e| {
+                failure(
+                    2,
+                    "invalid-configuration",
+                    format!("Invalid endpoint: {e:?}"),
+                )
+            })?,
             None => EndpointConfig::production(),
         };
-        let client = JevClient::new(endpoint_config)
-            .map_err(|e| failure(2, "invalid-configuration", format!("Client init failed: {e}")))?;
-        let scoped_cred = OriginScopedCredential::bind(credential.unwrap().clone(), client.origin())
-            .map_err(|_| failure(4, "authentication", "Credential origin mismatch"))?;
+        let client = JevClient::new(endpoint_config).map_err(|e| {
+            failure(
+                2,
+                "invalid-configuration",
+                format!("Client init failed: {e}"),
+            )
+        })?;
+        let scoped_cred =
+            OriginScopedCredential::bind(credential.unwrap().clone(), client.origin())
+                .map_err(|_| failure(4, "authentication", "Credential origin mismatch"))?;
         client
             .send(wide_req.request(), Some(&scoped_cred), consent, cx, clock)
             .await
@@ -919,6 +1247,7 @@ async fn execute_provider_wide(
     Ok(response)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn execute_provider_rerank(
     clock: &EntryClock,
     cx: &Cx,
@@ -955,7 +1284,11 @@ async fn execute_provider_rerank(
 
     let consent = receipt.network_consent();
     if !matches!(consent, NetworkConsent::Authorized(_)) {
-        return Err(failure(8, "network-denied", "Network transmission is not authorized"));
+        return Err(failure(
+            8,
+            "network-denied",
+            "Network transmission is not authorized",
+        ));
     }
 
     let credential = resolved_config.credential();
@@ -972,14 +1305,25 @@ async fn execute_provider_rerank(
             .map_err(map_transport_error)?
     } else {
         let endpoint_config = match resolved_config.effective().endpoint() {
-            Some(ep) => EndpointConfig::from_override(ep)
-                .map_err(|e| failure(2, "invalid-configuration", format!("Invalid endpoint: {e:?}")))?,
+            Some(ep) => EndpointConfig::from_override(ep).map_err(|e| {
+                failure(
+                    2,
+                    "invalid-configuration",
+                    format!("Invalid endpoint: {e:?}"),
+                )
+            })?,
             None => EndpointConfig::production(),
         };
-        let client = JevClient::new(endpoint_config)
-            .map_err(|e| failure(2, "invalid-configuration", format!("Client init failed: {e}")))?;
-        let scoped_cred = OriginScopedCredential::bind(credential.unwrap().clone(), client.origin())
-            .map_err(|_| failure(4, "authentication", "Credential origin mismatch"))?;
+        let client = JevClient::new(endpoint_config).map_err(|e| {
+            failure(
+                2,
+                "invalid-configuration",
+                format!("Client init failed: {e}"),
+            )
+        })?;
+        let scoped_cred =
+            OriginScopedCredential::bind(credential.unwrap().clone(), client.origin())
+                .map_err(|_| failure(4, "authentication", "Credential origin mismatch"))?;
         client
             .send(rerank_req.request(), Some(&scoped_cred), consent, cx, clock)
             .await
@@ -995,11 +1339,21 @@ async fn execute_provider_rerank(
 fn map_transport_error(e: TransportError) -> PipelineFailure {
     match e.kind {
         TransportErrorKind::Deadline => (6, "timeout", "Jev request exceeded deadline".into()),
-        TransportErrorKind::Admission(_) => (8, "network-denied", "Provider admission denied".into()),
-        TransportErrorKind::CredentialOriginMismatch => (4, "authentication", "Credential origin mismatch".into()),
-        TransportErrorKind::HttpStatus(401 | 403) => (4, "authentication", "Invalid credentials".into()),
-        TransportErrorKind::HttpStatus(429) => (4, "provider-cooldown", "Rate limited by provider".into()),
-        TransportErrorKind::HttpStatus(code) => (4, "provider-failure", format!("HTTP error {code}")),
+        TransportErrorKind::Admission(_) => {
+            (8, "network-denied", "Provider admission denied".into())
+        }
+        TransportErrorKind::CredentialOriginMismatch => {
+            (4, "authentication", "Credential origin mismatch".into())
+        }
+        TransportErrorKind::HttpStatus(401 | 403) => {
+            (4, "authentication", "Invalid credentials".into())
+        }
+        TransportErrorKind::HttpStatus(429) => {
+            (4, "provider-cooldown", "Rate limited by provider".into())
+        }
+        TransportErrorKind::HttpStatus(code) => {
+            (4, "provider-failure", format!("HTTP error {code}"))
+        }
         _ => (4, "network-failure", format!("Transport error: {e}")),
     }
 }
@@ -1021,7 +1375,11 @@ fn build_explicit_document(
                     LoadTarget::File(p) => p.as_path().display().to_string(),
                     LoadTarget::Harness(h) => h.as_str().to_string(),
                 };
-                (rec.display_name.as_str(), p, rec.source_content.as_str().to_string())
+                (
+                    rec.display_name.as_str(),
+                    p,
+                    rec.source_content.as_str().to_string(),
+                )
             } else {
                 (s.invocation.as_str(), String::new(), String::new())
             };
@@ -1069,7 +1427,7 @@ fn build_explicit_document(
             "partial": roster.is_partial(),
             "retrieval": "not-evaluated",
             "provenance": {
-                "snapshot_id": "000000000000000000000000000000000000000000000000000000000000000a",
+                "snapshot_id": crate::roster::evidence::snapshot_id(roster).as_str(),
                 "policy_version": "ranking-v1",
                 "wide_set_id": null,
                 "rerank_set_id": null,
@@ -1146,7 +1504,7 @@ fn build_abstain_document(
             "partial": roster.is_partial(),
             "retrieval": "not-evaluated",
             "provenance": {
-                "snapshot_id": "000000000000000000000000000000000000000000000000000000000000000a",
+                "snapshot_id": crate::roster::evidence::snapshot_id(roster).as_str(),
                 "policy_version": "ranking-v1",
                 "wide_set_id": null,
                 "rerank_set_id": null,
@@ -1191,6 +1549,7 @@ fn build_abstain_document(
     OutputDocument::from_value(val).expect("valid abstain document")
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_ranked_document(
     eligible: &[Eligible<'_>],
     ranking: &Ranking,
@@ -1268,7 +1627,7 @@ fn build_ranked_document(
             "partial": roster.is_partial(),
             "retrieval": "full",
             "provenance": {
-                "snapshot_id": "000000000000000000000000000000000000000000000000000000000000000a",
+                "snapshot_id": crate::roster::evidence::snapshot_id(roster).as_str(),
                 "policy_version": "ranking-v1",
                 "wide_set_id": "000000000000000000000000000000000000000000000000000000000000000b",
                 "rerank_set_id": "000000000000000000000000000000000000000000000000000000000000000c",
@@ -1307,6 +1666,559 @@ fn build_ranked_document(
     });
 
     OutputDocument::from_value(val).map_err(|e| {
-        failure(10, "invalid-provider-response", format!("Output contract validation failed: {e:?}"))
+        failure(
+            10,
+            "invalid-provider-response",
+            format!("Output contract validation failed: {e:?}"),
+        )
     })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn generate_trace(
+    args: &RankArgs,
+    roster: &ResolvedRoster,
+    context: &NormalizedContext,
+    policy: Option<&PolicyView<'_>>,
+    retrieval: &RetrievalView<'_>,
+    wide_outcome: Option<&WideOutcome<'_>>,
+    gate_threshold: f64,
+    rerank_outcome: Option<&RerankOutcome<'_>>,
+    fits_threshold: f64,
+    evaluation: Option<&Evaluation<'_>>,
+    ranking: Option<&Ranking>,
+    publication_passed: bool,
+) -> Option<Value> {
+    if !args.explain && args.why_not.is_none() {
+        return None;
+    }
+
+    let mut targets: Vec<SkillId> = Vec::new();
+    if let Some(target) = &args.why_not {
+        targets.push(target.clone());
+    } else {
+        if let Some(r) = ranking
+            && let Some(eval) = evaluation
+        {
+            for scored in &r.returned {
+                let id = eval.eligible[scored.index].skill.binding.id.clone();
+                if !targets.contains(&id) {
+                    targets.push(id);
+                }
+            }
+        }
+        if let Some(wo) = wide_outcome
+            && let WideDecision::Shortlist(ref list) = wo.decision
+        {
+            for s in list {
+                let id = s.skill.binding.id.clone();
+                if !targets.contains(&id) && targets.len() < 16 {
+                    targets.push(id);
+                }
+            }
+        }
+        if targets.is_empty() {
+            for s in roster.skills() {
+                for b in s.bindings() {
+                    if !targets.contains(&b.id) && targets.len() < 16 {
+                        targets.push(b.id.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    let mut entries = Vec::new();
+    for target in &targets {
+        let skill_entries = compute_stage_trace(
+            target,
+            roster,
+            policy,
+            retrieval,
+            wide_outcome,
+            gate_threshold,
+            rerank_outcome,
+            fits_threshold,
+            evaluation,
+            ranking,
+            publication_passed,
+        );
+        entries.extend(skill_entries);
+    }
+
+    let snapshot_id = crate::roster::evidence::snapshot_id(roster);
+    let query_bytes = context.current_request.text.as_str().as_bytes();
+    let query_id = ContentHash::from_bytes(query_bytes);
+    let total = entries.len() as u64;
+
+    let trace_cursor = TraceCursor {
+        schema_version: 1,
+        snapshot_id,
+        query_id,
+        offset: 0,
+    };
+
+    let stage_trace = StageTrace {
+        cursor: trace_cursor,
+        total,
+        next_offset: None,
+        entries,
+    };
+
+    serde_json::to_value(stage_trace).ok()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn compute_stage_trace(
+    target: &SkillId,
+    roster: &ResolvedRoster,
+    policy: Option<&PolicyView<'_>>,
+    retrieval: &RetrievalView<'_>,
+    wide_outcome: Option<&WideOutcome<'_>>,
+    gate_threshold: f64,
+    rerank_outcome: Option<&RerankOutcome<'_>>,
+    fits_threshold: f64,
+    evaluation: Option<&Evaluation<'_>>,
+    ranking: Option<&Ranking>,
+    publication_passed: bool,
+) -> Vec<TraceEntry> {
+    let mut entries = Vec::with_capacity(8);
+
+    // 1. discovery
+    let matching_skill = roster.skills().iter().find(|s| {
+        s.bindings().iter().any(|b| {
+            &b.id == target || b.invocation.as_str() == target.as_str() || s.record().id == *target
+        })
+    });
+
+    if matching_skill.is_none() {
+        entries.push(TraceEntry::not_in_snapshot(target.clone()));
+        for stage in &TraceStage::ALL[1..] {
+            entries.push(TraceEntry::not_evaluated(target.clone(), *stage));
+        }
+        return entries;
+    }
+
+    entries.push(TraceEntry::passed(
+        target.clone(),
+        TraceStage::Discovery,
+        "discovered",
+        None,
+        None,
+    ));
+
+    // 2. visibility
+    let exact_res = match roster.exact_id(target) {
+        ExactResolution::Missing => roster.exact_name(target.as_str()),
+        other => other,
+    };
+    match exact_res {
+        ExactResolution::Missing => {
+            entries.push(TraceEntry::excluded(
+                target.clone(),
+                TraceStage::Visibility,
+                "missing",
+                None,
+                None,
+                Some("inspect-roster".into()),
+            ));
+            for stage in &TraceStage::ALL[2..] {
+                entries.push(TraceEntry::not_evaluated(target.clone(), *stage));
+            }
+            return entries;
+        }
+        ExactResolution::Shadowed => {
+            entries.push(TraceEntry::excluded(
+                target.clone(),
+                TraceStage::Visibility,
+                "shadowed",
+                None,
+                None,
+                Some("inspect-precedence".into()),
+            ));
+            for stage in &TraceStage::ALL[2..] {
+                entries.push(TraceEntry::not_evaluated(target.clone(), *stage));
+            }
+            return entries;
+        }
+        ExactResolution::Ambiguous => {
+            entries.push(TraceEntry::excluded(
+                target.clone(),
+                TraceStage::Visibility,
+                "ambiguous",
+                None,
+                None,
+                Some("inspect-precedence".into()),
+            ));
+            for stage in &TraceStage::ALL[2..] {
+                entries.push(TraceEntry::not_evaluated(target.clone(), *stage));
+            }
+            return entries;
+        }
+        ExactResolution::Unverified => {
+            entries.push(TraceEntry::excluded(
+                target.clone(),
+                TraceStage::Visibility,
+                "unverified",
+                None,
+                None,
+                Some("verify-adapter-visibility".into()),
+            ));
+            for stage in &TraceStage::ALL[2..] {
+                entries.push(TraceEntry::not_evaluated(target.clone(), *stage));
+            }
+            return entries;
+        }
+        ExactResolution::Forbidden => {
+            entries.push(TraceEntry::excluded(
+                target.clone(),
+                TraceStage::Visibility,
+                "forbidden",
+                None,
+                None,
+                Some("check-invocation-restrictions".into()),
+            ));
+            for stage in &TraceStage::ALL[2..] {
+                entries.push(TraceEntry::not_evaluated(target.clone(), *stage));
+            }
+            return entries;
+        }
+        ExactResolution::Resolved { kind, .. } => match kind {
+            InvocationKind::Forbidden => {
+                entries.push(TraceEntry::excluded(
+                    target.clone(),
+                    TraceStage::Visibility,
+                    "forbidden",
+                    None,
+                    None,
+                    Some("check-invocation-restrictions".into()),
+                ));
+                for stage in &TraceStage::ALL[2..] {
+                    entries.push(TraceEntry::not_evaluated(target.clone(), *stage));
+                }
+                return entries;
+            }
+            InvocationKind::ManualOnly => {
+                entries.push(TraceEntry::excluded(
+                    target.clone(),
+                    TraceStage::Visibility,
+                    "manual-only",
+                    None,
+                    None,
+                    Some("request-explicitly".into()),
+                ));
+                for stage in &TraceStage::ALL[2..] {
+                    entries.push(TraceEntry::not_evaluated(target.clone(), *stage));
+                }
+                return entries;
+            }
+            InvocationKind::Agent => {
+                entries.push(TraceEntry::passed(
+                    target.clone(),
+                    TraceStage::Visibility,
+                    "verified",
+                    None,
+                    None,
+                ));
+            }
+        },
+    }
+
+    // 3. local-policy
+    let siblings: Vec<SkillId> = if let Some(sk) = matching_skill {
+        sk.bindings().iter().map(|b| b.id.clone()).collect()
+    } else {
+        vec![target.clone()]
+    };
+
+    if let Some(pv) = policy {
+        let is_excluded =
+            siblings.iter().any(|id| pv.excluded.contains(id)) || pv.excluded.contains(target);
+        let is_loaded = siblings.iter().any(|id| pv.already_loaded.contains(id))
+            || pv.already_loaded.contains(target);
+        if is_excluded {
+            entries.push(TraceEntry::excluded(
+                target.clone(),
+                TraceStage::LocalPolicy,
+                "excluded",
+                None,
+                None,
+                Some("review-exclusions".into()),
+            ));
+            for stage in &TraceStage::ALL[3..] {
+                entries.push(TraceEntry::not_evaluated(target.clone(), *stage));
+            }
+            return entries;
+        } else if is_loaded {
+            entries.push(TraceEntry::excluded(
+                target.clone(),
+                TraceStage::LocalPolicy,
+                "already-loaded",
+                None,
+                None,
+                None,
+            ));
+            for stage in &TraceStage::ALL[3..] {
+                entries.push(TraceEntry::not_evaluated(target.clone(), *stage));
+            }
+            return entries;
+        } else {
+            entries.push(TraceEntry::passed(
+                target.clone(),
+                TraceStage::LocalPolicy,
+                "policy-admitted",
+                None,
+                None,
+            ));
+        }
+    } else {
+        entries.push(TraceEntry::not_evaluated(
+            target.clone(),
+            TraceStage::LocalPolicy,
+        ));
+    }
+
+    // 4. quill-admission
+    match retrieval {
+        RetrievalView::Admitted { ids, .. } => {
+            let admitted = siblings.iter().any(|id| ids.contains(id)) || ids.contains(target);
+            if admitted {
+                entries.push(TraceEntry::passed(
+                    target.clone(),
+                    TraceStage::QuillAdmission,
+                    "quill-admitted",
+                    None,
+                    None,
+                ));
+            } else {
+                entries.push(TraceEntry::excluded(
+                    target.clone(),
+                    TraceStage::QuillAdmission,
+                    "not-retrieved",
+                    None,
+                    None,
+                    Some("refine-request".into()),
+                ));
+                for stage in &TraceStage::ALL[4..] {
+                    entries.push(TraceEntry::not_evaluated(target.clone(), *stage));
+                }
+                return entries;
+            }
+        }
+        RetrievalView::Empty => {
+            entries.push(TraceEntry::excluded(
+                target.clone(),
+                TraceStage::QuillAdmission,
+                "retrieval-empty",
+                None,
+                None,
+                Some("refine-request".into()),
+            ));
+            for stage in &TraceStage::ALL[4..] {
+                entries.push(TraceEntry::not_evaluated(target.clone(), *stage));
+            }
+            return entries;
+        }
+        RetrievalView::NotEvaluated => {
+            entries.push(TraceEntry::passed(
+                target.clone(),
+                TraceStage::QuillAdmission,
+                "full-roster",
+                None,
+                None,
+            ));
+        }
+        RetrievalView::Failed => {
+            entries.push(TraceEntry::not_evaluated(
+                target.clone(),
+                TraceStage::QuillAdmission,
+            ));
+            for stage in &TraceStage::ALL[4..] {
+                entries.push(TraceEntry::not_evaluated(target.clone(), *stage));
+            }
+            return entries;
+        }
+    }
+
+    // 5. wide-shortlist
+    let Some(wo) = wide_outcome else {
+        for stage in &TraceStage::ALL[4..] {
+            entries.push(TraceEntry::not_evaluated(target.clone(), *stage));
+        }
+        return entries;
+    };
+
+    match &wo.decision {
+        WideDecision::LowNeed => {
+            entries.push(TraceEntry::excluded(
+                target.clone(),
+                TraceStage::WideShortlist,
+                "gate-not-met",
+                Some(wo.needs_skill),
+                Some(gate_threshold),
+                Some("refine-request".into()),
+            ));
+            for stage in &TraceStage::ALL[5..] {
+                entries.push(TraceEntry::not_evaluated(target.clone(), *stage));
+            }
+            return entries;
+        }
+        WideDecision::Shortlist(list) => {
+            if let Some(item) = list
+                .iter()
+                .find(|s| siblings.contains(&s.skill.binding.id) || &s.skill.binding.id == target)
+            {
+                entries.push(TraceEntry::passed(
+                    target.clone(),
+                    TraceStage::WideShortlist,
+                    "shortlisted",
+                    Some(item.wide_probability),
+                    Some(gate_threshold),
+                ));
+            } else {
+                entries.push(TraceEntry::excluded(
+                    target.clone(),
+                    TraceStage::WideShortlist,
+                    "shortlist-overflow",
+                    None,
+                    Some(gate_threshold),
+                    Some("refine-request".into()),
+                ));
+                for stage in &TraceStage::ALL[5..] {
+                    entries.push(TraceEntry::not_evaluated(target.clone(), *stage));
+                }
+                return entries;
+            }
+        }
+    }
+
+    // 6. fit-none
+    let Some(ro) = rerank_outcome else {
+        for stage in &TraceStage::ALL[5..] {
+            entries.push(TraceEntry::not_evaluated(target.clone(), *stage));
+        }
+        return entries;
+    };
+
+    let estimates = ro.estimates();
+    let est_entry = siblings
+        .iter()
+        .find_map(|id| estimates.get(id))
+        .or_else(|| estimates.get(target));
+
+    if let Some(est) = est_entry {
+        if est.fit < fits_threshold {
+            entries.push(TraceEntry::excluded(
+                target.clone(),
+                TraceStage::FitNone,
+                "fit-below-threshold",
+                Some(est.fit),
+                Some(fits_threshold),
+                Some("refine-request".into()),
+            ));
+            for stage in &TraceStage::ALL[6..] {
+                entries.push(TraceEntry::not_evaluated(target.clone(), *stage));
+            }
+            return entries;
+        } else if est.rerank <= ro.none_probability {
+            entries.push(TraceEntry::excluded(
+                target.clone(),
+                TraceStage::FitNone,
+                "none-won",
+                Some(est.rerank),
+                Some(ro.none_probability),
+                Some("refine-request".into()),
+            ));
+            for stage in &TraceStage::ALL[6..] {
+                entries.push(TraceEntry::not_evaluated(target.clone(), *stage));
+            }
+            return entries;
+        } else {
+            entries.push(TraceEntry::passed(
+                target.clone(),
+                TraceStage::FitNone,
+                "fit-eligible",
+                Some(est.fit),
+                Some(fits_threshold),
+            ));
+        }
+    } else {
+        entries.push(TraceEntry::not_evaluated(
+            target.clone(),
+            TraceStage::FitNone,
+        ));
+        for stage in &TraceStage::ALL[6..] {
+            entries.push(TraceEntry::not_evaluated(target.clone(), *stage));
+        }
+        return entries;
+    }
+
+    // 7. ordering
+    let Some(r) = ranking else {
+        for stage in &TraceStage::ALL[6..] {
+            entries.push(TraceEntry::not_evaluated(target.clone(), *stage));
+        }
+        return entries;
+    };
+
+    if let Some(eval) = evaluation {
+        if let Some(scored) = r.returned.iter().find(|s| {
+            let id = &eval.eligible[s.index].skill.binding.id;
+            siblings.contains(id) || id == target
+        }) {
+            entries.push(TraceEntry::passed(
+                target.clone(),
+                TraceStage::Ordering,
+                "top-k-selected",
+                Some(scored.rank_score),
+                None,
+            ));
+        } else {
+            entries.push(TraceEntry::excluded(
+                target.clone(),
+                TraceStage::Ordering,
+                "below-top-k",
+                None,
+                None,
+                Some("refine-request".into()),
+            ));
+            entries.push(TraceEntry::not_evaluated(
+                target.clone(),
+                TraceStage::Publication,
+            ));
+            return entries;
+        }
+    } else {
+        entries.push(TraceEntry::not_evaluated(
+            target.clone(),
+            TraceStage::Ordering,
+        ));
+        entries.push(TraceEntry::not_evaluated(
+            target.clone(),
+            TraceStage::Publication,
+        ));
+        return entries;
+    }
+
+    // 8. publication
+    if publication_passed {
+        entries.push(TraceEntry::passed(
+            target.clone(),
+            TraceStage::Publication,
+            "published",
+            None,
+            None,
+        ));
+    } else {
+        entries.push(TraceEntry::excluded(
+            target.clone(),
+            TraceStage::Publication,
+            "revalidation-failed",
+            None,
+            None,
+            Some("inspect-roster".into()),
+        ));
+    }
+
+    entries
 }

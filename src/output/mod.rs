@@ -14,6 +14,9 @@ use std::fmt;
 use std::io::{self, Write};
 
 pub mod table;
+pub mod trace;
+
+pub use trace::{StageTrace, TraceEntry, TraceStage, TraceStatus};
 
 pub const SCHEMA_VERSION: u64 = 1;
 pub const MAX_OUTPUT_BYTES: usize = 2 * crate::limits::MIB;
@@ -278,8 +281,10 @@ impl OutputDocument {
     ) -> Self {
         let clean_message =
             sanitize_diagnostic_text(message, "The requested operation is unavailable.");
-        let clean_hint =
-            sanitize_diagnostic_text(hint, "Inspect local readiness and the structured error kind.");
+        let clean_hint = sanitize_diagnostic_text(
+            hint,
+            "Inspect local readiness and the structured error kind.",
+        );
         Self {
             value: json!({
                 "schema_version": SCHEMA_VERSION,
@@ -319,6 +324,14 @@ impl OutputDocument {
             .collect();
         if let Some(obj) = self.value.as_object_mut() {
             obj.insert("unresolved".into(), Value::Array(items));
+        }
+        Self::from_value(self.value)
+    }
+
+    /// Attaches a bounded stage trace to a decision document.
+    pub fn with_trace(mut self, trace: Value) -> Result<Self, ContractError> {
+        if let Some(obj) = self.value.as_object_mut() {
+            obj.insert("trace".into(), trace);
         }
         Self::from_value(self.value)
     }

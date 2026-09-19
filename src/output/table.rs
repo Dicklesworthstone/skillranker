@@ -47,7 +47,8 @@ pub fn char_width(c: char) -> usize {
         || (0xFF00..=0xFF60).contains(&u) // Fullwidth ASCII variants
         || (0xFFE0..=0xFFE6).contains(&u) // Fullwidth signs
         || (0x1F300..=0x1F9FF).contains(&u) // Misc symbols & Pictographs / Emoji
-        || (0x2600..=0x27BF).contains(&u) // Misc symbols, Dingbats
+        || (0x2600..=0x27BF).contains(&u)
+    // Misc symbols, Dingbats
     {
         return 2;
     }
@@ -141,13 +142,17 @@ pub fn truncate_to_width(s: &str, max_width: usize) -> String {
 /// Renders an `OutputDocument` into a safe, aligned, readable table view.
 pub fn render_table(doc: &OutputDocument) -> String {
     let val = doc.as_value();
-    match doc.kind() {
+    let mut out = match doc.kind() {
         OutputKind::Decision(Decision::Ranked) => render_ranked_table(val),
         OutputKind::Decision(Decision::Explicit) => render_explicit_view(val),
         OutputKind::Decision(Decision::Abstain) => render_abstain_view(val),
         OutputKind::Decision(Decision::Unavailable) => render_unavailable_view(val),
         OutputKind::Artifact(_) => render_artifact_view(val),
+    };
+    if let Some(trace) = val.get("trace") {
+        out.push_str(&render_trace_section(trace));
     }
+    out
 }
 
 fn render_ranked_table(val: &Value) -> String {
@@ -233,14 +238,16 @@ fn render_ranked_table(val: &Value) -> String {
     }
 
     // Omitted mass or warnings footer
-    if let Some(omitted) = val["omitted_rank_mass"].as_f64().or_else(|| val["omitted_mass"].as_f64()) {
-        if omitted > 1e-4 {
-            out.push_str(&format!(
-                "\nNote: {:.4} probability mass omitted outside top {}.\n",
-                omitted,
-                skills.len()
-            ));
-        }
+    if let Some(omitted) = val["omitted_rank_mass"]
+        .as_f64()
+        .or_else(|| val["omitted_mass"].as_f64())
+        && omitted > 1e-4
+    {
+        out.push_str(&format!(
+            "\nNote: {:.4} probability mass omitted outside top {}.\n",
+            omitted,
+            skills.len()
+        ));
     }
 
     out
@@ -294,7 +301,11 @@ fn render_explicit_view(val: &Value) -> String {
         let clean_name = sanitize_terminal_text(s["name"].as_str().unwrap_or(""));
         let c_cmd = pad_to_width(&truncate_to_width(&clean_cmd, cmd_width), cmd_width, true);
         let c_id = pad_to_width(&truncate_to_width(&clean_id, id_width), id_width, true);
-        let c_name = pad_to_width(&truncate_to_width(&clean_name, name_width), name_width, true);
+        let c_name = pad_to_width(
+            &truncate_to_width(&clean_name, name_width),
+            name_width,
+            true,
+        );
         out.push_str(&format!("{c_cmd}  {c_id}  {c_name}  Required\n"));
     }
 
@@ -326,17 +337,17 @@ fn render_unavailable_view(val: &Value) -> String {
         out.push_str(&format!("Hint:       {hint}\n"));
     }
 
-    if let Some(unres) = val["unresolved"].as_array() {
-        if !unres.is_empty() {
-            out.push_str("\nUnresolved Explicit Requirements:\n");
-            out.push_str("  REFERENCE                       REASON\n");
-            out.push_str("  ------------------------------  ----------\n");
-            for u in unres {
-                let reference = sanitize_terminal_text(u["reference"].as_str().unwrap_or(""));
-                let reason = sanitize_terminal_text(u["reason"].as_str().unwrap_or(""));
-                let c_ref = pad_to_width(&truncate_to_width(&reference, 30), 30, true);
-                out.push_str(&format!("  {c_ref}  {reason}\n"));
-            }
+    if let Some(unres) = val["unresolved"].as_array()
+        && !unres.is_empty()
+    {
+        out.push_str("\nUnresolved Explicit Requirements:\n");
+        out.push_str("  REFERENCE                       REASON\n");
+        out.push_str("  ------------------------------  ----------\n");
+        for u in unres {
+            let reference = sanitize_terminal_text(u["reference"].as_str().unwrap_or(""));
+            let reason = sanitize_terminal_text(u["reason"].as_str().unwrap_or(""));
+            let c_ref = pad_to_width(&truncate_to_width(&reference, 30), 30, true);
+            out.push_str(&format!("  {c_ref}  {reason}\n"));
         }
     }
 
@@ -353,6 +364,134 @@ fn render_artifact_view(val: &Value) -> String {
     out.push_str("==================\n");
     out.push_str(&format!("Run Status:  {run_status}\n"));
     out.push_str(&format!("Gate Status: {gate_status}\n"));
+    out
+}
+
+fn render_trace_section(trace_val: &Value) -> String {
+    let mut out = String::new();
+    let empty_vec = Vec::new();
+    let entries = trace_val["entries"].as_array().unwrap_or(&empty_vec);
+    if entries.is_empty() {
+        return out;
+    }
+
+    out.push_str("\nSTAGE TRACE (WHY-NOT / EXPLANATION)\n");
+    out.push_str("===================================\n");
+
+    let mut id_width = 8usize; // min "SKILL ID"
+    let mut reason_width = 6usize; // min "REASON"
+    for e in entries {
+        let clean_id = sanitize_terminal_text(e["skill_id"].as_str().unwrap_or(""));
+        let clean_reason = sanitize_terminal_text(e["reason"].as_str().unwrap_or("-"));
+        id_width = id_width.max(str_width(&clean_id));
+        reason_width = reason_width.max(str_width(&clean_reason));
+    }
+    id_width = id_width.min(24);
+    reason_width = reason_width.min(24);
+
+    let stage_width = 16usize; // "quill-admission" is 15
+    let status_width = 15usize; // "not-in-snapshot" is 15
+    let val_width = 10usize;
+    let thresh_width = 10usize;
+
+    let h_id = pad_to_width("SKILL ID", id_width, true);
+    let h_stage = pad_to_width("STAGE", stage_width, true);
+    let h_status = pad_to_width("STATUS", status_width, true);
+    let h_val = pad_to_width("VALUE", val_width, false);
+    let h_thresh = pad_to_width("THRESHOLD", thresh_width, false);
+    let h_reason = pad_to_width("REASON", reason_width, true);
+
+    out.push_str(&format!(
+        "{h_id}  {h_stage}  {h_status}  {h_val}  {h_thresh}  {h_reason}\n"
+    ));
+    out.push_str(&format!(
+        "{}  {}  {}  {}  {}  {}\n",
+        "-".repeat(id_width),
+        "-".repeat(stage_width),
+        "-".repeat(status_width),
+        "-".repeat(val_width),
+        "-".repeat(thresh_width),
+        "-".repeat(reason_width)
+    ));
+
+    let mut recovery_hints = Vec::new();
+
+    for e in entries {
+        let clean_id = sanitize_terminal_text(e["skill_id"].as_str().unwrap_or(""));
+        let clean_stage = sanitize_terminal_text(e["stage"].as_str().unwrap_or(""));
+        let clean_status = sanitize_terminal_text(e["status"].as_str().unwrap_or(""));
+        let clean_reason = e["reason"]
+            .as_str()
+            .map(sanitize_terminal_text)
+            .unwrap_or_else(|| "-".into());
+
+        let val_str = e["value"]
+            .as_f64()
+            .map(|v| format!("{v:.6}"))
+            .unwrap_or_else(|| "-".into());
+        let thresh_str = e["threshold"]
+            .as_f64()
+            .map(|t| format!("{t:.6}"))
+            .unwrap_or_else(|| "-".into());
+
+        if let Some(hint) = e["hint"].as_str() {
+            let clean_hint = sanitize_terminal_text(hint);
+            if !recovery_hints.contains(&clean_hint) {
+                recovery_hints.push(clean_hint);
+            }
+        }
+
+        let c_id = pad_to_width(&truncate_to_width(&clean_id, id_width), id_width, true);
+        let c_stage = pad_to_width(
+            &truncate_to_width(&clean_stage, stage_width),
+            stage_width,
+            true,
+        );
+        let c_status = pad_to_width(
+            &truncate_to_width(&clean_status, status_width),
+            status_width,
+            true,
+        );
+        let c_val = pad_to_width(&val_str, val_width, false);
+        let c_thresh = pad_to_width(&thresh_str, thresh_width, false);
+        let c_reason = pad_to_width(
+            &truncate_to_width(&clean_reason, reason_width),
+            reason_width,
+            true,
+        );
+
+        out.push_str(&format!(
+            "{c_id}  {c_stage}  {c_status}  {c_val}  {c_thresh}  {c_reason}\n"
+        ));
+    }
+
+    if !recovery_hints.is_empty() {
+        out.push_str("\nRecovery Hints:\n");
+        for hint in recovery_hints {
+            let desc = match hint.as_str() {
+                "inspect-roster" => {
+                    "Inspect roster discovery paths and SKILL.md frontmatter syntax."
+                }
+                "inspect-precedence" => {
+                    "Inspect roster precedence: a higher-priority skill shadows this binding."
+                }
+                "verify-adapter-visibility" => {
+                    "Verify adapter visibility contract for this harness."
+                }
+                "request-explicitly" => {
+                    "Skill is manual-only: request explicitly via --require-skill or user prompt."
+                }
+                "check-invocation-restrictions" => {
+                    "Check invocation restrictions: agent invocation is forbidden."
+                }
+                "review-exclusions" => "Review local policy exclusions: skill is in excluded list.",
+                "refine-request" => "Refine user prompt or task anchor to match skill intent.",
+                _ => "Inspect configuration and candidate requirements.",
+            };
+            out.push_str(&format!("  * {hint}: {desc}\n"));
+        }
+    }
+
     out
 }
 
@@ -401,7 +540,10 @@ mod tests {
         assert_eq!(sanitize_terminal_text(malicious_osc), "Click Me");
 
         let cursor_tampering = "\x1b[2J\x1b[HSystem Compromised";
-        assert_eq!(sanitize_terminal_text(cursor_tampering), "System Compromised");
+        assert_eq!(
+            sanitize_terminal_text(cursor_tampering),
+            "System Compromised"
+        );
 
         let tabs_and_controls = "Skill\t1\x00\x07Name";
         assert_eq!(sanitize_terminal_text(tabs_and_controls), "Skill 1  Name");
