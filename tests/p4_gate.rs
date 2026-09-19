@@ -10,7 +10,7 @@
 //! fenced coordination response cache satisfy all foundational invariants.
 
 use asupersync::Cx;
-use serde_json::{Value, json};
+use serde_json::json;
 use skillranker::cache::{
     CachedResponseEntry, CoordinationKey, CoordinationPolicy, LeaseAcquisition, LeaseCoordinator,
     RequestFingerprint, RequestStage, SqliteLeaseCoordinator,
@@ -343,9 +343,11 @@ fn all_p4_invariants_verified() {
         .expect("missing required skill produces structured failure document");
     assert_eq!(err_doc.exit_code(), CliExit::Roster);
     let val = err_doc.as_value();
+    assert_eq!(val["decision"], "unavailable");
     assert_eq!(val["error"]["kind"], "unresolved-explicit");
-    let unresolved = val["error"]["unresolved"].as_array().expect("unresolved array");
+    let unresolved = val["unresolved"].as_array().expect("unresolved array");
     assert_eq!(unresolved[0]["reference"], "non_existent_skill");
+    assert_eq!(unresolved[0]["reason"], "missing");
 
     // =========================================================================
     // Invariant 3: Two-Stage Jev Ranking with Mock Transport
