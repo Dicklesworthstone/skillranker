@@ -911,6 +911,17 @@ async fn rank_once(
                         )
                     })?;
                 }
+                let dependencies =
+                    roster::capture_dependencies(&roster, std::iter::empty(), clock)?;
+                validate_advisory_publication(
+                    &roster_source,
+                    &dependencies,
+                    &config_files,
+                    &resolved_config,
+                    &current_receipt,
+                    cx,
+                    clock,
+                )?;
                 return Ok(doc);
             }
             Verdict::Unavailable(reason) => {
@@ -997,6 +1008,20 @@ async fn rank_once(
                 )
             })?;
         }
+        let dependencies = roster::capture_dependencies(
+            &roster,
+            initial_advisory.iter().map(|skill| &skill.binding.id),
+            clock,
+        )?;
+        validate_advisory_publication(
+            &roster_source,
+            &dependencies,
+            &config_files,
+            &resolved_config,
+            &current_receipt,
+            cx,
+            clock,
+        )?;
         return Ok(doc);
     }
 
@@ -1437,29 +1462,6 @@ async fn rank_once(
 
     let shortlisted = match &wide_outcome.decision {
         WideDecision::LowNeed => {
-            // Revalidate policy before emitting LowNeed abstention
-            let (refreshed, reval) = config_files.refresh(
-                clock,
-                &resolved_config,
-                &current_receipt,
-                PolicyBoundary::CliPublication(PublicationKind::Advisory),
-            )?;
-            if let Revalidation::Superseded(fields) = reval {
-                return Err(failure(
-                    3,
-                    "superseded",
-                    format!("Policy changed during evaluation: {fields:?}"),
-                ));
-            }
-            if let Revalidation::InvalidConfiguration = reval {
-                return Err(failure(
-                    2,
-                    "invalid-configuration",
-                    "Configuration became invalid before publication",
-                ));
-            }
-            let _ = refreshed;
-
             let mut doc = build_abstain_document(
                 "low-need",
                 &normalized_context,
@@ -1493,6 +1495,15 @@ async fn rank_once(
                     )
                 })?;
             }
+            validate_advisory_publication(
+                &roster_source,
+                &dependencies,
+                &config_files,
+                &resolved_config,
+                &current_receipt,
+                cx,
+                clock,
+            )?;
             return Ok(doc);
         }
         WideDecision::Shortlist(list) => list.clone(),
@@ -1637,6 +1648,15 @@ async fn rank_once(
                         )
                     })?;
                 }
+                validate_advisory_publication(
+                    &roster_source,
+                    &dependencies,
+                    &config_files,
+                    &resolved_config,
+                    &current_receipt,
+                    cx,
+                    clock,
+                )?;
                 return Ok(doc);
             }
             Verdict::Unavailable(reason) => {
@@ -1673,37 +1693,6 @@ async fn rank_once(
             format!("Scoring failed: {e:?}"),
         )
     })?;
-
-    // 15. Final Revalidation Before Publication
-    // a. Roster dependencies
-    roster_source.validate(&dependencies, cx, clock)?;
-
-    // b. Policy receipt revalidation
-    let (refreshed, reval) = config_files.refresh(
-        clock,
-        &resolved_config,
-        &current_receipt,
-        PolicyBoundary::CliPublication(PublicationKind::Advisory),
-    )?;
-    if let Revalidation::Superseded(fields) = reval {
-        return Err(failure(
-            3,
-            "superseded",
-            format!("Policy superseded before publication: {fields:?}"),
-        ));
-    }
-    if let Revalidation::InvalidConfiguration = reval {
-        return Err(failure(
-            2,
-            "invalid-configuration",
-            "Configuration became invalid before publication",
-        ));
-    }
-    let _ = refreshed;
-
-    // Check runtime publication admission (deadline cleanup reserve check)
-    admit_publication(clock.deadline(), clock.now(), clock.now())
-        .map_err(|e| failure(6, "timeout", format!("Runtime suppressed late result: {e}")))?;
 
     // 16. Build Ranked OutputDocument
     let mut doc = build_ranked_document(
@@ -1744,7 +1733,62 @@ async fn rank_once(
         })?;
     }
 
+    validate_advisory_publication(
+        &roster_source,
+        &dependencies,
+        &config_files,
+        &resolved_config,
+        &current_receipt,
+        cx,
+        clock,
+    )?;
     Ok(doc)
+}
+
+/// Revalidate every advisory outcome, including a negative recommendation.
+/// Cache reuse never bypasses this boundary: its responses still feed the same
+/// evaluation paths. Run after rendering so trace work shares the deadline too.
+fn validate_advisory_publication(
+    source: &roster::Source<'_>,
+    dependencies: &crate::roster::revalidation::Dependencies,
+    config_files: &ConfigFiles,
+    config: &ResolvedConfig,
+    receipt: &PolicyReceipt,
+    cx: &Cx,
+    clock: &EntryClock,
+) -> Result<(), PipelineFailure> {
+    source.validate(dependencies, cx, clock)?;
+    let (_, revalidation) = config_files.refresh(
+        clock,
+        config,
+        receipt,
+        PolicyBoundary::CliPublication(PublicationKind::Advisory),
+    )?;
+    match revalidation {
+        Revalidation::Superseded(fields) => {
+            return Err(failure(
+                3,
+                "superseded",
+                format!("Policy superseded before publication: {fields:?}"),
+            ));
+        }
+        Revalidation::InvalidConfiguration => {
+            return Err(failure(
+                2,
+                "invalid-configuration",
+                "Configuration became invalid before publication",
+            ));
+        }
+        _ => {}
+    }
+    admit_publication(clock.deadline(), clock.now(), clock.now()).map_err(|error| {
+        failure(
+            6,
+            "timeout",
+            format!("Runtime suppressed late result: {error}"),
+        )
+    })?;
+    Ok(())
 }
 
 /// Roster coverage gaps as bounded warnings: records excluded while resolving

@@ -1662,10 +1662,17 @@ fn abstention_publication_rejects_changed_manifest() {
 fn abstention_publication_rejects_changes_outside_the_shortlist() {
     for response in ["none", "low-fit"] {
         let f = Fixture::new(&format!("{CONSENT}[ranking]\ntop=1\nshortlist=1\n"));
-        // With M=1, beta is outside the rerank; it was still a wide candidate.
-        let file = f.skill_file("beta");
-        let changed =
-            "---\nname: beta\ndescription: Changed outside the shortlist\n---\nNew content.\n";
+        // The fixture favors the first option, ordered by opaque stable ID.
+        // Choose the other skill and verify its absence in the wire request.
+        let omitted = if skill_id(&f, "alpha") < skill_id(&f, "beta") {
+            "beta"
+        } else {
+            "alpha"
+        };
+        let file = f.skill_file(omitted);
+        let changed = format!(
+            "---\nname: {omitted}\ndescription: Changed outside the shortlist\n---\nNew content.\n"
+        );
         let provider = Provider::start(
             &f,
             &format!("{response}+write-on-rerank"),
@@ -1679,7 +1686,7 @@ fn abstention_publication_rejects_changes_outside_the_shortlist() {
         assert!(
             !rerank["questions"]["rerank"]["criteria"]
                 .to_string()
-                .contains("beta")
+                .contains(omitted)
         );
         let value = unavailable(outcome, 5, "roster-changed");
         assert_eq!(usage(&value), (2, 2, 220, 55));
@@ -1751,4 +1758,60 @@ fn abstention_publication_reapplies_current_policy_to_cached_responses() {
     assert_eq!(updated["cache"]["hit"], true);
     assert_eq!(usage(&updated), (0, 0, 0, 0));
     assert_eq!(stages(&provider.finish()), ["wide", "rerank"]);
+}
+
+#[test]
+fn abstention_publication_rejects_changed_membership_and_restrictions() {
+    for response in ["low-need", "none"] {
+        for added in [false, true] {
+            let f = Fixture::new(CONSENT);
+            let name = if added { "gamma" } else { "alpha" };
+            let file = f.skill_file(name);
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            let changed = format!(
+                "---\nname: {name}\ndescription: Rust debugging\ndisable-model-invocation: true\n---\nBody.\n"
+            );
+            let stage = if response == "low-need" {
+                "wide"
+            } else {
+                "rerank"
+            };
+            let provider = Provider::start(
+                &f,
+                &format!("{response}+write-on-{stage}"),
+                &[file.as_os_str(), changed.as_ref()],
+            );
+            let outcome = rank(&f, &provider, TASK, 10_000);
+            assert_eq!(provider.finish().len(), if stage == "wide" { 1 } else { 2 });
+            unavailable(outcome, 5, "roster-changed");
+        }
+    }
+}
+
+#[test]
+fn abstention_publication_rejects_invalid_policy_after_rerank() {
+    let f = Fixture::new(CONSENT);
+    let config = f.user_config();
+    let provider = Provider::start(
+        &f,
+        "none+write-on-rerank",
+        &[config.as_os_str(), "[ranking".as_ref()],
+    );
+    let outcome = rank(&f, &provider, TASK, 10_000);
+    assert_eq!(stages(&provider.finish()), ["wide", "rerank"]);
+    unavailable(outcome, 2, "invalid-configuration");
+}
+
+#[test]
+fn abstention_publication_preserves_local_all_excluded_without_requests() {
+    let f = Fixture::new(&format!(
+        "{CONSENT}[ranking]\nexclude_skills=[\"alpha\",\"beta\"]\n"
+    ));
+    let provider = Provider::start(&f, "useful", &[]);
+    let mut args = f.args(TASK);
+    args.explain = true;
+    let value = rank_args(&provider, args, 10_000).expect("local abstention");
+    assert_eq!(value["decision"], "abstain", "{value}");
+    assert_eq!(usage(&value), (0, 0, 0, 0));
+    assert!(provider.finish().is_empty(), "exclusions bypass Jev");
 }
