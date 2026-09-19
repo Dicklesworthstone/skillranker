@@ -6,7 +6,7 @@
 //! 2. Lease ownership is tracked via a unique `OwnerToken` and strictly monotonic `FencingGeneration`.
 //! 3. An expired leader cannot publish after a successor acquires the lease (superseded results become quiet fallback).
 //! 4. Follower wait is strictly bounded by remaining deadline, returning quiet fallback on timeout.
-//! 5. SQLite/coordination write transactions are short (< 1ms) and never held across HTTP calls.
+//! 5. SQLite/coordination write transactions cover bounded local work, never HTTP calls.
 //! 6. Coordination state stores NO response bodies; `--no-cache` disables cross-process response sharing.
 //! 7. Request owner alone records provider attempts/usage; followers incur zero new requests and zero new tokens.
 //! 8. Stage-aware coordination distinguishes Wide and Rerank stages.
@@ -692,8 +692,8 @@ fn open_qualified_connection_with_budget(
 /// SQLite-backed lease coordinator for cross-process coordination.
 ///
 /// Guarantees:
-/// 1. Short transactions: SQLite write lock is held only for atomic lease check/insert/update (~1ms),
-///    NEVER across an HTTP request.
+/// 1. SQLite write locks cover lease check/insert/update and bounded cache
+///    publication callbacks, NEVER an HTTP request.
 /// 2. Zero response bodies: table `sr_coordination_leases` contains only tokens, generation, and timestamps.
 pub struct SqliteLeaseCoordinator {
     db_path: PathBuf,
