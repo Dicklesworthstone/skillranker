@@ -135,6 +135,7 @@ pub enum StoreError {
     StoreReplaced,
     StaleGeneration,
     LeaseSuperseded,
+    LeaseUnavailable,
     GenerationExhausted,
     Quota,
     InsufficientSpace,
@@ -163,6 +164,7 @@ impl fmt::Display for StoreError {
             Self::StoreReplaced => "cache directory, file or incarnation changed",
             Self::StaleGeneration => "cache generation changed before mutation",
             Self::LeaseSuperseded => "response publisher no longer owns its lease",
+            Self::LeaseUnavailable => "response publication could not lock its lease",
             Self::GenerationExhausted => "cache generation cannot be advanced",
             Self::Quota => "cache recording capacity is exhausted; maintenance reserve retained",
             Self::InsufficientSpace => {
@@ -764,15 +766,12 @@ impl CacheStore {
                 };
                 if let Some((path, leader)) = fence {
                     let coordinator = crate::cache::SqliteLeaseCoordinator::open(path)
-                        .map_err(|_| StoreError::Io)?;
+                        .map_err(|_| StoreError::LeaseUnavailable)?;
                     let busy = remaining_busy_wait(&clock, Duration::from_millis(MAX_BUSY_WAIT_MS))
                         .map_err(StoreError::Runtime)?;
                     coordinator
                         .with_active_lease(&leader, busy, cache_wall_clock_ms, write)
-                        .map_err(|e| match e {
-                            crate::cache::CoordinationError::StorageBusy => StoreError::Busy,
-                            _ => StoreError::Io,
-                        })?
+                        .map_err(|_| StoreError::LeaseUnavailable)?
                         .ok_or(StoreError::LeaseSuperseded)?
                 } else {
                     write()

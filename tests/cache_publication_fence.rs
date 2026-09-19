@@ -216,3 +216,51 @@ fn expired_owner_does_not_create_a_cache_response() {
         .unwrap();
     assert_eq!(rows, 0);
 }
+
+#[test]
+fn optional_cache_refusal_and_unavailable_lease_are_distinct() {
+    let dir = directory();
+    let path = dir.join("leases.sqlite3");
+    let coordinator = SqliteLeaseCoordinator::open(&path).unwrap();
+    let leader = leading(
+        coordinator
+            .acquire(
+                CoordinationKey::from_bytes([6; 32]),
+                now(),
+                &CoordinationPolicy::default(),
+            )
+            .unwrap(),
+    );
+    let invocation = ProcessInvocation::enter().unwrap();
+    let cx = invocation.request_cx().unwrap();
+    let mut oversized = entry(b"not-written");
+    oversized.response_bytes = vec![0; skillranker::jev::codec::MAX_RESPONSE_BYTES + 1];
+    let error = open(&dir)
+        .record_response_fenced(
+            &invocation,
+            &cx,
+            [3; 32],
+            oversized,
+            (path.clone(), leader.clone()),
+        )
+        .unwrap_err();
+    assert_eq!(error, StoreError::Quota);
+    assert!(invocation.shutdown());
+    let lock = rusqlite::Connection::open(&path).unwrap();
+    lock.execute_batch("BEGIN IMMEDIATE").unwrap();
+    assert_eq!(
+        write(open(&dir), &path, &leader, b"blocked").unwrap_err(),
+        StoreError::LeaseUnavailable
+    );
+    lock.execute_batch("ROLLBACK").unwrap();
+    let cache = rusqlite::Connection::open(dir.join("cache.sqlite3")).unwrap();
+    assert_eq!(
+        cache
+            .query_row("SELECT count(*) FROM sr_cache_response", [], |r| r
+                .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    let stored = write(open(&dir), &path, &leader, b"healthy").unwrap();
+    assert_eq!(read(stored), b"healthy");
+}

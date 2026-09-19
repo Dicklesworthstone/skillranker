@@ -181,6 +181,7 @@ struct Progress {
     admitted: Option<Admitted>,
     evaluated: Evaluated,
     metrics: ExecutionMetrics,
+    cache_recording_failures: u64,
     /// A single-flight lease this invocation leads; completed on every path.
     lease: Option<(PathBuf, LeaderContext)>,
 }
@@ -232,25 +233,37 @@ pub async fn execute_pipeline(
     let result = rank_once(invocation, clock, cx, args, transport, &mut progress).await;
     // Release a led lease on every path. Followers then find the recorded
     // pair, or send themselves when this run recorded nothing.
-    let mut completion_failed = false;
-    if let Some((leases, leader)) = progress.lease.take()
-        && !matches!(
-            persistent::complete(invocation, cx, &leases, &leader),
-            Some(crate::cache::PublishOutcome::Published)
-        )
-    {
-        completion_failed = true;
+    let mut completion_superseded = false;
+    let mut completion_unconfirmed = false;
+    if let Some((leases, leader)) = progress.lease.take() {
+        match persistent::complete(invocation, cx, &leases, &leader) {
+            Some(crate::cache::PublishOutcome::Superseded { .. }) => completion_superseded = true,
+            Some(crate::cache::PublishOutcome::Published) => {}
+            None => completion_unconfirmed = true,
+        }
     }
-    if completion_failed && result.is_ok() {
-        return Err(failure(
+    // An optional coordination failure does not prove a successor exists.
+    // Cache writes were already fenced; do not discard a valid answer merely
+    // because completing that lease is busy or unavailable.
+    let result = if completion_superseded && result.is_ok() {
+        Err(failure(
             6,
             "timeout",
-            "Leader ownership could not be confirmed at lease completion",
-        ));
-    }
+            "Leader was superseded by successor before lease completion",
+        ))
+    } else {
+        result
+    };
     // Include final validation and lease release in reported latency. A lease
     // completion is a bounded storage effect, so check publication again after
     // it rather than trusting the earlier check inside rank_once.
+    let result = result.and_then(|doc| {
+        with_storage_warnings(
+            doc,
+            progress.cache_recording_failures,
+            completion_unconfirmed,
+        )
+    });
     let result = result.and_then(|mut doc| {
         if matches!(
             doc.kind(),
@@ -288,11 +301,68 @@ pub async fn execute_pipeline(
                 };
                 unavailable_document(&failure, admitted, &evaluated, clock.now().as_millis())
                     .ok_or(failure)
+                    .and_then(|doc| {
+                        with_storage_warnings(
+                            doc,
+                            progress.cache_recording_failures,
+                            completion_unconfirmed,
+                        )
+                    })
             }
             None => Err(failure),
         },
         result => result,
     }
+}
+
+fn with_storage_warnings(
+    doc: OutputDocument,
+    cache_recording_failures: u64,
+    completion_unconfirmed: bool,
+) -> Result<OutputDocument, PipelineFailure> {
+    if cache_recording_failures == 0 && !completion_unconfirmed {
+        return Ok(doc);
+    }
+    let mut value = doc.as_value().clone();
+    let Some(warnings) = value.get_mut("warnings").and_then(Value::as_array_mut) else {
+        return Ok(doc);
+    };
+    let mut omitted = 0;
+    for (kind, count, message) in [
+        (
+            "cache-recording-unavailable",
+            cache_recording_failures,
+            "Optional response cache recording was skipped",
+        ),
+        (
+            "coordination-completion-unconfirmed",
+            u64::from(completion_unconfirmed),
+            "Optional lease completion could not be confirmed",
+        ),
+    ] {
+        if count == 0 {
+            continue;
+        }
+        if warnings.len() < crate::output::MAX_WARNING_DETAILS {
+            warnings.push(json!({"kind":kind,"count":count,"message":message}));
+        } else {
+            omitted += 1;
+        }
+    }
+    value["warnings_omitted"] = json!(
+        value["warnings_omitted"]
+            .as_u64()
+            .unwrap_or(0)
+            .saturating_add(omitted)
+    );
+    let doc = OutputDocument::from_value(value).map_err(|_| {
+        failure(
+            5,
+            "contract-violation",
+            "Optional storage warning is invalid",
+        )
+    })?;
+    Ok(doc)
 }
 
 /// A full unavailable decision for a typed failure after admission, or `None`
@@ -1621,7 +1691,7 @@ async fn rank_once(
             )
         })?;
     if wide_fresh {
-        persistent::record(
+        if !persistent::record(
             &mut store,
             invocation,
             cx,
@@ -1633,7 +1703,9 @@ async fn rank_once(
                 active_model,
             ),
             progress.lease.as_ref(),
-        )?;
+        )? {
+            progress.cache_recording_failures += 1;
+        }
     }
     progress.evaluated.wide_returned = Some(wide_response.returned_model.clone());
     progress.evaluated.needs_skill = Some(wide_outcome.needs_skill);
@@ -1768,7 +1840,7 @@ async fn rank_once(
             rerank_builder.bytes(),
             rerank::RERANK_POLICY_VERSION,
         );
-        persistent::record(
+        if !persistent::record(
             &mut store,
             invocation,
             cx,
@@ -1780,7 +1852,9 @@ async fn rank_once(
                 active_model,
             ),
             progress.lease.as_ref(),
-        )?;
+        )? {
+            progress.cache_recording_failures += 1;
+        }
     }
     progress.evaluated.rerank_returned = Some(rerank_response.returned_model.clone());
     progress.evaluated.choice_confidence = Some(rerank_outcome.choice_confidence);
@@ -2382,9 +2456,9 @@ mod persistent {
         namespace: [u8; 32],
         entry: CachedResponseEntry,
         fence: Option<&(std::path::PathBuf, LeaderContext)>,
-    ) -> Result<(), super::PipelineFailure> {
+    ) -> Result<bool, super::PipelineFailure> {
         let Some(Store(store)) = slot.take() else {
-            return Ok(());
+            return Ok(true);
         };
         let result = match fence {
             Some(fence) => {
@@ -2397,16 +2471,16 @@ mod persistent {
         };
         match result {
             Ok(store) => *slot = Some(Store(store)),
-            Err(_) if fence.is_some() => {
+            Err(StoreError::LeaseSuperseded) => {
                 return Err(super::failure(
                     6,
                     "timeout",
                     "Leader cache publication could not verify and retain lease ownership",
                 ));
             }
-            Err(_) => {}
+            Err(_) => return Ok(false),
         }
-        Ok(())
+        Ok(true)
     }
 }
 
@@ -2502,8 +2576,8 @@ mod persistent {
         _: [u8; 32],
         _: CachedResponseEntry,
         _: Option<&(std::path::PathBuf, LeaderContext)>,
-    ) -> Result<(), super::PipelineFailure> {
-        Ok(())
+    ) -> Result<bool, super::PipelineFailure> {
+        Ok(true)
     }
 }
 

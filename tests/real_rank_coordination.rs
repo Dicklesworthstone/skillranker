@@ -542,3 +542,121 @@ fn no_cache_and_no_persist_preserve_documented_effects() {
     let served = provider.finish();
     assert_eq!(stages(&served), ["wide", "rerank"]);
 }
+
+#[test]
+fn cache_generation_change_during_provider_work_keeps_valid_answer() {
+    let f = Fixture::new(CONSENT);
+    f.claude_session("cache-generation-changed", TASK);
+    let marker = f.root.join("cache-change-wide");
+    let provider = Provider::start(
+        &f,
+        "slow-wide+write-on-wide",
+        &[marker.as_os_str(), "2".as_ref()],
+    );
+    let mut command = f.sr_command(&provider, &["--timeout-ms", "12000"]);
+    let child = OwnedRank(Some(
+        command
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    ));
+    wait_for_marker(&marker);
+    let cache = rusqlite::Connection::open(f.cache_dir().join("sr/cache.sqlite3")).unwrap();
+    assert_eq!(
+        cache
+            .execute("UPDATE sr_cache_meta SET generation=generation+1", [])
+            .unwrap(),
+        1
+    );
+    let output = child.wait();
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let doc: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(doc["decision"], "ranked");
+    assert_eq!(doc["usage"]["requests"], 2);
+    assert!(
+        doc["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|w| w["kind"] == "cache-recording-unavailable")
+    );
+    let rows: i64 = cache
+        .query_row("SELECT count(*) FROM sr_cache_response", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(
+        rows, 0,
+        "stale store generation must not record either response"
+    );
+    assert_eq!(stages(&provider.finish()), ["wide", "rerank"]);
+}
+
+#[test]
+fn busy_optional_lease_completion_keeps_answer_without_claiming_completion() {
+    let f = Fixture::new(CONSENT);
+    f.claude_session("busy-completion", TASK);
+    let marker = f.root.join("busy-rerank");
+    let provider = Provider::start(
+        &f,
+        "late-rerank+write-on-rerank",
+        &[marker.as_os_str(), "2".as_ref()],
+    );
+    let mut command = f.sr_command(&provider, &["--timeout-ms", "12000"]);
+    let child = OwnedRank(Some(
+        command
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    ));
+    wait_for_marker(&marker);
+    let lease = rusqlite::Connection::open(f.cache_dir().join("sr/leases.sqlite3")).unwrap();
+    lease.execute_batch("BEGIN IMMEDIATE").unwrap();
+    let output = child.wait();
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let doc: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(doc["decision"], "ranked");
+    assert_eq!(doc["usage"]["requests"], 2);
+    for kind in [
+        "cache-recording-unavailable",
+        "coordination-completion-unconfirmed",
+    ] {
+        assert!(
+            doc["warnings"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|w| w["kind"] == kind)
+        );
+    }
+    assert_eq!(
+        lease
+            .query_row("SELECT is_completed FROM sr_coordination_leases", [], |r| r
+                .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    lease.execute_batch("ROLLBACK").unwrap();
+    let cache = rusqlite::Connection::open(f.cache_dir().join("sr/cache.sqlite3")).unwrap();
+    assert_eq!(
+        cache
+            .query_row(
+                "SELECT count(*) FROM sr_cache_response WHERE stage='rerank'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+        0
+    );
+    assert_eq!(stages(&provider.finish()), ["wide", "rerank"]);
+}
