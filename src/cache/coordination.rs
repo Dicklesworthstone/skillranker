@@ -36,6 +36,7 @@ pub const DEFAULT_LEASE_TTL_MS: u64 = 5_000;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CoordinationError {
     LockPoisoned,
+    StorageBusy,
     StorageError(String),
     CacheError(CacheError),
     InvalidTimestamp,
@@ -45,6 +46,7 @@ impl fmt::Display for CoordinationError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::LockPoisoned => f.write_str("coordination synchronization lock was poisoned"),
+            Self::StorageBusy => f.write_str("coordination storage is busy"),
             Self::StorageError(e) => write!(f, "coordination storage error: {e}"),
             Self::CacheError(e) => write!(f, "response cache error: {e}"),
             Self::InvalidTimestamp => {
@@ -64,6 +66,12 @@ impl From<CacheError> for CoordinationError {
 
 impl From<rusqlite::Error> for CoordinationError {
     fn from(err: rusqlite::Error) -> Self {
+        if matches!(
+            err.sqlite_error_code(),
+            Some(rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked)
+        ) {
+            return Self::StorageBusy;
+        }
         Self::StorageError(err.to_string())
     }
 }
@@ -571,6 +579,13 @@ fn validate_sqlite_path(path: &Path) -> Result<(), CoordinationError> {
 }
 
 fn open_qualified_connection(path: &Path) -> Result<Connection, CoordinationError> {
+    open_qualified_connection_with_budget(path, Duration::from_millis(25))
+}
+
+fn open_qualified_connection_with_budget(
+    path: &Path,
+    busy_budget: Duration,
+) -> Result<Connection, CoordinationError> {
     crate::storage::linked_engine().map_err(|e| CoordinationError::StorageError(e.to_string()))?;
     validate_sqlite_path(path)?;
 
@@ -580,7 +595,7 @@ fn open_qualified_connection(path: &Path) -> Result<Connection, CoordinationErro
         | OpenFlags::SQLITE_OPEN_NOFOLLOW;
 
     let conn = Connection::open_with_flags(path, flags)?;
-    conn.busy_timeout(Duration::from_millis(25))?;
+    conn.busy_timeout(busy_budget.min(Duration::from_millis(25)))?;
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.pragma_update(None, "synchronous", "NORMAL")?;
     conn.pragma_update(None, "temp_store", "MEMORY")?;
@@ -875,7 +890,17 @@ impl LeaseCoordinator for SqliteLeaseCoordinator {
     }
 
     fn check_lease(&self, key: CoordinationKey) -> Result<Option<LeaseRecord>, CoordinationError> {
-        let conn = open_qualified_connection(&self.db_path)?;
+        self.check_lease_with_budget(key, Duration::from_millis(25))
+    }
+}
+
+impl SqliteLeaseCoordinator {
+    fn check_lease_with_budget(
+        &self,
+        key: CoordinationKey,
+        busy_budget: Duration,
+    ) -> Result<Option<LeaseRecord>, CoordinationError> {
+        let conn = open_qualified_connection_with_budget(&self.db_path, busy_budget)?;
         let row: Option<(Vec<u8>, i64, i64, i64, String, i64)> = conn
             .query_row(
                 "SELECT owner_token, fencing_generation, acquired_at_unix_ms, expires_at_unix_ms, attempt_id, is_completed
@@ -923,7 +948,25 @@ impl SqliteLeaseCoordinator {
                 return Ok(FollowerResolution::DeadlineExceeded);
             }
 
-            let lease = self.check_lease(key)?;
+            let lease = match self.check_lease_with_budget(
+                key,
+                Duration::from_millis(deadline_unix_ms.saturating_sub(now)),
+            ) {
+                Ok(lease) => lease,
+                Err(CoordinationError::StorageBusy) => {
+                    let remaining = deadline_unix_ms.saturating_sub(now_fn());
+                    if remaining == 0 {
+                        return Ok(FollowerResolution::DeadlineExceeded);
+                    }
+                    std::thread::sleep(poll_interval.min(Duration::from_millis(remaining)));
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
+            let now = now_fn();
+            if now >= deadline_unix_ms {
+                return Ok(FollowerResolution::DeadlineExceeded);
+            }
             let Some(record) = lease else {
                 return Ok(FollowerResolution::LeaderFailed);
             };
@@ -1255,6 +1298,7 @@ impl SingleFlightCoordinator {
         C: ResponseCache + ?Sized,
         F: FnOnce(&str) -> Result<(CachedResponseEntry, Usage), String>,
     {
+        check_request_deadline(query, now_fn())?;
         let coordinator: &dyn LeaseCoordinator = if let Some(sql) = &self.sqlite {
             sql
         } else {
@@ -1266,6 +1310,8 @@ impl SingleFlightCoordinator {
             CoordinationError::StorageError(format!("provider execution failed: {e}"))
         })?;
 
+        check_request_deadline(query, now_fn())?;
+
         // Put in cache BEFORE marking completed to eliminate completion/body race
         if self.policy.cache_enabled {
             cache
@@ -1274,12 +1320,15 @@ impl SingleFlightCoordinator {
         }
 
         let finish_now = now_fn();
+        check_request_deadline(query, finish_now)?;
         let outcome = coordinator.complete(
             coord_key,
             leader.owner_token,
             leader.fencing_generation,
             finish_now,
         )?;
+
+        check_request_deadline(query, now_fn())?;
 
         match outcome {
             PublishOutcome::Published => Ok(CoordinatedResponse {
@@ -1317,6 +1366,7 @@ impl SingleFlightCoordinator {
         let coord_key =
             CoordinationKey::compute(query.key, query.namespace, query.request_fingerprint);
         let now = now_fn();
+        check_request_deadline(query, now)?;
 
         // 1. Initial cache check
         if self.policy.cache_enabled {
@@ -1329,6 +1379,7 @@ impl SingleFlightCoordinator {
                 active_model: query.active_model,
                 active_revision: query.active_revision,
             })?;
+            check_request_deadline(query, now_fn())?;
             if let CacheLookupResult::Hit { entry, .. } = lookup {
                 return Ok(CoordinatedResponse {
                     entry,
@@ -1349,7 +1400,10 @@ impl SingleFlightCoordinator {
         };
 
         // 3. Acquire lease
-        let acq = coordinator.acquire(coord_key, now, &self.policy)?;
+        let acquire_now = now_fn();
+        check_request_deadline(query, acquire_now)?;
+        let acq = coordinator.acquire(coord_key, acquire_now, &self.policy)?;
+        check_request_deadline(query, now_fn())?;
         match acq {
             LeaseAcquisition::AlreadyCompleted => {
                 if self.policy.cache_enabled {
@@ -1362,6 +1416,7 @@ impl SingleFlightCoordinator {
                         active_model: query.active_model,
                         active_revision: query.active_revision,
                     })?;
+                    check_request_deadline(query, now_fn())?;
                     if let CacheLookupResult::Hit { entry, .. } = lookup {
                         return Ok(CoordinatedResponse {
                             entry,
@@ -1426,6 +1481,7 @@ impl SingleFlightCoordinator {
                             active_model: query.active_model,
                             active_revision: query.active_revision,
                         })?;
+                        check_request_deadline(query, now_fn())?;
                         if let CacheLookupResult::Hit { entry, .. } = lookup {
                             Ok(CoordinatedResponse {
                                 entry,
@@ -1465,6 +1521,18 @@ impl SingleFlightCoordinator {
             }
         }
     }
+}
+
+fn check_request_deadline(
+    query: &CoordinateRequestQuery<'_>,
+    now_unix_ms: u64,
+) -> Result<(), CoordinationError> {
+    if now_unix_ms >= query.deadline_unix_ms {
+        return Err(CoordinationError::StorageError(
+            "coordinated request deadline exceeded; quiet fallback".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 /// Final outcome of a coordinated request execution.

@@ -27,12 +27,76 @@ use skillranker::cache::{
 use skillranker::identity::{ContentHash, HarnessId, SessionId, SkillId};
 use skillranker::jev::codec::Usage;
 use std::fs::DirBuilder;
+use std::io::Read;
 use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 static NEXT_DIR: AtomicU64 = AtomicU64::new(0);
+
+// Drain both pipes concurrently, retaining a bounded prefix even when a child
+// fails or floods diagnostics. The guard also reaps the child on parent panic.
+struct CapturedChild {
+    child: std::process::Child,
+    readers: Vec<std::thread::JoinHandle<std::io::Result<Vec<u8>>>>,
+}
+
+impl CapturedChild {
+    fn drain(
+        reader: impl Read + Send + 'static,
+    ) -> std::thread::JoinHandle<std::io::Result<Vec<u8>>> {
+        std::thread::spawn(move || {
+            let mut reader = reader;
+            let mut retained = Vec::new();
+            let mut buffer = [0; 4096];
+            loop {
+                let count = reader.read(&mut buffer)?;
+                if count == 0 {
+                    return Ok(retained);
+                }
+                let keep = count.min((64 * 1024_usize).saturating_sub(retained.len()));
+                retained.extend_from_slice(&buffer[..keep]);
+            }
+        })
+    }
+
+    fn new(mut child: std::process::Child) -> Self {
+        let stdout = Self::drain(child.stdout.take().expect("piped child stdout"));
+        let stderr = Self::drain(child.stderr.take().expect("piped child stderr"));
+        Self {
+            child,
+            readers: vec![stdout, stderr],
+        }
+    }
+
+    fn diagnostics(&mut self) -> String {
+        let _ = self.child.kill();
+        self.child.wait().expect("reap coordination child");
+        self.readers
+            .drain(..)
+            .enumerate()
+            .map(|(index, reader)| {
+                let bytes = reader
+                    .join()
+                    .expect("diagnostic reader panicked")
+                    .expect("read child diagnostics");
+                format!("stream {index}: {}", String::from_utf8_lossy(&bytes))
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+}
+
+impl Drop for CapturedChild {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        for reader in self.readers.drain(..) {
+            let _ = reader.join();
+        }
+    }
+}
 
 fn private_tree(case: &str) -> PathBuf {
     let path = Path::new("/tmp").join(format!(
@@ -89,6 +153,208 @@ fn sample_request_fingerprint(key: &CacheKey, ns: &CacheNamespace) -> RequestFin
     sample_stage_request_fingerprint(key, ns, RequestStage::Wide)
 }
 
+#[test]
+fn coordinated_deadline_rejects_expired_admission_and_late_provider_without_caching() {
+    for expired_at_entry in [true, false] {
+        let coordinator = SingleFlightCoordinator::memory_only(CoordinationPolicy::default());
+        let cache = MemoryResponseCache::new();
+        let key = test_key();
+        let ns = test_namespace("deadline-admission");
+        let fp = sample_request_fingerprint(&key, &ns);
+        let clock = AtomicU64::new(if expired_at_entry { 1100 } else { 1000 });
+        let calls = AtomicU64::new(0);
+        let query = CoordinateRequestQuery {
+            key: &key,
+            namespace: &ns,
+            stage: RequestStage::Wide,
+            request_fingerprint: &fp,
+            deadline_unix_ms: 1100,
+            active_model: "jev-1",
+            active_revision: Some("rev-1"),
+        };
+        let result = coordinator.coordinate_request(
+            &query,
+            &cache,
+            || clock.load(Ordering::Relaxed),
+            |attempt| {
+                calls.fetch_add(1, Ordering::Relaxed);
+                clock.store(1100, Ordering::Relaxed);
+                Ok((
+                    deadline_entry(fp, attempt),
+                    Usage {
+                        input_tokens: 1,
+                        output_tokens: 1,
+                    },
+                ))
+            },
+        );
+        assert!(
+            result.is_err(),
+            "expired_at_entry={expired_at_entry}: {result:?}"
+        );
+        assert_eq!(calls.load(Ordering::Relaxed), u64::from(!expired_at_entry));
+        let lookup = cache.get(&skillranker::cache::CacheLookupQuery {
+            key: &key,
+            namespace: &ns,
+            stage: RequestStage::Wide,
+            fingerprint: &fp,
+            now_unix_ms: 1100,
+            active_model: "jev-1",
+            active_revision: Some("rev-1"),
+        });
+        assert!(
+            lookup.unwrap().fresh_entry().is_none(),
+            "late response must not become reusable"
+        );
+    }
+}
+
+fn deadline_entry(fp: RequestFingerprint, attempt: &str) -> CachedResponseEntry {
+    CachedResponseEntry {
+        stage: RequestStage::Wide,
+        request_fingerprint: fp,
+        response_bytes: b"{}".to_vec(),
+        received_at_unix_ms: 1000,
+        ttl_seconds: DEFAULT_CACHE_TTL_SECS,
+        model: "jev-1".into(),
+        model_revision: Some("rev-1".into()),
+        original_usage: Usage {
+            input_tokens: 1,
+            output_tokens: 1,
+        },
+        attempt_id: Some(attempt.into()),
+    }
+}
+
+#[test]
+fn sqlite_follower_retries_real_lock_contention_only_within_deadline() {
+    for release_lock in [true, false] {
+        let tree = private_tree("busy-follower");
+        let path = tree.join("coordination.sqlite3");
+        let coordinator = SqliteLeaseCoordinator::open(&path).unwrap();
+        let key = test_key();
+        let ns = test_namespace("busy-follower");
+        let fp = sample_request_fingerprint(&key, &ns);
+        let coord_key = CoordinationKey::compute(&key, &ns, &fp);
+        let LeaseAcquisition::Leading(leader) = coordinator
+            .acquire(coord_key, 1000, &CoordinationPolicy::default())
+            .unwrap()
+        else {
+            panic!("first owner must lead");
+        };
+        assert_eq!(
+            coordinator
+                .complete(
+                    coord_key,
+                    leader.owner_token,
+                    leader.fencing_generation,
+                    1000
+                )
+                .unwrap(),
+            PublishOutcome::Published
+        );
+
+        // Exclusive WAL locking blocks independent readers too. Keep the real
+        // connection alive until a failed poll has consumed a clock sample.
+        let locker = Connection::open(&path).unwrap();
+        locker
+            .execute_batch("PRAGMA locking_mode=EXCLUSIVE; BEGIN EXCLUSIVE;")
+            .unwrap();
+        assert!(matches!(
+            coordinator.check_lease(coord_key),
+            Err(skillranker::cache::CoordinationError::StorageBusy)
+        ));
+        let locker = std::sync::Mutex::new(Some(locker));
+        let ticks = AtomicU64::new(0);
+        let result = coordinator
+            .wait_for_completion(
+                coord_key,
+                || {
+                    let tick = ticks.fetch_add(1, Ordering::Relaxed);
+                    if release_lock && tick == 1 {
+                        let connection = locker.lock().unwrap().take().unwrap();
+                        connection.execute_batch("ROLLBACK;").unwrap();
+                        drop(connection);
+                    }
+                    1000 + tick * 15
+                },
+                1100,
+                Duration::from_millis(1),
+            )
+            .unwrap();
+        if release_lock {
+            assert!(matches!(
+                result,
+                skillranker::cache::FollowerResolution::Completed
+            ));
+        } else {
+            assert!(matches!(
+                result,
+                skillranker::cache::FollowerResolution::DeadlineExceeded
+            ));
+        }
+    }
+}
+
+#[test]
+fn coordinated_cache_hit_obeys_deadline_and_preserves_timely_success() {
+    let coordinator = SingleFlightCoordinator::memory_only(CoordinationPolicy::default());
+    let cache = MemoryResponseCache::new();
+    let key = test_key();
+    let ns = test_namespace("deadline-cache");
+    let fp = sample_request_fingerprint(&key, &ns);
+    let query = CoordinateRequestQuery {
+        key: &key,
+        namespace: &ns,
+        stage: RequestStage::Wide,
+        request_fingerprint: &fp,
+        deadline_unix_ms: 1100,
+        active_model: "jev-1",
+        active_revision: Some("rev-1"),
+    };
+    let leader = coordinator
+        .coordinate_request(
+            &query,
+            &cache,
+            || 1000,
+            |attempt| {
+                Ok((
+                    deadline_entry(fp, attempt),
+                    Usage {
+                        input_tokens: 1,
+                        output_tokens: 1,
+                    },
+                ))
+            },
+        )
+        .unwrap();
+    assert_eq!(leader.new_requests, 1);
+    let hit = coordinator
+        .coordinate_request(
+            &query,
+            &cache,
+            || 1099,
+            |_| panic!("cache hit sent provider request"),
+        )
+        .unwrap();
+    assert!(hit.served_from_cache);
+    assert!(
+        !hit.is_follower,
+        "arrival after publication is a cache hit, not a waiting follower"
+    );
+    assert_eq!(hit.new_requests, 0);
+    assert!(
+        coordinator
+            .coordinate_request(
+                &query,
+                &cache,
+                || 1100,
+                |_| panic!("expired call sent provider request")
+            )
+            .is_err()
+    );
+}
+
 // Subprocess entry point for multi-process test
 #[test]
 #[ignore = "subprocess entry point invoked by real_competing_processes_and_single_flight"]
@@ -115,6 +381,32 @@ fn coordination_child_worker() {
     let cache = SqliteResponseCache::open(&db_path).unwrap();
 
     let now = 1_000_000u64;
+    let started = Instant::now();
+    let ready_path = std::env::var_os("SR_TEST_COORD_READY").map(PathBuf::from);
+    let now_fn = || now + 100 + u64::try_from(started.elapsed().as_millis()).unwrap();
+    if let Some(path) = &ready_path {
+        let leases = SqliteLeaseCoordinator::open(&db_path).unwrap();
+        let coord_key = CoordinationKey::compute(&key, &ns, &fp);
+        assert!(
+            matches!(
+                leases
+                    .acquire(coord_key, now_fn(), &CoordinationPolicy::default())
+                    .unwrap(),
+                LeaseAcquisition::Following(_)
+            ),
+            "child must contend with the active parent lease"
+        );
+        std::fs::write(path, b"following").expect("signal follower acquisition");
+        assert!(
+            matches!(
+                leases
+                    .wait_for_completion(coord_key, now_fn, now + 5000, Duration::from_millis(5))
+                    .unwrap(),
+                skillranker::cache::FollowerResolution::Completed
+            ),
+            "follower must observe completion within its deadline"
+        );
+    }
     let query = CoordinateRequestQuery {
         key: &key,
         namespace: &ns,
@@ -126,15 +418,17 @@ fn coordination_child_worker() {
     };
 
     let res = coordinator
-        .coordinate_request(
-            &query,
-            &cache,
-            || now + 100,
-            |_attempt_id| panic!("child process should be follower, never invoke provider"),
-        )
+        .coordinate_request(&query, &cache, now_fn, |_attempt_id| {
+            panic!("child process should be follower, never invoke provider")
+        })
         .expect("follower must successfully receive coordinated response from leader");
 
-    assert!(res.is_follower, "child process must be follower");
+    // Contention and completion were proven above. Retrieval after completion
+    // takes the initial-cache-hit path, which correctly is not a waiting follower.
+    assert!(
+        !res.is_follower,
+        "completed response is an initial cache hit"
+    );
     assert!(
         res.served_from_cache,
         "follower response must be served from cache"
@@ -197,7 +491,8 @@ fn real_competing_processes_and_single_flight_wide_and_rerank() {
         } else {
             "wide"
         };
-        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+        let ready_path = tree.join(format!("{stage_str}.ready"));
+        let child = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
                 "coordination_child_worker",
@@ -207,14 +502,26 @@ fn real_competing_processes_and_single_flight_wide_and_rerank() {
             .env("SR_TEST_COORD_DB_PATH", &db_path)
             .env("SR_TEST_COORD_SESSION", session_name)
             .env("SR_TEST_COORD_STAGE", stage_str)
+            .env("SR_TEST_COORD_READY", &ready_path)
             .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
             .spawn()
             .expect("must spawn child process");
 
-        // Give child a moment to attempt acquire and become follower
-        std::thread::sleep(Duration::from_millis(60));
+        let mut child = CapturedChild::new(child);
+        let ready_started = Instant::now();
+        while !ready_path.exists() {
+            if child.child.try_wait().unwrap().is_some()
+                || ready_started.elapsed() > Duration::from_secs(5)
+            {
+                panic!(
+                    "child did not enter {stage:?} follower wait: {}",
+                    child.diagnostics()
+                );
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
 
         // 3. Parent puts validated response in cache, THEN completes the lease (eliminating race)
         let expected_bytes = if stage == RequestStage::Wide {
@@ -254,13 +561,14 @@ fn real_competing_processes_and_single_flight_wide_and_rerank() {
         // 4. Wait for child to exit successfully (exit code 0 proves response delivery)
         let start_wait = Instant::now();
         let status = loop {
-            if let Some(st) = child.try_wait().unwrap() {
+            if let Some(st) = child.child.try_wait().unwrap() {
                 break st;
             }
             if start_wait.elapsed() > Duration::from_secs(5) {
-                let _ = child.kill();
-                let _ = child.wait();
-                panic!("child process timed out waiting for lease completion on {stage:?}");
+                panic!(
+                    "child process timed out waiting for lease completion on {stage:?}: {}",
+                    child.diagnostics()
+                );
             }
             std::thread::sleep(Duration::from_millis(10));
         };
@@ -268,7 +576,8 @@ fn real_competing_processes_and_single_flight_wide_and_rerank() {
         assert_eq!(
             status.code(),
             Some(0),
-            "child process must exit 0, retrieving validated {stage:?} response from leader"
+            "child process must exit 0, retrieving validated {stage:?} response from leader: {}",
+            child.diagnostics()
         );
     }
 }
