@@ -1207,16 +1207,18 @@ fn resolve_workspace_roster(
         configured,
     )
     .map_err(|_| unusable("The documented skill roots could not be planned"))?;
-    let invocation = crate::runtime::ProcessInvocation::from_clock(*clock).map_err(|error| {
+    let runtime_failure = |error| {
         if matches!(error, crate::runtime::RuntimeError::Deadline(_)) {
             (6u8, "timeout", "Local inspection deadline exceeded".into())
         } else {
             unusable("The local runtime is unavailable")
         }
-    })?;
+    };
+    let invocation =
+        crate::runtime::ProcessInvocation::from_clock(*clock).map_err(runtime_failure)?;
     let outcome = invocation
         .request_cx()
-        .map_err(|_| unusable("The local runtime is unavailable"))
+        .map_err(runtime_failure)
         .and_then(|cx| {
             crate::roster::resolution::resolve_claude_plan(
                 &plan,
