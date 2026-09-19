@@ -669,7 +669,7 @@ fn bare_rank_does_not_choose_around_an_unresolved_transcript() {
     let provider = Provider::start(&f, "useful", &[]);
     for extra in [&[][..], &["--latest"][..]] {
         let (code, value) = run_bare(&f, &provider, extra);
-        assert_eq!(code, Some(3), "{value}");
+        assert_eq!(code, Some(7), "{value}");
         assert_eq!(value["error"]["kind"], "insufficient-context", "{value}");
     }
     assert!(
