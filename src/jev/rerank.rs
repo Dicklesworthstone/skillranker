@@ -269,14 +269,15 @@ pub fn evaluate<'a>(
     let Some(Answer::Choice(choice)) = response.answers.get(RERANK) else {
         return Err(WideError::MissingAnswer);
     };
-    let raw = choice.raw_probabilities();
-    let none_probability = raw
+    // Renormalized: the provider's total may differ slightly from one.
+    let normalized = choice.normalized_probabilities();
+    let none_probability = normalized
         .get(NONE_OPTION)
         .copied()
         .ok_or(WideError::MissingAnswer)?;
     let mut candidates = Vec::with_capacity(rerank.options.entries().len());
     for (option, skill) in rerank.options.entries() {
-        let rerank_probability = raw
+        let rerank_probability = normalized
             .get(option.as_str())
             .copied()
             .ok_or(WideError::MissingAnswer)?;

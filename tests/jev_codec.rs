@@ -157,7 +157,7 @@ fn choice_preserves_raw_drift_and_exposes_separate_normalization() {
         assert_eq!(answer.normalized_probability("foreign"), None);
         assert_eq!(answer.confidence(), 0.8);
     }
-    for (a, b) in [(0.0, 0.0), (0.6, 0.40011), (0.6, 0.39989)] {
+    for (a, b) in [(0.0, 0.0), (0.7, 0.5), (0.5, 0.3)] {
         let mut value = response_value();
         value["answers"]["rank"]["probabilities"] = json!({"a": a, "b": b});
         error(decode(&request, &value), CodecError::InvalidDistribution);

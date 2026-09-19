@@ -419,11 +419,11 @@ fn full_choice_mass_deficit_is_rejected_over_real_tls_without_relaxing_rounding(
         )],
     )
     .unwrap();
-    // Reproduce the measured count/sum failure class, not the unavailable raw
-    // provider body. Honest valid and tolerated-rounding counterparts traverse
-    // the same sockets, verified TLS, body parser and production decoder.
+    // Reproduce the measured 255-option / 0.99 total, not the unavailable raw
+    // provider body: it is accepted like the valid and rounding counterparts,
+    // through the same sockets, verified TLS, body parser and decoder.
     for (mode, expected_sum) in [
-        ("choice-255-deficit", None),
+        ("choice-255-deficit", Some(0.99)),
         ("choice-255-valid", Some(1.0)),
         ("choice-255-rounding", Some(0.99995)),
     ] {

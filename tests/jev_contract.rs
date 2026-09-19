@@ -156,17 +156,29 @@ fn distribution_sum_and_confidence() {
     val_tol_down["answers"]["rank"]["probabilities"]["skill_alpha"] = json!(0.59990);
     assert!(decode_val(&req, &val_tol_down).is_ok());
 
-    // Beyond tolerance: 1.0 + 1.01e-4 (1.00011) must be rejected
+    // The live provider's 0.99 total is accepted and renormalized.
+    let mut val_live = valid_response_json();
+    val_live["answers"]["rank"]["probabilities"]["skill_alpha"] = json!(0.59);
+    let resp_live = decode_val(&req, &val_live).expect("a 0.99 total must be accepted");
+    if let Answer::Choice(c) = &resp_live.answers["rank"] {
+        assert!((c.raw_sum() - 0.99).abs() < 1e-9);
+        let norm_alpha = c.normalized_probability("skill_alpha").unwrap();
+        assert!((norm_alpha - 0.59 / 0.99).abs() < 1e-9);
+    } else {
+        panic!("expected choice answer");
+    }
+
+    // Beyond the tolerance (a 1.15 total) is malformed and rejected
     let mut val_excess_up = valid_response_json();
-    val_excess_up["answers"]["rank"]["probabilities"]["skill_alpha"] = json!(0.60011);
+    val_excess_up["answers"]["rank"]["probabilities"]["skill_alpha"] = json!(0.75);
     let err_excess_up = expect_err(decode_val(&req, &val_excess_up));
     assert_eq!(err_excess_up, CodecError::InvalidDistribution);
     assert_eq!(err_excess_up.kind(), ErrorKind::InvalidProviderResponse);
     assert_eq!(err_excess_up.exit_code(), CliExit::ProviderContract);
 
-    // Beyond tolerance: 1.0 - 1.01e-4 (0.99989) must be rejected
+    // Beyond the tolerance (a 0.85 total) is malformed and rejected
     let mut val_excess_down = valid_response_json();
-    val_excess_down["answers"]["rank"]["probabilities"]["skill_alpha"] = json!(0.59989);
+    val_excess_down["answers"]["rank"]["probabilities"]["skill_alpha"] = json!(0.45);
     let err_excess_down = expect_err(decode_val(&req, &val_excess_down));
     assert_eq!(err_excess_down, CodecError::InvalidDistribution);
 
@@ -564,8 +576,8 @@ fn e2e_case_distribution_sum_tolerance() {
     large_resp["answers"]["rank"]["probabilities"]["skill_000"] = json!(p_even + 0.00005);
     assert!(decode_val(&large_req, &large_resp).is_ok());
 
-    // Add drift exceeding tolerance (0.00015)
-    large_resp["answers"]["rank"]["probabilities"]["skill_000"] = json!(p_even + 0.00015);
+    // A 1.2 total is beyond the tolerance and rejected
+    large_resp["answers"]["rank"]["probabilities"]["skill_000"] = json!(p_even + 0.2);
     assert_eq!(
         expect_err(decode_val(&large_req, &large_resp)),
         CodecError::InvalidDistribution

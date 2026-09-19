@@ -13,7 +13,11 @@ use std::io::{self, Write};
 pub const MAX_REQUEST_BYTES: usize = 96 * crate::limits::KIB;
 pub const MAX_RESPONSE_BYTES: usize = 2 * crate::limits::MIB;
 pub const MAX_CHOICE_OPTIONS: usize = 255;
-pub const SUM_TOLERANCE: f64 = 1e-4;
+/// How far a Choice distribution's total may be from one before it is
+/// rejected as malformed. Accepted answers are renormalized, and the raw
+/// values are kept. The live provider returns totals such as 0.99 for large
+/// Choices, so this is deliberately generous rather than a rounding bound.
+pub const SUM_TOLERANCE: f64 = 0.1;
 
 /// Errors deliberately contain no input, provider body, keys, or parser details.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

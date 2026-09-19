@@ -377,8 +377,9 @@ pub fn evaluate<'a>(
     let Some(Answer::Choice(phase)) = response.answers.get(PHASE) else {
         return Err(WideError::MissingAnswer);
     };
-    let raw = which.raw_probabilities();
-    let none_probability = raw
+    // Renormalized: the provider's total may differ slightly from one.
+    let normalized = which.normalized_probabilities();
+    let none_probability = normalized
         .get(NONE_OPTION)
         .copied()
         .ok_or(WideError::MissingAnswer)?;
@@ -388,7 +389,7 @@ pub fn evaluate<'a>(
     } else {
         let mut ranked = Vec::with_capacity(wide.options.entries().len());
         for (option, skill) in wide.options.entries() {
-            let probability = raw
+            let probability = normalized
                 .get(option.as_str())
                 .copied()
                 .ok_or(WideError::MissingAnswer)?;
@@ -409,7 +410,7 @@ pub fn evaluate<'a>(
         needs_skill: needs,
         none_probability,
         choice_confidence: which.confidence(),
-        phase: phase.raw_probabilities().clone(),
+        phase: phase.normalized_probabilities(),
         top,
         decision,
     })
