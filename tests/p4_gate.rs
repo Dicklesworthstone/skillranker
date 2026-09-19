@@ -515,10 +515,7 @@ fn all_p4_invariants_verified() {
         .block_on(async { execute_pipeline(&invocation, &cx, explain_args, None).await })
         .expect("explain pipeline execution succeeded");
 
-    assert_eq!(
-        explain_doc.kind(),
-        OutputKind::Decision(Decision::Explicit)
-    );
+    assert_eq!(explain_doc.kind(), OutputKind::Decision(Decision::Explicit));
     let explain_val = explain_doc.as_value();
     assert!(
         explain_val.get("trace").is_some(),
