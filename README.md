@@ -663,8 +663,9 @@ The library's `cli::ConfigFiles` shares bounded initial configuration reads with
 file refreshes. Refresh keeps the invocation's validated environment and CLI
 layers, returning the current configuration and a boundary-specific comparison
 against its typed policy receipt. Malformed, unreadable, or late reads fail rather
-than authorize output. Rank orchestration and its HTTP/publication call sites are
-not implemented yet; these library checks do not establish live ranking support.
+than authorize output. `sr rank` refreshes the configuration at each provider
+admission and before publishing, so a policy change during a run withholds its
+result.
 Shared request allowances and snoozes are explicit trusted-user controls. Project
 configuration cannot enable, raise, or disable the allowance.
 
