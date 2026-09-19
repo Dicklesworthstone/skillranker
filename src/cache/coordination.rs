@@ -736,6 +736,47 @@ impl SqliteLeaseCoordinator {
         &self.db_path
     }
 
+    /// Hold the lease writer lock from current-owner validation through a
+    /// bounded external cache write. The callback must not perform network
+    /// work. This serializes successor acquisition with the actual cache
+    /// commit without storing response bodies in the coordination database.
+    pub fn with_active_lease<T>(
+        &self,
+        leader: &LeaderContext,
+        busy_wait: Duration,
+        now: impl FnOnce() -> u64,
+        publish: impl FnOnce() -> T,
+    ) -> Result<Option<T>, CoordinationError> {
+        let mut conn = open_qualified_connection(&self.db_path)?;
+        conn.busy_timeout(busy_wait.min(Duration::from_millis(25)))?;
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let row: Option<(Vec<u8>, i64, i64, i64, i64)> = tx
+            .query_row(
+                "SELECT owner_token, fencing_generation, expires_at_unix_ms, is_completed, acquired_at_unix_ms \
+                 FROM sr_coordination_leases WHERE coordination_key=?1",
+                params![leader.key.as_bytes()],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )
+            .optional()?;
+        let now = now();
+        let valid = row.is_some_and(|(token, generation, expiry, completed, acquired)| {
+            token.as_slice() == leader.owner_token.as_bytes()
+                && u64::try_from(generation).ok() == Some(leader.fencing_generation.as_u64())
+                && u64::try_from(expiry).ok() == Some(leader.lease_expires_at_unix_ms)
+                && completed == 0
+                && u64::try_from(acquired).is_ok_and(|acquired| now >= acquired)
+                && now < leader.lease_expires_at_unix_ms
+        });
+        if !valid {
+            return Ok(None);
+        }
+        let result = publish();
+        // No lease mutation: dropping the read/write transaction releases the
+        // writer lock only after the external cache transaction has finished.
+        drop(tx);
+        Ok(Some(result))
+    }
+
     /// Atomically verifies lease ownership/fencing, optionally publishes response bytes into `sr_response_cache`,
     /// and marks the lease completed within a single immediate SQLite transaction.
     ///

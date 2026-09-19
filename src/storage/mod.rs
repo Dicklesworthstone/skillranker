@@ -134,6 +134,7 @@ pub enum StoreError {
     UnqualifiedEngine,
     StoreReplaced,
     StaleGeneration,
+    LeaseSuperseded,
     GenerationExhausted,
     Quota,
     InsufficientSpace,
@@ -161,6 +162,7 @@ impl fmt::Display for StoreError {
             }
             Self::StoreReplaced => "cache directory, file or incarnation changed",
             Self::StaleGeneration => "cache generation changed before mutation",
+            Self::LeaseSuperseded => "response publisher no longer owns its lease",
             Self::GenerationExhausted => "cache generation cannot be advanced",
             Self::Quota => "cache recording capacity is exhausted; maintenance reserve retained",
             Self::InsufficientSpace => {
@@ -662,12 +664,39 @@ impl CacheStore {
     /// pruned first; they could never be served. At quota, recording stops
     /// with a typed error and the maintenance reserve is kept.
     pub fn record_response(
+        self,
+        invocation: &ProcessInvocation,
+        cx: &Cx,
+        namespace: [u8; 32],
+        entry: CachedResponseEntry,
+        now_unix_ms: u64,
+    ) -> Result<Self, StoreError> {
+        self.record_response_inner(invocation, cx, namespace, entry, now_unix_ms, None)
+    }
+
+    /// Keep the lease writer lock through this store's commit. Recheck owner,
+    /// generation and expiry after acquiring it, and expiry again before commit.
+    pub fn record_response_fenced(
+        self,
+        invocation: &ProcessInvocation,
+        cx: &Cx,
+        namespace: [u8; 32],
+        entry: CachedResponseEntry,
+        fence: (PathBuf, crate::cache::LeaderContext),
+    ) -> Result<Self, StoreError> {
+        let now = cache_wall_clock_ms();
+        self.record_response_inner(invocation, cx, namespace, entry, now, Some(fence))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn record_response_inner(
         mut self,
         invocation: &ProcessInvocation,
         cx: &Cx,
         namespace: [u8; 32],
         entry: CachedResponseEntry,
         now_unix_ms: u64,
+        fence: Option<(PathBuf, crate::cache::LeaderContext)>,
     ) -> Result<Self, StoreError> {
         if entry.response_bytes.len() > MAX_RESPONSE_BYTES
             || !(1..=MAX_RESPONSE_TTL_SECONDS).contains(&entry.ttl_seconds)
@@ -685,46 +714,69 @@ impl CacheStore {
             BlockingLeafKind::Database,
             false,
             move || {
-                configure(&self.connection, clock, &child)?;
-                self.directory
-                    .verify_database_file(&self.file, clock, &child)?;
-                refresh_busy_limit(&self.connection, clock, &child)?;
-                let expected = self.stamp;
-                let generation = sql_integer(expected.generation)?;
-                let now = sql_integer(now_unix_ms)?;
-                let tx = self
-                    .connection
-                    .transaction_with_behavior(TransactionBehavior::Immediate)?;
-                check_stamp(&tx, expected)?;
-                self.directory.admit_space()?;
-                tx.execute(
-                    "DELETE FROM sr_cache_response WHERE generation<>?1 \
+                let expires = fence
+                    .as_ref()
+                    .map(|(_, leader)| leader.lease_expires_at_unix_ms);
+                let write = || {
+                    configure(&self.connection, clock, &child)?;
+                    self.directory
+                        .verify_database_file(&self.file, clock, &child)?;
+                    refresh_busy_limit(&self.connection, clock, &child)?;
+                    let expected = self.stamp;
+                    let generation = sql_integer(expected.generation)?;
+                    let now = sql_integer(now_unix_ms)?;
+                    let tx = self
+                        .connection
+                        .transaction_with_behavior(TransactionBehavior::Immediate)?;
+                    check_stamp(&tx, expected)?;
+                    self.directory.admit_space()?;
+                    tx.execute(
+                        "DELETE FROM sr_cache_response WHERE generation<>?1 \
                      OR received_at_unix_ms>?2 OR received_at_unix_ms+ttl_seconds*1000<=?2",
-                    params![generation, now],
-                )?;
-                tx.execute(
-                    "INSERT OR REPLACE INTO sr_cache_response VALUES \
+                        params![generation, now],
+                    )?;
+                    tx.execute(
+                        "INSERT OR REPLACE INTO sr_cache_response VALUES \
                      (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-                    params![
-                        generation,
-                        &namespace[..],
-                        entry.stage.as_str(),
-                        &entry.request_fingerprint.as_bytes()[..],
-                        entry.response_bytes,
-                        sql_integer(entry.received_at_unix_ms)?,
-                        entry.ttl_seconds,
-                        entry.model,
-                        entry.model_revision,
-                        sql_integer(entry.original_usage.input_tokens)?,
-                        sql_integer(entry.original_usage.output_tokens)?,
-                    ],
-                )?;
-                refresh_busy_limit(&tx, clock, &child)?;
-                tx.commit()?;
-                self.directory
-                    .verify_database_file(&self.file, clock, &child)?;
-                check_work(clock, &child)?;
-                Ok(self)
+                        params![
+                            generation,
+                            &namespace[..],
+                            entry.stage.as_str(),
+                            &entry.request_fingerprint.as_bytes()[..],
+                            entry.response_bytes,
+                            sql_integer(entry.received_at_unix_ms)?,
+                            entry.ttl_seconds,
+                            entry.model,
+                            entry.model_revision,
+                            sql_integer(entry.original_usage.input_tokens)?,
+                            sql_integer(entry.original_usage.output_tokens)?,
+                        ],
+                    )?;
+                    refresh_busy_limit(&tx, clock, &child)?;
+                    if expires.is_some_and(|expires| cache_wall_clock_ms() >= expires) {
+                        return Err(StoreError::LeaseSuperseded);
+                    }
+                    tx.commit()?;
+                    self.directory
+                        .verify_database_file(&self.file, clock, &child)?;
+                    check_work(clock, &child)?;
+                    Ok(self)
+                };
+                if let Some((path, leader)) = fence {
+                    let coordinator = crate::cache::SqliteLeaseCoordinator::open(path)
+                        .map_err(|_| StoreError::Io)?;
+                    let busy = remaining_busy_wait(&clock, Duration::from_millis(MAX_BUSY_WAIT_MS))
+                        .map_err(StoreError::Runtime)?;
+                    coordinator
+                        .with_active_lease(&leader, busy, cache_wall_clock_ms, write)
+                        .map_err(|e| match e {
+                            crate::cache::CoordinationError::StorageBusy => StoreError::Busy,
+                            _ => StoreError::Io,
+                        })?
+                        .ok_or(StoreError::LeaseSuperseded)?
+                } else {
+                    write()
+                }
             },
         )
         .map_err(StoreError::Runtime)?
@@ -844,4 +896,12 @@ mod tests {
             Err(StoreError::UnqualifiedEngine)
         );
     }
+}
+
+fn cache_wall_clock_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .and_then(|elapsed| u64::try_from(elapsed.as_millis()).ok())
+        .unwrap_or(u64::MAX)
 }
