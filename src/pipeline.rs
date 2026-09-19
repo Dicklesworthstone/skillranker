@@ -231,6 +231,29 @@ pub async fn execute_pipeline(
     if let Some((leases, leader)) = progress.lease.take() {
         persistent::complete(invocation, cx, &leases, &leader);
     }
+    // Include final validation and lease release in reported latency. A lease
+    // completion is a bounded storage effect, so check publication again after
+    // it rather than trusting the earlier check inside rank_once.
+    let result = result.and_then(|mut doc| {
+        if matches!(
+            doc.kind(),
+            OutputKind::Decision(
+                crate::output::Decision::Ranked
+                    | crate::output::Decision::Abstain
+                    | crate::output::Decision::Explicit
+            )
+        ) {
+            admit_publication(clock.deadline(), clock.now(), clock.now()).map_err(|error| {
+                failure(
+                    6,
+                    "timeout",
+                    format!("Runtime suppressed late result: {error}"),
+                )
+            })?;
+        }
+        doc.record_elapsed(clock.now().as_millis());
+        Ok(doc)
+    });
     // A dry run never publishes an actionable decision: a local result that
     // ends the run before any request is reported inside the preview.
     let result = match result {

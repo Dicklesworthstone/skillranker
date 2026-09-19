@@ -248,6 +248,14 @@ impl OutputDocument {
     pub fn as_value(&self) -> &Value {
         &self.value
     }
+    /// Refresh an existing full-decision timing field at the final boundary.
+    /// Minimal errors and artifacts without timing keep their original shape.
+    pub(crate) fn record_elapsed(&mut self, elapsed_ms: u64) {
+        if let Some(elapsed) = self.value.get_mut("elapsed_ms") {
+            *elapsed = Value::from(elapsed_ms);
+        }
+    }
+
     pub fn to_json(&self) -> Result<Vec<u8>, ContractError> {
         encode(&self.value)
     }
