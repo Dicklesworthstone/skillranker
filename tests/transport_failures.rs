@@ -21,7 +21,9 @@ use skillranker::jev::{
     AdmissionRefusal, AttemptBudget, CanonicalOrigin, EndpointConfig, OriginScopedCredential,
     RankingStage,
 };
-use skillranker::limits::DurationMillis;
+use skillranker::limits::{
+    DEFAULT_INVOCATION_DEADLINE_MS, DEFAULT_OUTPUT_CLEANUP_RESERVE_MS, DurationMillis,
+};
 use skillranker::privacy::{ConsentSource, NetworkConsent};
 use skillranker::runtime::{EntryClock, ProcessInvocation};
 use std::ffi::OsString;
@@ -120,10 +122,14 @@ impl TestContext {
         ))
     }
 
+    #[track_caller]
     fn finish(self) {
+        let started_ms = self.clock.now().as_millis();
+        let remaining_ms = self.clock.remaining_until_expiry().as_millis();
         assert!(
             self.invocation.shutdown(),
-            "ProcessInvocation runtime must shut down cleanly within deadline"
+            "Runtime shutdown failed: start_ms={started_ms} remaining_ms={remaining_ms} finish_ms={}",
+            self.clock.now().as_millis()
         );
     }
 }
@@ -318,11 +324,19 @@ fn handshake_timeout_preserves_cleanup_reserve_and_never_publishes() {
     let cred = scoped_credential(endpoint.origin(), TRANSPORT_CANARY);
     let client = JevClient::with_additional_roots(endpoint, vec![ca_certificate()]).unwrap();
 
-    // Work deadline 300ms, cleanup reserve 100ms -> total 400ms
-    let ctx = TestContext::new(400, 100);
-    let start = Instant::now();
+    // Runtime setup consumes the invocation budget too. Use the normal entry
+    // budget and deliberately spend time before send: restarting the clock here
+    // would hide the bug this test guards against.
+    let ctx = TestContext::new(
+        DEFAULT_INVOCATION_DEADLINE_MS,
+        DEFAULT_OUTPUT_CLEANUP_RESERVE_MS,
+    );
+    std::thread::sleep(Duration::from_millis(100));
+    let send_started_ms = ctx.clock.now().as_millis();
     let err = ctx.send(&client, Some(&cred)).err().unwrap();
-    let elapsed = start.elapsed();
+    let finished_ms = ctx.clock.now().as_millis();
+    let work_end_ms = ctx.clock.deadline().latest_work_time().as_millis();
+    let expires_ms = ctx.clock.deadline().expires_at().as_millis();
 
     assert!(
         matches!(
@@ -334,18 +348,26 @@ fn handshake_timeout_preserves_cleanup_reserve_and_never_publishes() {
     );
     assert!(err.http_attempt_started);
     assert_safe_error(&err);
-    // Bounded wait: must terminate before total deadline + scheduler slack, never hang indefinitely
+    // Measure both bounds in the same entry-clock domain as the deadline.
+    // The two millisecond tolerance covers the integer-millisecond conversion
+    // into the runtime timer; setup time must never create a fresh work window.
     assert!(
-        elapsed >= Duration::from_millis(250),
-        "Terminated too early: {elapsed:?}"
+        finished_ms.saturating_add(2) >= work_end_ms,
+        "Handshake stopped before its work deadline: start={send_started_ms} finish={finished_ms} work_end={work_end_ms}"
     );
     assert!(
-        elapsed < Duration::from_millis(800),
-        "Handshake timeout stalled beyond allowable limit: {elapsed:?}"
+        finished_ms < expires_ms + 400,
+        "Handshake exceeded invocation expiry plus scheduler slack: finish={finished_ms} expires={expires_ms}"
     );
 
     ctx.finish();
-    server.finish();
+    let report = server.finish();
+    assert_eq!(report["closed"], true);
+    assert_eq!(report["requests"], 0);
+    assert!(report["handshake_bytes"].as_u64().unwrap() > 0);
+    eprintln!(
+        "case=slow-handshake start_ms={send_started_ms} finish_ms={finished_ms} work_end_ms={work_end_ms} expires_ms={expires_ms} requests=0 closed=true"
+    );
 }
 
 // ==============================================================================
