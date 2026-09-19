@@ -1,6 +1,6 @@
 """Real loopback TLS Jev provider for rank pipeline tests; synthetic data only.
 
-Usage: provider_server.py SCENARIO [PATH [TEXT]]
+Usage: provider_server.py SCENARIO[+write-on-wide|+write-on-rerank] [PATH [TEXT]]
 
 Serves sequential POST /v1/systemone requests over TLS and answers every
 question in each request from the request itself, so option IDs are never
@@ -30,7 +30,7 @@ import sys
 import time
 
 root = pathlib.Path(__file__).parent
-scenario = sys.argv[1]
+scenario, _, mutation = sys.argv[1].partition("+")
 target = pathlib.Path(sys.argv[2]) if len(sys.argv) > 2 else None
 text = sys.argv[3] if len(sys.argv) > 3 else ""
 USAGE = {"wide": (100, 25), "rerank": (120, 30)}
@@ -121,7 +121,7 @@ while True:
     questions = request["questions"]
     stage = "wide" if "which" in questions else "rerank" if "rerank" in questions else "other"
     stages.append(stage)
-    if scenario == "write-on-wide" and stage == "wide":
+    if (scenario == "write-on-wide" and stage == "wide") or mutation == f"write-on-{stage}":
         target.write_text(text)
     if scenario == "touch-on-rerank" and stage == "rerank":
         with target.open("a") as handle:

@@ -1617,3 +1617,138 @@ fn concurrent_identical_requests_share_one_provider_evaluation() {
         "exactly one process was served the leader's pair"
     );
 }
+
+/// Mutation happens inside the real TLS server after it receives this stage,
+/// so it cannot race ahead of roster capture or lag behind response receipt.
+#[test]
+fn abstention_publication_rejects_changed_wide_content() {
+    let f = Fixture::new(CONSENT);
+    let file = f.skill_file("beta");
+    let changed =
+        "---\nname: beta\ndescription: Newly relevant rust debugging\n---\nChanged body.\n";
+    let provider = Provider::start(
+        &f,
+        "low-need+write-on-wide",
+        &[file.as_os_str(), changed.as_ref()],
+    );
+    let outcome = rank(&f, &provider, TASK, 10_000);
+    assert_eq!(stages(&provider.finish()), ["wide"]);
+    let value = unavailable(outcome, 5, "roster-changed");
+    assert_eq!(usage(&value), (1, 1, 100, 25));
+}
+
+#[test]
+fn abstention_publication_rejects_changed_manifest() {
+    let f = Fixture::new(CONSENT);
+    let manifest = supplied_alpha(&f);
+    let mut args = f.args(TASK);
+    args.roster_file = Some(manifest.clone());
+    let replacement = json!({
+        "schema": "sr.roster.v1", "harness": "claude_code", "mode": "authorized_files",
+        "skills": [{"source": "claude_code.project", "path": "beta/SKILL.md"}]
+    })
+    .to_string();
+    let provider = Provider::start(
+        &f,
+        "low-need+write-on-wide",
+        &[manifest.as_os_str(), replacement.as_ref()],
+    );
+    let outcome = rank_args(&provider, args, 10_000);
+    assert_eq!(stages(&provider.finish()), ["wide"]);
+    unavailable(outcome, 5, "roster-changed");
+}
+
+#[test]
+fn abstention_publication_rejects_changes_outside_the_shortlist() {
+    for response in ["none", "low-fit"] {
+        let f = Fixture::new(&format!("{CONSENT}[ranking]\ntop=1\nshortlist=1\n"));
+        // With M=1, beta is outside the rerank; it was still a wide candidate.
+        let file = f.skill_file("beta");
+        let changed =
+            "---\nname: beta\ndescription: Changed outside the shortlist\n---\nNew content.\n";
+        let provider = Provider::start(
+            &f,
+            &format!("{response}+write-on-rerank"),
+            &[file.as_os_str(), changed.as_ref()],
+        );
+        let outcome = rank(&f, &provider, TASK, 10_000);
+        let served = provider.finish();
+        assert_eq!(stages(&served), ["wide", "rerank"]);
+        assert_eq!(served[1]["options"], 2, "one skill plus none");
+        let rerank: Value = serde_json::from_str(served[1]["body"].as_str().unwrap()).unwrap();
+        assert!(
+            !rerank["questions"]["rerank"]["criteria"]
+                .to_string()
+                .contains("beta")
+        );
+        let value = unavailable(outcome, 5, "roster-changed");
+        assert_eq!(usage(&value), (2, 2, 220, 55));
+    }
+}
+
+#[test]
+fn abstention_publication_rejects_changed_policy_after_either_stage() {
+    for response in ["low-need", "none", "low-fit"] {
+        let f = Fixture::new(CONSENT);
+        let config = f.user_config();
+        let changed = format!("{CONSENT}[ranking]\nfits=0.05\nexclude_skills=[\"beta\"]\n");
+        let stage = if response == "low-need" {
+            "wide"
+        } else {
+            "rerank"
+        };
+        let provider = Provider::start(
+            &f,
+            &format!("{response}+write-on-{stage}"),
+            &[config.as_os_str(), changed.as_ref()],
+        );
+        let outcome = rank(&f, &provider, TASK, 10_000);
+        let served = provider.finish();
+        assert_eq!(served.len(), if stage == "wide" { 1 } else { 2 });
+        unavailable(outcome, 3, "superseded");
+    }
+}
+
+#[test]
+fn abstention_publication_preserves_stable_and_equivalent_input() {
+    for response in ["low-need", "none", "low-fit"] {
+        let f = Fixture::new(CONSENT);
+        let config = f.user_config();
+        let same = format!("# a harmless comment\n{CONSENT}");
+        let stage = if response == "low-need" {
+            "wide"
+        } else {
+            "rerank"
+        };
+        let provider = Provider::start(
+            &f,
+            &format!("{response}+write-on-{stage}"),
+            &[config.as_os_str(), same.as_ref()],
+        );
+        let value = rank(&f, &provider, TASK, 10_000).expect("valid abstention");
+        assert_eq!(value["decision"], "abstain", "{value}");
+        assert_eq!(provider.finish().len(), if stage == "wide" { 1 } else { 2 });
+    }
+}
+
+#[test]
+fn abstention_publication_reapplies_current_policy_to_cached_responses() {
+    let f = Fixture::new(CONSENT);
+    let cache = f.cache_dir();
+    let provider = Provider::start(&f, "low-fit", &[]);
+    let args = || f.args_with(TASK, "session-1", CACHED, Some(cache.clone()));
+    let first = rank_args(&provider, args(), 10_000).unwrap();
+    assert_eq!(first["decision"], "abstain");
+    let repeat = rank_args(&provider, args(), 10_000).unwrap();
+    assert_eq!(repeat["decision"], "abstain");
+    assert_eq!(repeat["cache"]["hit"], true);
+    assert_eq!(usage(&repeat), (0, 0, 0, 0));
+    // Fits policy is local eligibility, not provider question construction.
+    // Reuse exact responses, but never reuse their previous abstain decision.
+    std::fs::write(f.user_config(), format!("{CONSENT}[ranking]\nfits=0.05\n")).unwrap();
+    let updated = rank_args(&provider, args(), 10_000).unwrap();
+    assert_eq!(updated["decision"], "ranked", "{updated}");
+    assert_eq!(updated["cache"]["hit"], true);
+    assert_eq!(usage(&updated), (0, 0, 0, 0));
+    assert_eq!(stages(&provider.finish()), ["wide", "rerank"]);
+}
