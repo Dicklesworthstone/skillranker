@@ -563,6 +563,9 @@ fn transcript(f: &Fixture, filler: usize, filler_bytes: usize, tail: &str) -> Pa
     path
 }
 
+/// Reads one transcript's quality flags. The subject is the reported history,
+/// not the deadline, so the budget is generous: on a loaded machine the
+/// default 3 s can expire during roster validation (sr-5n0b).
 fn transcript_quality(f: &Fixture, path: &Path) -> Value {
     let output = f.run(&[
         "rank",
@@ -571,6 +574,8 @@ fn transcript_quality(f: &Fixture, path: &Path) -> Value {
         "--harness",
         "claude_code",
         "--offline",
+        "--timeout-ms",
+        "20000",
         "--json",
     ]);
     let value: Value = serde_json::from_slice(&output.stdout).unwrap();

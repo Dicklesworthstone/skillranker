@@ -1211,8 +1211,19 @@ fn sr_rank(f: &Fixture, provider: &Provider, trust_fixture: bool) -> Command {
 }
 
 /// Runs `sr rank` with no source, so it must discover the session itself.
+///
+/// These tests are about discovery, not the deadline, so unless the caller
+/// chooses a budget they get a generous one: on a loaded machine process
+/// startup alone can consume the default 3 s, which refuses the run with
+/// `Local inspection deadline exceeded` (sr-5n0b). The deadline itself is
+/// proved by `the_sr_binary_honors_a_shorter_timeout_flag` and
+/// `the_sr_binary_honors_a_longer_configured_deadline`.
 fn run_bare(f: &Fixture, provider: &Provider, extra: &[&str]) -> (Option<i32>, Value) {
-    let output = sr_rank(f, provider, true).args(extra).output().unwrap();
+    let mut command = sr_rank(f, provider, true);
+    if !extra.contains(&"--timeout-ms") {
+        command.args(["--timeout-ms", "20000"]);
+    }
+    let output = command.args(extra).output().unwrap();
     let text = String::from_utf8_lossy(&output.stdout).into_owned()
         + &String::from_utf8_lossy(&output.stderr);
     assert!(!text.contains("synthetic-acceptance-canary"));
