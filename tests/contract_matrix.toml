@@ -1081,7 +1081,64 @@ e2e_cases = ["demo-inert-envelope"]
 assertion_ids = ["non_actionable_envelope"]
 platforms = ["linux"]
 features = []
-status = "planned"
+[[boundaries]]
+id = "p4_cache_isolation"
+owner_bead = "sr-roadmap-l1i.5.20"
+member_beads = ["sr-roadmap-l1i.5.20"]
+phase = "P4"
+title = "Prove real cache isolation, invalidation and concurrent ownership"
+unit_property_tests = [
+    "tests/cache_fingerprint.rs::key_protection_and_generation",
+    "tests/cache_fingerprint.rs::request_fingerprint_determinism_and_canonical_equivalence",
+    "tests/cache_fingerprint.rs::request_fingerprint_stage_and_field_sensitivity",
+    "tests/cache_fingerprint.rs::namespace_isolation_across_sessions_and_key_generations",
+    "tests/cache_fingerprint.rs::decision_fingerprint_sensitivity",
+    "tests/cache_fingerprint.rs::non_finite_policy_weights_rejected",
+    "tests/cache_fingerprint.rs::event_delivery_duplicate_detection",
+    "tests/cache_namespace_isolation.rs::eviction_preserves_distinct_namespaces_with_real_request_fingerprints",
+    "tests/cache_namespace_isolation.rs::coordination_binds_field_boundaries_even_for_the_same_request_handle",
+    "tests/cache_namespace_isolation.rs::cache_lookup_cannot_cross_namespaces_with_a_reused_request_handle",
+    "tests/response_cache_contract.rs::per_stage_isolation",
+    "tests/response_cache_contract.rs::shortlist_sensitivity_causes_rerank_miss_when_candidates_change",
+    "tests/response_cache_contract.rs::truthful_freshness_and_no_ttl_renewal_on_read",
+    "tests/response_cache_contract.rs::wall_clock_rollback_detected_and_rejected",
+    "tests/response_cache_contract.rs::revision_mismatch_and_unversioned_alias_rules",
+    "tests/response_cache_contract.rs::zero_cost_accounting_for_wholly_cached_executions",
+    "tests/response_cache_contract.rs::stale_inspection_non_actionable_and_no_hook_fallback",
+    "tests/response_cache_contract.rs::namespace_isolation_and_eviction",
+    "tests/response_cache_contract.rs::a_stored_ttl_never_extends_freshness_past_ten_minutes",
+    "tests/coordination_contract.rs::real_competing_processes_and_single_flight_wide_and_rerank",
+    "tests/coordination_contract.rs::lease_expiry_and_reacquisition_with_fencing_bump",
+    "tests/coordination_contract.rs::fresh_reacquisition_after_cache_loss_when_lease_completed",
+    "tests/coordination_contract.rs::completion_published_after_cache_put_eliminates_body_race",
+    "tests/coordination_contract.rs::old_owner_late_completion_rejected_after_expiry",
+    "tests/coordination_contract.rs::follower_deadline_causes_quiet_fallback",
+    "tests/coordination_contract.rs::different_session_and_event_isolation",
+    "tests/coordination_contract.rs::no_hidden_response_body_in_coordination_store",
+    "tests/coordination_contract.rs::missing_owner_usage_remains_unknown_no_duplicate_attempt_charges",
+    "tests/coordination_contract.rs::private_bounded_sqlite_qualifications",
+    "tests/cache_policy_revocation.rs::exact_hit_consumer_withholds_stale_exclusion_authority",
+    "tests/cache_policy_revocation.rs::two_process_follower_withholds_stale_exclusion_authority",
+    "tests/cache_policy_revocation.rs::exact_hit_network_only_revocation_preserves_valid_local_result",
+    "tests/cache_policy_revocation.rs::shared_response_network_only_revocation_preserves_valid_local_result",
+    "tests/cache_policy_revocation.rs::no_cache_forbids_cross_process_body_sharing",
+    "tests/cache_policy_revocation.rs::no_persist_guarantees_zero_disk_mutation",
+    "tests/cache_policy_revocation.rs::stale_expired_entry_refuses_actionable_publication"
+]
+e2e_suite = "cache"
+e2e_cases = [
+    "cache-isolation-and-invalidation",
+    "stale-policy-authority-withheld",
+    "network-only-revocation-preserves-local",
+    "no-cache-no-persist-isolation",
+    "concurrent-lease-coordination-and-recovery"
+]
+assertion_ids = [
+    "cache_isolation_verified"
+]
+platforms = ["linux"]
+features = []
+status = "executed"
 
 [[boundaries]]
 id = "p4_core_cli_acceptance"

@@ -59,7 +59,7 @@ pub struct Binding {
     pub invocation: InvocationName,
     pub visibility: Visibility,
     pub restrictions: InvocationRestrictions,
-    priority: Option<i32>,
+    pub priority: Option<i32>,
 }
 
 /// Constructed only by parsing the very bytes whose identity/hash were read.

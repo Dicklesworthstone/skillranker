@@ -1,0 +1,100 @@
+{
+  "schema_version": 1,
+  "suite": "cache",
+  "tier": "rust-product-integration",
+  "targets": [
+    "cache_fingerprint",
+    "cache_namespace_isolation",
+    "cache_policy_revocation",
+    "coordination_contract",
+    "response_cache_contract"
+  ],
+  "allowed_ignored": [
+    {
+      "test": "coordination_contract::coordination_child_worker",
+      "reason": "subprocess entry point invoked by real_competing_processes_and_single_flight"
+    }
+  ],
+  "cases": [
+    {
+      "id": "cache-isolation-and-invalidation",
+      "assertions": [
+        "cache_isolation_verified"
+      ],
+      "tests": [
+        "cache_fingerprint::key_protection_and_generation",
+        "cache_fingerprint::request_fingerprint_determinism_and_canonical_equivalence",
+        "cache_fingerprint::request_fingerprint_stage_and_field_sensitivity",
+        "cache_fingerprint::namespace_isolation_across_sessions_and_key_generations",
+        "cache_fingerprint::decision_fingerprint_sensitivity",
+        "cache_fingerprint::non_finite_policy_weights_rejected",
+        "cache_fingerprint::event_delivery_duplicate_detection",
+        "cache_namespace_isolation::eviction_preserves_distinct_namespaces_with_real_request_fingerprints",
+        "cache_namespace_isolation::coordination_binds_field_boundaries_even_for_the_same_request_handle",
+        "cache_namespace_isolation::cache_lookup_cannot_cross_namespaces_with_a_reused_request_handle",
+        "response_cache_contract::per_stage_isolation",
+        "response_cache_contract::shortlist_sensitivity_causes_rerank_miss_when_candidates_change",
+        "response_cache_contract::truthful_freshness_and_no_ttl_renewal_on_read",
+        "response_cache_contract::wall_clock_rollback_detected_and_rejected",
+        "response_cache_contract::revision_mismatch_and_unversioned_alias_rules",
+        "response_cache_contract::zero_cost_accounting_for_wholly_cached_executions",
+        "response_cache_contract::stale_inspection_non_actionable_and_no_hook_fallback",
+        "response_cache_contract::namespace_isolation_and_eviction",
+        "response_cache_contract::a_stored_ttl_never_extends_freshness_past_ten_minutes",
+        "cache_policy_revocation::stale_expired_entry_refuses_actionable_publication"
+      ]
+    },
+    {
+      "id": "stale-policy-authority-withheld",
+      "assertions": [
+        "cache_isolation_verified",
+        "stale_policy_withheld"
+      ],
+      "tests": [
+        "cache_policy_revocation::exact_hit_consumer_withholds_stale_exclusion_authority",
+        "cache_policy_revocation::two_process_follower_withholds_stale_exclusion_authority"
+      ]
+    },
+    {
+      "id": "network-only-revocation-preserves-local",
+      "assertions": [
+        "cache_isolation_verified",
+        "network_revocation_safe"
+      ],
+      "tests": [
+        "cache_policy_revocation::exact_hit_network_only_revocation_preserves_valid_local_result",
+        "cache_policy_revocation::shared_response_network_only_revocation_preserves_valid_local_result"
+      ]
+    },
+    {
+      "id": "no-cache-no-persist-isolation",
+      "assertions": [
+        "cache_isolation_verified",
+        "no_cache_no_persist_clean"
+      ],
+      "tests": [
+        "cache_policy_revocation::no_cache_forbids_cross_process_body_sharing",
+        "cache_policy_revocation::no_persist_guarantees_zero_disk_mutation",
+        "coordination_contract::no_hidden_response_body_in_coordination_store",
+        "coordination_contract::private_bounded_sqlite_qualifications"
+      ]
+    },
+    {
+      "id": "concurrent-lease-coordination-and-recovery",
+      "assertions": [
+        "cache_isolation_verified",
+        "coordination_lease_recovery_verified"
+      ],
+      "tests": [
+        "coordination_contract::real_competing_processes_and_single_flight_wide_and_rerank",
+        "coordination_contract::lease_expiry_and_reacquisition_with_fencing_bump",
+        "coordination_contract::fresh_reacquisition_after_cache_loss_when_lease_completed",
+        "coordination_contract::completion_published_after_cache_put_eliminates_body_race",
+        "coordination_contract::old_owner_late_completion_rejected_after_expiry",
+        "coordination_contract::follower_deadline_causes_quiet_fallback",
+        "coordination_contract::different_session_and_event_isolation",
+        "coordination_contract::missing_owner_usage_remains_unknown_no_duplicate_attempt_charges"
+      ]
+    }
+  ]
+}
