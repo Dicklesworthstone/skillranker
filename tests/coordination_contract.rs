@@ -17,12 +17,12 @@
 
 use rusqlite::Connection;
 use skillranker::cache::{
-    CacheKey, CacheNamespace, CachedResponseEntry, CandidateDigest, CoordinateRequestQuery,
-    CoordinationKey, CoordinationPolicy, DEFAULT_CACHE_TTL_SECS, DEFAULT_LEASE_TTL_MS,
-    FencingGeneration, LeaseAcquisition, LeaseCoordinator, MemoryCoordinator, MemoryResponseCache,
-    PublishOutcome, RequestFingerprint, RequestFingerprintInput, RequestStage,
-    SingleFlightCoordinator, SqliteLeaseCoordinator, SqliteResponseCache,
-    compute_request_fingerprint,
+    CacheError, CacheKey, CacheLookupQuery, CacheLookupResult, CacheNamespace, CachedResponseEntry,
+    CandidateDigest, CoordinateRequestQuery, CoordinationKey, CoordinationPolicy,
+    DEFAULT_CACHE_TTL_SECS, DEFAULT_LEASE_TTL_MS, FencingGeneration, LeaseAcquisition,
+    LeaseCoordinator, MemoryCoordinator, MemoryResponseCache, PublishOutcome, RequestFingerprint,
+    RequestFingerprintInput, RequestStage, ResponseCache, SingleFlightCoordinator,
+    SqliteLeaseCoordinator, SqliteResponseCache, compute_request_fingerprint,
 };
 use skillranker::identity::{ContentHash, HarnessId, SessionId, SkillId};
 use skillranker::jev::codec::Usage;
@@ -31,7 +31,7 @@ use std::io::Read;
 use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 static NEXT_DIR: AtomicU64 = AtomicU64::new(0);
@@ -1600,4 +1600,343 @@ fn raced_cache_miss_force_reacquire_follows_active_leader() {
         )
         .unwrap();
     assert_eq!(publish_outcome, PublishOutcome::Published);
+}
+
+#[test]
+fn exact_boundary_lease_expiry_refuses_publish_sqlite() {
+    let tree = private_tree("boundary-expiry-sqlite");
+    let db_path = tree.join("coordination.sqlite3");
+    let key = test_key();
+    let ns = test_namespace("boundary-sqlite");
+    let fp = sample_request_fingerprint(&key, &ns);
+    let coord_key = CoordinationKey::compute(&key, &ns, &fp);
+
+    let policy = CoordinationPolicy {
+        cache_enabled: true,
+        cross_process_allowed: true,
+        lease_ttl_ms: 200,
+    };
+    let coordinator = SqliteLeaseCoordinator::open(&db_path).unwrap();
+
+    let t0 = 1_000_000u64;
+    // 1. Acquire lease at t0 (expires_at = 1_000_200)
+    let acq = coordinator.acquire(coord_key, t0, &policy).unwrap();
+    let leader = match acq {
+        LeaseAcquisition::Leading(l) => l,
+        other => panic!("expected leading, got {other:?}"),
+    };
+    assert_eq!(leader.lease_expires_at_unix_ms, 1_000_200);
+
+    let entry = CachedResponseEntry {
+        stage: RequestStage::Wide,
+        request_fingerprint: fp,
+        response_bytes: b"{\"winner\":\"boundary\"}".to_vec(),
+        received_at_unix_ms: t0,
+        ttl_seconds: DEFAULT_CACHE_TTL_SECS,
+        model: "jev-1".to_string(),
+        model_revision: Some("rev-1".to_string()),
+        original_usage: Usage {
+            input_tokens: 10,
+            output_tokens: 5,
+        },
+        attempt_id: Some(leader.attempt_id.clone()),
+    };
+
+    // 2. Attempt publish at exact expiration millisecond now == expires_at (1_000_200)
+    let outcome = coordinator
+        .complete_and_publish(
+            coord_key,
+            leader.owner_token,
+            leader.fencing_generation,
+            1_000_200,
+            Some((&key, &ns, &entry)),
+        )
+        .unwrap();
+
+    // Must be refused as Superseded
+    assert_eq!(
+        outcome,
+        PublishOutcome::Superseded {
+            expected_generation: FencingGeneration(1),
+            current_generation: Some(FencingGeneration(1)),
+        }
+    );
+
+    // 3. Verify response body was NOT published into SQLite cache
+    let cache = SqliteResponseCache::open(&db_path).unwrap();
+    let lookup = cache.get(&skillranker::cache::CacheLookupQuery {
+        key: &key,
+        namespace: &ns,
+        stage: RequestStage::Wide,
+        fingerprint: &fp,
+        now_unix_ms: 1_000_200,
+        active_model: "jev-1",
+        active_revision: Some("rev-1"),
+    });
+    assert!(
+        lookup.unwrap().fresh_entry().is_none(),
+        "cache body must not be published on boundary expiry"
+    );
+
+    // 4. Competitor acquiring at 1_000_200 sees lease as expired and reacquires
+    let acq2 = coordinator.acquire(coord_key, 1_000_200, &policy).unwrap();
+    match acq2 {
+        LeaseAcquisition::Leading(l2) => {
+            assert_eq!(l2.fencing_generation, FencingGeneration(2));
+        }
+        other => panic!("competitor at exact expiry should acquire lease, got {other:?}"),
+    }
+}
+
+#[test]
+fn exact_boundary_lease_expiry_refuses_publish_memory() {
+    let key = test_key();
+    let ns = test_namespace("boundary-mem");
+    let fp = sample_request_fingerprint(&key, &ns);
+    let coord_key = CoordinationKey::compute(&key, &ns, &fp);
+
+    let policy = CoordinationPolicy {
+        cache_enabled: true,
+        cross_process_allowed: false,
+        lease_ttl_ms: 200,
+    };
+    let coordinator = MemoryCoordinator::new();
+
+    let t0 = 1_000_000u64;
+    // 1. Acquire lease at t0 (expires_at = 1_000_200)
+    let acq = coordinator.acquire(coord_key, t0, &policy).unwrap();
+    let leader = match acq {
+        LeaseAcquisition::Leading(l) => l,
+        other => panic!("expected leading, got {other:?}"),
+    };
+    assert_eq!(leader.lease_expires_at_unix_ms, 1_000_200);
+
+    // 2. Attempt publish at exact expiration millisecond now == expires_at (1_000_200)
+    let mut publish_invoked = false;
+    let outcome = coordinator
+        .complete_and_publish(
+            coord_key,
+            leader.owner_token,
+            leader.fencing_generation,
+            1_000_200,
+            || {
+                publish_invoked = true;
+                Ok(())
+            },
+        )
+        .unwrap();
+
+    // Must be refused as Superseded and closure NOT invoked
+    assert_eq!(
+        outcome,
+        PublishOutcome::Superseded {
+            expected_generation: FencingGeneration(1),
+            current_generation: Some(FencingGeneration(1)),
+        }
+    );
+    assert!(
+        !publish_invoked,
+        "publish closure must not run on boundary expiry"
+    );
+
+    // 3. Competitor acquiring at 1_000_200 sees lease as expired and reacquires
+    let acq2 = coordinator.acquire(coord_key, 1_000_200, &policy).unwrap();
+    match acq2 {
+        LeaseAcquisition::Leading(l2) => {
+            assert_eq!(l2.fencing_generation, FencingGeneration(2));
+        }
+        other => panic!("competitor at exact expiry should acquire lease, got {other:?}"),
+    }
+}
+
+struct TrackingResponseCache {
+    inner: SqliteResponseCache,
+    put_count: Arc<AtomicUsize>,
+}
+
+impl ResponseCache for TrackingResponseCache {
+    fn sqlite_path(&self) -> Option<&Path> {
+        self.inner.sqlite_path()
+    }
+
+    fn get(&self, query: &CacheLookupQuery<'_>) -> Result<CacheLookupResult, CacheError> {
+        self.inner.get(query)
+    }
+
+    fn put(
+        &self,
+        key: &CacheKey,
+        namespace: &CacheNamespace,
+        entry: CachedResponseEntry,
+    ) -> Result<(), CacheError> {
+        self.put_count.fetch_add(1, Ordering::SeqCst);
+        self.inner.put(key, namespace, entry)
+    }
+
+    fn evict_namespace(
+        &self,
+        key: &CacheKey,
+        namespace: &CacheNamespace,
+    ) -> Result<usize, CacheError> {
+        self.inner.evict_namespace(key, namespace)
+    }
+}
+
+#[test]
+fn sqlite_coordinator_rejects_mismatched_cache_backends() {
+    let tree = private_tree("mismatched-cache");
+    let db1 = tree.join("coord.sqlite3");
+    let db2 = tree.join("other.sqlite3");
+    let key = test_key();
+    let ns = test_namespace("mismatched");
+    let fp = sample_request_fingerprint(&key, &ns);
+
+    let policy = CoordinationPolicy::default();
+    let coordinator = SingleFlightCoordinator::new(policy, Some(&db1)).unwrap();
+
+    let query = CoordinateRequestQuery {
+        key: &key,
+        namespace: &ns,
+        stage: RequestStage::Wide,
+        request_fingerprint: &fp,
+        deadline_unix_ms: 1_000_000 + 10_000,
+        active_model: "jev-1",
+        active_revision: Some("rev-1"),
+    };
+
+    let mut provider_called = false;
+
+    // 1. In-memory cache with SQLite coordinator is rejected before provider execution
+    let mem_cache = MemoryResponseCache::new();
+    let res = coordinator.coordinate_request(
+        &query,
+        &mem_cache,
+        || 1_000_000,
+        |_| {
+            provider_called = true;
+            panic!("provider must not be called on store mismatch");
+        },
+    );
+    assert!(!provider_called);
+    match res {
+        Err(skillranker::cache::CoordinationError::StorageError(msg)) => {
+            assert!(msg.contains("response cache store mismatch"));
+            assert!(msg.contains("supplied cache is in-memory"));
+        }
+        other => panic!("expected StorageError mismatch, got {other:?}"),
+    }
+
+    // 2. Different SQLite db path is rejected before provider execution
+    let other_cache = SqliteResponseCache::open(&db2).unwrap();
+    let res2 = coordinator.coordinate_request(
+        &query,
+        &other_cache,
+        || 1_000_000,
+        |_| {
+            provider_called = true;
+            panic!("provider must not be called on store mismatch");
+        },
+    );
+    assert!(!provider_called);
+    match res2 {
+        Err(skillranker::cache::CoordinationError::StorageError(msg)) => {
+            assert!(msg.contains("response cache store mismatch"));
+            assert!(msg.contains("supplied cache bound to"));
+        }
+        other => panic!("expected StorageError mismatch, got {other:?}"),
+    }
+}
+
+#[test]
+fn sqlite_coordinator_atomic_commit_never_calls_caller_cache_put() {
+    let tree = private_tree("atomic-no-secondary-put");
+    let db_path = tree.join("coord.sqlite3");
+    let key = test_key();
+    let ns = test_namespace("no-secondary-put");
+    let fp = sample_request_fingerprint(&key, &ns);
+
+    let policy = CoordinationPolicy::default();
+    let coordinator = SingleFlightCoordinator::new(policy, Some(&db_path)).unwrap();
+    let raw_cache = SqliteResponseCache::open(&db_path).unwrap();
+
+    let put_count = Arc::new(AtomicUsize::new(0));
+    let tracking_cache = TrackingResponseCache {
+        inner: raw_cache,
+        put_count: put_count.clone(),
+    };
+
+    let t0 = 1_000_000u64;
+    let query = CoordinateRequestQuery {
+        key: &key,
+        namespace: &ns,
+        stage: RequestStage::Wide,
+        request_fingerprint: &fp,
+        deadline_unix_ms: t0 + 10_000,
+        active_model: "jev-1",
+        active_revision: Some("rev-1"),
+    };
+
+    let res = coordinator
+        .coordinate_request(
+            &query,
+            &tracking_cache,
+            || t0,
+            |attempt_id| {
+                let entry = CachedResponseEntry {
+                    stage: RequestStage::Wide,
+                    request_fingerprint: fp,
+                    response_bytes: b"{\"winner\":\"atomic_no_put\"}".to_vec(),
+                    received_at_unix_ms: t0,
+                    ttl_seconds: DEFAULT_CACHE_TTL_SECS,
+                    model: "jev-1".to_string(),
+                    model_revision: Some("rev-1".to_string()),
+                    original_usage: Usage {
+                        input_tokens: 10,
+                        output_tokens: 5,
+                    },
+                    attempt_id: Some(attempt_id.to_string()),
+                };
+                Ok((
+                    entry,
+                    Usage {
+                        input_tokens: 10,
+                        output_tokens: 5,
+                    },
+                ))
+            },
+        )
+        .unwrap();
+
+    assert!(!res.is_follower);
+    assert!(!res.served_from_cache);
+    assert_eq!(res.entry.response_bytes, b"{\"winner\":\"atomic_no_put\"}");
+
+    // Critical assertion: tracking_cache.put MUST NOT have been called!
+    // The SQLite coordinator must write atomically inside complete_and_publish,
+    // with ZERO un-fenced secondary cache.put calls outside the lease lock.
+    assert_eq!(
+        put_count.load(Ordering::SeqCst),
+        0,
+        "caller cache.put must never be invoked when SQLite coordinator publishes atomically"
+    );
+
+    // Verify the response is genuinely in SQLite cache
+    let lookup = tracking_cache
+        .get(&CacheLookupQuery {
+            key: &key,
+            namespace: &ns,
+            stage: RequestStage::Wide,
+            fingerprint: &fp,
+            now_unix_ms: t0 + 10,
+            active_model: "jev-1",
+            active_revision: Some("rev-1"),
+        })
+        .unwrap();
+
+    match lookup {
+        CacheLookupResult::Hit { entry, .. } => {
+            assert_eq!(entry.response_bytes, b"{\"winner\":\"atomic_no_put\"}");
+        }
+        other => panic!("expected CacheLookupResult::Hit from SQLite cache, got {other:?}"),
+    }
 }

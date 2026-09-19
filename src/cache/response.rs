@@ -16,6 +16,7 @@ use crate::jev::codec::Usage;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt;
+use std::path::Path;
 use std::sync::{Arc, RwLock};
 
 /// Default and maximum time-to-live: 10 minutes (600 seconds). A longer stored
@@ -337,6 +338,11 @@ pub trait ResponseCache: Send + Sync {
         key: &CacheKey,
         namespace: &CacheNamespace,
     ) -> Result<usize, CacheError>;
+
+    /// Returns the SQLite backing path if this cache is backed by SQLite, or None if in-memory.
+    fn sqlite_path(&self) -> Option<&Path> {
+        None
+    }
 }
 
 impl ResponseCache for MemoryResponseCache {

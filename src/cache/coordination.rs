@@ -344,7 +344,7 @@ impl MemoryCoordinator {
             });
         }
 
-        if now_unix_ms > existing.expires_at_unix_ms {
+        if now_unix_ms >= existing.expires_at_unix_ms {
             return Ok(PublishOutcome::Superseded {
                 expected_generation: generation,
                 current_generation: Some(existing.fencing_generation),
@@ -779,7 +779,7 @@ impl SqliteLeaseCoordinator {
             });
         }
 
-        if now_unix_ms > expires_at {
+        if now_unix_ms >= expires_at {
             tx.commit()?;
             return Ok(PublishOutcome::Superseded {
                 expected_generation: generation,
@@ -1211,6 +1211,10 @@ type CachedResponseRow = (
 );
 
 impl ResponseCache for SqliteResponseCache {
+    fn sqlite_path(&self) -> Option<&Path> {
+        Some(&self.db_path)
+    }
+
     fn get(&self, query: &CacheLookupQuery<'_>) -> Result<CacheLookupResult, CacheError> {
         let conn = open_qualified_connection(&self.db_path)
             .map_err(|e| CacheError::StorageError(e.to_string()))?;
@@ -1470,17 +1474,13 @@ impl SingleFlightCoordinator {
             } else {
                 None
             };
-            let outcome = sql.complete_and_publish(
+            sql.complete_and_publish(
                 coord_key,
                 leader.owner_token,
                 leader.fencing_generation,
                 finish_now,
                 cache_entry,
-            )?;
-            if outcome == PublishOutcome::Published && self.policy.cache_enabled {
-                let _ = cache.put(query.key, query.namespace, response_entry.clone());
-            }
-            outcome
+            )?
         } else {
             self.memory.complete_and_publish(
                 coord_key,
@@ -1617,6 +1617,29 @@ impl SingleFlightCoordinator {
             CoordinationKey::compute(query.key, query.namespace, query.request_fingerprint);
         let now = now_fn();
         check_request_deadline(query, now)?;
+
+        // Validate that if cross-process SQLite coordination is active and caching is enabled,
+        // the supplied cache backend is bound to the exact same SQLite database.
+        if self.policy.cache_enabled
+            && let Some(sql) = &self.sqlite
+        {
+            match cache.sqlite_path() {
+                Some(path) if path == sql.db_path() => {}
+                Some(other) => {
+                    return Err(CoordinationError::StorageError(format!(
+                        "response cache store mismatch: coordinator bound to SQLite {:?}, supplied cache bound to {:?}",
+                        sql.db_path(),
+                        other
+                    )));
+                }
+                None => {
+                    return Err(CoordinationError::StorageError(format!(
+                        "response cache store mismatch: coordinator bound to SQLite {:?}, supplied cache is in-memory",
+                        sql.db_path()
+                    )));
+                }
+            }
+        }
 
         // 1. Initial cache check
         if self.policy.cache_enabled {
