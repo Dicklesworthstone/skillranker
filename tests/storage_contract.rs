@@ -1,6 +1,8 @@
 #![cfg(target_os = "linux")]
 
 use rusqlite::Connection;
+use skillranker::cache::{CachedResponseEntry, RequestFingerprint, RequestStage};
+use skillranker::jev::codec::Usage;
 use skillranker::limits::DurationMillis;
 use skillranker::runtime::{EntryClock, ProcessInvocation};
 use skillranker::storage::{
@@ -148,15 +150,18 @@ fn repeated_initialization_preserves_identity_generation_and_private_wal_files()
             .unwrap(),
         "wal"
     );
+    // Schema v2 holds exactly the metadata, key and response tables.
+    let mut tables = observer
+        .prepare("SELECT name FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY name")
+        .unwrap()
+        .query_map([], |r| r.get::<_, String>(0))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    tables.sort();
     assert_eq!(
-        observer
-            .query_row(
-                "SELECT count(*) FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*'",
-                [],
-                |r| r.get::<_, i64>(0)
-            )
-            .unwrap(),
-        1
+        tables,
+        ["sr_cache_key", "sr_cache_meta", "sr_cache_response"]
     );
     assert!(!format!("{second:?}").contains(path.to_str().unwrap()));
 }
@@ -548,4 +553,244 @@ fn abrupt_process_exit_preserves_only_committed_generation() {
         serde_json::json!({"case":"process-death", "stage":"recovery", "schema":CACHE_SCHEMA_VERSION,
         "elapsed_ms":start.elapsed().as_millis(), "result":"committed-only", "child_exit":73})
     );
+}
+
+const NOW: u64 = 1_800_000_000_000;
+
+fn entry(stage: RequestStage, id: u8, received_at_unix_ms: u64, ttl: u32) -> CachedResponseEntry {
+    CachedResponseEntry {
+        stage,
+        request_fingerprint: RequestFingerprint::from_bytes([id; 32]),
+        response_bytes: format!("{{\"synthetic\":{id}}}").into_bytes(),
+        received_at_unix_ms,
+        ttl_seconds: ttl,
+        model: "jev-latest".to_owned(),
+        model_revision: None,
+        original_usage: Usage {
+            input_tokens: 100,
+            output_tokens: 25,
+        },
+        attempt_id: None,
+    }
+}
+
+fn record(
+    store: CacheStore,
+    namespace: [u8; 32],
+    entry: CachedResponseEntry,
+    now: u64,
+) -> Result<CacheStore, StoreError> {
+    let invocation = ProcessInvocation::enter().unwrap();
+    let cx = invocation.request_cx().unwrap();
+    let result = store.record_response(&invocation, &cx, namespace, entry, now);
+    assert!(invocation.shutdown());
+    result
+}
+
+fn read(
+    store: CacheStore,
+    namespace: [u8; 32],
+    stage: RequestStage,
+    id: u8,
+) -> Result<(CacheStore, Option<CachedResponseEntry>), StoreError> {
+    let invocation = ProcessInvocation::enter().unwrap();
+    let cx = invocation.request_cx().unwrap();
+    let result = store.response(
+        &invocation,
+        &cx,
+        namespace,
+        stage,
+        RequestFingerprint::from_bytes([id; 32]),
+    );
+    assert!(invocation.shutdown());
+    result
+}
+
+fn stored_key(path: &Path) -> Vec<u8> {
+    Connection::open(path.join(CACHE_FILE))
+        .unwrap()
+        .query_row("SELECT key FROM sr_cache_key", [], |r| r.get(0))
+        .unwrap()
+}
+
+#[test]
+fn the_fingerprint_key_is_random_stable_and_never_printed() {
+    let (a, b) = (private_tree("key-a"), private_tree("key-b"));
+    drop(ready(&a));
+    drop(ready(&b));
+    let first = stored_key(&a);
+    assert_eq!(first.len(), 32);
+    assert_ne!(first, vec![0; 32]);
+    assert_ne!(first, stored_key(&b), "each store draws its own key");
+    let reopened = ready(&a);
+    assert_eq!(stored_key(&a), first, "reopening keeps the key");
+    assert_eq!(
+        format!("{:?}", reopened.fingerprint_key()),
+        "CacheKey(<secret-key>)"
+    );
+    assert_eq!(
+        fs::metadata(a.join(CACHE_FILE)).unwrap().mode() & 0o7777,
+        0o600
+    );
+}
+
+#[test]
+fn responses_round_trip_only_by_exact_identity_and_generation() {
+    let path = private_tree("responses");
+    let namespace = [7; 32];
+    let store = record(
+        ready(&path),
+        namespace,
+        entry(RequestStage::Wide, 1, NOW, 600),
+        NOW,
+    )
+    .unwrap();
+    let (store, found) = read(store, namespace, RequestStage::Wide, 1).unwrap();
+    let found = found.expect("the recorded response");
+    let expected = entry(RequestStage::Wide, 1, NOW, 600);
+    assert_eq!(found.response_bytes, expected.response_bytes);
+    assert_eq!(found.received_at_unix_ms, NOW);
+    assert_eq!(found.ttl_seconds, 600);
+    assert_eq!(found.model, "jev-latest");
+    assert_eq!(found.original_usage, expected.original_usage);
+    // Another stage, fingerprint or namespace is a miss, never a neighbor.
+    let (store, miss) = read(store, namespace, RequestStage::Rerank, 1).unwrap();
+    assert!(miss.is_none());
+    let (store, miss) = read(store, namespace, RequestStage::Wide, 2).unwrap();
+    assert!(miss.is_none());
+    let (store, miss) = read(store, [8; 32], RequestStage::Wide, 1).unwrap();
+    assert!(miss.is_none());
+    // A new generation makes earlier rows unreachable, and handles holding
+    // the old stamp can neither read nor record.
+    let stale_reader = ready(&path);
+    let stale_writer = ready(&path);
+    let advanced = advance(store, stale_reader.stamp()).unwrap();
+    assert_eq!(
+        read(stale_reader, namespace, RequestStage::Wide, 1).err(),
+        Some(StoreError::StaleGeneration)
+    );
+    assert_eq!(
+        record(
+            stale_writer,
+            namespace,
+            entry(RequestStage::Wide, 9, NOW, 600),
+            NOW
+        )
+        .err(),
+        Some(StoreError::StaleGeneration)
+    );
+    let (_, gone) = read(advanced, namespace, RequestStage::Wide, 1).unwrap();
+    assert!(gone.is_none(), "an earlier generation is never served");
+}
+
+#[test]
+fn recording_prunes_expired_future_and_earlier_generation_rows() {
+    let path = private_tree("prune");
+    let namespace = [3; 32];
+    let past = NOW - 700_000;
+    let future = NOW + 60_000;
+    let store = record(
+        ready(&path),
+        namespace,
+        entry(RequestStage::Wide, 1, past, 600),
+        past,
+    )
+    .unwrap();
+    // At `future`, row 1 is past its TTL and is pruned.
+    let store = record(
+        store,
+        namespace,
+        entry(RequestStage::Wide, 2, future, 600),
+        future,
+    )
+    .unwrap();
+    // Back at NOW, row 2 is dated in the future and is pruned.
+    drop(
+        record(
+            store,
+            namespace,
+            entry(RequestStage::Rerank, 3, NOW, 600),
+            NOW,
+        )
+        .unwrap(),
+    );
+    let remaining: Vec<Vec<u8>> = Connection::open(path.join(CACHE_FILE))
+        .unwrap()
+        .prepare("SELECT fingerprint FROM sr_cache_response")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(remaining, vec![vec![3u8; 32]]);
+}
+
+#[test]
+fn unbounded_entries_are_refused_before_any_write() {
+    let path = private_tree("bounds");
+    let namespace = [5; 32];
+    let mut oversized = entry(RequestStage::Wide, 1, NOW, 600);
+    oversized.response_bytes = vec![b' '; 2 * 1024 * 1024 + 1];
+    let mut unnamed = entry(RequestStage::Wide, 1, NOW, 600);
+    unnamed.model.clear();
+    for bad in [
+        entry(RequestStage::Wide, 1, NOW, 0),
+        entry(RequestStage::Wide, 1, NOW, 601),
+        oversized,
+        unnamed,
+    ] {
+        assert_eq!(
+            record(ready(&path), namespace, bad, NOW).err(),
+            Some(StoreError::Quota)
+        );
+    }
+    // Positive twin: a bounded entry records.
+    let store = record(
+        ready(&path),
+        namespace,
+        entry(RequestStage::Wide, 1, NOW, 600),
+        NOW,
+    )
+    .unwrap();
+    assert!(
+        read(store, namespace, RequestStage::Wide, 1)
+            .unwrap()
+            .1
+            .is_some()
+    );
+}
+
+#[test]
+fn a_version_one_store_is_refused_without_repair() {
+    let path = private_tree("version-one");
+    let db = raw_database(&path);
+    db.execute_batch(
+        "CREATE TABLE sr_cache_meta (
+        singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+        incarnation BLOB NOT NULL CHECK(length(incarnation)=16),
+        generation INTEGER NOT NULL CHECK(generation>=0),
+        schema_id TEXT NOT NULL
+    ) STRICT;
+    INSERT INTO sr_cache_meta VALUES (1, randomblob(16), 0, 'sr-cache-foundation-v1');
+    PRAGMA application_id=1397900104;
+    PRAGMA user_version=1;",
+    )
+    .unwrap();
+    for access in [CacheAccess::ExistingOnly, CacheAccess::Initialize] {
+        assert_eq!(
+            open(&path, access).unwrap_err(),
+            StoreError::IncompatibleSchema
+        );
+    }
+    let version: i64 = db
+        .pragma_query_value(None, "user_version", |r| r.get(0))
+        .unwrap();
+    let tables: i64 = db
+        .query_row(
+            "SELECT count(*) FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!((version, tables), (1, 1), "nothing was added or rewritten");
 }

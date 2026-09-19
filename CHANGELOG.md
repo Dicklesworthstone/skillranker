@@ -51,6 +51,14 @@
   declaration validation remains distinct from an execution receipt.
 
 ### Added
+- `sr rank` keeps an exact response cache in the owner-only platform cache
+  directory. An identical request in the same session is answered without
+  contacting Jev, with zero new usage, for up to ten minutes; `--offline` can
+  serve a complete cached pair. Fingerprints use a random key kept in the
+  store. The cache never crosses sessions, and a cached wide answer is never
+  paired with a fresh rerank. `--no-cache`, `--no-persist` and `--dry-run`
+  never touch it. The cache store schema is now version 2; a version 1 store
+  is refused and ranking continues uncached.
 - `sr capabilities --json` prints this build's capability registry
   (`sr.capabilities.v1`): every command as implemented or planned, flags
   refused until their phase, adapter evidence, schema versions, features,

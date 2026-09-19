@@ -166,6 +166,7 @@ fn test_explicit_directive_bypasses_inference() {
         workspace: workspace.clone(),
         user_config_root: None,
         home: None,
+        cache_dir: None,
         sources: ConfigSources::default(),
         gate,
         source_options,
@@ -180,7 +181,7 @@ fn test_explicit_directive_bypasses_inference() {
 
     let doc = invocation
         .runtime()
-        .block_on(async { execute_pipeline(&clock, &cx, args, None).await })
+        .block_on(async { execute_pipeline(&invocation, &cx, args, None).await })
         .expect("pipeline execution succeeded");
 
     assert_eq!(doc.kind(), skillranker::output::OutputKind::Decision(Decision::Explicit));
@@ -317,6 +318,7 @@ fn test_ranked_flow_with_mock_jev() {
         workspace: workspace.clone(),
         user_config_root: None,
         home: None,
+        cache_dir: None,
         sources,
         gate,
         source_options,
@@ -331,7 +333,7 @@ fn test_ranked_flow_with_mock_jev() {
 
     let doc = invocation
         .runtime()
-        .block_on(async { execute_pipeline(&clock, &cx, args, Some(&mock_transport)).await })
+        .block_on(async { execute_pipeline(&invocation, &cx, args, Some(&mock_transport)).await })
         .expect("pipeline execution succeeded");
 
     assert_eq!(doc.kind(), skillranker::output::OutputKind::Decision(Decision::Ranked));
@@ -427,6 +429,7 @@ fn test_low_need_abstention() {
         workspace: workspace.clone(),
         user_config_root: None,
         home: None,
+        cache_dir: None,
         sources,
         gate,
         source_options,
@@ -441,7 +444,7 @@ fn test_low_need_abstention() {
 
     let doc = invocation
         .runtime()
-        .block_on(async { execute_pipeline(&clock, &cx, args, Some(&mock_transport)).await })
+        .block_on(async { execute_pipeline(&invocation, &cx, args, Some(&mock_transport)).await })
         .expect("pipeline execution succeeded");
 
     assert_eq!(doc.kind(), skillranker::output::OutputKind::Decision(Decision::Abstain));
@@ -484,6 +487,7 @@ fn test_dry_run_preview_without_network() {
         workspace: workspace.clone(),
         user_config_root: None,
         home: None,
+        cache_dir: None,
         sources: ConfigSources::default(),
         gate,
         source_options,
@@ -498,7 +502,7 @@ fn test_dry_run_preview_without_network() {
 
     let doc = invocation
         .runtime()
-        .block_on(async { execute_pipeline(&clock, &cx, args, None).await })
+        .block_on(async { execute_pipeline(&invocation, &cx, args, None).await })
         .expect("pipeline execution succeeded");
 
     assert_eq!(doc.kind(), skillranker::output::OutputKind::Decision(Decision::Abstain));
@@ -668,6 +672,7 @@ fn test_low_fit_abstention() {
         workspace: workspace.clone(),
         user_config_root: None,
         home: None,
+        cache_dir: None,
         sources,
         gate,
         source_options,
@@ -682,7 +687,7 @@ fn test_low_fit_abstention() {
 
     let doc = invocation
         .runtime()
-        .block_on(async { execute_pipeline(&clock, &cx, args, Some(&mock_transport)).await })
+        .block_on(async { execute_pipeline(&invocation, &cx, args, Some(&mock_transport)).await })
         .expect("pipeline execution succeeded");
 
     assert_eq!(doc.kind(), skillranker::output::OutputKind::Decision(Decision::Abstain));
@@ -811,6 +816,7 @@ fn test_none_winner_abstention() {
         workspace: workspace.clone(),
         user_config_root: None,
         home: None,
+        cache_dir: None,
         sources,
         gate,
         source_options,
@@ -825,7 +831,7 @@ fn test_none_winner_abstention() {
 
     let doc = invocation
         .runtime()
-        .block_on(async { execute_pipeline(&clock, &cx, args, Some(&mock_transport)).await })
+        .block_on(async { execute_pipeline(&invocation, &cx, args, Some(&mock_transport)).await })
         .expect("pipeline execution succeeded");
 
     assert_eq!(doc.kind(), skillranker::output::OutputKind::Decision(Decision::Abstain));

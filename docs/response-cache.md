@@ -38,6 +38,29 @@ Incoming Stage Query (Key, Namespace, Stage, Fingerprint)
 7. **Zero-Cost Execution Accounting**:
    - When a ranking pipeline run is wholly satisfied from cache, `ExecutionAccounting` reports `new_requests = 0` and `new_tokens = 0`, ensuring truthful cost tracking and preventing double-billing or false usage reporting.
 
+## Persistent Store in `sr rank`
+
+`sr rank` keeps validated responses in the qualified owner-only store described
+in [storage foundation](storage-foundation.md), under the platform cache
+directory (`$XDG_CACHE_HOME/sr` or `~/.cache/sr`).
+
+- **When it is used:** only when the response-cache effect is enabled and the
+  context carries a session identity. `--no-cache`, `--no-persist` and
+  `--dry-run` never open or create the store. A context without a session never
+  shares responses across invocations.
+- **Keying:** fingerprints use the store's random key. The namespace binds the
+  workspace, session, branch, context epoch, harness and store generation.
+  Request fingerprints bind the exact request bytes, candidates, endpoint,
+  model alias and policy versions.
+- **Pairing:** a cached wide answer is served only when it needs no rerank (low
+  need) or when the rerank answer for its exact shortlist is cached too.
+  Otherwise the pair is refreshed together, or the run is `cache-miss` when no
+  send is allowed. `--offline` can therefore serve a complete cached pair.
+- **Accounting:** a served pair reports zero new requests, attempts and tokens.
+- **Recording:** fresh answers are recorded after local evaluation, with receipt
+  time as wall-clock milliseconds and the ten-minute TTL.
+- **Failure:** an unusable store never fails ranking; the run continues uncached.
+
 ## Verification
 
 The contract is verified in `tests/response_cache_contract.rs` (8 tests, 0 failures):

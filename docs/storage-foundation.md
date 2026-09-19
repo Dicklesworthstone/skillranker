@@ -1,10 +1,10 @@
 # Qualified cache storage foundation
 
 `skillranker::storage` is a Linux library boundary for opening an explicitly
-selected disposable cache and fencing generation changes. It is not yet wired
-to ranking or a storage CLI. It does not store provider responses, initialize an
-observation ledger, create an allowance store, or create a fingerprint key.
-Those operations belong to subsequent roadmap tasks.
+selected disposable cache, fencing generation changes, and holding the
+persistent exact response cache that `sr rank` uses: an owner-only fingerprint
+key and generation-stamped validated responses. It does not initialize an
+observation ledger or create an allowance store, and there is no storage CLI.
 
 ## Entry points and effects
 
@@ -49,14 +49,30 @@ fails closed until its source and tests are reviewed; a Cargo version string
 alone is not engine evidence. `linked_engine()` exposes only this public engine
 identity for future doctor integration. See [SQLite's WAL documentation](https://www.sqlite.org/wal.html).
 
-Schema version 1 uses application ID `SRCH` and one strict metadata table with
-an opaque 16-byte random incarnation, nonnegative generation, and a fixed schema
-identity. The stored DDL and singleton cardinality are checked, so a matching
+Schema version 2 uses application ID `SRCH` and exactly three strict tables:
+metadata (an opaque 16-byte random incarnation, nonnegative generation and a
+fixed schema identity), the fingerprint key (32 bytes from the operating
+system CSPRNG, drawn once at initialization), and validated responses. Every
+table's stored DDL and the singleton cardinalities are checked, so a matching
 `user_version` alone cannot authorize mutation. A newer schema is inspected with
 a read-only SQLite connection and rejected. This is not a promise of zero WAL
-shared-memory bookkeeping. Corrupt, foreign, or incompatible stores are refused
-without replacement, downgrade, permission repair, or automatic migration.
-No migration, backup, prune, or repair command is implemented here.
+shared-memory bookkeeping. Corrupt, foreign, or incompatible stores, including
+version 1 foundation stores, are refused without replacement, downgrade,
+permission repair, or automatic migration. The rank caller then continues
+uncached. No migration, backup or repair command is implemented here.
+
+`CacheStore::response` reads one entry of the current generation by exact
+namespace hash, stage and request fingerprint. `CacheStore::record_response`
+writes one inside `BEGIN IMMEDIATE`. Both check the store incarnation and
+generation first, so a handle from before a generation change can neither read
+nor record. A response row keeps the validated wire bytes (at most the 2 MiB
+decoded-response cap), receipt time, a TTL of 1–600 seconds, the requested
+model alias, an optional revision and the original usage. Recording first
+prunes rows of other generations, rows past their TTL and rows dated in the
+future; none of them could ever be served. Freshness, model matching and stage
+pairing are the caller's decisions (see [response cache](response-cache.md)).
+The key never leaves the store except as keyed-hash input, and `Debug` output
+omits it.
 
 ## Filesystem boundary
 
@@ -93,14 +109,14 @@ cancellation/deadline during SQL execution. Temporary tables stay in memory;
 SQL/value sizes and attached databases/worker threads are restricted.
 
 The main file and known sidecars share a 64 MiB logical cap. Admission keeps
-4 MiB for maintenance plus 1 MiB for the next bounded metadata mutation, and
-requires 5 MiB free on the filesystem. A connection page-count ceiling, a
-64-page automatic checkpoint interval and a 1 MiB journal-size target complement
-pre/post file checks. The only writable data is one fixed-size metadata row.
-The journal target is not a hard WAL limit when readers pin frames; subsequent
-operations stop at the recording ceiling. Future bulk writes, response bodies,
-backup files and temporary copies need their own conservative growth admission
-and retention/maintenance tests before being added. External writers and
+4 MiB for maintenance plus 1 MiB of mutation margin, and requires 5 MiB free on
+the filesystem. A connection page-count ceiling, a 64-page automatic checkpoint
+interval and a 1 MiB journal-size target complement pre/post file checks. The
+writable data is the metadata and key singletons and bounded response rows; at
+the page ceiling recording stops with a typed error and ranking continues
+uncached. The journal target is not a hard WAL limit when readers pin frames;
+subsequent operations stop at the recording ceiling. Backup files and temporary
+copies need their own conservative growth admission before being added. External writers and
 unrelated disk consumption cannot be globally bounded by these checks.
 
 Close-time checkpointing is disabled to avoid adding an unbudgeted maintenance
@@ -124,7 +140,10 @@ effects, repeated initialization, private WAL files, path/type/link/mode refusal
 corrupt/foreign/newer stores, schema drift, real lock contention with successful
 retry, generation/incarnation fencing, overflow, cancellation, expiry, quota,
 directory replacement and abrupt process death across committed/uncommitted
-generations. Unit tests separately cover engine qualification and the
+generations. Schema v2 cases cover a random, stable, never-printed key; exact
+response identity and generation fencing for reads and writes; pruning of
+expired, future and earlier-generation rows; refusal of unbounded entries; and
+refusal of a version 1 store without repair. Unit tests separately cover engine qualification and the
 filesystem/free-space admission predicates. Synthetic policy inputs are not
 evidence of a real mounted network filesystem or an actual disk-full crash.
 

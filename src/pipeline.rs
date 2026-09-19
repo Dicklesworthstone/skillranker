@@ -11,8 +11,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use crate::cache::{
-    CacheKey, CacheLookupQuery, CacheLookupResult, CacheNamespace, CandidateDigest,
-    MemoryResponseCache, RequestFingerprintInput, RequestStage, compute_request_fingerprint,
+    CacheKey, CacheNamespace, CachedResponseEntry, CandidateDigest, DEFAULT_CACHE_TTL_SECS,
+    MemoryResponseCache, RequestFingerprint, RequestFingerprintInput, RequestStage,
+    compute_request_fingerprint,
 };
 use crate::cli::ConfigFiles;
 use crate::config::{
@@ -74,6 +75,9 @@ pub struct RankArgs {
     /// The user's home directory: Claude's user skills live in its
     /// `.claude/skills`, not under the configuration root.
     pub home: Option<PathBuf>,
+    /// Trusted host directory for the persistent response cache. `None`
+    /// keeps every response in this invocation only.
+    pub cache_dir: Option<PathBuf>,
     pub sources: ConfigSources,
     pub gate: EffectGate,
     pub source_options: SourceOptions,
@@ -162,13 +166,14 @@ struct Admitted {
 /// admission are bare typed failures; later ones are full unavailable
 /// decisions carrying the usage already incurred.
 pub async fn execute_pipeline(
-    clock: &EntryClock,
+    invocation: &ProcessInvocation,
     cx: &Cx,
     args: RankArgs,
     transport: Option<&dyn JevTransport>,
 ) -> Result<OutputDocument, PipelineFailure> {
+    let clock = &invocation.clock();
     let mut progress = Progress::default();
-    match rank_once(clock, cx, args, transport, &mut progress).await {
+    match rank_once(invocation, clock, cx, args, transport, &mut progress).await {
         Err(failure) => match &progress.admitted {
             Some(admitted) => {
                 let evaluated = Evaluated {
@@ -255,6 +260,7 @@ fn unavailable_document(
 }
 
 async fn rank_once(
+    invocation: &ProcessInvocation,
     clock: &EntryClock,
     cx: &Cx,
     args: RankArgs,
@@ -872,21 +878,39 @@ async fn rank_once(
         render_context_and_receipt(&normalized_context, &render_opts)
             .map_err(|e| failure(7, "oversized-input", format!("Context render error: {e:?}")))?;
 
-    // 10. Cache check for Wide Stage
-    // Fingerprints are keyed by fresh randomness, never a fixed constant. A
-    // protected persistent key and cross-invocation cache are not wired yet.
-    let cache_key = CacheKey::generate().map_err(|_| {
-        failure(
-            9,
-            "storage-failure",
-            "Fingerprint key could not be generated",
-        )
-    })?;
-    let cache_ns = CacheNamespace::new(
+    // 10. The exact response cache. Persistent entries need a trusted cache
+    // directory, an enabled response-cache effect and a session identity to
+    // scope them. Otherwise fingerprints are keyed with fresh randomness and
+    // nothing outlives this invocation. An unusable store degrades to that.
+    let mut store = match (&args.cache_dir, &normalized_context.session_id) {
+        (Some(dir), Some(_)) => persistent::Store::open(invocation, cx, &gate, dir),
+        _ => None,
+    };
+    let cache_key = match &store {
+        Some(store) => store.key(),
+        None => CacheKey::generate().map_err(|_| {
+            failure(
+                9,
+                "storage-failure",
+                "Fingerprint key could not be generated",
+            )
+        })?,
+    };
+    let mut cache_ns = CacheNamespace::new(
         normalized_context.harness.clone(),
-        current_receipt.generation(),
+        store.as_ref().map_or(0, persistent::Store::generation),
     )
     .with_workspace(workspace_id.clone());
+    if let Some(id) = &normalized_context.session_id {
+        cache_ns = cache_ns.with_session(id.clone());
+    }
+    if let Some(id) = &normalized_context.branch_id {
+        cache_ns = cache_ns.with_branch(id.clone());
+    }
+    if let Some(epoch) = &normalized_context.context_epoch {
+        cache_ns = cache_ns.with_context_epoch(epoch.clone());
+    }
+    let namespace = MemoryResponseCache::namespace_hash(&cache_key, &cache_ns);
 
     let candidate_ids: Vec<SkillId> = candidate_skills
         .iter()
@@ -901,7 +925,6 @@ async fn rank_once(
         })
         .collect();
 
-    let memory_cache = MemoryResponseCache::new();
     // One transport, credential binding and attempt allowance per invocation:
     // at most two logical requests and four HTTP attempts, with classified
     // retries inside the entry deadline. Opened only when a send is due, so
@@ -1000,57 +1023,86 @@ async fn rank_once(
         })?,
         None => EndpointConfig::production(),
     };
-    let wide_req_fp = compute_request_fingerprint(
-        &cache_key,
-        &cache_ns,
-        &RequestFingerprintInput {
-            stage: RequestStage::Wide,
-            canonical_redacted_state: &rendered_context.to_json_bytes().unwrap_or_default(),
-            candidates: &candidate_digests,
-            questions_digest: *blake3::hash(wide_builder.bytes()).as_bytes(),
-            endpoint_url: endpoint.target_url().as_str(),
-            model: effective.model().as_str(),
-            prompt_version: wide::WIDE_POLICY_VERSION,
-            adapter_version: "v1",
-            privacy_policy_version: "v1",
-            excerpt_strategy: "default",
-        },
+    let canonical_state = rendered_context.to_json_bytes().unwrap_or_default();
+    let active_model = effective.model().as_str();
+    let fingerprint = |stage: RequestStage,
+                       candidates: &[CandidateDigest],
+                       request: &[u8],
+                       version: &str|
+     -> RequestFingerprint {
+        compute_request_fingerprint(
+            &cache_key,
+            &cache_ns,
+            &RequestFingerprintInput {
+                stage,
+                canonical_redacted_state: &canonical_state,
+                candidates,
+                questions_digest: *blake3::hash(request).as_bytes(),
+                endpoint_url: endpoint.target_url().as_str(),
+                model: active_model,
+                prompt_version: version,
+                adapter_version: "v1",
+                privacy_policy_version: "v1",
+                excerpt_strategy: "default",
+            },
+        )
+    };
+    let wide_req_fp = fingerprint(
+        RequestStage::Wide,
+        &candidate_digests,
+        wide_builder.bytes(),
+        wide::WIDE_POLICY_VERSION,
     );
 
-    // An exact cached answer is served without a send; `--no-cache` skips the
-    // lookup entirely.
-    let cached = if gate.policy().flags().no_cache {
-        None
-    } else {
-        let lookup_q = CacheLookupQuery {
-            key: &cache_key,
-            namespace: &cache_ns,
-            stage: RequestStage::Wide,
-            fingerprint: &wide_req_fp,
-            now_unix_ms: clock.now().as_millis(),
-            active_model: effective.model().as_str(),
-            active_revision: None,
-        };
-        match memory_cache.get(&lookup_q) {
-            Ok(CacheLookupResult::Hit { entry, .. }) => {
-                progress.metrics.wide_hit = true;
-                progress.metrics.cache_hit = true;
-                Some(
-                    wide_builder
-                        .request()
-                        .decode_response(&entry.response_bytes)
-                        .map_err(|e| {
-                            failure(
-                                10,
-                                "invalid-provider-response",
-                                format!("Corrupt cached wide response: {e:?}"),
-                            )
-                        })?,
-                )
-            }
-            _ => None,
+    // An exact cached pair is served without a send. A cached wide answer is
+    // used only when it needs no rerank, or when the rerank answer for its
+    // shortlist is cached too: under an unpinned model alias a cached wide
+    // answer is never paired with a fresh rerank.
+    let now_unix_ms = wall_clock_ms();
+    let mut cached_rerank: Option<Response> = None;
+    let cached = persistent::lookup(
+        &mut store,
+        invocation,
+        cx,
+        namespace,
+        RequestStage::Wide,
+        wide_req_fp,
+        active_model,
+        now_unix_ms,
+    )
+    .and_then(|(bytes, age_ms)| {
+        let response = wide_builder.request().decode_response(&bytes).ok()?;
+        let outcome = wide::evaluate(&wide_builder, &response, gate_threshold, sizes).ok()?;
+        if let WideDecision::Shortlist(list) = &outcome.decision {
+            let ids: Vec<SkillId> = list.iter().map(|s| s.skill.binding.id.clone()).collect();
+            let builder = rerank::build(&roster, &ids, &rendered_context, active_model).ok()?;
+            let rerank_fp = fingerprint(
+                RequestStage::Rerank,
+                &shortlist_digests(list),
+                builder.bytes(),
+                rerank::RERANK_POLICY_VERSION,
+            );
+            let (bytes, _) = persistent::lookup(
+                &mut store,
+                invocation,
+                cx,
+                namespace,
+                RequestStage::Rerank,
+                rerank_fp,
+                active_model,
+                now_unix_ms,
+            )?;
+            cached_rerank = Some(builder.request().decode_response(&bytes).ok()?);
         }
-    };
+        Some((response, age_ms))
+    });
+    let wide_fresh = cached.is_none();
+    let cached = cached.map(|(response, age_ms)| {
+        progress.metrics.cache_hit = true;
+        progress.metrics.wide_hit = true;
+        progress.metrics.cache_age_ms = Some(age_ms);
+        response
+    });
     let wide_response = match cached {
         Some(response) => response,
         None => {
@@ -1124,6 +1176,20 @@ async fn rank_once(
                 format!("Wide evaluation failed: {e:?}"),
             )
         })?;
+    if wide_fresh {
+        persistent::record(
+            &mut store,
+            invocation,
+            cx,
+            namespace,
+            cache_entry(
+                RequestStage::Wide,
+                wide_req_fp,
+                &wide_response,
+                active_model,
+            ),
+        );
+    }
     progress.evaluated.wide_returned = Some(wide_response.returned_model.clone());
     progress.evaluated.needs_skill = Some(wide_outcome.needs_skill);
     progress.evaluated.phase = dominant_phase(&wide_outcome.phase).map(str::to_owned);
@@ -1216,29 +1282,38 @@ async fn rank_once(
         )
     })?;
 
-    // Rerank pairs with the wide answer this session produced. A wide answer
-    // from elsewhere cannot be paired with a fresh rerank under an unpinned
-    // model alias, so that run remains unavailable.
-    let Some(active) = session.as_mut() else {
-        return Err(failure(
-            11,
-            "cache-miss",
-            "A cached wide answer cannot be paired with a fresh rerank",
-        ));
+    // A cached wide answer arrives with its cached rerank answer. Otherwise
+    // rerank pairs with the wide answer this session produced; a wide answer
+    // from elsewhere is never paired with a fresh rerank.
+    let rerank_fresh = cached_rerank.is_none();
+    let rerank_response = match cached_rerank.take() {
+        Some(response) => {
+            progress.metrics.rerank_hit = true;
+            response
+        }
+        None => {
+            let Some(active) = session.as_mut() else {
+                return Err(failure(
+                    11,
+                    "cache-miss",
+                    "A cached wide answer cannot be paired with a fresh rerank",
+                ));
+            };
+            provider_stage(
+                active,
+                RankingStage::Rerank,
+                rerank_builder.request(),
+                &config_files,
+                &resolved_config,
+                &mut current_receipt,
+                &gate,
+                &mut progress.metrics,
+                cx,
+                clock,
+            )
+            .await?
+        }
     };
-    let rerank_response = provider_stage(
-        active,
-        RankingStage::Rerank,
-        rerank_builder.request(),
-        &config_files,
-        &resolved_config,
-        &mut current_receipt,
-        &gate,
-        &mut progress.metrics,
-        cx,
-        clock,
-    )
-    .await?;
 
     let rerank_outcome = rerank::evaluate(&rerank_builder, &rerank_response).map_err(|e| {
         failure(
@@ -1248,6 +1323,26 @@ async fn rank_once(
         )
     })?;
 
+    if rerank_fresh {
+        let rerank_fp = fingerprint(
+            RequestStage::Rerank,
+            &shortlist_digests(&shortlisted),
+            rerank_builder.bytes(),
+            rerank::RERANK_POLICY_VERSION,
+        );
+        persistent::record(
+            &mut store,
+            invocation,
+            cx,
+            namespace,
+            cache_entry(
+                RequestStage::Rerank,
+                rerank_fp,
+                &rerank_response,
+                active_model,
+            ),
+        );
+    }
     progress.evaluated.rerank_returned = Some(rerank_response.returned_model.clone());
     progress.evaluated.choice_confidence = Some(rerank_outcome.choice_confidence);
     progress.evaluated.none_probability = Some(rerank_outcome.none_probability);
@@ -1448,6 +1543,178 @@ async fn rank_once(
     }
 
     Ok(doc)
+}
+
+/// Wall-clock milliseconds for cache receipt and freshness. A clock before the
+/// epoch reads as zero, which no stored entry can be fresh against.
+fn wall_clock_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+}
+
+fn shortlist_digests(shortlisted: &[wide::Shortlisted<'_>]) -> Vec<CandidateDigest> {
+    shortlisted
+        .iter()
+        .map(|s| CandidateDigest {
+            skill_id: s.skill.binding.id.clone(),
+            content_hash: s.skill.record.source_content.clone(),
+            excerpt_hash: None,
+        })
+        .collect()
+}
+
+/// A validated response as it is cached: received now, for at most the
+/// ten-minute TTL, under the requested model alias it answered.
+fn cache_entry(
+    stage: RequestStage,
+    fingerprint: RequestFingerprint,
+    response: &Response,
+    model: &str,
+) -> CachedResponseEntry {
+    CachedResponseEntry {
+        stage,
+        request_fingerprint: fingerprint,
+        response_bytes: response.to_wire_bytes(),
+        received_at_unix_ms: wall_clock_ms(),
+        ttl_seconds: DEFAULT_CACHE_TTL_SECS,
+        model: model.to_owned(),
+        model_revision: None,
+        original_usage: response.usage,
+        attempt_id: None,
+    }
+}
+
+/// The persistent exact response cache. Only Linux has the qualified store;
+/// elsewhere every run keys fingerprints with fresh randomness and caches
+/// nothing. Store failures never fail ranking: the store is dropped and the
+/// run continues uncached.
+#[cfg(target_os = "linux")]
+mod persistent {
+    use super::{EffectGate, ProcessInvocation};
+    use crate::cache::{
+        CacheKey, CachedResponseEntry, FreshnessStatus, RequestFingerprint, RequestStage,
+    };
+    use crate::storage::{CacheAccess, CacheLocation, CacheOpen, CacheStore};
+    use asupersync::Cx;
+    use std::path::Path;
+
+    pub(super) struct Store(CacheStore);
+
+    impl Store {
+        pub(super) fn open(
+            invocation: &ProcessInvocation,
+            cx: &Cx,
+            gate: &EffectGate,
+            dir: &Path,
+        ) -> Option<Self> {
+            match gate.open_cache(
+                invocation,
+                cx,
+                CacheAccess::Initialize,
+                CacheLocation::Directory(dir.to_path_buf()),
+            ) {
+                Ok(CacheOpen::Ready(store)) => Some(Self(*store)),
+                _ => None,
+            }
+        }
+        pub(super) const fn key(&self) -> CacheKey {
+            self.0.fingerprint_key()
+        }
+        pub(super) const fn generation(&self) -> u64 {
+            self.0.stamp().generation()
+        }
+    }
+
+    /// A fresh stored answer's bytes and age, or nothing.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn lookup(
+        slot: &mut Option<Store>,
+        invocation: &ProcessInvocation,
+        cx: &Cx,
+        namespace: [u8; 32],
+        stage: RequestStage,
+        fingerprint: RequestFingerprint,
+        model: &str,
+        now_unix_ms: u64,
+    ) -> Option<(Vec<u8>, u64)> {
+        let Store(store) = slot.take()?;
+        let (store, entry) = store
+            .response(invocation, cx, namespace, stage, fingerprint)
+            .ok()?;
+        *slot = Some(Store(store));
+        let entry = entry?;
+        match entry.evaluate_freshness(now_unix_ms, model, None) {
+            FreshnessStatus::Fresh { age_ms, .. } => Some((entry.response_bytes, age_ms)),
+            _ => None,
+        }
+    }
+
+    pub(super) fn record(
+        slot: &mut Option<Store>,
+        invocation: &ProcessInvocation,
+        cx: &Cx,
+        namespace: [u8; 32],
+        entry: CachedResponseEntry,
+    ) {
+        let Some(Store(store)) = slot.take() else {
+            return;
+        };
+        let now = entry.received_at_unix_ms;
+        if let Ok(store) = store.record_response(invocation, cx, namespace, entry, now) {
+            *slot = Some(Store(store));
+        }
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+mod persistent {
+    use super::{EffectGate, ProcessInvocation};
+    use crate::cache::{CacheKey, CachedResponseEntry, RequestFingerprint, RequestStage};
+    use asupersync::Cx;
+    use std::path::Path;
+
+    pub(super) enum Store {}
+
+    impl Store {
+        pub(super) fn open(
+            _: &ProcessInvocation,
+            _: &Cx,
+            _: &EffectGate,
+            _: &Path,
+        ) -> Option<Self> {
+            None
+        }
+        pub(super) const fn key(&self) -> CacheKey {
+            match *self {}
+        }
+        pub(super) const fn generation(&self) -> u64 {
+            match *self {}
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn lookup(
+        _: &mut Option<Store>,
+        _: &ProcessInvocation,
+        _: &Cx,
+        _: [u8; 32],
+        _: RequestStage,
+        _: RequestFingerprint,
+        _: &str,
+        _: u64,
+    ) -> Option<(Vec<u8>, u64)> {
+        None
+    }
+
+    pub(super) fn record(
+        _: &mut Option<Store>,
+        _: &ProcessInvocation,
+        _: &Cx,
+        _: [u8; 32],
+        _: CachedResponseEntry,
+    ) {
+    }
 }
 
 /// Refresh trusted policy immediately before a provider attempt. Invalid

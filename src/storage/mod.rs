@@ -13,20 +13,23 @@ pub use export::{
 };
 
 use crate::blocking::{BlockingLeafKind, remaining_busy_wait, run_blocking_leaf};
+use crate::cache::{CacheKey, CachedResponseEntry, RequestFingerprint, RequestStage};
+use crate::jev::codec::{MAX_RESPONSE_BYTES, Usage};
 use crate::runtime::{EntryClock, ProcessInvocation, RuntimeError};
 use asupersync::Cx;
 use filesystem::PrivateDirectory;
 use rusqlite::{
-    Connection, ErrorCode, OpenFlags, TransactionBehavior, config::DbConfig, limits::Limit,
+    Connection, ErrorCode, OpenFlags, OptionalExtension, TransactionBehavior, config::DbConfig,
+    limits::Limit, params,
 };
 use std::{fmt, fs::File, path::PathBuf, time::Duration};
 
 pub const CACHE_FILE: &str = "cache.sqlite3";
-pub const CACHE_SCHEMA_VERSION: u32 = 1;
+pub const CACHE_SCHEMA_VERSION: u32 = 2;
 pub const CACHE_QUOTA_BYTES: u64 = 64 * 1024 * 1024;
 pub const MAINTENANCE_RESERVE_BYTES: u64 = 4 * 1024 * 1024;
-// The only write is one metadata row. Even at SQLite's largest page size,
-// initialization and a generation update fit well below this admission margin.
+// Metadata and key writes are single rows. A response row is bounded by the
+// decoded-response cap; SQLite's page quota, not this margin, stops recording.
 pub const MUTATION_RESERVE_BYTES: u64 = 1024 * 1024;
 pub const MAX_BUSY_WAIT_MS: u64 = 25;
 pub const RUSQLITE_VERSION: &str = "0.40.2";
@@ -35,13 +38,40 @@ pub const QUALIFIED_SQLITE_SOURCE_ID: &str =
     "2026-06-03 19:12:13 d6e03d8c777cfa2d35e3b60d8ec3e0187f3e9f99d8e2ee9cac695fd6fcdf1a24";
 const MIN_SQLITE_VERSION: i32 = 3_051_003;
 const APPLICATION_ID: i64 = 0x53524348; // SRCH: cache, never ledger/accounting.
-const SCHEMA_ID: &str = "sr-cache-foundation-v1";
+const SCHEMA_ID: &str = "sr-cache-responses-v2";
+/// Maximum age of a stored response; the ten-minute TTL is a ceiling.
+pub const MAX_RESPONSE_TTL_SECONDS: u32 = 600;
 const METADATA_DDL: &str = "CREATE TABLE sr_cache_meta (
         singleton INTEGER PRIMARY KEY CHECK(singleton=1),
         incarnation BLOB NOT NULL CHECK(length(incarnation)=16),
         generation INTEGER NOT NULL CHECK(generation>=0),
         schema_id TEXT NOT NULL
     ) STRICT";
+/// The owner-only random key for keyed request and namespace fingerprints.
+const KEY_DDL: &str = "CREATE TABLE sr_cache_key (
+        singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+        key BLOB NOT NULL CHECK(length(key)=32)
+    ) STRICT";
+/// Validated provider responses, bound to the store generation that wrote them.
+const RESPONSE_DDL: &str = "CREATE TABLE sr_cache_response (
+        generation INTEGER NOT NULL CHECK(generation>=0),
+        namespace BLOB NOT NULL CHECK(length(namespace)=32),
+        stage TEXT NOT NULL CHECK(stage IN ('wide','rerank')),
+        fingerprint BLOB NOT NULL CHECK(length(fingerprint)=32),
+        response BLOB NOT NULL CHECK(length(response)<=2097152),
+        received_at_unix_ms INTEGER NOT NULL CHECK(received_at_unix_ms>=0),
+        ttl_seconds INTEGER NOT NULL CHECK(ttl_seconds BETWEEN 1 AND 600),
+        model TEXT NOT NULL CHECK(length(model) BETWEEN 1 AND 256),
+        model_revision TEXT CHECK(model_revision IS NULL OR length(model_revision)<=256),
+        input_tokens INTEGER NOT NULL CHECK(input_tokens>=0),
+        output_tokens INTEGER NOT NULL CHECK(output_tokens>=0),
+        PRIMARY KEY (generation, namespace, stage, fingerprint)
+    ) STRICT";
+const TABLES: [(&str, &str); 3] = [
+    ("sr_cache_meta", METADATA_DDL),
+    ("sr_cache_key", KEY_DDL),
+    ("sr_cache_response", RESPONSE_DDL),
+];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CacheAccess {
@@ -182,6 +212,7 @@ pub struct CacheStore {
     file: File,
     engine: EngineIdentity,
     stamp: CacheStamp,
+    key: [u8; 32],
 }
 impl fmt::Debug for CacheStore {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -300,6 +331,22 @@ fn schema_version(connection: &Connection) -> Result<i64, StoreError> {
     Ok(version)
 }
 
+fn sql_integer(value: u64) -> Result<i64, StoreError> {
+    i64::try_from(value).map_err(|_| StoreError::Quota)
+}
+
+/// Refuse to serve or record under a replaced store or a changed generation.
+fn check_stamp(connection: &Connection, expected: CacheStamp) -> Result<(), StoreError> {
+    let actual = read_stamp(connection)?;
+    if actual.incarnation != expected.incarnation {
+        return Err(StoreError::StoreReplaced);
+    }
+    if actual.generation != expected.generation {
+        return Err(StoreError::StaleGeneration);
+    }
+    Ok(())
+}
+
 fn read_stamp(connection: &Connection) -> Result<CacheStamp, StoreError> {
     if schema_version(connection)? != i64::from(CACHE_SCHEMA_VERSION) {
         return Err(StoreError::IncompatibleSchema);
@@ -313,18 +360,29 @@ fn read_stamp(connection: &Connection) -> Result<CacheStamp, StoreError> {
         [],
         |row| row.get(0),
     )?;
-    let ddl: String = connection.query_row(
-        "SELECT sql FROM sqlite_schema WHERE type='table' AND name='sr_cache_meta'",
-        [],
-        |row| row.get(0),
-    )?;
-    if objects != 1 || ddl != METADATA_DDL {
+    if objects != TABLES.len() as i64 {
         return Err(StoreError::IncompatibleSchema);
     }
-    let rows: i64 =
-        connection.query_row("SELECT count(*) FROM sr_cache_meta", [], |row| row.get(0))?;
-    if rows != 1 {
-        return Err(StoreError::IncompatibleSchema);
+    for (name, expected) in TABLES {
+        let ddl: Option<String> = connection
+            .query_row(
+                "SELECT sql FROM sqlite_schema WHERE type='table' AND name=?1",
+                [name],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if ddl.as_deref() != Some(expected) {
+            return Err(StoreError::IncompatibleSchema);
+        }
+    }
+    for singleton in ["sr_cache_meta", "sr_cache_key"] {
+        let rows: i64 =
+            connection.query_row(&format!("SELECT count(*) FROM {singleton}"), [], |row| {
+                row.get(0)
+            })?;
+        if rows != 1 {
+            return Err(StoreError::IncompatibleSchema);
+        }
     }
     let (incarnation, generation, schema): (Vec<u8>, i64, String) = connection.query_row(
         "SELECT incarnation, generation, schema_id FROM sr_cache_meta WHERE singleton=1",
@@ -341,6 +399,15 @@ fn read_stamp(connection: &Connection) -> Result<CacheStamp, StoreError> {
         incarnation,
         generation: generation as u64,
     })
+}
+
+fn read_key(connection: &Connection) -> Result<[u8; 32], StoreError> {
+    let key: Vec<u8> = connection.query_row(
+        "SELECT key FROM sr_cache_key WHERE singleton=1",
+        [],
+        |row| row.get(0),
+    )?;
+    key.try_into().map_err(|_| StoreError::IncompatibleSchema)
 }
 
 fn initialize(connection: &mut Connection, clock: EntryClock, cx: &Cx) -> Result<(), StoreError> {
@@ -360,10 +427,19 @@ fn initialize(connection: &mut Connection, clock: EntryClock, cx: &Cx) -> Result
     if app != 0 || objects != 0 {
         return Err(StoreError::WrongStore);
     }
-    tx.execute_batch(METADATA_DDL)?;
+    for (_, ddl) in TABLES {
+        tx.execute_batch(ddl)?;
+    }
     tx.execute(
         "INSERT INTO sr_cache_meta VALUES (1, randomblob(16), 0, ?1)",
         [SCHEMA_ID],
+    )?;
+    // The fingerprint key comes from the operating system CSPRNG and never
+    // leaves this owner-only store except as keyed-hash input.
+    let key = CacheKey::generate().map_err(|_| StoreError::Io)?;
+    tx.execute(
+        "INSERT INTO sr_cache_key VALUES (1, ?1)",
+        [&key.as_raw_bytes()[..]],
     )?;
     tx.pragma_update(None, "application_id", APPLICATION_ID)?;
     tx.pragma_update(None, "user_version", CACHE_SCHEMA_VERSION)?;
@@ -432,6 +508,7 @@ fn open_blocking(
         initialize(&mut connection, clock, cx)?;
     }
     let stamp = read_stamp(&connection)?;
+    let key = read_key(&connection)?;
     check_work(clock, cx)?;
     let mode: String = connection.pragma_query_value(None, "journal_mode", |row| row.get(0))?;
     if mode != "wal" {
@@ -473,6 +550,7 @@ fn open_blocking(
         file,
         engine,
         stamp,
+        key,
     })))
 }
 
@@ -482,6 +560,175 @@ impl CacheStore {
     }
     pub const fn stamp(&self) -> CacheStamp {
         self.stamp
+    }
+
+    /// The store's fingerprint key. Together with the stamp generation it
+    /// scopes every keyed request and namespace fingerprint to this store.
+    pub const fn fingerprint_key(&self) -> CacheKey {
+        CacheKey::from_bytes(self.key)
+    }
+
+    /// Read one stored response of this generation by exact namespace hash,
+    /// stage and request fingerprint. Freshness is the caller's decision;
+    /// nothing is renewed, repaired or pruned on read. A changed generation or
+    /// incarnation is refused rather than served.
+    pub fn response(
+        mut self,
+        invocation: &ProcessInvocation,
+        cx: &Cx,
+        namespace: [u8; 32],
+        stage: RequestStage,
+        fingerprint: RequestFingerprint,
+    ) -> Result<(Self, Option<CachedResponseEntry>), StoreError> {
+        let clock = invocation.clock();
+        let child = cx.clone();
+        run_blocking_leaf(
+            invocation,
+            cx,
+            BlockingLeafKind::Database,
+            false,
+            move || {
+                configure(&self.connection, clock, &child)?;
+                self.directory
+                    .verify_database_file(&self.file, clock, &child)?;
+                refresh_busy_limit(&self.connection, clock, &child)?;
+                let expected = self.stamp;
+                let generation = sql_integer(expected.generation)?;
+                let tx = self
+                    .connection
+                    .transaction_with_behavior(TransactionBehavior::Deferred)?;
+                check_stamp(&tx, expected)?;
+                let row = tx
+                    .query_row(
+                        "SELECT response, received_at_unix_ms, ttl_seconds, model, \
+                         model_revision, input_tokens, output_tokens FROM sr_cache_response \
+                         WHERE generation=?1 AND namespace=?2 AND stage=?3 AND fingerprint=?4",
+                        params![
+                            generation,
+                            &namespace[..],
+                            stage.as_str(),
+                            &fingerprint.as_bytes()[..]
+                        ],
+                        |row| {
+                            Ok((
+                                row.get::<_, Vec<u8>>(0)?,
+                                row.get::<_, i64>(1)?,
+                                row.get::<_, i64>(2)?,
+                                row.get::<_, String>(3)?,
+                                row.get::<_, Option<String>>(4)?,
+                                row.get::<_, i64>(5)?,
+                                row.get::<_, i64>(6)?,
+                            ))
+                        },
+                    )
+                    .optional()?;
+                tx.finish()?;
+                check_work(clock, &child)?;
+                let entry = row
+                    .map(
+                        |(response, received, ttl, model, revision, input, output)| {
+                            let unsigned =
+                                |v: i64| u64::try_from(v).map_err(|_| StoreError::Corrupt);
+                            Ok::<_, StoreError>(CachedResponseEntry {
+                                stage,
+                                request_fingerprint: fingerprint,
+                                response_bytes: response,
+                                received_at_unix_ms: unsigned(received)?,
+                                ttl_seconds: u32::try_from(ttl)
+                                    .ok()
+                                    .filter(|t| (1..=MAX_RESPONSE_TTL_SECONDS).contains(t))
+                                    .ok_or(StoreError::Corrupt)?,
+                                model,
+                                model_revision: revision,
+                                original_usage: Usage {
+                                    input_tokens: unsigned(input)?,
+                                    output_tokens: unsigned(output)?,
+                                },
+                                attempt_id: None,
+                            })
+                        },
+                    )
+                    .transpose()?;
+                Ok((self, entry))
+            },
+        )
+        .map_err(StoreError::Runtime)?
+        .value
+    }
+
+    /// Record one validated provider response for this generation, fenced by
+    /// the store incarnation and generation inside `BEGIN IMMEDIATE`. Rows of
+    /// other generations and rows past their TTL (or dated in the future) are
+    /// pruned first; they could never be served. At quota, recording stops
+    /// with a typed error and the maintenance reserve is kept.
+    pub fn record_response(
+        mut self,
+        invocation: &ProcessInvocation,
+        cx: &Cx,
+        namespace: [u8; 32],
+        entry: CachedResponseEntry,
+        now_unix_ms: u64,
+    ) -> Result<Self, StoreError> {
+        if entry.response_bytes.len() > MAX_RESPONSE_BYTES
+            || !(1..=MAX_RESPONSE_TTL_SECONDS).contains(&entry.ttl_seconds)
+            || entry.model.is_empty()
+            || entry.model.len() > 256
+            || entry.model_revision.as_ref().is_some_and(|r| r.len() > 256)
+        {
+            return Err(StoreError::Quota);
+        }
+        let clock = invocation.clock();
+        let child = cx.clone();
+        run_blocking_leaf(
+            invocation,
+            cx,
+            BlockingLeafKind::Database,
+            false,
+            move || {
+                configure(&self.connection, clock, &child)?;
+                self.directory
+                    .verify_database_file(&self.file, clock, &child)?;
+                refresh_busy_limit(&self.connection, clock, &child)?;
+                let expected = self.stamp;
+                let generation = sql_integer(expected.generation)?;
+                let now = sql_integer(now_unix_ms)?;
+                let tx = self
+                    .connection
+                    .transaction_with_behavior(TransactionBehavior::Immediate)?;
+                check_stamp(&tx, expected)?;
+                self.directory.admit_space()?;
+                tx.execute(
+                    "DELETE FROM sr_cache_response WHERE generation<>?1 \
+                     OR received_at_unix_ms>?2 OR received_at_unix_ms+ttl_seconds*1000<=?2",
+                    params![generation, now],
+                )?;
+                tx.execute(
+                    "INSERT OR REPLACE INTO sr_cache_response VALUES \
+                     (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                    params![
+                        generation,
+                        &namespace[..],
+                        entry.stage.as_str(),
+                        &entry.request_fingerprint.as_bytes()[..],
+                        entry.response_bytes,
+                        sql_integer(entry.received_at_unix_ms)?,
+                        entry.ttl_seconds,
+                        entry.model,
+                        entry.model_revision,
+                        sql_integer(entry.original_usage.input_tokens)?,
+                        sql_integer(entry.original_usage.output_tokens)?,
+                    ],
+                )?;
+                refresh_busy_limit(&tx, clock, &child)?;
+                tx.commit()?;
+                self.directory
+                    .verify_database_file(&self.file, clock, &child)?;
+                check_work(clock, &child)?;
+                Ok(self)
+            },
+        )
+        .map_err(StoreError::Runtime)?
+        .value
     }
 
     /// Advance only this disposable cache's generation. No ledger/allowance is

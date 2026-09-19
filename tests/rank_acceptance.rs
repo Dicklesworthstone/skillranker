@@ -25,12 +25,29 @@ use skillranker::roster::LocalPath;
 use skillranker::runtime::{EntryClock, ProcessInvocation};
 use std::ffi::OsString;
 use std::io::{BufRead, BufReader, Write};
+use std::os::unix::fs::{DirBuilderExt, MetadataExt};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
 const CONSENT: &str = "[network]\nenabled = true\n";
+/// Network-capable runs with no persistent state.
+const UNCACHED: EffectFlags = EffectFlags {
+    offline: false,
+    allow_network: false,
+    dry_run: false,
+    no_cache: true,
+    no_ledger: true,
+    no_persist: true,
+    save_case: false,
+};
+/// Default persistence: the response cache reads and writes.
+const CACHED: EffectFlags = EffectFlags {
+    no_cache: false,
+    no_persist: false,
+    ..UNCACHED
+};
 
 struct Fixture {
     root: PathBuf,
@@ -78,7 +95,7 @@ impl Fixture {
         )
         .unwrap();
     }
-    fn context(&self, request: &str) -> PathBuf {
+    fn context_in(&self, session: &str, request: &str) -> PathBuf {
         let path = self.workspace().join("context.json");
         let message = |id: &str, text: &str| {
             json!({"event_id": id, "parent_id": null, "turn_id": "turn-1", "agent_id": null,
@@ -90,7 +107,7 @@ impl Fixture {
             "harness": "claude_code",
             "producer_id": "synthetic-test",
             "workspace_root": self.workspace().to_string_lossy(),
-            "session_id": "session-1",
+            "session_id": session,
             "agent_id": null,
             "branch_id": null,
             "context_epoch": null,
@@ -104,19 +121,32 @@ impl Fixture {
         path
     }
     fn args(&self, request: &str) -> RankArgs {
-        let flags = EffectFlags {
-            offline: false,
-            allow_network: false,
-            dry_run: false,
-            no_cache: true,
-            no_ledger: true,
-            no_persist: true,
-            save_case: false,
-        };
+        self.args_with(request, "session-1", UNCACHED, None)
+    }
+    /// A private cache directory under root-owned sticky /tmp: RCH's TMPDIR
+    /// can have group-writable ancestors, which the store rightly refuses.
+    fn cache_dir(&self) -> PathBuf {
+        let dir = std::path::Path::new("/tmp").join(format!(
+            "sr-rank-cache-{}",
+            self.root.file_name().unwrap().to_string_lossy()
+        ));
+        if !dir.exists() {
+            std::fs::DirBuilder::new().mode(0o700).create(&dir).unwrap();
+        }
+        dir
+    }
+    fn args_with(
+        &self,
+        request: &str,
+        session: &str,
+        flags: EffectFlags,
+        cache_dir: Option<PathBuf>,
+    ) -> RankArgs {
         RankArgs {
             workspace: self.workspace(),
             user_config_root: Some(self.root.join("config")),
             home: None,
+            cache_dir,
             sources: ConfigSources {
                 environment: vec![(
                     OsString::from("TYPESAFE_API_KEY"),
@@ -126,7 +156,7 @@ impl Fixture {
             },
             gate: EffectGate::new(flags, Scope::Rank).unwrap(),
             source_options: SourceOptions {
-                context: Some(LocalPath::new(self.context(request))),
+                context: Some(LocalPath::new(self.context_in(session, request))),
                 ..Default::default()
             },
             require_skills: Vec::new(),
@@ -148,7 +178,9 @@ struct Provider {
 
 impl Provider {
     fn start(f: &Fixture, scenario: &str, extra: &[&std::ffi::OsStr]) -> Self {
-        let directory = f.root.join("provider");
+        let directory = f
+            .root
+            .join(format!("provider-{}", NEXT.fetch_add(1, Ordering::Relaxed)));
         std::fs::create_dir(&directory).unwrap();
         for (name, bytes) in [
             (
@@ -230,6 +262,10 @@ impl Drop for Provider {
 type Outcome = Result<Value, (u8, &'static str)>;
 
 fn rank(f: &Fixture, provider: &Provider, request: &str, total_ms: u64) -> Outcome {
+    rank_args(provider, f.args(request), total_ms)
+}
+
+fn rank_args(provider: &Provider, args: RankArgs, total_ms: u64) -> Outcome {
     let clock = EntryClock::capture_with(
         DurationMillis::new("acceptance-total", total_ms, 30_000).unwrap(),
         DurationMillis::new("acceptance-cleanup", 200, 30_000).unwrap(),
@@ -238,10 +274,9 @@ fn rank(f: &Fixture, provider: &Provider, request: &str, total_ms: u64) -> Outco
     let invocation = ProcessInvocation::from_clock(clock).unwrap();
     let cx = invocation.request_cx().unwrap();
     let client = provider.client();
-    let args = f.args(request);
     let result = invocation
         .runtime()
-        .block_on(async { execute_pipeline(&clock, &cx, args, Some(&client)).await });
+        .block_on(async { execute_pipeline(&invocation, &cx, args, Some(&client)).await });
     assert!(invocation.shutdown(), "owned runtime must shut down");
     result
         .map(|doc| doc.as_value().clone())
@@ -496,4 +531,157 @@ fn an_authentication_failure_is_not_retried() {
     assert_eq!(stages(&served), ["wide"], "authentication is never retried");
     let value = unavailable(outcome, 4, "authentication");
     assert_eq!(usage(&value), (1, 1, 0, 0));
+}
+
+#[test]
+fn an_exact_repeat_is_served_from_the_persistent_cache() {
+    let f = Fixture::new(CONSENT);
+    let cache = f.cache_dir();
+    let provider = Provider::start(&f, "useful", &[]);
+    let args = || f.args_with(TASK, "session-1", CACHED, Some(cache.clone()));
+    let first = rank_args(&provider, args(), 10_000).expect("ranked");
+    let second = rank_args(&provider, args(), 10_000).expect("ranked");
+    let served = provider.finish();
+    assert_eq!(
+        stages(&served),
+        ["wide", "rerank"],
+        "the repeat sends nothing"
+    );
+    assert_eq!(first["decision"], "ranked", "{first}");
+    assert_eq!(first["cache"]["hit"], false);
+    assert_eq!(second["decision"], "ranked", "{second}");
+    assert_eq!(second["skills"], first["skills"]);
+    assert_eq!(second["cache"]["hit"], true);
+    assert_eq!(second["cache"]["wide_hit"], true);
+    assert_eq!(second["cache"]["rerank_hit"], true);
+    assert!(second["cache"]["age_ms"].is_u64());
+    assert_eq!(usage(&second), (0, 0, 0, 0), "a cache hit incurs no usage");
+    let file = std::fs::metadata(cache.join("cache.sqlite3")).unwrap();
+    assert_eq!(file.mode() & 0o7777, 0o600, "the store is owner-only");
+}
+
+#[test]
+fn a_different_session_never_reuses_a_response() {
+    let f = Fixture::new(CONSENT);
+    let cache = f.cache_dir();
+    let provider = Provider::start(&f, "useful", &[]);
+    rank_args(
+        &provider,
+        f.args_with(TASK, "session-1", CACHED, Some(cache.clone())),
+        10_000,
+    )
+    .expect("ranked");
+    let other = rank_args(
+        &provider,
+        f.args_with(TASK, "session-2", CACHED, Some(cache)),
+        10_000,
+    )
+    .expect("ranked");
+    let served = provider.finish();
+    assert_eq!(stages(&served), ["wide", "rerank", "wide", "rerank"]);
+    assert_eq!(other["cache"]["hit"], false);
+    assert_eq!(usage(&other), (2, 2, 220, 55));
+}
+
+#[test]
+fn offline_serves_a_complete_cached_pair() {
+    let f = Fixture::new(CONSENT);
+    let cache = f.cache_dir();
+    let provider = Provider::start(&f, "useful", &[]);
+    let online = rank_args(
+        &provider,
+        f.args_with(TASK, "session-1", CACHED, Some(cache.clone())),
+        10_000,
+    )
+    .expect("ranked");
+    let offline = EffectFlags {
+        offline: true,
+        ..CACHED
+    };
+    let local = rank_args(
+        &provider,
+        f.args_with(TASK, "session-1", offline, Some(cache)),
+        10_000,
+    )
+    .expect("ranked from cache");
+    let served = provider.finish();
+    assert_eq!(stages(&served), ["wide", "rerank"]);
+    assert_eq!(local["decision"], "ranked", "{local}");
+    assert_eq!(local["skills"], online["skills"]);
+    assert_eq!(usage(&local), (0, 0, 0, 0));
+}
+
+#[test]
+fn a_cached_wide_answer_is_never_paired_with_a_fresh_rerank() {
+    let f = Fixture::new(CONSENT);
+    let cache = f.cache_dir();
+    // The first run records its wide answer, then its rerank never arrives.
+    let late = Provider::start(&f, "late-rerank", &["".as_ref(), "4".as_ref()]);
+    let first = rank_args(
+        &late,
+        f.args_with(TASK, "session-1", CACHED, Some(cache.clone())),
+        2_000,
+    );
+    assert_eq!(stages(&late.finish()), ["wide", "rerank"]);
+    unavailable(first, 6, "timeout");
+    // The repeat refreshes the whole pair rather than reusing the wide answer.
+    let provider = Provider::start(&f, "useful", &[]);
+    let value = rank_args(
+        &provider,
+        f.args_with(TASK, "session-1", CACHED, Some(cache)),
+        10_000,
+    )
+    .expect("ranked");
+    assert_eq!(stages(&provider.finish()), ["wide", "rerank"]);
+    assert_eq!(value["cache"]["hit"], false);
+    assert_eq!(usage(&value), (2, 2, 220, 55));
+}
+
+#[test]
+fn a_cached_low_need_answer_needs_no_rerank() {
+    let f = Fixture::new(CONSENT);
+    let cache = f.cache_dir();
+    let provider = Provider::start(&f, "low-need", &[]);
+    let args = || f.args_with(TASK, "session-1", CACHED, Some(cache.clone()));
+    rank_args(&provider, args(), 10_000).expect("abstain");
+    let second = rank_args(&provider, args(), 10_000).expect("abstain");
+    assert_eq!(stages(&provider.finish()), ["wide"]);
+    assert_eq!(second["decision"], "abstain", "{second}");
+    assert_eq!(second["cache"]["wide_hit"], true);
+    assert_eq!(second["cache"]["rerank_hit"], false);
+    assert_eq!(usage(&second), (0, 0, 0, 0));
+}
+
+#[test]
+fn disabled_persistence_never_creates_a_store() {
+    for flags in [
+        EffectFlags {
+            no_cache: true,
+            ..CACHED
+        },
+        EffectFlags {
+            no_persist: true,
+            ..CACHED
+        },
+        EffectFlags {
+            dry_run: true,
+            ..CACHED
+        },
+    ] {
+        let f = Fixture::new(CONSENT);
+        let cache = f.cache_dir();
+        let provider = Provider::start(&f, "useful", &[]);
+        let value = rank_args(
+            &provider,
+            f.args_with(TASK, "session-1", flags, Some(cache.clone())),
+            10_000,
+        )
+        .expect("a decision");
+        provider.finish();
+        assert!(value["decision"].is_string());
+        assert!(
+            !cache.join("cache.sqlite3").exists(),
+            "{flags:?} must not create a store"
+        );
+    }
 }

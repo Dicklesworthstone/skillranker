@@ -592,6 +592,9 @@ fn rank_command(
     let home = std::env::var_os("HOME")
         .filter(|path| !path.is_empty())
         .map(PathBuf::from);
+    // The persistent response cache lives in the platform cache directory
+    // ($XDG_CACHE_HOME/sr or ~/.cache/sr); effect flags may still disable it.
+    let cache_dir = directories::BaseDirs::new().map(|dirs| dirs.cache_dir().join("sr"));
 
     let stdin_supplied = is_stdin_supplied();
     let context = rank_matches
@@ -656,6 +659,7 @@ fn rank_command(
         workspace,
         user_config_root: user_root,
         home,
+        cache_dir,
         sources,
         gate,
         source_options,
@@ -675,9 +679,9 @@ fn rank_command(
         .request_cx()
         .map_err(|_| (6u8, "timeout", "Local runtime unavailable".into()))?;
 
-    let output_doc = invocation
-        .runtime()
-        .block_on(async { crate::pipeline::execute_pipeline(clock, &cx, args, None).await })?;
+    let output_doc = invocation.runtime().block_on(async {
+        crate::pipeline::execute_pipeline(&invocation, &cx, args, None).await
+    })?;
 
     timely(clock)?;
 

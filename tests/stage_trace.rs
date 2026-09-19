@@ -315,6 +315,7 @@ fn test_paired_runs_identical_evaluation_with_and_without_explain() {
         workspace: workspace.clone(),
         user_config_root: None,
         home: None,
+        cache_dir: None,
         sources: sources.clone(),
         gate,
         source_options: source_options.clone(),
@@ -328,7 +329,7 @@ fn test_paired_runs_identical_evaluation_with_and_without_explain() {
     };
     let doc_a = inv_a
         .runtime()
-        .block_on(async { execute_pipeline(&clock_a, &cx_a, args_a, Some(&transport_a)).await })
+        .block_on(async { execute_pipeline(&inv_a, &cx_a, args_a, Some(&transport_a)).await })
         .expect("pipeline A succeeds");
 
     // Run B: explain=true, why_not=Some("skill_a")
@@ -340,6 +341,7 @@ fn test_paired_runs_identical_evaluation_with_and_without_explain() {
         workspace: workspace.clone(),
         user_config_root: None,
         home: None,
+        cache_dir: None,
         sources: sources.clone(),
         gate,
         source_options: source_options.clone(),
@@ -353,7 +355,7 @@ fn test_paired_runs_identical_evaluation_with_and_without_explain() {
     };
     let doc_b = inv_b
         .runtime()
-        .block_on(async { execute_pipeline(&clock_b, &cx_b, args_b, Some(&transport_b)).await })
+        .block_on(async { execute_pipeline(&inv_b, &cx_b, args_b, Some(&transport_b)).await })
         .expect("pipeline B succeeds");
 
     // Run C: explain=true, why_not=None
@@ -365,6 +367,7 @@ fn test_paired_runs_identical_evaluation_with_and_without_explain() {
         workspace: workspace.clone(),
         user_config_root: None,
         home: None,
+        cache_dir: None,
         sources,
         gate,
         source_options,
@@ -378,7 +381,7 @@ fn test_paired_runs_identical_evaluation_with_and_without_explain() {
     };
     let doc_c = inv_c
         .runtime()
-        .block_on(async { execute_pipeline(&clock_c, &cx_c, args_c, Some(&transport_c)).await })
+        .block_on(async { execute_pipeline(&inv_c, &cx_c, args_c, Some(&transport_c)).await })
         .expect("pipeline C succeeds");
 
     let val_a = doc_a.as_value();
@@ -460,6 +463,7 @@ fn test_unknown_skill_id_produces_not_in_snapshot_without_broadening_discovery()
         workspace: workspace.clone(),
         user_config_root: None,
         home: None,
+        cache_dir: None,
         sources,
         gate,
         source_options,
@@ -474,7 +478,7 @@ fn test_unknown_skill_id_produces_not_in_snapshot_without_broadening_discovery()
 
     let doc = inv
         .runtime()
-        .block_on(async { execute_pipeline(&clock, &cx, args, Some(&transport)).await })
+        .block_on(async { execute_pipeline(&inv, &cx, args, Some(&transport)).await })
         .expect("pipeline succeeds with unknown why-not");
 
     let val = doc.as_value();
@@ -564,6 +568,7 @@ fn test_early_exclusion_marks_subsequent_stages_not_evaluated() {
         workspace: workspace.clone(),
         user_config_root: None,
         home: None,
+        cache_dir: None,
         sources,
         gate,
         source_options,
@@ -578,7 +583,7 @@ fn test_early_exclusion_marks_subsequent_stages_not_evaluated() {
 
     let doc = inv
         .runtime()
-        .block_on(async { execute_pipeline(&clock, &cx, args, Some(&transport)).await })
+        .block_on(async { execute_pipeline(&inv, &cx, args, Some(&transport)).await })
         .expect("pipeline succeeds");
 
     let val = doc.as_value();
@@ -655,6 +660,7 @@ fn test_every_exclusion_reason_with_success_twin() {
         workspace: workspace.clone(),
         user_config_root: None,
         home: None,
+        cache_dir: None,
         sources: sources.clone(),
         gate,
         source_options: source_options.clone(),
@@ -668,7 +674,7 @@ fn test_every_exclusion_reason_with_success_twin() {
     };
     let doc_ex = inv_ex
         .runtime()
-        .block_on(async { execute_pipeline(&clock_ex, &cx_ex, args_ex, Some(&transport_ex)).await })
+        .block_on(async { execute_pipeline(&inv_ex, &cx_ex, args_ex, Some(&transport_ex)).await })
         .expect("pipeline excluded twin succeeds");
 
     let val_ex = doc_ex.as_value();
@@ -691,6 +697,7 @@ fn test_every_exclusion_reason_with_success_twin() {
         workspace: workspace.clone(),
         user_config_root: None,
         home: None,
+        cache_dir: None,
         sources,
         gate,
         source_options,
@@ -704,7 +711,7 @@ fn test_every_exclusion_reason_with_success_twin() {
     };
     let doc_el = inv_el
         .runtime()
-        .block_on(async { execute_pipeline(&clock_el, &cx_el, args_el, Some(&transport_el)).await })
+        .block_on(async { execute_pipeline(&inv_el, &cx_el, args_el, Some(&transport_el)).await })
         .expect("pipeline eligible twin succeeds");
 
     let val_el = doc_el.as_value();
@@ -756,6 +763,7 @@ fn test_stage_trace_contract_and_round_trip() {
         workspace: workspace.clone(),
         user_config_root: None,
         home: None,
+        cache_dir: None,
         sources,
         gate,
         source_options,
@@ -770,7 +778,7 @@ fn test_stage_trace_contract_and_round_trip() {
 
     let doc = inv
         .runtime()
-        .block_on(async { execute_pipeline(&clock, &cx, args, Some(&transport)).await })
+        .block_on(async { execute_pipeline(&inv, &cx, args, Some(&transport)).await })
         .expect("pipeline succeeds");
 
     let json_bytes = doc.to_json().unwrap();
@@ -831,6 +839,7 @@ fn test_table_view_trace_rendering_and_recovery_hints() {
         workspace: workspace.clone(),
         user_config_root: None,
         home: None,
+        cache_dir: None,
         sources,
         gate,
         source_options,
@@ -845,7 +854,7 @@ fn test_table_view_trace_rendering_and_recovery_hints() {
 
     let doc = inv
         .runtime()
-        .block_on(async { execute_pipeline(&clock, &cx, args, Some(&transport)).await })
+        .block_on(async { execute_pipeline(&inv, &cx, args, Some(&transport)).await })
         .expect("pipeline succeeds");
 
     let table_str = doc.render_table();

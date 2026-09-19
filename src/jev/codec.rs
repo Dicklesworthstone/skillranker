@@ -270,6 +270,36 @@ impl Request {
     }
 }
 
+impl Response {
+    /// This validated answer in wire form, for exact local caching. Decoding
+    /// the bytes with the same request reproduces this response: the returned
+    /// model, raw probabilities, choices, confidences and usage are all kept.
+    pub fn to_wire_bytes(&self) -> Vec<u8> {
+        let answers: serde_json::Map<String, Value> = self
+            .answers
+            .iter()
+            .map(|(id, answer)| {
+                let wire = match answer {
+                    Answer::Noul(value) => serde_json::json!({"type": "noul", "noul": value}),
+                    Answer::Choice(choice) => serde_json::json!({
+                        "type": "choice",
+                        "choice": choice.choice,
+                        "probabilities": choice.raw_probabilities,
+                        "confidence": choice.confidence,
+                    }),
+                };
+                (id.clone(), wire)
+            })
+            .collect();
+        serde_json::to_vec(&serde_json::json!({
+            "model": self.returned_model,
+            "answers": answers,
+            "usage": self.usage,
+        }))
+        .unwrap_or_default()
+    }
+}
+
 // No Debug derives on raw fields: even model IDs and question keys may be private.
 #[derive(Deserialize)]
 struct WireResponse {
