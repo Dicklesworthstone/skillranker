@@ -1,0 +1,107 @@
+{
+  "schema_version": 1,
+  "suite": "parser-corpus",
+  "tier": "rust-product-integration",
+  "targets": [
+    "parser_corpus"
+  ],
+  "cases": [
+    {
+      "id": "config-and-authority-fuzz-boundaries",
+      "assertions": [
+        "parser_corpus_verified"
+      ],
+      "tests": [
+        "parser_corpus::test_configuration_and_authority_parser_fuzz_boundaries"
+      ]
+    },
+    {
+      "id": "context-and-transcript-tail-fuzz-boundaries",
+      "assertions": [
+        "parser_corpus_verified"
+      ],
+      "tests": [
+        "parser_corpus::test_normalized_context_and_jsonl_tail_fuzz_boundaries"
+      ]
+    },
+    {
+      "id": "roster-frontmatter-alias-adversarial-corpus",
+      "assertions": [
+        "parser_corpus_verified"
+      ],
+      "tests": [
+        "parser_corpus::test_roster_frontmatter_and_alias_adversarial_corpus"
+      ]
+    },
+    {
+      "id": "quill-query-escaping-and-bounds",
+      "assertions": [
+        "parser_corpus_verified"
+      ],
+      "tests": [
+        "parser_corpus::test_quill_query_escaping_and_term_bounds"
+      ]
+    },
+    {
+      "id": "provider-json-codec-option-map-boundaries",
+      "assertions": [
+        "parser_corpus_verified"
+      ],
+      "tests": [
+        "parser_corpus::test_provider_json_codec_and_option_map_boundaries"
+      ]
+    },
+    {
+      "id": "explicit-directive-resolution-adversarial-corpus",
+      "assertions": [
+        "parser_corpus_verified"
+      ],
+      "tests": [
+        "parser_corpus::test_explicit_directive_resolution_adversarial_inputs"
+      ]
+    },
+    {
+      "id": "scoring-normalization-finite-arithmetic-fuzz",
+      "assertions": [
+        "parser_corpus_verified"
+      ],
+      "tests": [
+        "parser_corpus::test_scoring_normalization_and_finite_arithmetic_fuzz"
+      ]
+    },
+    {
+      "id": "cache-fingerprint-namespace-invariants",
+      "assertions": [
+        "parser_corpus_verified"
+      ],
+      "tests": [
+        "parser_corpus::test_cache_fingerprint_and_namespace_invariants"
+      ]
+    },
+    {
+      "id": "bounded-output-sanitization-corpus",
+      "assertions": [
+        "parser_corpus_verified"
+      ],
+      "tests": [
+        "parser_corpus::test_bounded_output_and_control_character_sanitization"
+      ]
+    },
+    {
+      "id": "deterministic-fuzz-smoke-campaign",
+      "assertions": [
+        "parser_corpus_verified"
+      ],
+      "tests": [
+        "parser_corpus::test_deterministic_fuzz_smoke_campaign_runner"
+      ]
+    },
+    {
+      "id": "full-parser-corpus-suite",
+      "assertions": [
+        "parser_corpus_verified"
+      ],
+      "tests": "all"
+    }
+  ]
+}

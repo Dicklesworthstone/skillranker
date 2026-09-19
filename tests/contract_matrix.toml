@@ -1141,6 +1141,45 @@ features = []
 status = "executed"
 
 [[boundaries]]
+id = "p4_parser_corpus"
+owner_bead = "sr-roadmap-l1i.5.22"
+member_beads = ["sr-roadmap-l1i.5.22"]
+phase = "P4"
+title = "Build bounded parser, property and fuzz regression campaigns"
+unit_property_tests = [
+    "tests/parser_corpus.rs::test_configuration_and_authority_parser_fuzz_boundaries",
+    "tests/parser_corpus.rs::test_normalized_context_and_jsonl_tail_fuzz_boundaries",
+    "tests/parser_corpus.rs::test_roster_frontmatter_and_alias_adversarial_corpus",
+    "tests/parser_corpus.rs::test_quill_query_escaping_and_term_bounds",
+    "tests/parser_corpus.rs::test_provider_json_codec_and_option_map_boundaries",
+    "tests/parser_corpus.rs::test_explicit_directive_resolution_adversarial_inputs",
+    "tests/parser_corpus.rs::test_scoring_normalization_and_finite_arithmetic_fuzz",
+    "tests/parser_corpus.rs::test_cache_fingerprint_and_namespace_invariants",
+    "tests/parser_corpus.rs::test_bounded_output_and_control_character_sanitization",
+    "tests/parser_corpus.rs::test_deterministic_fuzz_smoke_campaign_runner"
+]
+e2e_suite = "parser-corpus"
+e2e_cases = [
+    "config-and-authority-fuzz-boundaries",
+    "context-and-transcript-tail-fuzz-boundaries",
+    "roster-frontmatter-alias-adversarial-corpus",
+    "quill-query-escaping-and-bounds",
+    "provider-json-codec-option-map-boundaries",
+    "explicit-directive-resolution-adversarial-corpus",
+    "scoring-normalization-finite-arithmetic-fuzz",
+    "cache-fingerprint-namespace-invariants",
+    "bounded-output-sanitization-corpus",
+    "deterministic-fuzz-smoke-campaign",
+    "full-parser-corpus-suite"
+]
+assertion_ids = [
+    "parser_corpus_verified"
+]
+platforms = ["linux"]
+features = []
+status = "planned"
+
+[[boundaries]]
 id = "p4_core_cli_acceptance"
 owner_bead = "sr-roadmap-l1i.5.21"
 member_beads = ["sr-roadmap-l1i.5.21", "sr-roadmap-l1i.5.10", "sr-roadmap-l1i.5.11", "sr-roadmap-l1i.5.12", "sr-roadmap-l1i.5.13", "sr-roadmap-l1i.5.14", "sr-roadmap-l1i.5.17", "sr-roadmap-l1i.5.18", "sr-roadmap-l1i.5.19", "sr-roadmap-l1i.5.2", "sr-roadmap-l1i.5.20", "sr-roadmap-l1i.5.22", "sr-roadmap-l1i.5.3", "sr-roadmap-l1i.5.4", "sr-roadmap-l1i.5.5", "sr-roadmap-l1i.5.6", "sr-roadmap-l1i.5.7", "sr-roadmap-l1i.5.8", "sr-roadmap-l1i.5.9"]
