@@ -2,18 +2,11 @@ use skillranker::blocking::{
     BlockingAdmission, BlockingLeafKind, admit_blocking_leaf, admit_blocking_publication,
     hook_path_admission, remaining_busy_wait, run_blocking_leaf,
 };
-use skillranker::limits::DurationMillis;
 use skillranker::runtime::{EntryClock, ProcessInvocation, RuntimeError};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::Duration;
-
-fn short_clock() -> EntryClock {
-    EntryClock::capture_with(
-        DurationMillis::new("block_total", 80, 3_000).unwrap(),
-        DurationMillis::new("block_cleanup", 20, 3_000).unwrap(),
-    )
-    .unwrap()
-}
 
 #[test]
 fn uninterruptible_leaves_are_maintenance_only() {
@@ -51,14 +44,27 @@ fn timely_filesystem_leaf_publishes() {
 
 #[test]
 fn stalled_blocking_leaf_cannot_publish_after_cleanup() {
-    let clock = short_clock();
+    let clock = EntryClock::capture().unwrap();
     let invocation = ProcessInvocation::from_clock(clock).unwrap();
     let cx = invocation.request_cx().unwrap();
-    let err = run_blocking_leaf(&invocation, &cx, BlockingLeafKind::Database, false, || {
-        thread::sleep(Duration::from_millis(120));
-        "stalled"
-    })
+    let entered = Arc::new(AtomicBool::new(false));
+    let leaf_entered = Arc::clone(&entered);
+    let err = run_blocking_leaf(
+        &invocation,
+        &cx,
+        BlockingLeafKind::Database,
+        false,
+        move || {
+            leaf_entered.store(true, Ordering::SeqCst);
+            // Cross the actual work boundary, independent of runtime startup time.
+            thread::sleep(Duration::from_millis(
+                clock.remaining_before_cleanup().as_millis() + 1,
+            ));
+            "stalled"
+        },
+    )
     .unwrap_err();
+    assert!(entered.load(Ordering::SeqCst), "the stalled leaf must run");
     assert!(
         matches!(
             err,
@@ -73,20 +79,25 @@ fn stalled_blocking_leaf_cannot_publish_after_cleanup() {
 
 #[test]
 fn cancelling_a_blocking_join_does_not_publish_the_leaf() {
-    let clock = short_clock();
+    let clock = EntryClock::capture().unwrap();
     let invocation = ProcessInvocation::from_clock_with_blocking_pool(clock, 1, 1).unwrap();
     let cx = invocation.request_cx().unwrap();
     let published = invocation.runtime().block_on(async {
+        let (started_tx, mut started_rx) = asupersync::channel::oneshot::channel();
+        let (release_tx, release_rx) = mpsc::sync_channel(1);
         let mut running = cx
-            .spawn_blocking(|_child| {
-                thread::sleep(Duration::from_millis(30));
+            .spawn_blocking(move |_child| {
+                started_tx.send_blocking(()).unwrap();
+                release_rx.recv_timeout(Duration::from_secs(2)).unwrap();
                 1_u8
             })
             .expect("first blocking worker");
+        started_rx.recv(&cx).await.unwrap();
         let mut queued = cx
             .spawn_blocking(|_child| 2_u8)
             .expect("second blocking worker");
         cx.cancel_with(asupersync::CancelKind::User, Some("queued cancel"));
+        release_tx.send(()).unwrap();
         let queued_joined = queued.join(&cx).await;
         let _ = running.join(&cx).await;
         match queued_joined {
@@ -109,17 +120,22 @@ fn cancelling_a_blocking_join_does_not_publish_the_leaf() {
 
 #[test]
 fn cancelling_a_running_blocking_leaf_does_not_publish() {
-    let clock = short_clock();
+    let clock = EntryClock::capture().unwrap();
     let invocation = ProcessInvocation::from_clock_with_blocking_pool(clock, 1, 1).unwrap();
     let cx = invocation.request_cx().unwrap();
     let published = invocation.runtime().block_on(async {
+        let (started_tx, mut started_rx) = asupersync::channel::oneshot::channel();
+        let (release_tx, release_rx) = mpsc::sync_channel(1);
         let mut running = cx
-            .spawn_blocking(|_child| {
-                thread::sleep(Duration::from_millis(40));
+            .spawn_blocking(move |_child| {
+                started_tx.send_blocking(()).unwrap();
+                release_rx.recv_timeout(Duration::from_secs(2)).unwrap();
                 "late"
             })
             .expect("running blocking worker");
+        started_rx.recv(&cx).await.unwrap();
         cx.cancel_with(asupersync::CancelKind::User, Some("running cancel"));
+        release_tx.send(()).unwrap();
         match running.join(&cx).await {
             Ok(value) => {
                 admit_blocking_publication(&invocation.clock(), invocation.clock().now(), &cx)?;

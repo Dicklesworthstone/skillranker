@@ -128,17 +128,17 @@ fn user_cancel_is_the_signal_path() {
 #[test]
 fn later_invocation_uses_the_runtime_process_epoch() {
     let _ = asupersync::time::wall_now();
-    thread::sleep(Duration::from_millis(120));
-    let clock = EntryClock::capture_with(
-        DurationMillis::new("total", 100, 3000).unwrap(),
-        DurationMillis::new("cleanup", 20, 3000).unwrap(),
-    )
-    .unwrap();
+    // Make the process epoch older than the entire invocation budget, while
+    // leaving the normal budget for constructing the real runtime itself.
+    thread::sleep(Duration::from_millis(DEFAULT_INVOCATION_DEADLINE_MS + 100));
+    let clock = EntryClock::capture().unwrap();
     let invocation = ProcessInvocation::from_clock(clock).unwrap();
     let cx = invocation.request_cx().unwrap();
     cx.checkpoint()
         .expect("fresh invocation must not inherit elapsed process time");
-    thread::sleep(Duration::from_millis(110));
+    thread::sleep(Duration::from_millis(
+        clock.remaining_before_cleanup().as_millis() + 1,
+    ));
     assert!(cx.checkpoint().is_err());
     assert_eq!(
         cx.cancel_reason().map(|reason| reason.kind),
