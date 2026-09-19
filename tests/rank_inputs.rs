@@ -405,6 +405,104 @@ fn failure_kind(output: &Output) -> (Option<i32>, String) {
     )
 }
 
+/// Feed the real CLI through a pipe, optionally retaining its writer after the
+/// document. The watchdog reaps a broken implementation before asserting.
+fn rank_stdin(f: &Fixture, input: Vec<u8>, hold_open: bool) -> (Output, bool) {
+    use std::io::Write;
+    use std::process::Stdio;
+    use std::time::{Duration, Instant};
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_sr"))
+        .env_clear()
+        .env("HOME", f.root.join("home"))
+        .env("XDG_CONFIG_HOME", f.root.join("config"))
+        .current_dir(f.workspace())
+        .args([
+            "rank",
+            "--context",
+            "-",
+            "--dry-run",
+            "--json",
+            "--timeout-ms",
+            if hold_open { "1200" } else { "10000" },
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut pipe = child.stdin.take().unwrap();
+    let (release, held) = std::sync::mpsc::channel();
+    let writer = std::thread::spawn(move || {
+        let result = pipe.write_all(&input);
+        if hold_open {
+            let _ = held.recv();
+        }
+        result
+    });
+    let end = Instant::now() + Duration::from_secs(if hold_open { 3 } else { 15 });
+    let mut killed = false;
+    loop {
+        if child.try_wait().unwrap().is_some() {
+            break;
+        }
+        if Instant::now() >= end {
+            child.kill().unwrap();
+            killed = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    drop(release);
+    let output = child.wait_with_output().unwrap();
+    if let Err(error) = writer.join().unwrap() {
+        assert_eq!(error.kind(), std::io::ErrorKind::BrokenPipe);
+    }
+    (output, killed)
+}
+
+#[test]
+fn normalized_stdin_deadline_does_not_wait_for_the_pipe_writer() {
+    let f = Fixture::new();
+    let valid = std::fs::read(f.context("context.json", "test failed")).unwrap();
+    // Even a syntactically complete document needs EOF to establish that no
+    // trailing document or extra bytes follow it.
+    for input in [Vec::new(), b"{\"schema_version\":".to_vec(), valid] {
+        let (output, killed) = rank_stdin(&f, input, true);
+        assert!(!killed, "sr waited for stdin beyond its own deadline");
+        assert_eq!(failure_kind(&output), (Some(6), "timeout".to_owned()));
+        let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(value["decision"], "unavailable");
+    }
+}
+
+#[test]
+fn normalized_stdin_eof_preserves_valid_malformed_and_byte_limit_results() {
+    let f = Fixture::new();
+    let valid = std::fs::read(f.context("context.json", "test failed")).unwrap();
+    for size in [valid.len(), 1_048_575, 1_048_576] {
+        let mut input = valid.clone();
+        input.resize(size, b' ');
+        let (output, killed) = rank_stdin(&f, input, false);
+        assert!(!killed);
+        assert!(dry_run_request_bytes(&output) > 0);
+    }
+    let (output, killed) = rank_stdin(&f, b"{".to_vec(), false);
+    assert!(!killed);
+    assert_eq!(
+        failure_kind(&output),
+        (Some(7), "malformed-input".to_owned())
+    );
+    let mut oversized = valid;
+    oversized.resize(1_048_577, b' ');
+    let (output, killed) = rank_stdin(&f, oversized, false);
+    assert!(!killed);
+    assert_eq!(
+        failure_kind(&output),
+        (Some(7), "oversized-input".to_owned())
+    );
+}
+
 #[test]
 fn input_that_cannot_support_an_evaluation_is_never_ranked() {
     let f = Fixture::new();
