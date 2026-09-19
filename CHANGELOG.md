@@ -4,6 +4,12 @@
 
 ### Fixed
 
+- A Claude transcript read only in part now says so. Reading just the
+  bounded 2 MiB tail sets `quality.history_windowed`. An unfinished last
+  record, unread backlog, oversized or duplicate-key records, or tool results
+  whose invocations the read window does not explain set `quality.source_gaps`
+  and make `context_quality` `partial`. These were reported as complete, and
+  `source_gaps` was never set.
 - `sr rank --transcript` no longer gives every native transcript the same
   session identity. Two sessions with identical content could share a cached
   response, and the latest request was sent to Jev twice, once as the request
