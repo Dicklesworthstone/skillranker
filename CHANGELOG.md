@@ -4,6 +4,12 @@
 
 ### Fixed
 
+- `sr rank` retries transient provider failures (429, 5xx, connection errors)
+  within one per-invocation allowance of two logical requests and four HTTP
+  attempts. It honors `Retry-After` and the entry deadline, and never retries
+  authentication or invalid answers. Trusted policy is re-authorized before
+  every attempt, retries included. Each rank had made exactly one attempt per
+  stage with no allowance.
 - A rank failure after its input is admitted is a full `unavailable` decision.
   This covers a superseded policy, withdrawn consent, a roster change, a
   timeout and a provider failure. The decision keeps the stages that ran and

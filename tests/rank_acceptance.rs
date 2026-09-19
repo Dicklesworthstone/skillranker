@@ -456,3 +456,44 @@ fn a_late_rerank_answer_is_never_published() {
         "the deadline, not the provider, ends the run: {elapsed:?}"
     );
 }
+
+#[test]
+fn a_transient_wide_failure_is_retried_within_the_allowance() {
+    let f = Fixture::new(CONSENT);
+    let provider = Provider::start(&f, "retry-wide", &[]);
+    let value = rank(&f, &provider, TASK, 10_000).expect("ranked");
+    let served = provider.finish();
+    assert_eq!(stages(&served), ["wide", "wide", "rerank"]);
+    assert_eq!(served[0]["status"], 503);
+    assert_eq!(value["decision"], "ranked", "{value}");
+    // Two logical requests over three attempts; the 503 returned no usage.
+    assert_eq!(usage(&value), (2, 3, 220, 55));
+    assert_eq!(value["usage"]["unknown_usage_attempts"], 1);
+}
+
+#[test]
+fn persistent_provider_failure_stops_at_the_attempt_allowance() {
+    let f = Fixture::new(CONSENT);
+    let provider = Provider::start(&f, "always-503", &[]);
+    let outcome = rank(&f, &provider, TASK, 10_000);
+    let served = provider.finish();
+    assert_eq!(
+        stages(&served),
+        ["wide", "wide", "wide", "wide"],
+        "four HTTP attempts per invocation at most"
+    );
+    let value = unavailable(outcome, 4, "request-budget");
+    assert_eq!(usage(&value), (1, 4, 0, 0));
+    assert_eq!(value["usage"]["unknown_usage_attempts"], 4);
+}
+
+#[test]
+fn an_authentication_failure_is_not_retried() {
+    let f = Fixture::new(CONSENT);
+    let provider = Provider::start(&f, "unauthorized", &[]);
+    let outcome = rank(&f, &provider, TASK, 10_000);
+    let served = provider.finish();
+    assert_eq!(stages(&served), ["wide"], "authentication is never retried");
+    let value = unavailable(outcome, 4, "authentication");
+    assert_eq!(usage(&value), (1, 1, 0, 0));
+}

@@ -3,12 +3,13 @@
 //! This boundary owns no background work or persistent cooldown. Every actual
 //! attempt rechecks caller authorization and the single-attempt client's policy.
 
+use super::CanonicalOrigin;
 use super::OriginScopedCredential;
 use super::admission::{
     AdmissionError, AdmissionRefusal, AttemptAdmission, AttemptBudget, AttemptPermit, CostReceipt,
     RankingStage, SentAttempt,
 };
-use super::client::{JevClient, TransportError, TransportErrorKind};
+use super::client::{JevTransport, TransportError, TransportErrorKind};
 use super::codec::{Request, Response, Usage};
 use crate::privacy::NetworkConsent;
 use crate::runtime::EntryClock;
@@ -179,9 +180,12 @@ pub struct StageResponse {
 
 /// One invocation, one client/origin, one clock, one attempt allowance across
 /// stages. This type does not create a durable guard or evaluation batch
-/// allowance; those require a separate admission integration.
+/// allowance; those require a separate admission integration. An in-memory
+/// transport without an origin is scoped to the production origin for
+/// allowance bookkeeping only; it never receives a credential.
 pub struct RetrySession<'a> {
-    client: &'a JevClient,
+    client: &'a dyn JevTransport,
+    origin: CanonicalOrigin,
     credential: Option<&'a OriginScopedCredential>,
     clock: EntryClock,
     admission: AttemptAdmission,
@@ -191,7 +195,7 @@ pub struct RetrySession<'a> {
 
 impl<'a> RetrySession<'a> {
     pub fn new(
-        client: &'a JevClient,
+        client: &'a dyn JevTransport,
         credential: Option<&'a OriginScopedCredential>,
         clock: EntryClock,
         budget: AttemptBudget,
@@ -199,6 +203,10 @@ impl<'a> RetrySession<'a> {
     ) -> Result<Self, AdmissionError> {
         Ok(Self {
             client,
+            origin: client
+                .origin()
+                .cloned()
+                .unwrap_or_else(CanonicalOrigin::production),
             credential,
             clock,
             admission: AttemptAdmission::new(budget, clock, invocation_id)?,
@@ -258,19 +266,26 @@ impl<'a> RetrySession<'a> {
                 .map_err(|()| self.error(RetryErrorKind::PolicyChanged, last_transport))?;
             let permit = self
                 .admission
-                .admit(stage, self.client.origin())
+                .admit(stage, &self.origin)
                 .map_err(|kind| self.error(RetryErrorKind::Admission(kind), last_transport))?;
             let mut flight = AttemptFlight {
                 admission: &mut self.admission,
                 permit: Some(permit),
                 sent: None,
             };
-            let result = self
-                .client
-                .send_accounted(request, self.credential, consent, cx, &self.clock, || {
-                    flight.start()
-                })
-                .await;
+            let result = {
+                let mut on_start = || flight.start();
+                self.client
+                    .send_accounted(
+                        request,
+                        self.credential,
+                        consent,
+                        cx,
+                        &self.clock,
+                        &mut on_start,
+                    )
+                    .await
+            };
             let accounting = flight.finish(result.as_ref().ok().map(|response| response.usage));
             drop(flight);
             accounting.map_err(|_| self.error(RetryErrorKind::Accounting, last_transport))?;

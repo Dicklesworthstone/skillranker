@@ -1,12 +1,15 @@
 # Jev retries and stage accounting
 
-`jev::retry::RetrySession` performs sequential stage calls through the real
-`JevClient`. The caller supplies the process-entry `EntryClock`, scoped credential,
-attempt budget and trusted authorization refresh. It retains one admission
-coordinator across wide and rerank: by default two logical requests and four
-HTTP attempts in total. The HTTP client still has automatic retries disabled.
-This library boundary does not expose `sr rank` or implement the future shared
-allowance, batch scheduler, persistent endpoint cooldown, or circuit breaker.
+`jev::retry::RetrySession` performs sequential stage calls through a
+`jev::client::JevTransport`: the real `JevClient`, or an in-memory test double
+that has no origin and never receives a credential. The caller supplies the
+process-entry `EntryClock`, scoped credential, attempt budget and trusted
+authorization refresh. It retains one admission coordinator across wide and
+rerank: by default two logical requests and four HTTP attempts in total. The
+HTTP client still has automatic retries disabled. `sr rank` opens one session
+per invocation, only once a send is due, and re-authorizes trusted policy before
+every attempt. This boundary does not implement the future shared allowance,
+batch scheduler, persistent endpoint cooldown, or circuit breaker.
 
 The explicit transient allowlist is HTTP 429, 500, 502, 503, 504 and 529, DNS or
 connect failure, and selected connection I/O failures. Authentication, input,

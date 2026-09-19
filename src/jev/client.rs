@@ -16,11 +16,85 @@ use asupersync::http::h1::http_client::{ClientError, HttpClient};
 use asupersync::tls::Certificate;
 use std::fmt;
 use std::future::{Future, poll_fn};
+use std::pin::Pin;
 use std::task::Poll;
 use std::time::Duration;
 
 const MAX_ADDITIONAL_ROOTS: usize = 8;
 const MAX_ROOT_BYTES: usize = 64 * 1024;
+
+/// A boxed provider attempt.
+pub type TransportFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<Response, TransportError>> + Send + 'a>>;
+
+/// The seam one provider attempt crosses: [`JevClient`] over real TLS, or an
+/// in-memory test double. `send_accounted` calls `on_start` once, immediately
+/// before the attempt can leave, so the caller's allowance records every
+/// attempt that may incur cost. A double without a real origin receives no
+/// credential.
+pub trait JevTransport: Send + Sync {
+    fn send<'a>(
+        &'a self,
+        request: &'a Request,
+        credential: Option<&'a OriginScopedCredential>,
+        consent: NetworkConsent,
+        cx: &'a Cx,
+        clock: &'a EntryClock,
+    ) -> TransportFuture<'a>;
+
+    fn send_accounted<'a>(
+        &'a self,
+        request: &'a Request,
+        credential: Option<&'a OriginScopedCredential>,
+        consent: NetworkConsent,
+        cx: &'a Cx,
+        clock: &'a EntryClock,
+        on_start: &'a mut (dyn FnMut() -> Result<(), TransportError> + Send),
+    ) -> TransportFuture<'a> {
+        Box::pin(async move {
+            on_start()?;
+            self.send(request, credential, consent, cx, clock).await
+        })
+    }
+
+    /// The origin a credential is bound to, when this transport reaches one.
+    fn origin(&self) -> Option<&super::CanonicalOrigin> {
+        None
+    }
+}
+
+impl JevTransport for JevClient {
+    fn send<'a>(
+        &'a self,
+        request: &'a Request,
+        credential: Option<&'a OriginScopedCredential>,
+        consent: NetworkConsent,
+        cx: &'a Cx,
+        clock: &'a EntryClock,
+    ) -> TransportFuture<'a> {
+        Box::pin(JevClient::send(
+            self, request, credential, consent, cx, clock,
+        ))
+    }
+
+    fn send_accounted<'a>(
+        &'a self,
+        request: &'a Request,
+        credential: Option<&'a OriginScopedCredential>,
+        consent: NetworkConsent,
+        cx: &'a Cx,
+        clock: &'a EntryClock,
+        on_start: &'a mut (dyn FnMut() -> Result<(), TransportError> + Send),
+    ) -> TransportFuture<'a> {
+        Box::pin(JevClient::send_accounted(
+            self, request, credential, consent, cx, clock, on_start,
+        ))
+    }
+
+    fn origin(&self) -> Option<&super::CanonicalOrigin> {
+        Some(JevClient::origin(self))
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TransportErrorKind {

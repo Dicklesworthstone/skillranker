@@ -27,11 +27,13 @@ use crate::context::{CurrentRequest, NormalizedContext, PrivateText, parse_norma
 use crate::effects::EffectGate;
 use crate::eligibility::{Eligible, Evaluation, LoadedState, Verdict, admit, after_rerank};
 use crate::identity::{ContentHash, EventId, HarnessId, SessionId, SkillId, WorkspaceId};
-use crate::jev::client::{JevClient, TransportError, TransportErrorKind};
+use crate::jev::admission::{AttemptBudget, RankingStage};
+use crate::jev::client::{JevClient, TransportErrorKind};
 use crate::jev::codec::{Request, Response};
-use crate::jev::endpoint::{CanonicalOrigin, EndpointConfig};
-use crate::jev::rerank::{RerankOutcome, RerankRequest};
-use crate::jev::wide::{Sizes, WideDecision, WideOutcome, WideRequest};
+use crate::jev::endpoint::EndpointConfig;
+use crate::jev::rerank::RerankOutcome;
+use crate::jev::retry::{RetryErrorKind, RetrySession};
+use crate::jev::wide::{Sizes, WideDecision, WideOutcome};
 use crate::jev::{OriginScopedCredential, rerank, wide};
 use crate::output::trace::{StageTrace, TraceEntry, TraceStage};
 use crate::output::{ErrorKind, OutputDocument, SCHEMA_VERSION, TraceCursor};
@@ -62,45 +64,7 @@ fn failure(code: u8, kind: &'static str, message: impl Into<String>) -> Pipeline
     (code, kind, message.into())
 }
 
-/// Abstract transport interface for Jev requests, enabling real TLS sockets
-/// or controlled test fixture injection.
-pub trait JevTransport: Send + Sync {
-    fn send<'a>(
-        &'a self,
-        request: &'a Request,
-        credential: Option<&'a OriginScopedCredential>,
-        consent: NetworkConsent,
-        cx: &'a Cx,
-        clock: &'a EntryClock,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<Response, TransportError>> + Send + 'a>,
-    >;
-
-    /// The origin the credential is bound to when this transport reaches a
-    /// real endpoint. In-memory test transports have none and get no credential.
-    fn origin(&self) -> Option<&CanonicalOrigin> {
-        None
-    }
-}
-
-impl JevTransport for JevClient {
-    fn send<'a>(
-        &'a self,
-        request: &'a Request,
-        credential: Option<&'a OriginScopedCredential>,
-        consent: NetworkConsent,
-        cx: &'a Cx,
-        clock: &'a EntryClock,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<Response, TransportError>> + Send + 'a>,
-    > {
-        Box::pin(self.send(request, credential, consent, cx, clock))
-    }
-
-    fn origin(&self) -> Option<&CanonicalOrigin> {
-        Some(JevClient::origin(self))
-    }
-}
+pub use crate::jev::client::JevTransport;
 
 /// Parameters for running the ranking pipeline.
 #[derive(Clone, Debug)]
@@ -938,6 +902,13 @@ async fn rank_once(
         .collect();
 
     let memory_cache = MemoryResponseCache::new();
+    // One transport, credential binding and attempt allowance per invocation:
+    // at most two logical requests and four HTTP attempts, with classified
+    // retries inside the entry deadline. Opened only when a send is due, so
+    // refused runs never construct a client.
+    let mut owned_client: Option<JevClient> = None;
+    let mut bound_credential: Option<OriginScopedCredential> = None;
+    let mut session: Option<RetrySession<'_>> = None;
 
     // 11. Stage 1 (Wide) Call or Cache Hit
     let wide_builder = wide::build(
@@ -1046,7 +1017,11 @@ async fn rank_once(
         },
     );
 
-    let wide_response = if !gate.policy().flags().no_cache {
+    // An exact cached answer is served without a send; `--no-cache` skips the
+    // lookup entirely.
+    let cached = if gate.policy().flags().no_cache {
+        None
+    } else {
         let lookup_q = CacheLookupQuery {
             key: &cache_key,
             namespace: &cache_ns,
@@ -1060,46 +1035,84 @@ async fn rank_once(
             Ok(CacheLookupResult::Hit { entry, .. }) => {
                 progress.metrics.wide_hit = true;
                 progress.metrics.cache_hit = true;
-                wide_builder
-                    .request()
-                    .decode_response(&entry.response_bytes)
-                    .map_err(|e| {
-                        failure(
-                            10,
-                            "invalid-provider-response",
-                            format!("Corrupt cached wide response: {e:?}"),
-                        )
-                    })?
-            }
-            _ => {
-                // Cache miss: execute provider attempt
-                execute_provider_wide(
-                    clock,
-                    cx,
-                    &config_files,
-                    &resolved_config,
-                    &mut current_receipt,
-                    &gate,
-                    &wide_builder,
-                    transport,
-                    &mut progress.metrics,
+                Some(
+                    wide_builder
+                        .request()
+                        .decode_response(&entry.response_bytes)
+                        .map_err(|e| {
+                            failure(
+                                10,
+                                "invalid-provider-response",
+                                format!("Corrupt cached wide response: {e:?}"),
+                            )
+                        })?,
                 )
-                .await?
             }
+            _ => None,
         }
-    } else {
-        execute_provider_wide(
-            clock,
-            cx,
-            &config_files,
-            &resolved_config,
-            &mut current_receipt,
-            &gate,
-            &wide_builder,
-            transport,
-            &mut progress.metrics,
-        )
-        .await?
+    };
+    let wide_response = match cached {
+        Some(response) => response,
+        None => {
+            // Refuse before building a client when policy forbids any send.
+            authorize_send(
+                clock,
+                &config_files,
+                &resolved_config,
+                &mut current_receipt,
+                &gate,
+                RankingStage::Wide,
+            )?;
+            let client: &dyn JevTransport = match transport {
+                Some(transport) => transport,
+                None => &*owned_client.insert(JevClient::new(endpoint.clone()).map_err(|e| {
+                    failure(
+                        2,
+                        "invalid-configuration",
+                        format!("Client init failed: {e}"),
+                    )
+                })?),
+            };
+            let credential =
+                match (resolved_config.credential(), client.origin()) {
+                    (Some(credential), Some(origin)) => Some(&*bound_credential.insert(
+                        OriginScopedCredential::bind(credential.clone(), origin).map_err(|_| {
+                            failure(4, "authentication", "Credential origin mismatch")
+                        })?,
+                    )),
+                    _ => None,
+                };
+            let active = session.insert(
+                RetrySession::new(
+                    client,
+                    credential,
+                    *clock,
+                    AttemptBudget::default_invocation(),
+                    "rank",
+                )
+                .map_err(|_| {
+                    let kind = ErrorKind::BudgetState;
+                    failure(
+                        kind.exit_code() as u8,
+                        kind.as_str(),
+                        "The attempt allowance could not be opened",
+                    )
+                })?,
+            );
+            provider_stage(
+                active,
+                RankingStage::Wide,
+                wide_builder.request(),
+                &config_files,
+                &resolved_config,
+                &mut current_receipt,
+                &gate,
+                &mut progress.metrics,
+                cx,
+                clock,
+            )
+            .await?
+        }
     };
 
     // Evaluate Wide Response
@@ -1203,16 +1216,27 @@ async fn rank_once(
         )
     })?;
 
-    let rerank_response = execute_provider_rerank(
-        clock,
-        cx,
+    // Rerank pairs with the wide answer this session produced. A wide answer
+    // from elsewhere cannot be paired with a fresh rerank under an unpinned
+    // model alias, so that run remains unavailable.
+    let Some(active) = session.as_mut() else {
+        return Err(failure(
+            11,
+            "cache-miss",
+            "A cached wide answer cannot be paired with a fresh rerank",
+        ));
+    };
+    let rerank_response = provider_stage(
+        active,
+        RankingStage::Rerank,
+        rerank_builder.request(),
         &config_files,
         &resolved_config,
         &mut current_receipt,
         &gate,
-        &rerank_builder,
-        transport,
         &mut progress.metrics,
+        cx,
+        clock,
     )
     .await?;
 
@@ -1426,19 +1450,17 @@ async fn rank_once(
     Ok(doc)
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn execute_provider_wide(
+/// Refresh trusted policy immediately before a provider attempt. Invalid
+/// configuration fails; offline, withdrawn consent or a missing credential
+/// refuse with their typed error; any other relevant change supersedes.
+fn authorize_send(
     clock: &EntryClock,
-    cx: &Cx,
     config_files: &ConfigFiles,
     resolved_config: &ResolvedConfig,
     receipt: &mut PolicyReceipt,
     gate: &EffectGate,
-    wide_req: &WideRequest<'_>,
-    transport: Option<&dyn JevTransport>,
-    metrics: &mut ExecutionMetrics,
-) -> Result<Response, PipelineFailure> {
-    // Revalidate PolicyReceipt before HTTP attempt
+    stage: RankingStage,
+) -> Result<NetworkConsent, PipelineFailure> {
     let (refreshed, reval) = config_files.refresh(
         clock,
         resolved_config,
@@ -1449,11 +1471,9 @@ async fn execute_provider_wide(
         return Err(failure(
             2,
             "invalid-configuration",
-            "Configuration invalid before wide send",
+            format!("Configuration invalid before {} send", stage.as_str()),
         ));
     }
-    // Withdrawn consent refuses this unsent request as a privacy failure; any
-    // other relevant change supersedes the evaluation.
     let current = refreshed.receipt(gate.policy());
     let consent = current.network_consent();
     admit_provider_attempt(consent, current.credential()).map_err(admission_refusal)?;
@@ -1461,146 +1481,83 @@ async fn execute_provider_wide(
         return Err(failure(
             3,
             "superseded",
-            format!("Policy changed before wide send: {fields:?}"),
+            format!("Policy changed before {} send: {fields:?}", stage.as_str()),
         ));
     }
     *receipt = current;
-
-    metrics.requests += 1;
-    metrics.http_attempts += 1;
-
-    let response = send_one(
-        wide_req.request(),
-        resolved_config,
-        consent,
-        transport,
-        metrics,
-        cx,
-        clock,
-    )
-    .await?;
-
-    metrics.input_tokens += response.usage.input_tokens;
-    metrics.output_tokens += response.usage.output_tokens;
-
-    Ok(response)
+    Ok(consent)
 }
 
+/// Run one logical stage through the invocation's retry session. Policy is
+/// re-authorized before every attempt, retries included. Usage comes from the
+/// allowance's receipt, so unknown usage from attempts that returned nothing
+/// is kept, never counted as zero.
 #[allow(clippy::too_many_arguments)]
-async fn execute_provider_rerank(
-    clock: &EntryClock,
-    cx: &Cx,
-    config_files: &ConfigFiles,
-    resolved_config: &ResolvedConfig,
-    receipt: &mut PolicyReceipt,
-    gate: &EffectGate,
-    rerank_req: &RerankRequest<'_>,
-    transport: Option<&dyn JevTransport>,
-    metrics: &mut ExecutionMetrics,
-) -> Result<Response, PipelineFailure> {
-    // Revalidate PolicyReceipt before Rerank HTTP attempt
-    let (refreshed, reval) = config_files.refresh(
-        clock,
-        resolved_config,
-        receipt,
-        PolicyBoundary::ProviderAdmission,
-    )?;
-    if let Revalidation::InvalidConfiguration = reval {
-        return Err(failure(
-            2,
-            "invalid-configuration",
-            "Configuration invalid before rerank send",
-        ));
-    }
-    // Withdrawn consent refuses this unsent request as a privacy failure; any
-    // other relevant change supersedes the evaluation.
-    let current = refreshed.receipt(gate.policy());
-    let consent = current.network_consent();
-    admit_provider_attempt(consent, current.credential()).map_err(admission_refusal)?;
-    if let Revalidation::Superseded(fields) = reval {
-        return Err(failure(
-            3,
-            "superseded",
-            format!("Policy changed before rerank send: {fields:?}"),
-        ));
-    }
-    *receipt = current;
-
-    metrics.requests += 1;
-    metrics.http_attempts += 1;
-
-    let response = send_one(
-        rerank_req.request(),
-        resolved_config,
-        consent,
-        transport,
-        metrics,
-        cx,
-        clock,
-    )
-    .await?;
-
-    metrics.input_tokens += response.usage.input_tokens;
-    metrics.output_tokens += response.usage.output_tokens;
-
-    Ok(response)
-}
-
-/// Send one request through `transport`, or through a client for the effective
-/// endpoint. A transport that reaches a real origin gets the credential scoped
-/// to that origin, so an injected client takes the same path as production.
-/// An attempt that started but returned no usage may still be billed; it is
-/// counted as unknown usage, never as zero.
-async fn send_one(
+async fn provider_stage(
+    session: &mut RetrySession<'_>,
+    stage: RankingStage,
     request: &Request,
+    config_files: &ConfigFiles,
     resolved_config: &ResolvedConfig,
-    consent: NetworkConsent,
-    transport: Option<&dyn JevTransport>,
+    receipt: &mut PolicyReceipt,
+    gate: &EffectGate,
     metrics: &mut ExecutionMetrics,
     cx: &Cx,
     clock: &EntryClock,
 ) -> Result<Response, PipelineFailure> {
-    let credential = resolved_config
-        .credential()
-        .ok_or_else(|| failure(4, "authentication", "Missing TYPESAFE_API_KEY"))?;
-    let owned;
-    let transport: &dyn JevTransport = match transport {
-        Some(transport) => transport,
-        None => {
-            let endpoint = match resolved_config.effective().endpoint() {
-                Some(ep) => EndpointConfig::from_override(ep).map_err(|e| {
-                    failure(
-                        2,
-                        "invalid-configuration",
-                        format!("Invalid endpoint: {e:?}"),
-                    )
-                })?,
-                None => EndpointConfig::production(),
-            };
-            owned = JevClient::new(endpoint).map_err(|e| {
-                failure(
-                    2,
-                    "invalid-configuration",
-                    format!("Client init failed: {e}"),
-                )
-            })?;
-            &owned
-        }
-    };
-    let scoped = transport
-        .origin()
-        .map(|origin| OriginScopedCredential::bind(credential.clone(), origin))
-        .transpose()
-        .map_err(|_| failure(4, "authentication", "Credential origin mismatch"))?;
-    transport
-        .send(request, scoped.as_ref(), consent, cx, clock)
-        .await
-        .map_err(|error| {
-            if error.http_attempt_started {
-                metrics.unknown_usage_attempts += 1;
-            }
-            map_transport_error(error)
+    let sent_before = session.receipt().sent_attempts;
+    let mut refusal = None;
+    let result = session
+        .send_stage(stage, request, cx, || {
+            authorize_send(clock, config_files, resolved_config, receipt, gate, stage)
+                .map_err(|failure| refusal = Some(failure))
         })
+        .await;
+    let cost = session.receipt();
+    if cost.sent_attempts > sent_before {
+        metrics.requests += 1;
+    }
+    metrics.http_attempts = u64::from(cost.sent_attempts);
+    metrics.input_tokens = cost.known_usage.input_tokens;
+    metrics.output_tokens = cost.known_usage.output_tokens;
+    metrics.unknown_usage_attempts = u64::from(cost.unknown_usage_attempts);
+    match result {
+        Ok(answer) => Ok(answer.response),
+        Err(error) => Err(match (error.kind, refusal) {
+            (RetryErrorKind::PolicyChanged, Some(refusal)) => refusal,
+            (kind, _) => retry_failure(kind, error.last_transport.map(|t| t.kind)),
+        }),
+    }
+}
+
+/// The terminal reason for a stage that exhausted or stopped its retries.
+fn retry_failure(kind: RetryErrorKind, last: Option<TransportErrorKind>) -> PipelineFailure {
+    match kind {
+        RetryErrorKind::Transport(kind) => map_transport_error(kind),
+        RetryErrorKind::Admission(refusal) => {
+            let kind = refusal.error_kind();
+            failure(kind.exit_code() as u8, kind.as_str(), refusal.to_string())
+        }
+        RetryErrorKind::Accounting => {
+            let kind = ErrorKind::BudgetState;
+            failure(
+                kind.exit_code() as u8,
+                kind.as_str(),
+                "Attempt accounting failed",
+            )
+        }
+        RetryErrorKind::PolicyChanged => failure(3, "superseded", "Policy changed before send"),
+        // A transient provider failure with no retry left: report that failure.
+        RetryErrorKind::RetryStopped(_) => last.map_or_else(
+            || failure(4, "provider-failure", "The provider request failed"),
+            map_transport_error,
+        ),
+        RetryErrorKind::ModelPairMismatch => failure(
+            10,
+            "invalid-provider-response",
+            "Wide and rerank answers came from different models",
+        ),
+    }
 }
 
 /// Offline is a cache miss (exit 11), not an authorization failure; missing
@@ -1610,12 +1567,17 @@ fn admission_refusal(refusal: ProviderAdmissionRefusal) -> PipelineFailure {
     failure(kind.exit_code() as u8, kind.as_str(), refusal.to_string())
 }
 
-fn map_transport_error(e: TransportError) -> PipelineFailure {
-    match e.kind {
-        TransportErrorKind::Deadline => (6, "timeout", "Jev request exceeded deadline".into()),
-        TransportErrorKind::Admission(_) => {
-            (8, "network-denied", "Provider admission denied".into())
+fn map_transport_error(kind: TransportErrorKind) -> PipelineFailure {
+    match kind {
+        TransportErrorKind::Deadline | TransportErrorKind::Cancelled => {
+            (6, "timeout", "Jev request exceeded deadline".into())
         }
+        TransportErrorKind::Admission(refusal) => admission_refusal(refusal),
+        TransportErrorKind::Response(_) => (
+            10,
+            "invalid-provider-response",
+            "The provider response failed validation".into(),
+        ),
         TransportErrorKind::CredentialOriginMismatch => {
             (4, "authentication", "Credential origin mismatch".into())
         }
@@ -1628,7 +1590,7 @@ fn map_transport_error(e: TransportError) -> PipelineFailure {
         TransportErrorKind::HttpStatus(code) => {
             (4, "provider-failure", format!("HTTP error {code}"))
         }
-        _ => (4, "network-failure", format!("Transport error: {e}")),
+        _ => (4, "network-failure", format!("Transport error: {kind:?}")),
     }
 }
 

@@ -15,6 +15,10 @@ Scenarios:
   write-on-wide   like useful; before answering wide, write TEXT to PATH
   touch-on-rerank like useful; before answering rerank, append to PATH
   late-rerank     like useful; the rerank answer is delayed by TEXT seconds
+  retry-wide      like useful, but the first wide attempt is a 503 with
+                  Retry-After: 0
+  always-503      every attempt is a 503 with Retry-After: 0
+  unauthorized    every attempt is a 401
 """
 
 import json
@@ -117,17 +121,28 @@ while True:
             handle.write("\nChanged while the provider answered.\n")
     if scenario == "late-rerank" and stage == "rerank":
         time.sleep(float(text))
+    status = "200 OK"
+    if scenario == "always-503" or (
+            scenario == "retry-wide" and stages.count("wide") == 1 and stage == "wide"):
+        status = "503 Service Unavailable"
+    elif scenario == "unauthorized":
+        status = "401 Unauthorized"
     inputs, outputs = USAGE.get(stage, (1, 1))
     body = json.dumps({
         "model": "jev-test",
         "answers": {key: answer(key, question, stage) for key, question in questions.items()},
         "usage": {"input_tokens": inputs, "output_tokens": outputs},
     }).encode()
-    emit({"stage": stage, "request_bytes": length, "options": len(
-        questions.get("which", questions.get("rerank", {"criteria": {}}))["criteria"]),
-        "authorization": "authorization" in fields})
+    extra = ""
+    if status != "200 OK":
+        body = b'{"error": "synthetic provider failure"}'
+        extra = "Retry-After: 0\r\n" if status.startswith("503") else ""
+    emit({"stage": stage, "status": int(status.split()[0]), "request_bytes": length,
+          "options": len(questions.get("which", questions.get("rerank", {"criteria": {}}))[
+              "criteria"]),
+          "authorization": "authorization" in fields})
     try:
-        stream.sendall(("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+        stream.sendall((f"HTTP/1.1 {status}\r\nContent-Type: application/json\r\n{extra}"
                         f"Content-Length: {len(body)}\r\nConnection: close\r\n\r\n").encode()
                        + body)
         stream.recv(1)
