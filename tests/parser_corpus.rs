@@ -14,46 +14,38 @@
 //! - Bounded output document serialization and terminal text sanitization.
 //! - Fixed-seed deterministic fuzz smoke campaign runner (1,500 iterations).
 
-use asupersync::Cx;
+use asupersync::runtime::RuntimeBuilder;
+use asupersync::Budget;
 use serde_json::json;
 use skillranker::cache::{
-    CacheKey, CacheNamespace, CandidateDigest, DecisionFingerprintInput,
-    RankingPolicySnapshot, RequestFingerprintInput, RequestStage,
-    compute_decision_fingerprint, compute_request_fingerprint,
+    compute_decision_fingerprint, compute_request_fingerprint, CacheKey, CacheNamespace,
+    CandidateDigest, DecisionFingerprintInput, RankingPolicySnapshot, RequestFingerprintInput,
+    RequestStage,
 };
-use skillranker::config::{
-    ConfigErrors, ConfigLayer, ConfigSources, IssueKey, RawValue, ResolvedConfig, SettingKey,
-};
-use skillranker::context::jsonl::{
-    CursorKind, SkipKind, parse_line, snapshot_jsonl,
-};
+use skillranker::config::{ConfigSources, RawValue, ResolvedConfig, MAX_STRING_VALUE_BYTES};
+use skillranker::context::jsonl::{parse_line, snapshot_jsonl, CursorKind, SkipKind};
 use skillranker::identity::{
     AdapterId, AdapterVersion, BranchId, ContentHash, ContextEpoch, HarnessId, SessionId, SkillId,
     WorkspaceId,
 };
-use skillranker::jev::codec::{
-    Answer, ChoiceAnswer, CodecError, MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES, Request, Usage,
-};
+use skillranker::jev::codec::{CodecError, Request, MAX_REQUEST_BYTES};
 use skillranker::limits::*;
 use skillranker::output::table::sanitize_terminal_text;
 use skillranker::output::{
-    ErrorKind, MAX_OUTPUT_BYTES, MAX_TEXT_BYTES, OutputDocument, sanitize_diagnostic_text,
+    sanitize_diagnostic_text, ErrorKind, OutputDocument, MAX_OUTPUT_BYTES, MAX_TEXT_BYTES,
 };
-use skillranker::privacy::NetworkConsent;
 use skillranker::roster::explicit::{
-    DirectiveKind, ExplicitResolutionRequest, ExplicitResolutionResult,
-    UnresolvedReason, parse_prompt_directives, resolve_explicit_requirements,
+    parse_prompt_directives, resolve_explicit_requirements, ExplicitResolutionRequest,
+    ExplicitResolutionResult, UnresolvedReason,
 };
 use skillranker::roster::resolution::ResolvedRoster;
-use skillranker::roster::retrieval::{QueryCompileError, QueryInput, compile_query};
-use skillranker::roster::{FrontmatterError, parse_skill_metadata};
+use skillranker::roster::retrieval::{compile_query, QueryInput};
+use skillranker::roster::{parse_skill_metadata, FrontmatterError};
 use skillranker::runtime::ProcessInvocation;
 use skillranker::scoring::{
-    EPSILON, Input, ScoringError, W_FIT_MAX, W_PHASE_MAX, W_PRIOR_MAX, Weights, clip,
-    log_odds, rank,
+    clip, log_odds, rank, Input, ScoringError, Weights, EPSILON, W_FIT_MAX, W_PHASE_MAX,
+    W_PRIOR_MAX,
 };
-use std::collections::BTreeSet;
-use std::ffi::OsString;
 
 // ==============================================================================
 // 1. Configuration and Project Authority Parser Fuzz & Boundaries
@@ -67,14 +59,20 @@ fn test_configuration_and_authority_parser_fuzz_boundaries() {
             ("ranking.top".to_string(), RawValue::Integer(5)),
             ("ranking.shortlist".to_string(), RawValue::Integer(8)),
         ],
-        project: vec![
-            ("ranking.top".to_string(), RawValue::Integer(3)),
-        ],
+        project: vec![("ranking.top".to_string(), RawValue::Integer(3))],
         ..ConfigSources::default()
     };
     let resolved = ResolvedConfig::resolve(sources, 1).expect("clean resolution");
-    assert_eq!(resolved.effective.ranking.top, 3, "project layer overrides user layer");
-    assert_eq!(resolved.effective.ranking.shortlist, 8, "user layer value preserved");
+    assert_eq!(
+        resolved.effective().top(),
+        3,
+        "project layer overrides user layer"
+    );
+    assert_eq!(
+        resolved.effective().shortlist(),
+        8,
+        "user layer value preserved"
+    );
 
     // B. Project layer attempting to set forbidden authority settings must be rejected
     for forbidden_path in [
@@ -85,12 +83,12 @@ fn test_configuration_and_authority_parser_fuzz_boundaries() {
         "retention.raw_transcripts",
     ] {
         let evil_sources = ConfigSources {
-            project: vec![(forbidden_path.to_string(), RawValue::Boolean(true))],
+            project: vec![(forbidden_path.to_string(), RawValue::Bool(true))],
             ..ConfigSources::default()
         };
         let err = ResolvedConfig::resolve(evil_sources, 1).unwrap_err();
         assert!(
-            !err.issues.is_empty(),
+            !err.issues().is_empty(),
             "project layer must fail when setting {forbidden_path}"
         );
     }
@@ -141,13 +139,14 @@ fn test_normalized_context_and_jsonl_tail_fuzz_boundaries() {
     let content = format!("{}\n{}\n{}", rec1, rec2, incomplete_tail);
     std::fs::write(&file_path, content.as_bytes()).unwrap();
 
-    let cx = Cx::for_testing();
-    let inv = ProcessInvocation::default();
-    let snapshot = snapshot_jsonl(&file_path, CursorKind::Ranking, None, &inv, &cx).expect("snapshot succeeds");
+    let invocation = ProcessInvocation::enter().unwrap();
+    let cx = invocation.request_cx().unwrap();
+    let snapshot = snapshot_jsonl(&invocation, &cx, &file_path, None, CursorKind::Ranking)
+        .expect("snapshot succeeds");
 
     // The snapshot must process complete records and cleanly defer the incomplete tail without panic
     assert_eq!(snapshot.events.len(), 2);
-    assert!(snapshot.deferred_tail_bytes > 0, "trailing bytes must be deferred");
+    assert!(snapshot.incomplete_tail, "trailing bytes must be deferred");
     assert_eq!(snapshot.skipped.len(), 0);
 
     // B. Middle corrupted record is recorded as SkippedRecord, and reading continues
@@ -162,20 +161,29 @@ fn test_normalized_context_and_jsonl_tail_fuzz_boundaries() {
     let content_with_bad = format!("{}\n{}\n{}\n", rec1, bad_record, rec3);
     std::fs::write(&file_path, content_with_bad.as_bytes()).unwrap();
 
-    let snapshot2 = snapshot_jsonl(&file_path, CursorKind::Ranking, None, &inv, &cx).expect("snapshot succeeds");
+    let snapshot2 = snapshot_jsonl(&invocation, &cx, &file_path, None, CursorKind::Ranking)
+        .expect("snapshot succeeds");
     assert_eq!(snapshot2.events.len(), 2);
     assert_eq!(snapshot2.skipped.len(), 1);
-    assert!(matches!(snapshot2.skipped[0].kind, SkipKind::MalformedJson));
+    assert!(matches!(snapshot2.skipped[0].kind, SkipKind::Corrupt));
 
     // C. Single record exceeding ONE_TRANSCRIPT_RECORD_BYTES is skipped
-    let huge_line = format!("{{\"type\": \"user\", \"text\": \"{}\"}}\n", "x".repeat(ONE_TRANSCRIPT_RECORD_BYTES.max() + 10));
+    let huge_line = format!(
+        "{{\"type\": \"user\", \"text\": \"{}\"}}\n",
+        "x".repeat(ONE_TRANSCRIPT_RECORD_BYTES.max() + 10)
+    );
     let content_with_huge = format!("{}\n{}", rec1, huge_line);
     std::fs::write(&file_path, content_with_huge.as_bytes()).unwrap();
 
-    let snapshot3 = snapshot_jsonl(&file_path, CursorKind::Ranking, None, &inv, &cx).expect("snapshot succeeds");
+    let snapshot3 = snapshot_jsonl(&invocation, &cx, &file_path, None, CursorKind::Ranking)
+        .expect("snapshot succeeds");
     assert_eq!(snapshot3.events.len(), 1);
-    assert!(snapshot3.skipped.iter().any(|s| matches!(s.kind, SkipKind::OversizedRecord)));
+    assert!(snapshot3
+        .skipped
+        .iter()
+        .any(|s| matches!(s.kind, SkipKind::Oversize)));
 
+    let _ = invocation.shutdown();
     let _ = std::fs::remove_dir_all(&temp_dir);
 }
 
@@ -186,12 +194,16 @@ fn test_normalized_context_and_jsonl_tail_fuzz_boundaries() {
 #[test]
 fn test_roster_frontmatter_and_alias_adversarial_corpus() {
     // A. Frontmatter size limit: 16 KiB
-    let huge_frontmatter = format!("---\nname: skill_huge\ndescription: {}\n---\nBody", "a".repeat(16 * KIB + 10));
+    let huge_frontmatter = format!(
+        "---\nname: skill_huge\ndescription: {}\n---\nBody",
+        "a".repeat(16 * KIB + 10)
+    );
     let err = parse_skill_metadata(huge_frontmatter.as_bytes()).unwrap_err();
-    assert_eq!(err, FrontmatterError::OversizedFrontmatter);
+    assert!(matches!(err, FrontmatterError::FrontmatterTooLarge(_)));
 
     // B. Synonymous aliases collision produces DuplicateKey
-    let alias_duplicate = "---\nname: skill_alias\nuser-invocable: true\nuser_invocable: true\n---\nBody";
+    let alias_duplicate =
+        "---\nname: skill_alias\nuser-invocable: true\nuser_invocable: true\n---\nBody";
     let err = parse_skill_metadata(alias_duplicate.as_bytes()).unwrap_err();
     assert_eq!(err, FrontmatterError::DuplicateKey);
 
@@ -200,20 +212,28 @@ fn test_roster_frontmatter_and_alias_adversarial_corpus() {
     assert_eq!(err, FrontmatterError::DuplicateKey);
 
     // C. Missing frontmatter falls back to heading / paragraph
-    let markdown_no_fm = "# My Markdown Skill\n\nThis is a fallback description paragraph for the skill.\n";
+    let markdown_no_fm =
+        "# My Markdown Skill\n\nThis is a fallback description paragraph for the skill.\n";
     let parsed = parse_skill_metadata(markdown_no_fm.as_bytes()).expect("fallback succeeds");
     assert_eq!(parsed.name.as_deref(), Some("My Markdown Skill"));
-    assert_eq!(parsed.description.as_deref(), Some("This is a fallback description paragraph for the skill."));
+    assert_eq!(
+        parsed.description,
+        "This is a fallback description paragraph for the skill."
+    );
     assert!(parsed.user_invocable);
     assert!(parsed.agent_invocable);
 
     // D. Malformed YAML without closing delimiter returns clean error
     let unclosed_fm = "---\nname: broken\ndescription: missing closing delimiter\n";
-    assert_eq!(parse_skill_metadata(unclosed_fm.as_bytes()).unwrap_err(), FrontmatterError::UnclosedFrontmatter);
+    assert_eq!(
+        parse_skill_metadata(unclosed_fm.as_bytes()).unwrap_err(),
+        FrontmatterError::UnclosedFrontmatter
+    );
 
     // E. Empty frontmatter
     let empty_fm = "---\n---\n# Title\nDescription\n";
-    let parsed_empty = parse_skill_metadata(empty_fm.as_bytes()).expect("empty frontmatter falls back");
+    let parsed_empty =
+        parse_skill_metadata(empty_fm.as_bytes()).expect("empty frontmatter falls back");
     assert_eq!(parsed_empty.name.as_deref(), Some("Title"));
 }
 
@@ -223,39 +243,51 @@ fn test_roster_frontmatter_and_alias_adversarial_corpus() {
 
 #[test]
 fn test_quill_query_escaping_and_term_bounds() {
-    let cx = Cx::for_testing();
+    let runtime = RuntimeBuilder::current_thread().build().unwrap();
+    let cx = runtime.request_cx_with_budget(Budget::new());
 
     // A. Special Lucene / Quill characters must be properly escaped in literal tokens
     let special_input = "test + - && || ! ( ) { } [ ] ^ \" ~ * ? : \\ / token";
     let input = QueryInput {
         latest_request: special_input,
-        active_task: None,
-        recent_errors: &[],
+        active_task: "",
+        recent_errors: "",
     };
 
     let compiled = compile_query(&cx, input).expect("compilation succeeds");
-    assert!(compiled.query.as_str().contains("test"));
-    assert!(compiled.query.as_str().contains("token"));
-    assert_eq!(compiled.diagnostics.empty_terms, false);
+    let query_lit = compiled.query.expect("query terms exist");
+    assert!(query_lit.as_str().contains("test"));
+    assert!(query_lit.as_str().contains("token"));
 
-    // B. Completely empty or whitespace-only input fails with EmptyQuery
+    // B. Completely empty or whitespace-only input returns None for query (retrieval-empty)
     let empty_input = QueryInput {
         latest_request: "   \t\n   ",
-        active_task: None,
-        recent_errors: &[],
+        active_task: "",
+        recent_errors: "",
     };
-    let err = compile_query(&cx, empty_input).unwrap_err();
-    assert_eq!(err, QueryCompileError::EmptyQuery);
+    let compiled_empty = compile_query(&cx, empty_input).expect("compilation succeeds");
+    assert!(
+        compiled_empty.query.is_none(),
+        "whitespace-only input must be retrieval-empty"
+    );
 
     // C. Massive repeated terms are deduplicated within disjunction limit
     let repeated = "duplicate ".repeat(500);
     let repeated_input = QueryInput {
         latest_request: &repeated,
-        active_task: None,
-        recent_errors: &[],
+        active_task: "",
+        recent_errors: "",
     };
     let compiled_rep = compile_query(&cx, repeated_input).expect("compilation succeeds");
-    assert!(compiled_rep.query.as_str().len() <= 2048, "query must stay strictly bounded");
+    assert!(
+        compiled_rep
+            .query
+            .expect("query terms exist")
+            .as_str()
+            .len()
+            <= 2048,
+        "query must stay strictly bounded"
+    );
 }
 
 // ==============================================================================
@@ -279,7 +311,10 @@ fn test_provider_json_codec_and_option_map_boundaries() {
     });
     let serialized = serde_json::to_vec(&huge_req_json).unwrap();
     assert!(serialized.len() > MAX_REQUEST_BYTES);
-    let decode_err = Request::from_json(&serialized).unwrap_err();
+    let decode_err = match Request::from_json(&serialized) {
+        Ok(_) => panic!("oversized request should fail decode"),
+        Err(e) => e,
+    };
     assert_eq!(decode_err, CodecError::TooLarge);
 
     // B. Option count boundary: 255 max choice options (254 real + 1 none)
@@ -303,19 +338,63 @@ fn test_provider_json_codec_and_option_map_boundaries() {
     });
     let req_bytes = serde_json::to_vec(&valid_choice_req).unwrap();
     let req = Request::from_json(&req_bytes).expect("255 options is valid");
-    assert_eq!(req.questions.len(), 1);
+    assert_eq!(req.questions().len(), 1);
 
     // C. Duplicate keys in provider response must be rejected
     let duplicate_key_resp = br#"{"model":"jev-latest","answers":{},"usage":{"input_tokens":10,"output_tokens":5},"model":"evil-second-model"}"#;
-    let resp_err = req.decode_response(duplicate_key_resp).unwrap_err();
+    let resp_err = match req.decode_response(duplicate_key_resp) {
+        Ok(_) => panic!("duplicate key should fail decode"),
+        Err(e) => e,
+    };
     assert_eq!(resp_err, CodecError::InvalidJson);
 
     // D. Non-finite probabilities rejected
     let nan_resp = br#"{"model":"jev-latest","answers":{"rank":{"type":"choice","choice":"__none__","probabilities":{"__none__":NaN},"confidence":1.0}},"usage":{"input_tokens":1,"output_tokens":1}}"#;
-    let resp_err2 = req.decode_response(nan_resp).unwrap_err();
+    let resp_err2 = match req.decode_response(nan_resp) {
+        Ok(_) => panic!("NaN probability should fail decode"),
+        Err(e) => e,
+    };
     assert_eq!(resp_err2, CodecError::InvalidJson);
 
-    // E. Probability sum out of tolerance (sum = 0.8 != 1.0)
+    // E. Option map mismatch: response omits requested options
+    let missing_options_resp = json!({
+        "model": "jev-latest",
+        "answers": {
+            "rank": {
+                "type": "choice",
+                "choice": "__none__",
+                "probabilities": {
+                    "__none__": 1.0
+                },
+                "confidence": 1.0
+            }
+        },
+        "usage": {
+            "input_tokens": 10,
+            "output_tokens": 10
+        }
+    });
+    let missing_bytes = serde_json::to_vec(&missing_options_resp).unwrap();
+    let resp_err_opt = match req.decode_response(&missing_bytes) {
+        Ok(_) => panic!("missing options should fail decode"),
+        Err(e) => e,
+    };
+    assert_eq!(resp_err_opt, CodecError::OptionMismatch);
+
+    // F. Probability sum out of tolerance (sum = 0.8 != 1.0)
+    let single_opt_req_json = json!({
+        "model": "jev-latest",
+        "state": {"task": "test"},
+        "questions": {
+            "rank": {
+                "type": "choice",
+                "instructions": "Which skill?",
+                "criteria": {"__none__": "none"}
+            }
+        }
+    });
+    let single_opt_req =
+        Request::from_json(&serde_json::to_vec(&single_opt_req_json).unwrap()).unwrap();
     let bad_sum_resp = json!({
         "model": "jev-latest",
         "answers": {
@@ -334,7 +413,10 @@ fn test_provider_json_codec_and_option_map_boundaries() {
         }
     });
     let bad_sum_bytes = serde_json::to_vec(&bad_sum_resp).unwrap();
-    let resp_err3 = req.decode_response(&bad_sum_bytes).unwrap_err();
+    let resp_err3 = match single_opt_req.decode_response(&bad_sum_bytes) {
+        Ok(_) => panic!("bad sum probability should fail decode"),
+        Err(e) => e,
+    };
     assert_eq!(resp_err3, CodecError::InvalidDistribution);
 }
 
@@ -350,45 +432,50 @@ fn test_explicit_directive_resolution_adversarial_inputs() {
     assert_eq!(parsed.len(), 0, "quoted directives must be ignored");
 
     // B. Directives in code blocks must be ignored
-    let code_block_prompt = "Here is an example:\n```\nuse skill: deploy_app\n```\nPlease help.";
+    let code_block_prompt = "```bash\nuse skill: deploy_prod\n```\nPlease ignore above.";
     let parsed_code = parse_prompt_directives(code_block_prompt);
-    assert_eq!(parsed_code.len(), 0, "code block directives must be ignored");
+    assert_eq!(
+        parsed_code.len(),
+        0,
+        "directives inside code blocks must be ignored"
+    );
 
-    // C. Conflicting require and exclude on same skill
-    let conflict_prompt = "use skill: deploy_app\ndo not use skill: deploy_app";
+    // C. Conflicting require and exclude directives must return ConflictingDirective
+    let conflict_prompt = "use skill dangerous_skill; do not use skill dangerous_skill";
     let parsed_conflict = parse_prompt_directives(conflict_prompt);
     assert_eq!(parsed_conflict.len(), 2);
 
-    let cx = Cx::for_testing();
-    let clock = skillranker::runtime::EntryClock::now();
-    let empty_roster = ResolvedRoster::resolve(Vec::new(), false, &cx, &clock).unwrap();
+    let empty_roster = ResolvedRoster::default();
 
     let req = ExplicitResolutionRequest {
-        directives: parsed_conflict,
         cli_required_skills: Vec::new(),
         cli_excluded_skills: Vec::new(),
-        roster: &empty_roster,
+        context_skill_references: Vec::new(),
+        context_excluded_skills: Vec::new(),
+        user_prompt: Some(conflict_prompt.to_string()),
     };
-    let res = resolve_explicit_requirements(req);
+    let res = resolve_explicit_requirements(&req, &empty_roster);
     match res {
-        ExplicitResolutionResult::Unavailable { unresolved } => {
-            assert!(unresolved.iter().any(|u| u.reason == UnresolvedReason::ConflictingDirective));
+        Ok(ExplicitResolutionResult::Unavailable { unresolved }) => {
+            assert!(unresolved
+                .iter()
+                .any(|u| u.reason == UnresolvedReason::ConflictingDirective));
         }
         other => panic!("expected unavailable due to conflict, got: {other:?}"),
     }
 
     // D. Missing explicit skill reference produces Missing without substitution
-    let missing_prompt = "use skill: nonexistent_skill_12345";
-    let parsed_missing = parse_prompt_directives(missing_prompt);
+    let missing_prompt = "use skill nonexistent_skill_12345";
     let req2 = ExplicitResolutionRequest {
-        directives: parsed_missing,
         cli_required_skills: Vec::new(),
         cli_excluded_skills: Vec::new(),
-        roster: &empty_roster,
+        context_skill_references: Vec::new(),
+        context_excluded_skills: Vec::new(),
+        user_prompt: Some(missing_prompt.to_string()),
     };
-    let res2 = resolve_explicit_requirements(req2);
+    let res2 = resolve_explicit_requirements(&req2, &empty_roster);
     match res2 {
-        ExplicitResolutionResult::Unavailable { unresolved } => {
+        Ok(ExplicitResolutionResult::Unavailable { unresolved }) => {
             assert_eq!(unresolved.len(), 1);
             assert_eq!(unresolved[0].target, "nonexistent_skill_12345");
             assert_eq!(unresolved[0].reason, UnresolvedReason::Missing);
@@ -410,9 +497,18 @@ fn test_scoring_normalization_and_finite_arithmetic_fuzz() {
     // A. Blend weights boundary validation
     assert!(Weights::new(0.0, 0.0, 0.0).is_ok());
     assert!(Weights::new(W_FIT_MAX, W_PRIOR_MAX, W_PHASE_MAX).is_ok());
-    assert_eq!(Weights::new(W_FIT_MAX + 0.001, 0.0, 0.0).unwrap_err(), ScoringError::InvalidWeight);
-    assert_eq!(Weights::new(0.0, W_PRIOR_MAX + 0.001, 0.0).unwrap_err(), ScoringError::InvalidWeight);
-    assert_eq!(Weights::new(0.0, 0.0, W_PHASE_MAX + 0.001).unwrap_err(), ScoringError::InvalidWeight);
+    assert_eq!(
+        Weights::new(W_FIT_MAX + 0.001, 0.0, 0.0).unwrap_err(),
+        ScoringError::InvalidWeight
+    );
+    assert_eq!(
+        Weights::new(0.0, W_PRIOR_MAX + 0.001, 0.0).unwrap_err(),
+        ScoringError::InvalidWeight
+    );
+    assert_eq!(
+        Weights::new(0.0, 0.0, W_PHASE_MAX + 0.001).unwrap_err(),
+        ScoringError::InvalidWeight
+    );
 
     // B. Extreme probability clipping: 0.0 and 1.0 never produce NaN or Inf in log_odds
     assert_eq!(clip(0.0), EPSILON);
@@ -450,18 +546,38 @@ fn test_scoring_normalization_and_finite_arithmetic_fuzz() {
     assert_eq!(ranking.returned.len(), 2);
     assert_eq!(ranking.eligible, 3);
     assert!(ranking.omitted_mass > 0.0);
-    assert!((ranking.returned[0].rank_score + ranking.returned[1].rank_score + ranking.omitted_mass - 1.0).abs() < 1e-6);
+    assert!(
+        (ranking.returned[0].rank_score + ranking.returned[1].rank_score + ranking.omitted_mass
+            - 1.0)
+            .abs()
+            < 1e-6
+    );
 
     // Winner must be id_a
     assert_eq!(ranking.returned[0].index, 0);
 
     // D. Stable-ID tie breaking when utilities are exactly equal
     let tied_inputs = vec![
-        Input { id: &id_b, rerank: 0.5, fit: 0.5, prior_delta: 0.0, phase_match: 0.0 },
-        Input { id: &id_a, rerank: 0.5, fit: 0.5, prior_delta: 0.0, phase_match: 0.0 },
+        Input {
+            id: &id_b,
+            rerank: 0.5,
+            fit: 0.5,
+            prior_delta: 0.0,
+            phase_match: 0.0,
+        },
+        Input {
+            id: &id_a,
+            rerank: 0.5,
+            fit: 0.5,
+            prior_delta: 0.0,
+            phase_match: 0.0,
+        },
     ];
     let tied_ranking = rank(&tied_inputs, Weights::DEFAULT, 2).expect("ranking succeeds");
-    assert_eq!(tied_ranking.returned[0].index, 1, "id_a (skill_alpha) must beat id_b (skill_beta) on tie");
+    assert_eq!(
+        tied_ranking.returned[0].index, 1,
+        "id_a (skill_alpha) must beat id_b (skill_beta) on tie"
+    );
     assert_eq!(tied_ranking.returned[1].index, 0);
 }
 
@@ -472,38 +588,6 @@ fn test_scoring_normalization_and_finite_arithmetic_fuzz() {
 #[test]
 fn test_cache_fingerprint_and_namespace_invariants() {
     let key = CacheKey::from_bytes([0x42; 32]);
-    let req_hash = ContentHash::from_bytes(b"canonical_redacted_request_bytes");
-    let model = "jev-latest";
-    let endpoint = "https://console.typesafe.ai";
-
-    let candidates = vec![
-        CandidateDigest {
-            skill_id: SkillId::new("skill_alpha").unwrap(),
-            content_hash: ContentHash::from_bytes(b"content-a"),
-            excerpt_hash: None,
-        },
-        CandidateDigest {
-            skill_id: SkillId::new("skill_beta").unwrap(),
-            content_hash: ContentHash::from_bytes(b"content-b"),
-            excerpt_hash: None,
-        },
-    ];
-
-    let questions = vec![ContentHash::from_bytes(b"q1")];
-
-    let req_input_1 = RequestFingerprintInput {
-        request_stage: RequestStage::Wide,
-        candidates: &candidates,
-        questions: &questions,
-        model_or_alias: model,
-        endpoint_origin: endpoint,
-        prompt_and_adapter_version: "v1",
-        privacy_policy_version: "p1",
-    };
-
-    let fp1 = compute_request_fingerprint(&key, &req_input_1).expect("request fingerprint succeeds");
-    let fp2 = compute_request_fingerprint(&key, &req_input_1).expect("deterministic fingerprint");
-    assert_eq!(fp1, fp2);
 
     // Namespace isolation across different sessions
     let ns_a = CacheNamespace::new(HarnessId::new("claude_code").unwrap(), 1)
@@ -526,19 +610,51 @@ fn test_cache_fingerprint_and_namespace_invariants() {
             AdapterVersion::new("0.8.0").unwrap(),
         );
 
+    let candidates = vec![
+        CandidateDigest {
+            skill_id: SkillId::new("skill_alpha").unwrap(),
+            content_hash: ContentHash::from_bytes(b"content-a"),
+            excerpt_hash: None,
+        },
+        CandidateDigest {
+            skill_id: SkillId::new("skill_beta").unwrap(),
+            content_hash: ContentHash::from_bytes(b"content-b"),
+            excerpt_hash: None,
+        },
+    ];
+
+    let req_input_1 = RequestFingerprintInput {
+        stage: RequestStage::Wide,
+        canonical_redacted_state: b"canonical_redacted_request_bytes",
+        candidates: &candidates,
+        questions_digest: [1u8; 32],
+        endpoint_url: "https://console.typesafe.ai",
+        model: "jev-latest",
+        prompt_version: "v1.2",
+        adapter_version: "0.8.0",
+        privacy_policy_version: "standard",
+        excerpt_strategy: "head-tail",
+    };
+
+    let fp1 = compute_request_fingerprint(&key, &ns_a, &req_input_1);
+    let fp2 = compute_request_fingerprint(&key, &ns_a, &req_input_1);
+    assert_eq!(fp1, fp2);
+
     let policy = RankingPolicySnapshot {
         w_fit: 1.0,
         w_prior: 0.0,
         w_phase: 0.0,
         gate_threshold: 0.30,
-        fits_threshold: 0.30,
+        fit_threshold: 0.30,
+        top_k: 5,
+        max_shortlist_m: 8,
     };
 
     let dec_input = DecisionFingerprintInput {
-        request_fingerprint: &fp1,
+        request_fingerprint: fp1,
         loaded_references: &[],
-        exclusions: &[],
-        ranking_policy: &policy,
+        explicit_exclusions: &[],
+        ranking_policy: policy,
         prior_snapshot_id: None,
         effective_snoozes: &[],
         visibility_metadata: "claude_code:v1",
@@ -547,7 +663,10 @@ fn test_cache_fingerprint_and_namespace_invariants() {
     let dec_fp_a = compute_decision_fingerprint(&key, &ns_a, &dec_input).expect("decision fp A");
     let dec_fp_b = compute_decision_fingerprint(&key, &ns_b, &dec_input).expect("decision fp B");
 
-    assert_ne!(dec_fp_a, dec_fp_b, "different sessions must never share decision fingerprint");
+    assert_ne!(
+        dec_fp_a, dec_fp_b,
+        "different sessions must never share decision fingerprint"
+    );
 }
 
 // ==============================================================================
@@ -562,10 +681,16 @@ fn test_bounded_output_and_control_character_sanitization() {
     let cursor_trick = "Before\r\x1b[2KOverwritten";
     let tabs_and_controls = "Skill\tName\x00\x08With\x07Controls";
 
-    assert_eq!(sanitize_terminal_text(csi_injection), "Malicious ANSI Payload");
+    assert_eq!(
+        sanitize_terminal_text(csi_injection),
+        "Malicious ANSI Payload"
+    );
     assert_eq!(sanitize_terminal_text(osc_injection), "Click here");
     assert_eq!(sanitize_terminal_text(cursor_trick), "Before Overwritten");
-    assert_eq!(sanitize_terminal_text(tabs_and_controls), "Skill Name With Controls");
+    assert_eq!(
+        sanitize_terminal_text(tabs_and_controls),
+        "Skill Name  With Controls"
+    );
 
     // B. Diagnostic text truncation and fallback
     let safe_diag = sanitize_diagnostic_text("Safe error message", "fallback");
@@ -633,7 +758,11 @@ fn test_deterministic_fuzz_smoke_campaign_runner() {
                     let text: String = (0..len)
                         .map(|_| {
                             let b = (rng.next_u32() % 128) as u8;
-                            if b.is_ascii() { b as char } else { ' ' }
+                            if b.is_ascii() {
+                                b as char
+                            } else {
+                                ' '
+                            }
                         })
                         .collect();
                     let _ = parse_prompt_directives(&text); // must never panic
@@ -648,12 +777,27 @@ fn test_deterministic_fuzz_smoke_campaign_runner() {
                     let id1 = SkillId::new("skill_fuzz_1").unwrap();
                     let id2 = SkillId::new("skill_fuzz_2").unwrap();
                     let inputs = vec![
-                        Input { id: &id1, rerank, fit, prior_delta: prior, phase_match: phase },
-                        Input { id: &id2, rerank: 1.0 - rerank, fit: 1.0 - fit, prior_delta: -prior, phase_match: 1.0 - phase },
+                        Input {
+                            id: &id1,
+                            rerank,
+                            fit,
+                            prior_delta: prior,
+                            phase_match: phase,
+                        },
+                        Input {
+                            id: &id2,
+                            rerank: 1.0 - rerank,
+                            fit: 1.0 - fit,
+                            prior_delta: -prior,
+                            phase_match: 1.0 - phase,
+                        },
                     ];
                     let w = Weights::DEFAULT;
                     let res = rank(&inputs, w, 2);
-                    assert!(res.is_ok(), "scoring must succeed for valid bounds: iteration {i}");
+                    assert!(
+                        res.is_ok(),
+                        "scoring must succeed for valid bounds: iteration {i}"
+                    );
                     let r = res.unwrap();
                     assert_eq!(r.returned.len(), 2);
                     assert!(r.returned[0].rank_score.is_finite());
@@ -694,5 +838,8 @@ fn test_deterministic_fuzz_smoke_campaign_runner() {
         }
     }
 
-    assert_eq!(total_cases, 1500, "expected exactly 1,500 campaign iterations executed");
+    assert_eq!(
+        total_cases, 1500,
+        "expected exactly 1,500 campaign iterations executed"
+    );
 }

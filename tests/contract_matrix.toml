@@ -1177,7 +1177,7 @@ assertion_ids = [
 ]
 platforms = ["linux"]
 features = []
-status = "planned"
+status = "executed"
 
 [[boundaries]]
 id = "p4_core_cli_acceptance"
