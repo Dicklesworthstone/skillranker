@@ -45,23 +45,20 @@ use crate::privacy::redaction::Redactor;
 use crate::privacy::{
     NetworkConsent, ProviderAdmissionRefusal, StoreAccess, admit_provider_attempt,
 };
-use crate::roster::discovery::claude_code_plan;
 use crate::roster::evidence::{PolicyView, RetrievalView};
 use crate::roster::explicit::{
     ExplicitResolutionRequest, ExplicitResolutionResult, ResolvedExplicitSkill,
     resolve_explicit_requirements,
 };
-use crate::roster::import::import_authorized;
-use crate::roster::resolution::{
-    AdvisorySkill, ExactResolution, ResolvedRoster, resolve_claude_plan,
-};
+use crate::roster::resolution::{AdvisorySkill, ExactResolution, ResolvedRoster};
 use crate::roster::retrieval::{
     QueryInput, RetrievalBudget, RetrievalError, RetrievalMethod, retrieve,
 };
-use crate::roster::revalidation::{RevalidationError, capture, revalidate_claude};
 use crate::roster::{InvocationKind, LoadTarget, Visibility};
 use crate::runtime::{EntryClock, ProcessInvocation, admit_publication};
 use crate::scoring::{Input as ScoringInput, Ranking, Weights, rank};
+
+mod roster;
 
 /// Failure tuple compatible with CLI error formatting: `(exit_code, kind, message)`.
 pub type PipelineFailure = (u8, &'static str, String);
@@ -675,55 +672,12 @@ async fn rank_once(
     // personal ones) resolves collisions, but no conformance evidence verifies
     // it yet. Rank uses it under an explicit provisional label and says so in
     // every result; withheld, ambiguous and shadowed names stay excluded.
-    let visibility = Visibility::Verified {
-        contract_version: PROVISIONAL_CLAUDE_CONTRACT.into(),
+    let roster_source = roster::Source {
+        workspace: &args.workspace,
+        home: args.home.as_deref(),
+        manifest: args.roster_file.as_deref(),
     };
-    let overrides = BTreeMap::new();
-    let roster = if let Some(roster_path) = &args.roster_file {
-        let roster_path = if roster_path.is_absolute() {
-            roster_path.clone()
-        } else {
-            args.workspace.join(roster_path)
-        };
-        let bytes = crate::roster::import::read_roster_file(&roster_path).map_err(|e| {
-            failure(
-                5,
-                "unusable-roster",
-                format!("Failed to read roster file: {e}"),
-            )
-        })?;
-        let plan = claude_code_plan(&args.workspace, args.home.as_deref(), visibility.clone())
-            .map_err(|e| {
-                failure(
-                    5,
-                    "unusable-roster",
-                    format!("Failed to create discovery plan: {e}"),
-                )
-            })?;
-        import_authorized(&bytes, &plan, &overrides, cx, clock).map_err(|e| {
-            failure(
-                5,
-                "unusable-roster",
-                format!("Failed to import roster: {e:?}"),
-            )
-        })?
-    } else {
-        let plan = claude_code_plan(&args.workspace, args.home.as_deref(), visibility.clone())
-            .map_err(|e| {
-                failure(
-                    5,
-                    "unusable-roster",
-                    format!("Failed to create discovery plan: {e}"),
-                )
-            })?;
-        resolve_claude_plan(&plan, &overrides, cx, clock).map_err(|e| {
-            failure(
-                5,
-                "unusable-roster",
-                format!("Failed to resolve discovery plan: {e}"),
-            )
-        })?
-    };
+    let roster = roster_source.load(cx, clock)?;
 
     let (warnings, warnings_omitted) =
         roster_warnings(&roster, progress.evaluated.source_warning.as_ref());
@@ -765,6 +719,8 @@ async fn rank_once(
     let mut excluded_skills = BTreeSet::new();
     match explicit_result {
         ExplicitResolutionResult::Resolved { skills, .. } => {
+            let dependencies =
+                roster::capture_dependencies(&roster, skills.iter().map(|skill| &skill.id), clock)?;
             // Revalidate policy receipt before publication of explicit result
             let (_refreshed, reval) = config_files.refresh(
                 clock,
@@ -786,6 +742,7 @@ async fn rank_once(
                     "Configuration became invalid before publication",
                 ));
             }
+            roster_source.validate(&dependencies, cx, clock)?;
             let mut doc = build_explicit_document(
                 &skills,
                 &normalized_context,
@@ -1038,13 +995,7 @@ async fn rank_once(
     for candidate in &candidate_skills {
         content_scope.insert(candidate.binding.id.clone());
     }
-    let dependencies = capture(&roster, &content_scope, clock).map_err(|e| {
-        failure(
-            5,
-            "unusable-roster",
-            format!("Failed to capture dependencies: {e:?}"),
-        )
-    })?;
+    let dependencies = roster::capture_dependencies(&roster, &content_scope, clock)?;
 
     // 9. Render context payload for Jev
     // Optional local project signals: filename markers, allowlisted tools in
@@ -1715,46 +1666,7 @@ async fn rank_once(
 
     // 15. Final Revalidation Before Publication
     // a. Roster dependencies
-    let reval_outcome = revalidate_claude(
-        &dependencies,
-        &args.workspace,
-        args.home.as_deref(),
-        visibility,
-        &overrides,
-        cx,
-        clock,
-    );
-    match reval_outcome {
-        Ok(_) => {}
-        Err(RevalidationError::Changed) => {
-            return Err(failure(
-                5,
-                "roster-changed",
-                "Roster changed during ranking",
-            ));
-        }
-        Err(RevalidationError::Incomplete) => {
-            return Err(failure(
-                5,
-                "incomplete-roster",
-                "Roster scope incomplete during revalidation",
-            ));
-        }
-        Err(RevalidationError::Deadline) => {
-            return Err(failure(
-                6,
-                "timeout",
-                "Deadline exceeded during revalidation",
-            ));
-        }
-        Err(e) => {
-            return Err(failure(
-                5,
-                "unusable-roster",
-                format!("Revalidation failed: {e:?}"),
-            ));
-        }
-    }
+    roster_source.validate(&dependencies, cx, clock)?;
 
     // b. Policy receipt revalidation
     let (refreshed, reval) = config_files.refresh(
