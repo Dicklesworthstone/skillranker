@@ -462,8 +462,8 @@ impl LeaseCoordinator for MemoryCoordinator {
             }
 
             let new_gen = existing.fencing_generation.next();
-            let new_token =
-                OwnerToken::generate().map_err(|e| CoordinationError::StorageError(e.to_string()))?;
+            let new_token = OwnerToken::generate()
+                .map_err(|e| CoordinationError::StorageError(e.to_string()))?;
             let expires_at = now_unix_ms.saturating_add(policy.lease_ttl_ms);
             let attempt_id = format!("att-inmem-{}", new_gen.as_u64());
 

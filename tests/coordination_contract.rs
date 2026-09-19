@@ -1273,7 +1273,10 @@ fn stalled_owner_a_refused_without_replacing_successor_b_body_sqlite() {
     );
 
     // 1. Stalled Owner A must be refused publication
-    assert!(res_a.is_err(), "stalled owner A must fail with quiet fallback");
+    assert!(
+        res_a.is_err(),
+        "stalled owner A must fail with quiet fallback"
+    );
     let err_msg = res_a.unwrap_err().to_string();
     assert!(
         err_msg.contains("superseded") || err_msg.contains("quiet fallback"),
@@ -1475,7 +1478,9 @@ fn stalled_owner_a_refused_without_replacing_successor_b_body_memory() {
             active_revision: Some("rev-1"),
         })
         .unwrap();
-    let fresh = lookup.fresh_entry().expect("response B must be cached in memory");
+    let fresh = lookup
+        .fresh_entry()
+        .expect("response B must be cached in memory");
     assert_eq!(
         fresh.response_bytes, b"{\"winner\":\"mem_B\"}",
         "Owner A must NOT overwrite Owner B's response body in memory cache"
@@ -1596,4 +1601,3 @@ fn raced_cache_miss_force_reacquire_follows_active_leader() {
         .unwrap();
     assert_eq!(publish_outcome, PublishOutcome::Published);
 }
-
