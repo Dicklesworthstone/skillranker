@@ -76,6 +76,21 @@ response = json.dumps({
     "answers": {"fit": {"type": "noul", "noul": 0.75}},
     "usage": {"input_tokens": 1, "output_tokens": 1},
 }).encode()
+# Synthetic regression for the measured 255-option / 0.99-sum failure class.
+# These are not captured provider probabilities; raw live bodies are not kept.
+if mode in ("choice-255-deficit", "choice-255-valid", "choice-255-rounding"):
+    criteria = request["questions"]["rank"]["criteria"]
+    assert len(criteria) == 255 and "__none__" in criteria
+    total = {"choice-255-deficit": 0.99, "choice-255-valid": 1.0,
+             "choice-255-rounding": 0.99995}[mode]
+    probabilities = {key: total / 255 for key in criteria}
+    response = json.dumps({
+        "model": "synthetic-test-model",
+        "answers": {"rank": {"type": "choice", "choice": min(criteria),
+                             "probabilities": probabilities, "confidence": 0.5}},
+        "usage": {"input_tokens": 1, "output_tokens": 1},
+    }).encode()
+
 status = "200 OK"
 extra = ""
 trap = None

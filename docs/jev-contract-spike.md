@@ -337,3 +337,54 @@ Executed source and checks:
 The observed rerank success closes its missing request-shape evidence, not the
 combined wide/rerank workflow, ranking quality, a latency percentile, or P1.
 The repeated wide rejection remains an unresolved qualification blocker.
+
+### Measured wide-distribution defect
+
+A September 19 reproduction instrumented the **production decoder's rejection
+branch** with numeric-only output. The 255-option Choice summed to
+`0.99000000000000010`, with absolute drift `0.00999999999999990`: about one percent
+of probability mass was missing. This exceeds the `1e-4` tolerance by about 100
+fold. The strict rejection is correct; normalizing this response would weaken
+validation. This identifies the defect in that response, not the provider's
+internal cause or a reliable supported candidate ceiling.
+
+The request remained 60,521 bytes with BLAKE3 `6f9f4986…` above. One HTTP attempt
+started, usage remained unknown, and rerank was withheld. The selected test
+failed in 0.87 seconds. An earlier alternate-path diagnostic that day passed
+again (both sums 1.0); its success does not override this production-path failure.
+Two HTTP calls were made during this investigation, with no retries.
+
+Temporary instrumentation was removed from the checkout before live execution;
+only its frozen RCH executable contained the numeric print. No response body or
+provider strings were retained. Executed base: `d68fc9ff32845b7513d65e51eb3226e65f27ff17`;
+RCH overlay: `4a8935729d5c6c4e86a1a490e44d20f2483f8bdcce473e3cef3b453456721a4d`;
+instrumented codec SHA-256: `5e19fbfecff2b7f62d8222a6537c44b51feb54b7eaccf35abb18eae288d8f1b5`;
+smoke-test SHA-256: `b476dfff2ad181f0201ff57367cfb673c277ae12feebc6fe587467e1196aa13f`;
+executable SHA-256: `1f2554b450e1d470cf9e456a7851da46c9beaf28126a8c6b07b989d6c404e7eb`,
+matched on worker and maintainer host. Nine ordinary tests passed remotely and
+locally before the selected live reproduction. Logs:
+`/data/tmp/sr-exact-wide-{build,local,live}.log`; alternate diagnostic:
+`/data/tmp/sr-wide-numeric-followup.log`.
+
+The regression `full_choice_mass_deficit_is_rejected_over_real_tls_without_relaxing_rounding`
+uses a real local TLS server and production client/decoder with synthetic
+255-option responses summing to 0.99, 1.0, and 0.99995. These reproduce the measured
+failure class and valid counterparts; they are not reconstructed live responses.
+The regression requires rejection of the one-percent deficit, acceptance with
+raw values preserved for valid/allowed rounding, and socket closure in all cases.
+
+Regression verification passed through RCH: eight codec-contract tests plus
+seven real-TLS transport tests; one separately consented live test was ignored.
+Frozen base `d68fc9f`, overlay
+`b16a30a8ef6fc5c36418fefe467031aabdb1f72c47889508e7d6012729babb33`;
+transport-test SHA-256 `cf96585f5abe58ce77cb995e45a8c680038fc0eec41624a8832ac83935171900`;
+TLS-server SHA-256 `2e0be3137bc1ad1d721521de81ed2d40858827d9cd730fe368976792742dcd2c`.
+Log: `/data/tmp/sr-wide-mass-regression.log`. Formatting, diff and public-contract
+checks passed. UBS's three critical findings were two intentional test panics
+and equality against the public synthetic fixture token; no suppressions or
+production credential comparisons were introduced. Other warnings covered
+assertions, fixture parsing and sockets whose closure the tests verify.
+
+Wide qualification remains blocked by the malformed provider response. The
+application continues to fail closed; no unsupported normalization, fallback
+ranking, smaller-capacity claim, or provider-internal diagnosis is asserted.

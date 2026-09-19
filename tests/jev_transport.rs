@@ -403,3 +403,68 @@ fn actual_typesafe_https_accepts_synthetic_typed_request() {
     record("actual-typesafe", &run, None, &json!({"requests": 1}));
     run.finish();
 }
+
+#[test]
+fn full_choice_mass_deficit_is_rejected_over_real_tls_without_relaxing_rounding() {
+    use skillranker::jev::codec::{CodecError, MAX_CHOICE_OPTIONS};
+    let options = (0..MAX_CHOICE_OPTIONS - 1)
+        .map(|i| (format!("skill_{i:03}"), "Synthetic skill".to_owned()))
+        .chain(std::iter::once(("__none__".to_owned(), "None".to_owned())));
+    let request = Request::new(
+        "synthetic-test-model".into(),
+        json!("synthetic transport probe"),
+        [(
+            "rank".into(),
+            Question::choice(json!("Synthetic choice"), options).unwrap(),
+        )],
+    )
+    .unwrap();
+    // Reproduce the measured count/sum failure class, not the unavailable raw
+    // provider body. Honest valid and tolerated-rounding counterparts traverse
+    // the same sockets, verified TLS, body parser and production decoder.
+    for (mode, expected_sum) in [
+        ("choice-255-deficit", None),
+        ("choice-255-valid", Some(1.0)),
+        ("choice-255-rounding", Some(0.99995)),
+    ] {
+        let server = Server::new(mode);
+        let endpoint = server.endpoint("localhost");
+        let key = credential(endpoint.origin(), CANARY);
+        let client = JevClient::with_additional_roots(endpoint, vec![root()]).unwrap();
+        let run = Run::new(3000);
+        let result = run.invocation.runtime().block_on(client.send(
+            &request,
+            Some(&key),
+            CONSENT,
+            &run.cx,
+            &run.clock,
+        ));
+        let error = if let Some(sum) = expected_sum {
+            let response = result.unwrap();
+            let Answer::Choice(answer) = &response.answers["rank"] else {
+                panic!("expected validated choice");
+            };
+            assert_eq!(answer.raw_probabilities().len(), 255);
+            assert!((answer.raw_sum() - sum).abs() < 1e-12);
+            assert!((answer.raw_probabilities()["__none__"] - sum / 255.0).abs() < 1e-12);
+            assert_eq!(response.usage.input_tokens, 1);
+            None
+        } else {
+            let error = failure(result);
+            assert_eq!(
+                error.kind,
+                TransportErrorKind::Response(CodecError::InvalidDistribution)
+            );
+            assert!(
+                error.http_attempt_started,
+                "refused response cannot establish zero provider cost"
+            );
+            Some(error.kind)
+        };
+        let report = server.finish();
+        assert_eq!(report["requests"], 1);
+        assert_eq!(report["closed"], true);
+        record(mode, &run, error, &report);
+        run.finish();
+    }
+}
