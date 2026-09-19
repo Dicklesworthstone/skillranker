@@ -8,8 +8,8 @@
   session identity. Two sessions with identical content could share a cached
   response, and the latest request was sent to Jev twice, once as the request
   and again as history. The current request now keeps its native event
-  identity. With no native session attribution extracted, a transcript
-  run's cache and single-flight namespace is private to that run.
+  identity. A transcript that does not attribute itself to a session of this
+  workspace keeps its cache and single-flight namespace private to that run.
 - `sr rank` honors `--timeout-ms`, `SR_TIMEOUT_MS` and trusted
   `ranking.timeout_ms`. The deadline still runs from process entry. Before
   this fix every rank used the 3,000 ms default, whatever was configured.
@@ -69,6 +69,16 @@
   declaration validation remains distinct from an execution receipt.
 
 ### Added
+- Bare `sr rank` discovers the workspace's Claude Code session under
+  `$HOME/.claude/projects` and trusted-user `context.transcript_roots`:
+  - A transcript counts only when its own records name this workspace as
+    their first working directory and carry its file name as the session ID.
+  - One session is used and disclosed as `discovered-session`. Several
+    sessions need `--latest` (now accepted), which picks the most recently
+    modified one and discloses it as `latest-session`. No session is
+    `missing-session`.
+  - An explicit `--transcript` with the same attribution gets a durable
+    session identity, so its exact repeats are served from the cache.
 - `sr rank --dry-run` prints a non-actionable `preview` artifact:
   - the exact redacted wide request a matching `--no-persist` run would send,
     with its byte count, disclosure receipt and effect receipt; or

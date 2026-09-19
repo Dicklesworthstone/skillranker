@@ -62,7 +62,9 @@ controls or more than 4 KiB is a configuration error.
 Project roots must be relative and lexically contained in the workspace. Only
 trusted user configuration may add an absolute root, which may not contain `..`.
 Symlink containment is enforced when a reader opens the path. Transcript roots are
-trusted-user-only and absolute.
+trusted-user-only and absolute. Each names a Claude-style projects directory that
+bare `sr rank` session discovery searches in addition to `$HOME/.claude/projects`
+(see [source selection](source-selection.md)).
 
 ## Effects, consent and admission
 

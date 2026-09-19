@@ -10,6 +10,7 @@ use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
+use crate::blocking::{BlockingLeafKind, run_blocking_leaf};
 use crate::cache::{
     CacheKey, CacheNamespace, CachedResponseEntry, CandidateDigest, CoordinationKey,
     DEFAULT_CACHE_TTL_SECS, LeaderContext, LeaseAcquisition, MemoryResponseCache,
@@ -23,7 +24,9 @@ use crate::context::anchor::resolve_task_anchor;
 use crate::context::branch::{LoadedSkillRecord, resolve_active_branch};
 use crate::context::jsonl::{CursorKind, snapshot_jsonl};
 use crate::context::render::{RenderContextOptions, render_context_and_receipt};
-use crate::context::source::{SelectionOutcome, SourceOptions, SourceTarget};
+use crate::context::source::{
+    SelectionOutcome, SelectionReason, SourceError, SourceOptions, SourceTarget,
+};
 use crate::context::{CurrentRequest, NormalizedContext, PrivateText, parse_normalized_context};
 use crate::effects::EffectGate;
 use crate::eligibility::{Eligible, Evaluation, LoadedState, Verdict, admit, after_rerank};
@@ -366,6 +369,20 @@ async fn rank_once(
     let workspace_id = WorkspaceId::new(args.workspace.to_string_lossy().as_ref())
         .map_err(|_| failure(2, "invalid-configuration", "Invalid workspace root path"))?;
 
+    // Without an explicit source, rank discovers this workspace's Claude
+    // sessions under trusted transcript roots: Claude's projects directory
+    // and any trusted-user `context.transcript_roots`.
+    let transcript_roots: Vec<PathBuf> = args
+        .home
+        .iter()
+        .map(|home| home.join(".claude").join("projects"))
+        .chain(
+            effective
+                .transcript_roots()
+                .iter()
+                .map(|root| root.as_path().to_path_buf()),
+        )
+        .collect();
     let selection_outcome = args
         .source_options
         .clone()
@@ -373,9 +390,21 @@ async fn rank_once(
             workspace_id.clone(),
             source_policy,
             false, // non-interactive by default
-            |_, _| {
-                // Inventory discovery fallback if needed
-                Ok(crate::context::source::SessionInventory::default())
+            |workspace, _| {
+                let (roots, path, id) = (
+                    transcript_roots.clone(),
+                    args.workspace.clone(),
+                    workspace.clone(),
+                );
+                run_blocking_leaf(
+                    invocation,
+                    cx,
+                    BlockingLeafKind::Filesystem,
+                    false,
+                    move || crate::context::discovery::discover_claude_sessions(&roots, &path, &id),
+                )
+                .map(|outcome| outcome.value)
+                .map_err(|_| SourceError::IncompleteInventory)
             },
         )
         .map_err(|err| {
@@ -395,6 +424,21 @@ async fn rank_once(
                 "Multiple sessions available; selection required",
             ));
         }
+    };
+    // A discovered session is disclosed with how it was chosen and how many
+    // sessions were eligible. Recency never proves a session is the live one.
+    progress.evaluated.source_warning = match source_selection.reason() {
+        SelectionReason::UniqueInWorkspace => Some(json!({
+            "kind": "discovered-session",
+            "count": source_selection.candidate_count(),
+            "message": "Used the only Claude session recorded for this workspace",
+        })),
+        SelectionReason::LatestRequested => Some(json!({
+            "kind": "latest-session",
+            "count": source_selection.candidate_count(),
+            "message": "--latest chose the most recently modified of this workspace's Claude sessions; recency does not prove it is the live session",
+        })),
+        SelectionReason::Explicit | SelectionReason::InteractiveChoice => None,
     };
 
     // Ingest normalized context or native transcript
@@ -437,6 +481,36 @@ async fn rank_once(
             })?
         }
         SourceTarget::ClaudeTranscript(path) => {
+            // The transcript's own records attribute it to a session of this
+            // workspace. Without that it has no durable identity, and its cache
+            // and lease namespace stays private to this run. A discovered
+            // session must still be the one discovery chose.
+            let session = {
+                let absolute = if path.as_path().is_absolute() {
+                    path.as_path().to_path_buf()
+                } else {
+                    args.workspace.join(path.as_path())
+                };
+                let workspace = args.workspace.clone();
+                run_blocking_leaf(
+                    invocation,
+                    cx,
+                    BlockingLeafKind::Filesystem,
+                    false,
+                    move || crate::context::discovery::transcript_session(&absolute, &workspace),
+                )
+                .ok()
+                .and_then(|outcome| outcome.value)
+            };
+            if let Some(expected) = source_selection.expected_identity()
+                && expected.session != session
+            {
+                return Err(failure(
+                    3,
+                    "missing-session",
+                    "The discovered session changed before it was read",
+                ));
+            }
             // Snapshot JSONL transcript
             let snapshot =
                 snapshot_jsonl(invocation, cx, path.as_path(), None, CursorKind::Ranking).map_err(
@@ -464,10 +538,7 @@ async fn rank_once(
                 harness: HarnessId::new("claude_code").unwrap(),
                 producer_id: None,
                 workspace_root: PrivateText::new(args.workspace.to_string_lossy()),
-                // This reader extracts no native session attribution, so the
-                // namespace stays invocation-local: no cached response or
-                // single-flight lease is shared with another transcript.
-                session_id: None,
+                session_id: session,
                 agent_id: None,
                 branch_id: None,
                 context_epoch: None,
@@ -637,7 +708,8 @@ async fn rank_once(
         })?
     };
 
-    let (warnings, warnings_omitted) = roster_warnings(&roster);
+    let (warnings, warnings_omitted) =
+        roster_warnings(&roster, progress.evaluated.source_warning.as_ref());
     progress.admitted = Some(Admitted {
         event_id: normalized_context
             .current_request
@@ -1743,7 +1815,7 @@ async fn rank_once(
 /// discovered files, and sources that could not be fully observed, by stable
 /// code and count. A normally absent optional root is not a gap. Paths and
 /// skill text never appear.
-fn roster_warnings(roster: &ResolvedRoster) -> (Vec<Value>, usize) {
+fn roster_warnings(roster: &ResolvedRoster, source: Option<&Value>) -> (Vec<Value>, usize) {
     let mut records: BTreeMap<&'static str, usize> = BTreeMap::new();
     for (_, error) in roster.diagnostics() {
         *records
@@ -1757,7 +1829,6 @@ fn roster_warnings(roster: &ResolvedRoster) -> (Vec<Value>, usize) {
             *sources.entry(code).or_insert(0) += 1;
         }
     }
-    // The provisional precedence caveat comes first so it is never truncated.
     let provisional = roster
         .skills()
         .iter()
@@ -1771,8 +1842,12 @@ fn roster_warnings(roster: &ResolvedRoster) -> (Vec<Value>, usize) {
             "message": "Claude's skill precedence is not yet conformance-verified; confirm a suggested skill loads before relying on it",
         })
     });
-    let mut warnings: Vec<Value> = caveat
+    // The session-selection disclosure and the provisional precedence caveat
+    // come first so neither is truncated.
+    let mut warnings: Vec<Value> = source
+        .cloned()
         .into_iter()
+        .chain(caveat)
         .chain(records.into_iter().map(|(code, count)| {
             json!({
                 "kind": code,
@@ -1892,8 +1967,8 @@ fn cache_entry(
 /// run continues uncached.
 #[cfg(target_os = "linux")]
 mod persistent {
+    use super::{BlockingLeafKind, run_blocking_leaf};
     use super::{EffectGate, ProcessInvocation, wall_clock_ms};
-    use crate::blocking::{BlockingLeafKind, run_blocking_leaf};
     use crate::cache::{
         CacheKey, CachedResponseEntry, CoordinationKey, CoordinationPolicy, FreshnessStatus,
         LeaderContext, LeaseAcquisition, LeaseCoordinator, RequestFingerprint, RequestStage,
@@ -2357,7 +2432,7 @@ fn build_explicit_document(
     evaluated: &Evaluated,
 ) -> OutputDocument {
     let quality = &evaluated.quality;
-    let (warnings, warnings_omitted) = roster_warnings(roster);
+    let (warnings, warnings_omitted) = roster_warnings(roster, evaluated.source_warning.as_ref());
     let skill_values: Vec<Value> = skills
         .iter()
         .enumerate()
@@ -2527,6 +2602,8 @@ struct Evaluated {
     phase: Option<String>,
     choice_confidence: Option<f64>,
     none_probability: Option<f64>,
+    /// How a discovered session was chosen, disclosed first among warnings.
+    source_warning: Option<Value>,
 }
 
 impl Evaluated {
@@ -2613,7 +2690,7 @@ fn build_abstain_document(
     evaluated: &Evaluated,
 ) -> OutputDocument {
     let quality = &evaluated.quality;
-    let (warnings, warnings_omitted) = roster_warnings(roster);
+    let (warnings, warnings_omitted) = roster_warnings(roster, evaluated.source_warning.as_ref());
     let event_id = context
         .current_request
         .event_id
@@ -2678,7 +2755,7 @@ fn build_ranked_document(
     elapsed_ms: u64,
 ) -> Result<OutputDocument, PipelineFailure> {
     let quality = &evaluated.quality;
-    let (warnings, warnings_omitted) = roster_warnings(roster);
+    let (warnings, warnings_omitted) = roster_warnings(roster, evaluated.source_warning.as_ref());
     let mut skill_values = Vec::new();
     for (i, scored) in ranking.returned.iter().enumerate() {
         let el = &eligible[scored.index];

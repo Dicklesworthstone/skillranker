@@ -39,6 +39,9 @@ nullable local `path`, and a 64-character lowercase hexadecimal `content_hash`.
 `sr rank` also labels each skill's `visibility` as `verified` or `unverified`.
 Claude's documented precedence is provisional, so its results are
 `unverified`, and the decision carries an `unverified-visibility` warning.
+When `sr rank` discovers its session, the first warning discloses the choice:
+`discovered-session` for the workspace's only session, or `latest-session` for
+an explicit `--latest` choice. Its count is the number of eligible sessions.
 Reserved `__none__` is never a skill ID. The schema validates identity syntax;
 only the roster/publication boundary can establish that a target is loadable.
 

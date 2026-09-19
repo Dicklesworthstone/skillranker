@@ -150,6 +150,44 @@ impl Fixture {
             ..Default::default()
         }
     }
+    /// Records a session where Claude keeps it:
+    /// `$HOME/.claude/projects/<encoded workspace>/<session>.jsonl`, with the
+    /// older (`/` only) or newer (every non-alphanumeric) encoding. `cwd` is
+    /// the working directory its records claim, this workspace by default.
+    fn claude_session(
+        &self,
+        session: &str,
+        request: &str,
+        newer_encoding: bool,
+        cwd: Option<&str>,
+    ) -> PathBuf {
+        let workspace = std::fs::canonicalize(self.workspace()).unwrap();
+        let workspace = workspace.to_str().unwrap();
+        let name: String = if newer_encoding {
+            workspace
+                .chars()
+                .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+                .collect()
+        } else {
+            workspace.replace('/', "-")
+        };
+        let directory = self.root.join("home/.claude/projects").join(name);
+        std::fs::create_dir_all(&directory).unwrap();
+        let cwd = cwd.unwrap_or(workspace);
+        let record = |n: u8, parent: Option<String>, text: &str| {
+            json!({"type": "user", "uuid": format!("{session}-{n}"), "parentUuid": parent,
+                   "cwd": cwd, "sessionId": session,
+                   "message": {"role": "user", "content": text}})
+            .to_string()
+        };
+        let path = directory.join(format!("{session}.jsonl"));
+        let lines = [
+            record(1, None, EARLIER),
+            record(2, Some(format!("{session}-1")), request),
+        ];
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        path
+    }
     fn args(&self, request: &str) -> RankArgs {
         self.args_with(request, "session-1", UNCACHED, None)
     }
@@ -564,6 +602,106 @@ fn native_transcripts_never_share_a_cached_response() {
     );
 }
 
+const RELEASE: &str = "Write the changelog entry for version 2.4 of this project.";
+
+#[test]
+fn bare_rank_uses_the_only_session_of_this_workspace() {
+    let f = Fixture::new(CONSENT);
+    std::fs::create_dir_all(f.root.join("home")).unwrap();
+    f.claude_session("s-only", TASK, false, None);
+    // A transcript whose records name another workspace is never a candidate.
+    f.claude_session(
+        "s-foreign",
+        RELEASE,
+        false,
+        Some("/data/projects/elsewhere"),
+    );
+    let provider = Provider::start(&f, "useful", &[]);
+    let (code, value) = run_bare(&f, &provider, &[]);
+    let served = provider.finish();
+    assert_eq!(code, Some(0), "{value}");
+    assert_eq!(value["decision"], "ranked", "{value}");
+    assert_eq!(
+        value["warnings"][0]["kind"], "discovered-session",
+        "{value}"
+    );
+    assert_eq!(value["warnings"][0]["count"], 1);
+    let body = served[0]["body"].as_str().unwrap();
+    assert!(body.contains("find and repair the failing test"), "{body}");
+    assert!(!body.contains("changelog entry for version 2.4"), "{body}");
+}
+
+#[test]
+fn bare_rank_needs_latest_to_choose_between_sessions() {
+    let f = Fixture::new(CONSENT);
+    std::fs::create_dir_all(f.root.join("home")).unwrap();
+    let older = f.claude_session("s-older", TASK, false, None);
+    let hour_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(3_600);
+    std::fs::File::options()
+        .write(true)
+        .open(older)
+        .unwrap()
+        .set_modified(hour_ago)
+        .unwrap();
+    f.claude_session("s-newer", RELEASE, true, None);
+    let provider = Provider::start(&f, "useful", &[]);
+    let (code, value) = run_bare(&f, &provider, &[]);
+    assert_eq!(code, Some(3), "{value}");
+    assert_eq!(value["error"]["kind"], "ambiguous-session", "{value}");
+    let (code, value) = run_bare(&f, &provider, &["--latest"]);
+    let served = provider.finish();
+    assert_eq!(code, Some(0), "{value}");
+    assert_eq!(value["warnings"][0]["kind"], "latest-session", "{value}");
+    assert_eq!(value["warnings"][0]["count"], 2);
+    // Only the --latest run sent anything, and it sent the newer session.
+    assert_eq!(stages(&served), ["wide", "rerank"]);
+    let body = served[0]["body"].as_str().unwrap();
+    assert!(body.contains("changelog entry for version 2.4"), "{body}");
+    assert!(!body.contains("find and repair the failing test"), "{body}");
+}
+
+#[test]
+fn bare_rank_without_a_session_reports_missing_session() {
+    let f = Fixture::new(CONSENT);
+    std::fs::create_dir_all(f.root.join("home")).unwrap();
+    let provider = Provider::start(&f, "useful", &[]);
+    let (code, value) = run_bare(&f, &provider, &[]);
+    assert!(provider.finish().is_empty());
+    assert_eq!(code, Some(3), "{value}");
+    assert_eq!(value["error"]["kind"], "missing-session", "{value}");
+}
+
+#[test]
+fn a_native_session_repeat_is_cached_and_never_shared() {
+    let f = Fixture::new(CONSENT);
+    let cache = f.cache_dir();
+    let provider = Provider::start(&f, "useful", &[]);
+    let workspace = std::fs::canonicalize(f.workspace()).unwrap();
+    let run = |path: PathBuf| {
+        let mut args = f.args_with(TASK, "session-1", CACHED, Some(cache.clone()));
+        args.workspace = workspace.clone();
+        args.source_options = SourceOptions {
+            transcript: Some(LocalPath::new(path)),
+            harness: Some(HarnessId::new("claude_code").unwrap()),
+            ..Default::default()
+        };
+        rank_args(&provider, args, 10_000).expect("ranked")
+    };
+    let first = f.claude_session("s-a", TASK, false, None);
+    let second = f.claude_session("s-b", TASK, false, None);
+    assert_eq!(run(first.clone())["cache"]["hit"], false);
+    assert_eq!(
+        run(first)["cache"]["hit"],
+        true,
+        "an exact repeat of one session"
+    );
+    assert_eq!(run(second)["cache"]["hit"], false, "another session");
+    let served = provider.finish();
+    assert_eq!(stages(&served), ["wide", "rerank", "wide", "rerank"]);
+    // The two sessions sent identical bytes: only their identity differs.
+    assert_eq!(served[0]["body"], served[2]["body"]);
+}
+
 #[test]
 fn a_partial_roster_still_ranks_a_verified_target() {
     let f = Fixture::new(CONSENT);
@@ -902,6 +1040,16 @@ fn sr_command(
     request: &str,
     extra: &[&str],
 ) -> Command {
+    let context = f.context_in("session-1", request);
+    let mut command = sr_rank(f, provider, trust_fixture);
+    command
+        .args(["--context", context.to_str().unwrap()])
+        .args(extra);
+    command
+}
+
+/// `sr rank --json` in the fixture workspace, with no source selected.
+fn sr_rank(f: &Fixture, provider: &Provider, trust_fixture: bool) -> Command {
     let ca = f.root.join("fixture-ca.pem");
     std::fs::write(&ca, include_bytes!("fixtures/jev-tls/ca.pem")).unwrap();
     let mut command = Command::new(env!("CARGO_BIN_EXE_sr"));
@@ -916,17 +1064,23 @@ fn sr_command(
             format!("https://localhost:{}", provider.port),
         )
         .current_dir(f.workspace())
-        .args([
-            "rank",
-            "--context",
-            f.context_in("session-1", request).to_str().unwrap(),
-            "--json",
-        ])
-        .args(extra);
+        .args(["rank", "--json"]);
     if trust_fixture {
         command.env("SSL_CERT_FILE", &ca);
     }
     command
+}
+
+/// Runs `sr rank` with no source, so it must discover the session itself.
+fn run_bare(f: &Fixture, provider: &Provider, extra: &[&str]) -> (Option<i32>, Value) {
+    let output = sr_rank(f, provider, true).args(extra).output().unwrap();
+    let text = String::from_utf8_lossy(&output.stdout).into_owned()
+        + &String::from_utf8_lossy(&output.stderr);
+    assert!(!text.contains("synthetic-acceptance-canary"));
+    (
+        output.status.code(),
+        serde_json::from_slice(&output.stdout).unwrap(),
+    )
 }
 
 fn run_sr_with(

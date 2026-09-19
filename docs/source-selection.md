@@ -57,6 +57,35 @@ preserved. Duplicate identities fail even when their paths or timestamps differ.
 Native and cass provenance must match the selected reader. Normalized imports
 are explicit inputs and never masquerade as discovered native sessions.
 
+### Native Claude discovery
+
+With no source flag, `sr rank` discovers native Claude Code sessions through
+`context::discovery`. It looks in `$HOME/.claude/projects` and in each
+trusted-user `context.transcript_roots` entry, which names a directory with the
+same layout. Within those roots it lists only this workspace's directories.
+Claude's directory encoding is an unverified harness convention that changed
+between versions: older versions replaced `/` with `-`, newer ones replace every
+character that is not ASCII alphanumeric. Discovery therefore tries each
+spelling, and a name alone admits nothing:
+
+- Only top-level regular `*.jsonl` files are opened, without following
+  symlinks, and each is read for at most 64 KiB.
+- A transcript is a candidate only when its first recorded `cwd` is exactly
+  the workspace and a record carries its file name as `sessionId`. That
+  session ID is the candidate's identity.
+- Recency is the file's modification time.
+- At most 1,000 transcripts are examined. Reaching that bound, or an unreadable
+  directory, leaves the inventory incomplete.
+- The same file reached through two names or roots counts once.
+
+An explicit `--transcript` path gets the same attribution when its records name
+this workspace. Otherwise its cache and single-flight namespace stays private
+to that run. Before reading a discovered session, `sr rank` confirms it still
+carries the chosen identity. A unique selection adds a `discovered-session`
+warning, and `--latest` adds `latest-session`. Each carries the eligible count
+and does not claim the session is live. Discovery reads local files only; it
+never runs cass or another child process.
+
 | Complete eligible inventory | Result |
 |---|---|
 | Empty | `missing-session`, exit 3 |
