@@ -134,6 +134,10 @@ fn explicitly_selected_live_test_cannot_pass_without_consent_or_key() {
             "budgeted_live_capacity_shapes",
             "SKILLRANKER_CAPACITY_CONSENT",
         ),
+        (
+            "budgeted_live_distribution_diagnostic",
+            "SKILLRANKER_DIAGNOSTIC_CONSENT",
+        ),
     ] {
         for (consent, key, diagnostic) in [
             (
@@ -173,6 +177,8 @@ fn explicitly_selected_live_test_cannot_pass_without_consent_or_key() {
             assert!(
                 stderr.contains(if name == "budgeted_live_capacity_shapes" {
                     "capacity probe requires SKILLRANKER_CAPACITY_CONSENT=1"
+                } else if name == "budgeted_live_distribution_diagnostic" {
+                    "diagnostic probe requires SKILLRANKER_DIAGNOSTIC_CONSENT=1"
                 } else {
                     diagnostic
                 }),
@@ -675,4 +681,188 @@ fn budgeted_live_capacity_shapes() {
     }
     assert_eq!(admission.receipt().sent_attempts, 2);
     run.finish();
+}
+
+// Diagnosis is deliberately separate from ranking: the strict decoder still
+// decides acceptance. Its first pass enforces byte/depth/duplicate-key bounds
+// before we inspect numeric fields, even for a rejected distribution.
+fn distribution_summary(request: &Request, body: &[u8]) -> Result<serde_json::Value, CodecError> {
+    let accepted = match request.decode_response(body) {
+        Ok(_) => true,
+        Err(CodecError::InvalidDistribution) => false,
+        Err(error) => return Err(error),
+    };
+    let value: serde_json::Value =
+        serde_json::from_slice(body).map_err(|_| CodecError::InvalidJson)?;
+    let answers = value["answers"]
+        .as_object()
+        .ok_or(CodecError::InvalidAnswer)?;
+    let mut distributions = Vec::new();
+    for (index, (id, question)) in request.questions().iter().enumerate() {
+        if let Question::Choice { criteria, .. } = question {
+            let probabilities = answers[id]["probabilities"]
+                .as_object()
+                .ok_or(CodecError::InvalidAnswer)?;
+            if !criteria.keys().eq(probabilities.keys()) {
+                return Err(CodecError::OptionMismatch);
+            }
+            let mut sum = 0.0;
+            for probability in probabilities.values() {
+                let p = probability
+                    .as_f64()
+                    .ok_or(CodecError::InvalidDistribution)?;
+                if !p.is_finite() || !(0.0..=1.0).contains(&p) {
+                    return Err(CodecError::InvalidDistribution);
+                }
+                sum += p;
+            }
+            distributions.push(json!({"question_index":index,
+                "option_count":probabilities.len(), "raw_sum":sum,
+                "absolute_drift":(sum - 1.0).abs(),
+                "sum_within_tolerance":sum > 0.0 && (sum - 1.0).abs() <= SUM_TOLERANCE}));
+        }
+    }
+    Ok(json!({"strictly_accepted":accepted, "distributions":distributions}))
+}
+
+#[test]
+fn distribution_diagnostic_preserves_strict_validation_and_numeric_only_output() {
+    let request = Request::new(
+        DEFAULT_MODEL.into(),
+        json!({}),
+        [(
+            "private_question".into(),
+            Question::choice(
+                json!("private instructions"),
+                [
+                    ("private_option".into(), "private text".into()),
+                    ("__none__".into(), "none".into()),
+                ],
+            )
+            .unwrap(),
+        )],
+    )
+    .unwrap();
+    for (p, accepted) in [(0.75, true), (0.74, false)] {
+        let body = serde_json::to_vec(&json!({"model":"private_model", "answers":{
+            "private_question":{"type":"choice", "choice":"private_option", "confidence":0.9,
+                "probabilities":{"private_option":p,"__none__":0.25}}},
+            "usage":{"input_tokens":1,"output_tokens":1}}))
+        .unwrap();
+        let summary = distribution_summary(&request, &body).unwrap();
+        assert_eq!(summary["strictly_accepted"], accepted);
+        assert_eq!(summary["distributions"][0]["option_count"], 2);
+        assert_eq!(
+            summary["distributions"][0]["sum_within_tolerance"],
+            accepted
+        );
+        assert!(!summary.to_string().contains("private"));
+        let duplicate = String::from_utf8(body)
+            .unwrap()
+            .replace("\"model\":", "\"model\":\"duplicate\",\"model\":");
+        assert!(distribution_summary(&request, duplicate.as_bytes()).is_err());
+    }
+}
+
+#[test]
+#[ignore = "one live paid synthetic diagnostic: explicit consent and exported key required"]
+fn budgeted_live_distribution_diagnostic() {
+    use asupersync::http::h1::http_client::HttpClient;
+    use skillranker::jev::SKILLRANKER_USER_AGENT;
+    use skillranker::jev::codec::MAX_RESPONSE_BYTES;
+    use std::time::Duration;
+
+    let api_key = live_api_key(std::env::var_os("SKILLRANKER_DIAGNOSTIC_CONSENT"), || {
+        std::env::var_os("TYPESAFE_API_KEY")
+    })
+    .unwrap_or_else(|_| panic!("diagnostic probe requires SKILLRANKER_DIAGNOSTIC_CONSENT=1 and an exported TYPESAFE_API_KEY"));
+    let [request, _] = capacity_requests();
+    let endpoint = EndpointConfig::production();
+    let key = resolve_credential(endpoint.origin(), &api_key);
+    let http = HttpClient::builder()
+        .no_redirects()
+        .no_retries()
+        .no_proxy()
+        .no_cookie_store()
+        .max_connections_per_host(1)
+        .max_total_connections(1)
+        .max_body_size(MAX_RESPONSE_BYTES)
+        .user_agent(SKILLRANKER_USER_AGENT)
+        .build();
+    let bytes = request.to_json().unwrap();
+    eprintln!(
+        "{}",
+        json!({"kind":"synthetic-distribution-diagnostic-attempt",
+        "request_bytes":bytes.len(), "request_blake3":blake3::hash(&bytes).to_hex().to_string(),
+        "maximum_attempts":1})
+    );
+    let run = TestContext::new(30_000, 500);
+    // Exactly one send; no retries, no redirects, no fallback, no persisted body.
+    let result = run.invocation.runtime().block_on(
+        http.post(endpoint.target_url().as_str())
+            .header(
+                "Authorization",
+                key.authorization_header_for(endpoint.origin()).unwrap(),
+            )
+            .header("Accept", "application/json")
+            .header("Accept-Encoding", "identity")
+            .header("Connection", "close")
+            .content_type("application/json")
+            .body(bytes)
+            .timeout(Duration::from_millis(
+                run.clock.remaining_before_cleanup().as_millis(),
+            ))
+            .send(&run.cx),
+    );
+    let response = match result {
+        Ok(response) => response,
+        Err(_) => {
+            run.finish();
+            panic!("diagnostic transport failed; usage unknown");
+        }
+    };
+    assert!(
+        run.clock.remaining_before_cleanup().as_millis() > 0,
+        "diagnostic deadline elapsed"
+    );
+    assert!(
+        (200..300).contains(&response.status),
+        "diagnostic non-success status; usage unknown"
+    );
+    let types: Vec<_> = response
+        .headers
+        .iter()
+        .filter(|(n, _)| n.eq_ignore_ascii_case("content-type"))
+        .collect();
+    assert!(
+        types.len() == 1
+            && types[0]
+                .1
+                .split(';')
+                .next()
+                .is_some_and(|v| v.trim().eq_ignore_ascii_case("application/json")),
+        "invalid diagnostic content type"
+    );
+    let encodings: Vec<_> = response
+        .headers
+        .iter()
+        .filter(|(n, _)| n.eq_ignore_ascii_case("content-encoding"))
+        .collect();
+    assert!(
+        encodings.is_empty()
+            || (encodings.len() == 1 && encodings[0].1.trim().eq_ignore_ascii_case("identity")),
+        "invalid diagnostic content encoding"
+    );
+    let summary = distribution_summary(&request, &response.body);
+    run.finish();
+    let summary =
+        summary.unwrap_or_else(|error| panic!("diagnostic rejected: {error:?}; usage unknown"));
+    eprintln!(
+        "{}",
+        json!({"kind":"synthetic-distribution-diagnostic", "summary":summary, "usage_unknown":true})
+    );
+    assert_eq!(
+        summary["strictly_accepted"], true,
+        "provider distribution rejected; diagnostic is not qualification"
+    );
 }

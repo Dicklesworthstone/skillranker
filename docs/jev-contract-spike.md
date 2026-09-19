@@ -221,3 +221,56 @@ Logs: `/data/tmp/sr-capacity-roster-fixed-full.log` and
 `/data/tmp/sr-capacity-check.log`. Live/installed-service tests remain explicitly
 ignored in ordinary runs. This offline pass does not change the failed large
 live request or the strict-Clippy limitation above.
+
+### Numeric diagnosis of rejected distributions
+
+`budgeted_live_distribution_diagnostic` is a separate, ignored, one-request
+synthetic probe. It requires `SKILLRANKER_DIAGNOSTIC_CONSENT=1` and the exported
+key, checked before fixture preparation. It sends the production wide request
+through Asupersync with verified TLS, disabled redirects/retries/proxies, identity
+encoding, and the same response-size bound. It is diagnostic instrumentation,
+not a ranking transport or end-to-end qualification. No response body is saved.
+
+The production decoder runs first. Only a valid response or its specific
+`InvalidDistribution` rejection permits numeric inspection; malformed JSON,
+duplicate keys, excess depth/bytes, and other decoder failures remain failures.
+Output contains question ordinal, option count, sum, absolute drift, and whether
+the sum meets the unchanged tolerance. It omits question/option names, provider
+text, and credentials. A rejected response still fails the test, with usage
+reported unknown. Ordinary tests exercise valid/invalid sums, duplicate-key
+rejection, and the actual executable's refusal without explicit consent/key.
+
+```bash
+SKILLRANKER_DIAGNOSTIC_CONSENT=1 /absolute/path/to/jev_smoke-test-binary \
+  --ignored --exact budgeted_live_distribution_diagnostic --nocapture
+```
+
+The September 19 diagnostic made **one request and passed strict decoding**:
+60,521 request bytes, BLAKE3
+`6f9f49869467cc0dfdd0198cdc83a57dc2dbed5b17742c35dae932b11d30c84d`.
+The eight-option phase Choice (question ordinal 3) and 255-option skill Choice
+(ordinal 5) each summed to exactly `1.0`, with zero measured drift. The selected
+test finished in 1.15 seconds including synthetic fixture preparation and
+shutdown; this is not an isolated HTTP latency measurement. No rerank or retry
+was sent. This diagnostic does not extract usage/model identity, so those fields
+remain unreported; no token-cost estimate is inferred.
+
+This successful response **does not explain the earlier failed response**.
+Neither failure frequency nor a reliable maximum-capacity claim follows from
+these two observations. The earlier body was not retained, so its rejected sum
+cannot be reconstructed. Large-request reliability, rerank qualification, and
+P1 acceptance remain open; the tolerance is unchanged.
+
+Executed identity and evidence:
+
+- Base `d68fc9ff32845b7513d65e51eb3226e65f27ff17`, only `tests/jev_smoke.rs` overlaid.
+- RCH overlay `6157a484a15152e4c787555fb52dccf1cf9468b93fb663e3ac55181ee6daec42`.
+- Test SHA-256 `7685eccaf465891ba3e6b8aebcf9cc7447c6ea5b9dd1d9a2bbad9ce4685349b6`.
+- Executable SHA-256 `f5c742ddb7276a64b845020c1cbde16320dc09e118fdbad2d06dadf682501de5`, matched on worker and maintainer host.
+- Pinned `nightly-2026-08-31`, default features, locked offline remote build.
+- Eight ordinary tests passed remotely and locally; three live tests ignored.
+  The explicitly selected diagnostic passed once; ten other tests filtered out.
+- Logs: `/data/tmp/sr-distribution-final-build.log`,
+  `/data/tmp/sr-distribution-local.log`, `/data/tmp/sr-distribution-live.log`.
+- Static UBS: zero critical findings; 206 warnings reviewed as test assertions,
+  bounded fixtures/indexing, and test-generated JSON conversion. No suppressions.
