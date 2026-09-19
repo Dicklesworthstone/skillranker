@@ -417,6 +417,62 @@ fn unavailable(outcome: Outcome, code: u64, kind: &str) -> Value {
 
 const TASK: &str = "The rust tests are failing; find and repair the failing test.";
 
+/// A supplied inventory replaces discovery even when other skills exist.
+fn supplied_alpha(f: &Fixture) -> PathBuf {
+    let path = f.workspace().join("supplied-roster.json");
+    std::fs::write(
+        &path,
+        serde_json::to_vec(&json!({
+            "schema": "sr.roster.v1", "harness": "claude_code", "mode": "authorized_files",
+            "skills": [{"source": "claude_code.project", "path": "alpha/SKILL.md"}]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    path
+}
+
+#[test]
+fn supplied_roster_subset_publishes_after_both_provider_stages() {
+    let f = Fixture::new(CONSENT);
+    let mut args = f.args(TASK);
+    args.roster_file = Some(supplied_alpha(&f));
+    let provider = Provider::start(&f, "useful", &[]);
+    let value = rank_args(&provider, args, 10_000).expect("ranked imported subset");
+    let served = provider.finish();
+    assert_eq!(stages(&served), ["wide", "rerank"]);
+    assert_eq!(value["decision"], "ranked", "{value}");
+    assert_eq!(value["roster"]["total"], 1);
+    assert_eq!(value["skills"][0]["invocation_name"], "alpha");
+    assert_eq!(usage(&value), (2, 2, 220, 55));
+}
+
+#[test]
+fn supplied_roster_changed_target_is_withheld_after_rerank() {
+    let f = Fixture::new(CONSENT);
+    let mut args = f.args(TASK);
+    args.roster_file = Some(supplied_alpha(&f));
+    let alpha = f.skill_file("alpha");
+    let provider = Provider::start(&f, "touch-on-rerank", &[alpha.as_os_str()]);
+    let outcome = rank_args(&provider, args, 10_000);
+    assert_eq!(stages(&provider.finish()), ["wide", "rerank"]);
+    let value = unavailable(outcome, 5, "roster-changed");
+    assert_eq!(usage(&value), (2, 2, 220, 55));
+}
+
+#[test]
+fn supplied_roster_explicit_requirement_stays_local() {
+    let f = Fixture::new(CONSENT);
+    let mut args = f.args("Please use skill alpha to fix this.");
+    args.roster_file = Some(supplied_alpha(&f));
+    let provider = Provider::start(&f, "useful", &[]);
+    let value = rank_args(&provider, args, 10_000).expect("explicit imported target");
+    assert!(provider.finish().is_empty());
+    assert_eq!(value["decision"], "explicit", "{value}");
+    assert_eq!(value["skills"][0]["invocation_name"], "alpha");
+    assert_eq!(usage(&value), (0, 0, 0, 0));
+}
+
 #[test]
 fn a_useful_evaluation_ranks_after_wide_and_rerank() {
     let f = Fixture::new(CONSENT);
