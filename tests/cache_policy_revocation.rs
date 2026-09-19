@@ -18,15 +18,15 @@
 #![cfg(unix)]
 
 use skillranker::cache::{
-    compute_request_fingerprint, CacheKey, CacheLookupQuery, CacheLookupResult, CacheNamespace,
-    CachedResponseEntry, CandidateDigest, CoordinateRequestQuery, CoordinationKey,
-    CoordinationPolicy, LeaseAcquisition, LeaseCoordinator, MemoryResponseCache, PublishOutcome,
-    RequestFingerprint, RequestFingerprintInput, RequestStage, SingleFlightCoordinator,
-    SqliteResponseCache, DEFAULT_CACHE_TTL_SECS, DEFAULT_LEASE_TTL_MS,
+    CacheKey, CacheLookupQuery, CacheLookupResult, CacheNamespace, CachedResponseEntry,
+    CandidateDigest, CoordinateRequestQuery, CoordinationKey, CoordinationPolicy,
+    DEFAULT_CACHE_TTL_SECS, DEFAULT_LEASE_TTL_MS, LeaseAcquisition, LeaseCoordinator,
+    MemoryResponseCache, PublishOutcome, RequestFingerprint, RequestFingerprintInput, RequestStage,
+    SingleFlightCoordinator, SqliteResponseCache, compute_request_fingerprint,
 };
 use skillranker::context::PrivateText;
 use skillranker::effects::{EffectGate, Scope};
-use skillranker::eligibility::{admit, AbstainReason, Exclusion, LoadedState, Verdict};
+use skillranker::eligibility::{AbstainReason, Exclusion, LoadedState, Verdict, admit};
 use skillranker::identity::{ContentHash, HarnessId, SessionId, SkillId, SourceId};
 use skillranker::jev::codec::Usage;
 use skillranker::privacy::EffectFlags;
@@ -226,10 +226,12 @@ fn exact_hit_consumer_withholds_stale_exclusion_authority() {
     // cargo-test is excluded
     assert_eq!(admission_a.admitted.len(), 1);
     assert_eq!(admission_a.admitted[0].binding.id.as_str(), "rust-lint");
-    assert!(admission_a
-        .removed
-        .iter()
-        .any(|(id, exc)| { id.as_str() == "cargo-test" && *exc == Exclusion::Excluded }));
+    assert!(
+        admission_a
+            .removed
+            .iter()
+            .any(|(id, exc)| { id.as_str() == "cargo-test" && *exc == Exclusion::Excluded })
+    );
 
     // If ALL candidates were excluded, admission gives Abstain(Excluded)
     let mut exclude_all = BTreeSet::new();
