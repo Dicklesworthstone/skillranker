@@ -90,3 +90,39 @@ rch exec -- cargo test --test jev_smoke
 scripts/e2e/run.sh --suite transport --artifacts /data/tmp/test-artifacts
 # Output: {"product_gate":"not-applicable","run":"sr-e2e-ho872g5k","runner_status":"passed","schema_version":2}
 ```
+
+---
+
+## 5. Test environment qualification (`sr-5n0b`)
+
+Parts of this suite assert that `sr` completes real work inside its process
+entry deadline. That deadline runs monotonically from process start
+(`DEFAULT_INVOCATION_DEADLINE_MS` = 3000), so it includes the binary's own
+startup, which `sr-5n0b` measured at 718-852 ms of runtime construction on an
+otherwise idle worker and more on a busy one. Once startup approaches the
+budget, `cli::timely` refuses the run with exit 6 before any work begins.
+
+Such a refusal is correct product behavior, so a contended failure is not
+evidence of a product defect, and a pass on a loaded machine is not evidence
+that the timing assertions hold. A full-suite acceptance run therefore
+qualifies only when its worker runs no concurrent foreign builds.
+
+| Condition | Source | Worker | Result |
+|---|---|---|---|
+| Concurrent foreign builds | `3a63db9` | `vmi1153651`, job 450 | 4 timing failures: `rank_acceptance::bare_rank_uses_the_only_session_of_this_workspace` (6, local inspection), `rank_inputs::a_transcript_longer_than_its_tail_window_reports_windowed_history` (6, roster validation), `subprocess_contract::descendant_holding_pipes_is_terminated_after_parent_exits` (`DeadlineExceeded`), `transport_failures::http_429_backoff_and_retry_after_budget_accounting` (stalled at 501.4 ms) |
+| No foreign builds | `99de43e` | `vmi1149989`, `-j 5`, default test threads | 82 reports, 773 passed, 0 failed, 9 ignored, `[RCH] remote vmi1149989 (529.8s)` |
+
+`501bbdc` removed the incidental cases: the two rank tests above examine
+discovery and transcript quality, not the deadline, so they now request an
+explicit 20 s budget. The tests that exist to prove deadline behavior keep
+their tight budgets and are not exempt from this qualification:
+`the_sr_binary_honors_a_shorter_timeout_flag` (800 ms) and
+`the_sr_binary_honors_a_longer_configured_deadline` (15 s configured against a
+3.5 s answer).
+
+Limits of this qualification: the green run above is the author's own, so it is
+not independent verification; it does not show that `sr`'s startup cost is
+acceptable inside a production hook budget, which is why `sr-5n0b` stays open;
+and it changes no production deadline, capacity default, or assertion. Retire
+this section once startup cost is measured as a small fraction of the smallest
+test budget, or once no acceptance test depends on wall-clock margin.
