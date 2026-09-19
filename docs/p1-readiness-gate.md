@@ -47,7 +47,7 @@ its name is not proof of live provider readiness.
 3. **Codec & Distribution Integrity:**
    - Serialized requests bounded by 96 KiB; oversized requests fail at construction with `CodecError::TooLarge`.
    - Choice questions bounded by 255 options (`MAX_CHOICE_OPTIONS`); duplicate IDs rejected.
-   - Response probabilities validated: sum within $\pm 10^{-4}$ tolerance of $1.0$, all values in $[0.0, 1.0]$, argmax option alignment strictly enforced.
+   - Response probabilities validated: sum within $\pm 0.1$ of $1.0$ and renormalized (the live provider returns totals such as 0.99), all values in $[0.0, 1.0]$, argmax option alignment strictly enforced.
 4. **Privacy & Fail-Closed Admission:**
    - Unconsented or offline execution rejected locally before network initialization (`ProviderAdmissionRefusal::Offline`, `NetworkNotAuthorized`).
    - Missing credentials fail admission without attempting wire transfer.

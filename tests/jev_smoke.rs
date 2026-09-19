@@ -815,7 +815,9 @@ fn distribution_diagnostic_preserves_strict_validation_and_numeric_only_output()
         )],
     )
     .unwrap();
-    for (p, accepted) in [(0.75, true), (0.74, false)] {
+    // A 0.99 total, as the live provider returns, is accepted; a 0.75 total
+    // is malformed.
+    for (p, accepted) in [(0.75, true), (0.74, true), (0.5, false)] {
         let body = serde_json::to_vec(&json!({"model":"private_model", "answers":{
             "private_question":{"type":"choice", "choice":"private_option", "confidence":0.9,
                 "probabilities":{"private_option":p,"__none__":0.25}}},

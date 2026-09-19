@@ -271,8 +271,9 @@ cannot justify an unqualified no-skill message.
   question includes the skill's meaning; opaque question keys convey no content.
 - Parse structured JSON. Reject duplicate keys, missing/foreign option IDs,
   answer-type mismatches, non-finite/out-of-range values, and invalid usage counts.
-  Distribution sums must be positive and within the documented `1e-4` tolerance
-  of one; normalize only rounding drift and retain raw values.
+  Distribution sums must be positive and within `0.1` of one (the live
+  provider returns totals such as 0.99); renormalize accepted distributions
+  and retain raw values. Do not tighten this back to a rounding bound.
 - Validate `choice` against an argmax, allowing ties. Deterministic local ties use
   stable skill IDs. Cap decoded/decompressed response bytes, not just wire length.
 - Filter exclusions, reusable references proven present with matching rendered

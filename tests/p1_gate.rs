@@ -194,7 +194,7 @@ fn all_p1_invariants_verified() {
     assert_eq!(resp.usage.output_tokens, 25);
     assert_eq!(resp.usage.total_tokens(), 175);
 
-    // Sum violating tolerance (> 1e-4 drift) must be rejected
+    // A total beyond the tolerance (0.75, more than 0.1 from one) is rejected
     let bad_sum_bytes = br#"{
         "model": "jev-1.13.0",
         "answers": {
@@ -203,7 +203,7 @@ fn all_p1_invariants_verified() {
                 "choice": "tool_a",
                 "confidence": 0.95,
                 "probabilities": {
-                    "tool_a": 0.70,
+                    "tool_a": 0.50,
                     "tool_b": 0.20,
                     "__none__": 0.05
                 }

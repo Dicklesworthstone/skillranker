@@ -4,6 +4,10 @@
 
 ### Fixed
 
+- `sr rank` accepts Jev Choice distributions whose total is within 0.1 of
+  one and renormalizes them, keeping the raw values. The live provider
+  returns totals such as 0.99 for large Choices, and the previous 1e-4 bound
+  rejected every such answer, so live ranking of large rosters failed.
 - `sr rank` on a Claude transcript ranks the latest prompt the user
   submitted. Claude also writes `user` records nobody typed: injected meta
   content, compaction summaries, task notifications, interrupt markers and

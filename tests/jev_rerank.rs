@@ -386,7 +386,8 @@ fn answers_map_into_local_eligibility_with_per_candidate_none_checks() {
         &[0.8, 0.9],
     );
     let outcome = evaluate(&rerank, &rerank.request().decode_response(&body).unwrap()).unwrap();
-    assert_eq!(outcome.none_probability, 0.3);
+    // Renormalized by the raw total, so compare within float rounding.
+    assert!((outcome.none_probability - 0.3).abs() < 1e-12);
     let skills: Vec<_> = rerank.options().entries().values().copied().collect();
     let evaluation = after_rerank(
         &skills,

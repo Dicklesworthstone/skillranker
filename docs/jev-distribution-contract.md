@@ -15,10 +15,11 @@ Satisfies boundary `p1_distribution_validation` (`sr-roadmap-l1i.2.6`).
 ### 2. Choice Distributions and Sum Tolerance
 - A Choice distribution must contain exactly the options requested in the question criteria (no missing options, no foreign option IDs).
 - Sum of distribution probabilities must be strictly positive (`sum > 0.0`) and within a tolerance of `1.0`:
-  $$| \sum p_i - 1.0 | \le 10^{-4} \quad (\text{SUM\_TOLERANCE} = 10^{-4})$$
+  $$| \sum p_i - 1.0 | \le 0.1 \quad (\text{SUM\_TOLERANCE} = 0.1)$$
+  The live provider returns totals such as 0.99 for large Choices, so the bound is deliberately generous. Only grossly malformed distributions are rejected.
 - Raw probabilities and the raw sum are preserved in `ChoiceAnswer`.
-- Normalized probabilities are calculated on-demand by dividing raw probabilities by `raw_sum`, isolating rounding drift without modifying recorded provider evidence.
-- Sum deviations exceeding `1e-4` produce `CodecError::InvalidDistribution`.
+- Normalized probabilities are calculated by dividing raw probabilities by `raw_sum`. The wide and rerank stages use them, so every downstream probability is a proper distribution, and the recorded provider evidence is not modified.
+- Sum deviations exceeding `0.1` produce `CodecError::InvalidDistribution`.
 
 ### 3. Argmax Validation and Deterministic Tie-Breaking
 - The option returned in the `choice` field MUST be an argmax of the distribution:
@@ -47,4 +48,4 @@ Satisfies boundary `p1_distribution_validation` (`sr-roadmap-l1i.2.6`).
 | `exact_argmax` | Choice in argmax set, ties allowed, deterministic tie-breaking | `tests/jev_contract.rs` |
 | `unknown_usage_preserved` | Integer validation, known accumulation, and terminal error preservation | `tests/jev_contract.rs` |
 | `nonfinite-rejected` | Rejection of NaN, Inf, missing fields, type mismatches | `tests/jev_contract.rs` |
-| `distribution-sum-tolerance` | Boundary tests around 1e-4 tolerance across 255 options | `tests/jev_contract.rs` |
+| `distribution-sum-tolerance` | The live 0.99 total accepted and renormalized; totals beyond 0.1 rejected, across 255 options | `tests/jev_contract.rs` |
