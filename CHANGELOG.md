@@ -20,6 +20,12 @@
   declaration validation remains distinct from an execution receipt.
 
 ### Added
+- `sr capabilities --json` prints this build's capability registry
+  (`sr.capabilities.v1`): every command as implemented or planned, flags
+  refused until their phase, adapter evidence, schema versions, features,
+  limits and exit codes. The foundation document and `limits`/`ErrorKind`
+  supply it. Planned commands are refused, `rank --save-case` is refused until
+  P5, and bare `sr` now ranks as documented.
 - A catalog-driven product e2e runner, `scripts/e2e/product.sh`, runs any
   suite in `scripts/e2e/product/`. A complete run may leave ignored only opt-in
   tests the catalog declares with a reason. A test's own `--exact` child run

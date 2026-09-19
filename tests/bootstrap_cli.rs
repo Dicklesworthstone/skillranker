@@ -18,9 +18,9 @@ fn version_reports_package_version() {
 #[test]
 fn unsupported_commands_fail_without_echoing_private_arguments() {
     for args in [
-        vec![],
         vec!["rank", "private-canary"],
         vec!["--help", "private-canary"],
+        vec!["hook", "private-canary"],
     ] {
         let result = Command::new(env!("CARGO_BIN_EXE_sr"))
             .env_clear()
@@ -37,6 +37,23 @@ fn unsupported_commands_fail_without_echoing_private_arguments() {
         assert!(!String::from_utf8_lossy(&result.stdout).contains("private-canary"));
         assert!(result.stderr.is_empty());
     }
+}
+
+/// Bare `sr` is `sr rank` since P4 (it was a usage error in the P0 bootstrap
+/// build). Without a session source it fails with a typed envelope, not usage.
+#[test]
+fn bare_sr_ranks_instead_of_reporting_usage() {
+    let result = Command::new(env!("CARGO_BIN_EXE_sr"))
+        .env_clear()
+        .output()
+        .unwrap();
+    assert_ne!(result.status.code(), Some(0));
+    assert_ne!(result.status.code(), Some(2));
+    let report: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+    assert_eq!(report["schema_version"], 1);
+    assert_eq!(report["decision"], "unavailable");
+    assert_ne!(report["error"]["kind"], "invalid-usage");
+    assert!(result.stderr.is_empty());
 }
 
 #[cfg(unix)]

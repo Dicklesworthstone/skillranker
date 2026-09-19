@@ -31,7 +31,8 @@ struct CliFixture {
 impl CliFixture {
     fn new() -> Self {
         let id = FIXTURE_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let root = std::env::temp_dir().join(format!("sr-envelope-test-{}-{}", std::process::id(), id));
+        let root =
+            std::env::temp_dir().join(format!("sr-envelope-test-{}-{}", std::process::id(), id));
         let workspace = root.join("workspace");
         let skills_dir = workspace.join(".claude/skills");
         fs::create_dir_all(&skills_dir).unwrap();
@@ -101,7 +102,11 @@ fn test_all_28_error_kinds_and_documented_exit_categories() {
     let expected_mappings = [
         // Category 2: Usage / Configuration
         (2u8, ErrorKind::InvalidUsage, "invalid-usage"),
-        (2u8, ErrorKind::InvalidConfiguration, "invalid-configuration"),
+        (
+            2u8,
+            ErrorKind::InvalidConfiguration,
+            "invalid-configuration",
+        ),
         // Category 3: Session
         (3u8, ErrorKind::MissingSession, "missing-session"),
         (3u8, ErrorKind::AmbiguousSession, "ambiguous-session"),
@@ -127,7 +132,11 @@ fn test_all_28_error_kinds_and_documented_exit_categories() {
         (7u8, ErrorKind::MalformedInput, "malformed-input"),
         (7u8, ErrorKind::OversizedInput, "oversized-input"),
         (7u8, ErrorKind::UnsupportedInput, "unsupported-input"),
-        (7u8, ErrorKind::UnsupportedSourceMode, "unsupported-source-mode"),
+        (
+            7u8,
+            ErrorKind::UnsupportedSourceMode,
+            "unsupported-source-mode",
+        ),
         (7u8, ErrorKind::InsufficientContext, "insufficient-context"),
         (7u8, ErrorKind::OutputLimit, "output-limit"),
         // Category 8: Privacy
@@ -135,7 +144,11 @@ fn test_all_28_error_kinds_and_documented_exit_categories() {
         // Category 9: Storage
         (9u8, ErrorKind::StorageFailure, "storage-failure"),
         // Category 10: Provider Contract
-        (10u8, ErrorKind::InvalidProviderResponse, "invalid-provider-response"),
+        (
+            10u8,
+            ErrorKind::InvalidProviderResponse,
+            "invalid-provider-response",
+        ),
         // Category 11: Cache Miss
         (11u8, ErrorKind::CacheMiss, "cache-miss"),
     ];
@@ -251,8 +264,8 @@ fn test_unresolved_explicit_skill_references() {
         })
         .collect();
 
-    let overflow = OutputDocument::failure(ErrorKind::UnresolvedExplicit, false)
-        .with_unresolved(too_many);
+    let overflow =
+        OutputDocument::failure(ErrorKind::UnresolvedExplicit, false).with_unresolved(too_many);
     assert_eq!(overflow.unwrap_err(), ContractError::LimitExceeded);
 }
 
@@ -260,20 +273,26 @@ fn test_unresolved_explicit_skill_references() {
 fn test_cli_binary_failure_envelopes() {
     let f = CliFixture::new();
 
-    // 1. Bare `sr` without subcommand -> exit 2 invalid-usage
+    // 1. Bare `sr` is `sr rank` (AGENTS.md: "Bare sr ranks once"). With no
+    // session source it fails with a typed envelope, not a usage error.
     let out_bare = f.run(&["--json"], &[]);
-    assert_eq!(out_bare.status.code(), Some(2));
+    assert_ne!(out_bare.status.code(), Some(0));
+    assert_ne!(out_bare.status.code(), Some(2));
     let val_bare: Value = serde_json::from_slice(&out_bare.stdout).expect("valid JSON stdout");
     assert_eq!(val_bare["schema_version"], 1);
     assert_eq!(val_bare["decision"], "unavailable");
-    assert_eq!(val_bare["error"]["code"], 2);
-    assert_eq!(val_bare["error"]["kind"], "invalid-usage");
+    assert_eq!(
+        val_bare["error"]["code"].as_i64(),
+        out_bare.status.code().map(i64::from)
+    );
+    assert_ne!(val_bare["error"]["kind"], "invalid-usage");
     assert_eq!(val_bare["error"]["retryable"], false);
 
     // 2. Conflicting flags -> exit 2 invalid-usage
     let out_conflicts = f.run(&["rank", "--offline", "--allow-network", "--json"], &[]);
     assert_eq!(out_conflicts.status.code(), Some(2));
-    let val_conflicts: Value = serde_json::from_slice(&out_conflicts.stdout).expect("valid JSON stdout");
+    let val_conflicts: Value =
+        serde_json::from_slice(&out_conflicts.stdout).expect("valid JSON stdout");
     assert_eq!(val_conflicts["error"]["code"], 2);
     assert_eq!(val_conflicts["error"]["kind"], "invalid-usage");
 
@@ -321,7 +340,13 @@ fn test_cli_binary_failure_envelopes() {
 
     let out_empty = Command::new(env!("CARGO_BIN_EXE_sr"))
         .current_dir(&empty_workspace)
-        .args(["rank", "--context", empty_ctx.to_str().unwrap(), "--offline", "--json"])
+        .args([
+            "rank",
+            "--context",
+            empty_ctx.to_str().unwrap(),
+            "--offline",
+            "--json",
+        ])
         .output()
         .expect("run binary");
     assert_eq!(out_empty.status.code(), Some(5));
@@ -343,11 +368,14 @@ fn test_cli_binary_failure_envelopes() {
         &[],
     );
     assert_eq!(out_unresolved.status.code(), Some(5));
-    let val_unresolved: Value = serde_json::from_slice(&out_unresolved.stdout).expect("valid JSON stdout");
+    let val_unresolved: Value =
+        serde_json::from_slice(&out_unresolved.stdout).expect("valid JSON stdout");
     assert_eq!(val_unresolved["decision"], "unavailable");
     assert_eq!(val_unresolved["error"]["code"], 5);
     assert_eq!(val_unresolved["error"]["kind"], "unresolved-explicit");
-    let unres = val_unresolved["unresolved"].as_array().expect("unresolved array present");
+    let unres = val_unresolved["unresolved"]
+        .as_array()
+        .expect("unresolved array present");
     assert_eq!(unres.len(), 1);
     assert_eq!(unres[0]["reference"], "nonexistent-skill-xyz");
     assert_eq!(unres[0]["reason"], "missing");
@@ -356,11 +384,18 @@ fn test_cli_binary_failure_envelopes() {
     let malformed_ctx = f.workspace.join("malformed.json");
     fs::write(&malformed_ctx, b"not valid json {{{").unwrap();
     let out_malformed = f.run(
-        &["rank", "--context", malformed_ctx.to_str().unwrap(), "--offline", "--json"],
+        &[
+            "rank",
+            "--context",
+            malformed_ctx.to_str().unwrap(),
+            "--offline",
+            "--json",
+        ],
         &[],
     );
     assert_eq!(out_malformed.status.code(), Some(7));
-    let val_malformed: Value = serde_json::from_slice(&out_malformed.stdout).expect("valid JSON stdout");
+    let val_malformed: Value =
+        serde_json::from_slice(&out_malformed.stdout).expect("valid JSON stdout");
     assert_eq!(val_malformed["error"]["code"], 7);
     assert_eq!(val_malformed["error"]["kind"], "malformed-input");
 }

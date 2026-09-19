@@ -12,7 +12,7 @@ use std::ffi::OsString;
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
-const HELP: &str = "SkillRanker — powered by TypeSafe.ai Jev\n\nUsage: sr [rank] [--context FILE | --transcript FILE --harness NAME | --session PATH]\n                 [--roster FILE] [--require-skill ID] [--dry-run]\n                 [--offline | --allow-network] [--json | --table]\n                 [--top N] [--shortlist M] [--gate FLOAT] [--fits FLOAT]\n                 [--explain] [--why-not ID] [--no-tools] [--no-cache]\n       sr doctor [--json | --table] [--offline | --allow-network]\n       sr doctor --config [--json | --table] [--top N] [--shortlist N]\n       sr roster [--json] [--limit N] [--cursor TOKEN]\n       sr roster --snapshot FILE | --diff FILE\n       sr --help | --version\n\nRank the next step of an agent session using TypeSafe Jev.\nRequires your own TypeSafe API key (TYPESAFE_API_KEY) and network consent (--allow-network).\n";
+const HELP: &str = "SkillRanker — powered by TypeSafe.ai Jev\n\nUsage: sr [rank] [--context FILE | --transcript FILE --harness NAME | --session PATH]\n                 [--roster FILE] [--require-skill ID] [--dry-run]\n                 [--offline | --allow-network] [--json | --table]\n                 [--top N] [--shortlist M] [--gate FLOAT] [--fits FLOAT]\n                 [--explain] [--why-not ID] [--no-tools] [--no-cache]\n       sr doctor [--json | --table] [--offline | --allow-network]\n       sr doctor --config [--json | --table] [--top N] [--shortlist N]\n       sr roster [--json] [--limit N] [--cursor TOKEN]\n       sr roster --snapshot FILE | --diff FILE\n       sr capabilities [--json]\n       sr --help | --version\n\nRank the next step of an agent session using TypeSafe Jev.\nRequires your own TypeSafe API key (TYPESAFE_API_KEY) and network consent (--allow-network).\n";
 
 fn command() -> Command {
     let mut doctor = Command::new("doctor")
@@ -93,7 +93,11 @@ fn command() -> Command {
                 .long("require-skill")
                 .action(ArgAction::Append),
         )
-        .arg(Arg::new("explain").long("explain").action(ArgAction::SetTrue))
+        .arg(
+            Arg::new("explain")
+                .long("explain")
+                .action(ArgAction::SetTrue),
+        )
         .arg(
             Arg::new("why-not")
                 .long("why-not")
@@ -125,8 +129,16 @@ fn command() -> Command {
                 .conflicts_with_all(["allow-network", "save-case"])
                 .action(ArgAction::SetTrue),
         )
-        .arg(Arg::new("no-cache").long("no-cache").action(ArgAction::SetTrue))
-        .arg(Arg::new("no-ledger").long("no-ledger").action(ArgAction::SetTrue))
+        .arg(
+            Arg::new("no-cache")
+                .long("no-cache")
+                .action(ArgAction::SetTrue),
+        )
+        .arg(
+            Arg::new("no-ledger")
+                .long("no-ledger")
+                .action(ArgAction::SetTrue),
+        )
         .arg(
             Arg::new("no-persist")
                 .long("no-persist")
@@ -169,6 +181,17 @@ fn command() -> Command {
         )
         .subcommand(doctor)
         .subcommand(rank)
+        .subcommand(
+            Command::new("capabilities")
+                .disable_help_flag(true)
+                .arg(
+                    Arg::new("help")
+                        .long("help")
+                        .short('h')
+                        .action(ArgAction::SetTrue),
+                )
+                .arg(Arg::new("json").long("json").action(ArgAction::SetTrue)),
+        )
         .subcommand(
             Command::new("roster")
                 .disable_help_flag(true)
@@ -262,8 +285,18 @@ fn timely(clock: &EntryClock) -> Result<(), Failure> {
         .map_err(|_| (6, "timeout", "Local inspection deadline exceeded".into()))
 }
 
-fn execute(clock: &EntryClock, args: Vec<OsString>) -> Result<String, Failure> {
+fn execute(clock: &EntryClock, mut args: Vec<OsString>) -> Result<String, Failure> {
     timely(clock)?;
+    // Bare `sr` is `sr rank`: rank flags may follow the program name directly.
+    if args
+        .get(1)
+        .and_then(|first| first.to_str())
+        .is_some_and(|first| {
+            first.starts_with('-') && !matches!(first, "--help" | "-h" | "--version" | "-V")
+        })
+    {
+        args.insert(1, OsString::from("rank"));
+    }
     let matches = command().try_get_matches_from(args).map_err(|_| {
         (
             2,
@@ -302,11 +335,15 @@ fn execute(clock: &EntryClock, args: Vec<OsString>) -> Result<String, Failure> {
         }
         return rank_command(clock, Some(rank_matches));
     }
-    Err((
-        2,
-        "invalid-usage",
-        "Select an implemented command; use --help".into(),
-    ))
+    if let Some(("capabilities", capabilities)) = matches.subcommand() {
+        if capabilities.get_flag("help") {
+            return Ok(HELP.into());
+        }
+        // Always JSON: this is a machine-readable registry.
+        return Ok(format!("{}\n", crate::capabilities::registry()));
+    }
+    // Bare `sr` ranks once, as documented.
+    rank_command(clock, None)
 }
 
 fn doctor_command(clock: &EntryClock, doctor: &clap::ArgMatches) -> Result<String, Failure> {
@@ -414,9 +451,8 @@ fn rank_command(
     let no_cache = rank_matches.is_some_and(|m| m.get_flag("no-cache"));
     let no_ledger = rank_matches.is_some_and(|m| m.get_flag("no-ledger"));
     let no_persist = rank_matches.is_some_and(|m| m.get_flag("no-persist"));
-    let save_case = rank_matches.is_some_and(|m| {
-        m.contains_id("save-case") && m.get_one::<String>("save-case").is_some()
-    });
+    let save_case = rank_matches
+        .is_some_and(|m| m.contains_id("save-case") && m.get_one::<String>("save-case").is_some());
 
     let flags = crate::privacy::EffectFlags {
         offline,
@@ -435,6 +471,15 @@ fn rank_command(
             (2u8, "invalid-usage", first.to_string())
         },
     )?;
+    // Flag conflicts are reported above; the capture itself ships in P5.
+    if save_case {
+        return Err((
+            2,
+            "invalid-usage",
+            "--save-case (case capture) is planned for P5 and is not available in this build"
+                .into(),
+        ));
+    }
 
     let mut sources = ConfigSources::default();
     if let Some(m) = rank_matches {
@@ -519,7 +564,11 @@ fn rank_command(
         if let Some(reqs) = m.get_many::<String>("require-skill") {
             for req in reqs {
                 let id = crate::identity::SkillId::new(req).map_err(|_| {
-                    (5u8, "unresolved-explicit", format!("Invalid skill ID: {req}"))
+                    (
+                        5u8,
+                        "unresolved-explicit",
+                        format!("Invalid skill ID: {req}"),
+                    )
                 })?;
                 require_skills.push(id);
             }
@@ -529,9 +578,15 @@ fn rank_command(
     let explain = rank_matches.is_some_and(|m| m.get_flag("explain"));
     let why_not = rank_matches
         .and_then(|m| m.get_one::<String>("why-not"))
-        .map(|s| crate::identity::SkillId::new(s).map_err(|_| {
-            (2u8, "invalid-usage", format!("Invalid skill ID for --why-not: {s}"))
-        }))
+        .map(|s| {
+            crate::identity::SkillId::new(s).map_err(|_| {
+                (
+                    2u8,
+                    "invalid-usage",
+                    format!("Invalid skill ID for --why-not: {s}"),
+                )
+            })
+        })
         .transpose()?;
 
     let args = crate::pipeline::RankArgs {
@@ -550,16 +605,15 @@ fn rank_command(
     };
 
     timely(clock)?;
-    let invocation = crate::runtime::ProcessInvocation::from_clock(*clock).map_err(|_| {
-        (6u8, "timeout", "Local runtime unavailable".into())
-    })?;
-    let cx = invocation.request_cx().map_err(|_| {
-        (6u8, "timeout", "Local runtime unavailable".into())
-    })?;
+    let invocation = crate::runtime::ProcessInvocation::from_clock(*clock)
+        .map_err(|_| (6u8, "timeout", "Local runtime unavailable".into()))?;
+    let cx = invocation
+        .request_cx()
+        .map_err(|_| (6u8, "timeout", "Local runtime unavailable".into()))?;
 
-    let output_doc = invocation.runtime().block_on(async {
-        crate::pipeline::execute_pipeline(clock, &cx, args, None).await
-    })?;
+    let output_doc = invocation
+        .runtime()
+        .block_on(async { crate::pipeline::execute_pipeline(clock, &cx, args, None).await })?;
 
     timely(clock)?;
 
@@ -570,7 +624,11 @@ fn rank_command(
         let val = output_doc.as_value();
         let kind = val["error"]["kind"]
             .as_str()
-            .and_then(|s| crate::output::ErrorKind::ALL.iter().find(|k| k.as_str() == s))
+            .and_then(|s| {
+                crate::output::ErrorKind::ALL
+                    .iter()
+                    .find(|k| k.as_str() == s)
+            })
             .map(|k| k.as_str())
             .unwrap_or("unavailable");
         if json_output {
@@ -603,7 +661,10 @@ fn is_stdin_supplied() -> bool {
         use std::os::fd::AsFd;
         if let Ok(stat) = fstat(std::io::stdin().as_fd()) {
             let flag = SFlag::from_bits_truncate(stat.st_mode);
-            if flag.contains(SFlag::S_IFIFO) || flag.contains(SFlag::S_IFSOCK) || flag.contains(SFlag::S_IFREG) {
+            if flag.contains(SFlag::S_IFIFO)
+                || flag.contains(SFlag::S_IFSOCK)
+                || flag.contains(SFlag::S_IFREG)
+            {
                 return true;
             }
             return false;
