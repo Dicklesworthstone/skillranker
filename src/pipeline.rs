@@ -60,6 +60,7 @@ use crate::roster::{InvocationKind, LoadTarget, Visibility};
 use crate::runtime::{EntryClock, ProcessInvocation, admit_publication};
 use crate::scoring::{Input as ScoringInput, Ranking, Weights, rank};
 
+mod cass_source;
 mod roster;
 
 /// Failure tuple compatible with CLI error formatting: `(exit_code, kind, message)`.
@@ -606,12 +607,17 @@ async fn rank_once(
                 "Use sr hook claude for hook protocol stdin mode",
             ));
         }
-        SourceTarget::CassSession(_) => {
-            return Err(failure(
-                7,
-                "unsupported-source-mode",
-                "Cass session mode unavailable in this execution lane",
-            ));
+        SourceTarget::CassSession(path) => {
+            cass_source::read(
+                &args.workspace,
+                args.home.as_deref(),
+                path.as_path(),
+                !effective.no_tools(),
+                source_policy,
+                cx,
+                clock,
+            )
+            .await?
         }
     };
 
