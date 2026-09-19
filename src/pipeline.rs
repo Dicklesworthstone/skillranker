@@ -554,20 +554,35 @@ async fn rank_once(
         ..Quality::default()
     };
 
-    // Combine explicit skill directives from CLI flags, context, and anchor
+    // Combine explicit skill directives from CLI flags, context, and anchor.
+    // Exclusions come from trusted configuration and from any turn's
+    // directives: they defeat advisory suggestions and conflict with a request.
     let mut explicit_directives = args.require_skills.clone();
     for ref_id in &normalized_context.explicit_skill_references {
         if !explicit_directives.contains(ref_id) {
             explicit_directives.push(ref_id.clone());
         }
     }
+    let mut explicit_exclusions: Vec<String> = effective
+        .exclude_skills()
+        .iter()
+        .map(|ex| ex.as_str().to_owned())
+        .collect();
     if let crate::context::anchor::AnchorResolution::Established(ref a) = anchor_res {
         for directive in &a.directives {
-            if directive.kind == crate::context::anchor::AnchorDirectiveKind::Require
-                && let Ok(id) = SkillId::new(&directive.target)
-                && !explicit_directives.contains(&id)
-            {
-                explicit_directives.push(id);
+            match directive.kind {
+                crate::context::anchor::AnchorDirectiveKind::Require => {
+                    if let Ok(id) = SkillId::new(&directive.target)
+                        && !explicit_directives.contains(&id)
+                    {
+                        explicit_directives.push(id);
+                    }
+                }
+                crate::context::anchor::AnchorDirectiveKind::Exclude => {
+                    if !explicit_exclusions.contains(&directive.target) {
+                        explicit_exclusions.push(directive.target.clone());
+                    }
+                }
             }
         }
     }
@@ -641,123 +656,125 @@ async fn rank_once(
         warnings_omitted,
     });
 
-    // 5. Explicit Directives Check (bypasses Jev and Quill)
-    if !explicit_directives.is_empty() {
-        let explicit_req = ExplicitResolutionRequest {
-            cli_required_skills: explicit_directives
-                .iter()
-                .map(|id| id.as_str().to_string())
-                .collect(),
-            cli_excluded_skills: Vec::new(),
-            context_skill_references: normalized_context.explicit_skill_references.clone(),
-            context_excluded_skills: Vec::new(),
-            user_prompt: Some(normalized_context.current_request.text.as_str().to_string()),
-        };
-        let explicit_result =
-            resolve_explicit_requirements(&explicit_req, &roster).map_err(|e| {
-                failure(
-                    2,
-                    "invalid-usage",
-                    format!("Explicit resolution error: {e}"),
-                )
-            })?;
+    // 5. Explicit directives resolve locally, bypassing Jev and Quill. The
+    // resolver runs even without a positive request: exclusions from the prompt,
+    // earlier turns and configuration restrict the advisory candidates.
+    let explicit_req = ExplicitResolutionRequest {
+        cli_required_skills: explicit_directives
+            .iter()
+            .map(|id| id.as_str().to_string())
+            .collect(),
+        cli_excluded_skills: explicit_exclusions,
+        context_skill_references: normalized_context.explicit_skill_references.clone(),
+        context_excluded_skills: Vec::new(),
+        user_prompt: Some(normalized_context.current_request.text.as_str().to_string()),
+    };
+    let explicit_result = resolve_explicit_requirements(&explicit_req, &roster).map_err(|e| {
+        failure(
+            2,
+            "invalid-usage",
+            format!("Explicit resolution error: {e}"),
+        )
+    })?;
 
-        match explicit_result {
-            ExplicitResolutionResult::Resolved { skills, .. } => {
-                // Revalidate policy receipt before publication of explicit result
-                let (_refreshed, reval) = config_files.refresh(
-                    clock,
-                    &resolved_config,
-                    &current_receipt,
-                    PolicyBoundary::CliPublication(PublicationKind::Explicit),
-                )?;
-                if let Revalidation::Superseded(fields) = reval {
-                    return Err(failure(
-                        3,
-                        "superseded",
-                        format!("Policy changed during evaluation: {fields:?}"),
-                    ));
-                }
-                if let Revalidation::InvalidConfiguration = reval {
-                    return Err(failure(
-                        2,
-                        "invalid-configuration",
-                        "Configuration became invalid before publication",
-                    ));
-                }
-                let mut doc = build_explicit_document(
-                    &skills,
-                    &normalized_context,
-                    &roster,
-                    clock.now().as_millis(),
-                    &progress.evaluated,
-                );
-                if let Some(trace_val) = generate_trace(
-                    &args,
-                    &roster,
-                    &normalized_context,
-                    None,
-                    &RetrievalView::NotEvaluated,
-                    None,
-                    gate_threshold,
-                    None,
-                    fits_threshold,
-                    None,
-                    None,
-                    true,
-                ) {
-                    doc = doc.with_trace(trace_val).map_err(|e| {
-                        failure(
-                            5,
-                            "contract-violation",
-                            format!("Trace contract error: {e:?}"),
-                        )
-                    })?;
-                }
-                return Ok(doc);
+    let mut excluded_skills = BTreeSet::new();
+    match explicit_result {
+        ExplicitResolutionResult::Resolved { skills, .. } => {
+            // Revalidate policy receipt before publication of explicit result
+            let (_refreshed, reval) = config_files.refresh(
+                clock,
+                &resolved_config,
+                &current_receipt,
+                PolicyBoundary::CliPublication(PublicationKind::Explicit),
+            )?;
+            if let Revalidation::Superseded(fields) = reval {
+                return Err(failure(
+                    3,
+                    "superseded",
+                    format!("Policy changed during evaluation: {fields:?}"),
+                ));
             }
-            ExplicitResolutionResult::Unavailable { unresolved } => {
-                let msg = if let Some(first) = unresolved.first() {
-                    format!("Unresolved explicit skill: {}", first.target)
-                } else {
-                    "Unresolved explicit skill".to_string()
-                };
-                let unresolved_refs: Vec<crate::output::UnresolvedReference> = unresolved
-                    .iter()
-                    .map(|u| {
-                        let reason = match u.reason {
-                            crate::roster::explicit::UnresolvedReason::Missing => {
-                                crate::output::UnresolvedReason::Missing
-                            }
-                            crate::roster::explicit::UnresolvedReason::Ambiguous => {
-                                crate::output::UnresolvedReason::Ambiguous
-                            }
-                            crate::roster::explicit::UnresolvedReason::Forbidden
-                            | crate::roster::explicit::UnresolvedReason::Shadowed
-                            | crate::roster::explicit::UnresolvedReason::ConflictingDirective
-                            | crate::roster::explicit::UnresolvedReason::Unverified
-                            | crate::roster::explicit::UnresolvedReason::InvalidName => {
-                                crate::output::UnresolvedReason::Restricted
-                            }
-                        };
-                        crate::output::UnresolvedReference {
-                            reference: u.target.clone(),
-                            reason,
-                        }
-                    })
-                    .collect();
-                let doc = OutputDocument::failure_with_details(
-                    ErrorKind::UnresolvedExplicit,
-                    &msg,
-                    "Inspect available skills in the roster or configure skill roots.",
-                    false,
-                )
-                .with_unresolved(unresolved_refs)
-                .map_err(|e| failure(5, "unresolved-explicit", format!("Contract error: {e:?}")))?;
-                return Ok(doc);
+            if let Revalidation::InvalidConfiguration = reval {
+                return Err(failure(
+                    2,
+                    "invalid-configuration",
+                    "Configuration became invalid before publication",
+                ));
             }
-            ExplicitResolutionResult::NoneSpecified { .. } => {}
+            let mut doc = build_explicit_document(
+                &skills,
+                &normalized_context,
+                &roster,
+                clock.now().as_millis(),
+                &progress.evaluated,
+            );
+            if let Some(trace_val) = generate_trace(
+                &args,
+                &roster,
+                &normalized_context,
+                None,
+                &RetrievalView::NotEvaluated,
+                None,
+                gate_threshold,
+                None,
+                fits_threshold,
+                None,
+                None,
+                true,
+            ) {
+                doc = doc.with_trace(trace_val).map_err(|e| {
+                    failure(
+                        5,
+                        "contract-violation",
+                        format!("Trace contract error: {e:?}"),
+                    )
+                })?;
+            }
+            return Ok(doc);
         }
+        ExplicitResolutionResult::Unavailable { unresolved } => {
+            let msg = if let Some(first) = unresolved.first() {
+                format!("Unresolved explicit skill: {}", first.target)
+            } else {
+                "Unresolved explicit skill".to_string()
+            };
+            let unresolved_refs: Vec<crate::output::UnresolvedReference> = unresolved
+                .iter()
+                .map(|u| {
+                    let reason = match u.reason {
+                        crate::roster::explicit::UnresolvedReason::Missing => {
+                            crate::output::UnresolvedReason::Missing
+                        }
+                        crate::roster::explicit::UnresolvedReason::Ambiguous => {
+                            crate::output::UnresolvedReason::Ambiguous
+                        }
+                        crate::roster::explicit::UnresolvedReason::Forbidden
+                        | crate::roster::explicit::UnresolvedReason::Shadowed
+                        | crate::roster::explicit::UnresolvedReason::ConflictingDirective
+                        | crate::roster::explicit::UnresolvedReason::Unverified
+                        | crate::roster::explicit::UnresolvedReason::InvalidName => {
+                            crate::output::UnresolvedReason::Restricted
+                        }
+                    };
+                    crate::output::UnresolvedReference {
+                        reference: u.target.clone(),
+                        reason,
+                    }
+                })
+                .collect();
+            let doc = OutputDocument::failure_with_details(
+                ErrorKind::UnresolvedExplicit,
+                &msg,
+                "Inspect available skills in the roster or configure skill roots.",
+                false,
+            )
+            .with_unresolved(unresolved_refs)
+            .map_err(|e| failure(5, "unresolved-explicit", format!("Contract error: {e:?}")))?;
+            return Ok(doc);
+        }
+        ExplicitResolutionResult::NoneSpecified {
+            excluded_skills: resolved,
+        } => excluded_skills.extend(resolved),
     }
 
     // 6. Advisory candidate admission & local policy filtering
@@ -767,7 +784,6 @@ async fn rank_once(
         records: &loaded_records,
     };
 
-    let mut excluded_skills = BTreeSet::new();
     for ex in effective.exclude_skills() {
         if let Ok(id) = SkillId::new(ex.as_str()) {
             excluded_skills.insert(id);

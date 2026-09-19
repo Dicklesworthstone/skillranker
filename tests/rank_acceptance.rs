@@ -96,6 +96,10 @@ impl Fixture {
         .unwrap();
     }
     fn context_in(&self, session: &str, request: &str) -> PathBuf {
+        self.context_turns(session, &[], request)
+    }
+    /// Earlier user messages precede the current request in the session.
+    fn context_turns(&self, session: &str, earlier: &[&str], request: &str) -> PathBuf {
         let path = self.workspace().join("context.json");
         let message = |id: &str, text: &str| {
             json!({"event_id": id, "parent_id": null, "turn_id": "turn-1", "agent_id": null,
@@ -113,7 +117,12 @@ impl Fixture {
             "context_epoch": null,
             "current_request": {"event_id": "request-1", "text": request,
                                 "attachments_omitted": false, "essential_attachment_missing": false},
-            "events": [message("request-1", request)],
+            "events": earlier
+                .iter()
+                .enumerate()
+                .map(|(i, text)| message(&format!("earlier-{i}"), text))
+                .chain([message("request-1", request)])
+                .collect::<Vec<_>>(),
             "explicit_skill_references": [],
             "supplied_loads": []
         });
@@ -409,6 +418,77 @@ fn an_explicit_request_resolves_locally_without_a_provider_call() {
     assert_eq!(value["skills"][0]["visibility"], "unverified");
     assert_eq!(value["warnings"][0]["kind"], "unverified-visibility");
     assert_eq!(usage(&value), (0, 0, 0, 0));
+}
+
+/// Asserts alpha never reached the provider: the wide Choice offered only beta
+/// and none, and no request carried alpha's description.
+fn alpha_never_sent(served: &[Value]) {
+    assert_eq!(served[0]["options"], 2, "beta plus none");
+    for request in served {
+        let body = request["body"].as_str().unwrap();
+        assert!(
+            !body.contains("Runs and repairs failing rust tests"),
+            "{body}"
+        );
+    }
+}
+
+#[test]
+fn a_prompt_exclusion_removes_the_skill_before_any_send() {
+    let f = Fixture::new(CONSENT);
+    let provider = Provider::start(&f, "useful", &[]);
+    let request = format!("{TASK} Don't use skill alpha.");
+    let value = rank(&f, &provider, &request, 10_000).expect("ranked");
+    let served = provider.finish();
+    assert_eq!(stages(&served), ["wide", "rerank"]);
+    alpha_never_sent(&served);
+    assert_eq!(value["decision"], "ranked", "{value}");
+    for skill in value["skills"].as_array().unwrap() {
+        assert_eq!(skill["invocation_name"], "beta", "{skill}");
+    }
+}
+
+#[test]
+fn an_exclusion_from_an_earlier_turn_still_applies() {
+    let f = Fixture::new(CONSENT);
+    let provider = Provider::start(&f, "useful", &[]);
+    let mut args = f.args(TASK);
+    let context = f.context_turns(
+        "session-1",
+        &["Do not use skill alpha in this session."],
+        TASK,
+    );
+    args.source_options.context = Some(LocalPath::new(context));
+    let value = rank_args(&provider, args, 10_000).expect("ranked");
+    let served = provider.finish();
+    alpha_never_sent(&served);
+    assert_eq!(value["decision"], "ranked", "{value}");
+    for skill in value["skills"].as_array().unwrap() {
+        assert_eq!(skill["invocation_name"], "beta", "{skill}");
+    }
+}
+
+#[test]
+fn a_configured_exclusion_conflicts_with_an_explicit_request() {
+    let f = Fixture::new(&format!(
+        "{CONSENT}[ranking]\nexclude_skills = [\"alpha\"]\n"
+    ));
+    let provider = Provider::start(&f, "useful", &[]);
+    let outcome = rank(&f, &provider, "Please use skill alpha to fix this.", 10_000);
+    let served = provider.finish();
+    assert!(served.is_empty(), "a conflict sends nothing");
+    // The explicit-resolution failure envelope: no guess, no advisory skills.
+    let value = outcome.expect("an unavailable decision");
+    assert_eq!(value["decision"], "unavailable", "{value}");
+    assert_eq!(value["error"]["code"], 5, "{value}");
+    assert_eq!(value["error"]["kind"], "unresolved-explicit", "{value}");
+    assert!(
+        value
+            .get("skills")
+            .is_none_or(|s| s.as_array().unwrap().is_empty())
+    );
+    assert_eq!(value["unresolved"][0]["reference"], "alpha", "{value}");
+    assert_eq!(value["unresolved"][0]["reason"], "restricted", "{value}");
 }
 
 #[test]
