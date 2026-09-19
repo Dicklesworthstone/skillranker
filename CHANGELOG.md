@@ -4,6 +4,13 @@
 
 ### Fixed
 
+- `sr rank` reads `--context`, stdin and `--roster` as bounded regular files:
+  an oversized context is `oversized-input`, and a FIFO, device or symlink
+  leaving its directory is refused with a typed error instead of blocking or
+  being read. The trusted `context.profile` and configured ranking weights now
+  apply (both were hard-coded), every effect restriction comes from the effect
+  gate, and the wide request fingerprint binds the exact request bytes and
+  effective endpoint under a fresh random key rather than a fixed one.
 - Scoped roster authority withholding to affected invocation names and continue
   past per-file read errors during Claude plan resolution (`sr-fzia`). Individual
   malformed or escaping skill files now withhold authority only for the callable

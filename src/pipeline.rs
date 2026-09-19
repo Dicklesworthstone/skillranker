@@ -8,7 +8,7 @@
 use asupersync::Cx;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::cache::{
     CacheKey, CacheLookupQuery, CacheLookupResult, CacheNamespace, CandidateDigest,
@@ -22,7 +22,7 @@ use crate::context::anchor::resolve_task_anchor;
 use crate::context::branch::{LoadedSkillRecord, resolve_active_branch};
 use crate::context::jsonl::{CursorKind, snapshot_jsonl};
 use crate::context::render::{RenderContextOptions, render_context_and_receipt};
-use crate::context::source::{SelectionOutcome, SourceOptions, SourcePolicy, SourceTarget};
+use crate::context::source::{SelectionOutcome, SourceOptions, SourceTarget};
 use crate::context::{CurrentRequest, NormalizedContext, PrivateText, parse_normalized_context};
 use crate::effects::EffectGate;
 use crate::eligibility::{Eligible, Evaluation, LoadedState, Verdict, admit, after_rerank};
@@ -35,8 +35,8 @@ use crate::jev::wide::{Sizes, WideDecision, WideOutcome, WideRequest};
 use crate::jev::{OriginScopedCredential, rerank, wide};
 use crate::output::trace::{StageTrace, TraceEntry, TraceStage};
 use crate::output::{ErrorKind, OutputDocument, SCHEMA_VERSION, TraceCursor};
+use crate::privacy::NetworkConsent;
 use crate::privacy::redaction::Redactor;
-use crate::privacy::{ContextProfile, NetworkConsent};
 use crate::roster::discovery::claude_code_plan;
 use crate::roster::evidence::{PolicyView, RetrievalView};
 use crate::roster::explicit::{
@@ -123,6 +123,44 @@ pub struct ExecutionMetrics {
     pub cache_age_ms: Option<u64>,
 }
 
+/// Read one explicitly selected input file: a bounded regular file under its
+/// own directory, resolved against the workspace when relative. Devices, FIFOs
+/// and symlinks leaving that directory are refused; errors name no path.
+fn read_input_file(
+    workspace: &Path,
+    path: &Path,
+    limit: crate::limits::ResourceLimit,
+) -> Result<Vec<u8>, PipelineFailure> {
+    use crate::authorized_read::{AuthorizedRoot, AuthorizedRoots, ReadError};
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        workspace.join(path)
+    };
+    let unsupported = || {
+        failure(
+            7,
+            "unsupported-input",
+            "The input is not a readable regular file",
+        )
+    };
+    let (Some(parent), Some(name)) = (absolute.parent(), absolute.file_name()) else {
+        return Err(unsupported());
+    };
+    let root = AuthorizedRoot::open_absolute(parent).map_err(|_| unsupported())?;
+    AuthorizedRoots::single(root)
+        .read_bounded(0, Path::new(name), limit)
+        .map(|read| read.bytes().to_vec())
+        .map_err(|error| match error {
+            ReadError::TooLarge { .. } => failure(
+                7,
+                "oversized-input",
+                "The input file exceeds its size limit",
+            ),
+            _ => unsupported(),
+        })
+}
+
 /// Assembles and executes the two-stage rank pipeline.
 pub async fn execute_pipeline(
     clock: &EntryClock,
@@ -138,10 +176,27 @@ pub async fn execute_pipeline(
         )
     })?;
 
+    // Every effect restriction comes from the gate; `args.dry_run` can only add
+    // the dry-run restriction, never remove one.
+    let gate = if args.dry_run && !args.gate.policy().flags().dry_run {
+        let mut flags = args.gate.policy().flags();
+        flags.dry_run = true;
+        EffectGate::new(flags, args.gate.scope()).map_err(|conflicts| {
+            let first = conflicts
+                .first()
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "conflicting effect flags".to_owned());
+            failure(2, "invalid-usage", first)
+        })?
+    } else {
+        args.gate
+    };
+    let dry_run = gate.policy().flags().dry_run;
+
     // 1. Initial configuration loading and policy receipt capture
     let config_files = ConfigFiles::new(args.workspace.clone(), args.user_config_root.clone());
     let resolved_config = config_files.load(clock, args.sources.clone())?;
-    let mut current_receipt = resolved_config.receipt(args.gate.policy());
+    let mut current_receipt = resolved_config.receipt(gate.policy());
 
     let effective = resolved_config.effective();
     let top = effective.top() as usize;
@@ -158,13 +213,8 @@ pub async fn execute_pipeline(
         )
     })?;
 
-    // 2. Select and ingest context source
-    let source_policy = SourcePolicy {
-        offline: args.gate.policy().flags().offline,
-        dry_run: args.dry_run,
-        local_only: args.gate.policy().flags().offline,
-        allow_network: args.gate.policy().flags().allow_network,
-    };
+    // 2. Select and ingest context source.
+    let source_policy = gate.source_policy();
     let workspace_id = WorkspaceId::new(args.workspace.to_string_lossy().as_ref())
         .map_err(|_| failure(2, "invalid-configuration", "Invalid workspace root path"))?;
 
@@ -202,13 +252,11 @@ pub async fn execute_pipeline(
     // Ingest normalized context or native transcript
     let normalized_context = match source_selection.target() {
         SourceTarget::NormalizedFile(path) => {
-            let bytes = std::fs::read(path.as_path()).map_err(|e| {
-                failure(
-                    7,
-                    "malformed-input",
-                    format!("Failed to read context file: {e}"),
-                )
-            })?;
+            let bytes = read_input_file(
+                &args.workspace,
+                path.as_path(),
+                crate::limits::NORMALIZED_CONTEXT_JSON_BYTES,
+            )?;
             parse_normalized_context(&bytes).map_err(|e| {
                 failure(
                     7,
@@ -218,14 +266,20 @@ pub async fn execute_pipeline(
             })?
         }
         SourceTarget::NormalizedStdin => {
+            let limit = crate::limits::NORMALIZED_CONTEXT_JSON_BYTES.max();
             let mut bytes = Vec::new();
-            std::io::Read::read_to_end(&mut std::io::stdin().lock(), &mut bytes).map_err(|e| {
-                failure(
+            std::io::Read::read_to_end(
+                &mut std::io::Read::take(std::io::stdin().lock(), limit as u64 + 1),
+                &mut bytes,
+            )
+            .map_err(|_| failure(7, "malformed-input", "Failed to read context from stdin"))?;
+            if bytes.len() > limit {
+                return Err(failure(
                     7,
-                    "malformed-input",
-                    format!("Failed to read context from stdin: {e}"),
-                )
-            })?;
+                    "oversized-input",
+                    "Normalized context on stdin exceeds 1 MiB",
+                ));
+            }
             parse_normalized_context(&bytes).map_err(|e| {
                 failure(
                     7,
@@ -340,7 +394,12 @@ pub async fn execute_pipeline(
     };
     let overrides = BTreeMap::new();
     let roster = if let Some(roster_path) = &args.roster_file {
-        let bytes = std::fs::read(roster_path).map_err(|e| {
+        let roster_path = if roster_path.is_absolute() {
+            roster_path.clone()
+        } else {
+            args.workspace.join(roster_path)
+        };
+        let bytes = crate::roster::import::read_roster_file(&roster_path).map_err(|e| {
             failure(
                 5,
                 "unusable-roster",
@@ -693,18 +752,26 @@ pub async fn execute_pipeline(
     // 9. Render context payload for Jev
     let render_opts = RenderContextOptions {
         no_tools: effective.no_tools(),
-        context_profile: ContextProfile::Standard,
+        context_profile: effective.context_profile(),
         max_messages: effective.messages() as usize,
         max_total_scalars: effective.budget_chars() as usize,
         redactor,
         ..Default::default()
     };
-    let (rendered_context, _receipt) =
+    let (rendered_context, _disclosure_receipt) =
         render_context_and_receipt(&normalized_context, &render_opts)
             .map_err(|e| failure(7, "oversized-input", format!("Context render error: {e:?}")))?;
 
     // 10. Cache check for Wide Stage
-    let cache_key = CacheKey::from_bytes([42u8; 32]);
+    // Fingerprints are keyed by fresh randomness, never a fixed constant. A
+    // protected persistent key and cross-invocation cache are not wired yet.
+    let cache_key = CacheKey::generate().map_err(|_| {
+        failure(
+            9,
+            "storage-failure",
+            "Fingerprint key could not be generated",
+        )
+    })?;
     let cache_ns = CacheNamespace::new(
         normalized_context.harness.clone(),
         current_receipt.generation(),
@@ -723,23 +790,6 @@ pub async fn execute_pipeline(
             excerpt_hash: None,
         })
         .collect();
-
-    let wide_req_fp = compute_request_fingerprint(
-        &cache_key,
-        &cache_ns,
-        &RequestFingerprintInput {
-            stage: RequestStage::Wide,
-            canonical_redacted_state: &rendered_context.to_json_bytes().unwrap_or_default(),
-            candidates: &candidate_digests,
-            questions_digest: [0u8; 32],
-            endpoint_url: "https://api.typesafe.ai/v1/systemone",
-            model: effective.model().as_str(),
-            prompt_version: wide::WIDE_POLICY_VERSION,
-            adapter_version: "v1",
-            privacy_policy_version: "v1",
-            excerpt_strategy: "default",
-        },
-    );
 
     let memory_cache = MemoryResponseCache::new();
     let mut metrics = ExecutionMetrics::default();
@@ -761,7 +811,7 @@ pub async fn execute_pipeline(
     })?;
 
     // Check dry-run
-    if args.dry_run {
+    if dry_run {
         let dry_run_json = json!({
             "dry_run": true,
             "stage": "wide",
@@ -807,7 +857,36 @@ pub async fn execute_pipeline(
         return Ok(doc);
     }
 
-    let wide_response = if !args.gate.policy().flags().no_cache {
+    // The request identity binds the exact serialized request (context,
+    // questions and options) and the endpoint it would be sent to.
+    let endpoint = match effective.endpoint() {
+        Some(ep) => EndpointConfig::from_override(ep).map_err(|_| {
+            failure(
+                2,
+                "invalid-configuration",
+                "The configured endpoint is invalid",
+            )
+        })?,
+        None => EndpointConfig::production(),
+    };
+    let wide_req_fp = compute_request_fingerprint(
+        &cache_key,
+        &cache_ns,
+        &RequestFingerprintInput {
+            stage: RequestStage::Wide,
+            canonical_redacted_state: &rendered_context.to_json_bytes().unwrap_or_default(),
+            candidates: &candidate_digests,
+            questions_digest: *blake3::hash(wide_builder.bytes()).as_bytes(),
+            endpoint_url: endpoint.target_url().as_str(),
+            model: effective.model().as_str(),
+            prompt_version: wide::WIDE_POLICY_VERSION,
+            adapter_version: "v1",
+            privacy_policy_version: "v1",
+            excerpt_strategy: "default",
+        },
+    );
+
+    let wide_response = if !gate.policy().flags().no_cache {
         let lookup_q = CacheLookupQuery {
             key: &cache_key,
             namespace: &cache_ns,
@@ -840,7 +919,7 @@ pub async fn execute_pipeline(
                     &config_files,
                     &resolved_config,
                     &mut current_receipt,
-                    &args.gate,
+                    &gate,
                     &wide_builder,
                     transport,
                     &mut metrics,
@@ -855,7 +934,7 @@ pub async fn execute_pipeline(
             &config_files,
             &resolved_config,
             &mut current_receipt,
-            &args.gate,
+            &gate,
             &wide_builder,
             transport,
             &mut metrics,
@@ -958,7 +1037,7 @@ pub async fn execute_pipeline(
         &config_files,
         &resolved_config,
         &mut current_receipt,
-        &args.gate,
+        &gate,
         &rerank_builder,
         transport,
         &mut metrics,
@@ -1039,7 +1118,14 @@ pub async fn execute_pipeline(
         .map(ScoringInput::from_eligible)
         .collect();
 
-    let weights = Weights::DEFAULT;
+    let weights = Weights::new(effective.w_fit(), effective.w_prior(), effective.w_phase())
+        .map_err(|_| {
+            failure(
+                2,
+                "invalid-configuration",
+                "Ranking weights are out of bounds",
+            )
+        })?;
     let scored_ranking = rank(&scoring_inputs, weights, top).map_err(|e| {
         failure(
             10,
