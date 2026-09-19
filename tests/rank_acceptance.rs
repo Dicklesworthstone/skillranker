@@ -1815,3 +1815,53 @@ fn abstention_publication_preserves_local_all_excluded_without_requests() {
     assert_eq!(usage(&value), (0, 0, 0, 0));
     assert!(provider.finish().is_empty(), "exclusions bypass Jev");
 }
+
+#[test]
+fn overflow_publication_revalidates_indexed_skills_outside_the_wide_cutoff() {
+    for changed in [false, true] {
+        for response in ["low-need", "none", "useful"] {
+            let f = Fixture::new(CONSENT);
+            // Alpha and beta do not match this query, but all 254 added skills
+            // do. Quill must index 256 records and omit beta from the wide set.
+            for index in 0..254 {
+                f.skill(&format!("catalog-{index:03}"), "Quasar diagnostics.");
+            }
+            let victim = f.skill_file("beta");
+            let before = std::fs::read_to_string(&victim).unwrap();
+            let replacement = if changed {
+                "---\nname: beta\ndescription: Quasar diagnostics and repair\n---\nNew relevant content.\n"
+            } else {
+                &before
+            };
+            let provider = Provider::start(
+                &f,
+                &format!("{response}+write-on-wide"),
+                &[victim.as_os_str(), replacement.as_ref()],
+            );
+            let outcome = rank(&f, &provider, "Diagnose the quasar.", 20_000);
+            let served = provider.finish();
+            assert_eq!(served[0]["stage"], "wide");
+            assert_eq!(served[0]["options"], 255, "254 skills plus none");
+            let wide: Value = serde_json::from_str(served[0]["body"].as_str().unwrap()).unwrap();
+            assert!(
+                !wide["questions"]["which"]["criteria"]
+                    .to_string()
+                    .contains("beta"),
+                "the mutated skill must be outside the provider candidate set"
+            );
+            if changed {
+                unavailable(outcome, 5, "roster-changed");
+            } else {
+                let value = outcome.expect("unchanged indexed inventory remains usable");
+                assert_eq!(
+                    value["decision"],
+                    if response == "useful" {
+                        "ranked"
+                    } else {
+                        "abstain"
+                    }
+                );
+            }
+        }
+    }
+}
