@@ -654,10 +654,16 @@ fn local_explicit_resolution() {
     }
 
     // 2. Manual-only skill
-    for name in ["CaseSkill", "caseskill", "Review.Tools"] {
+    // Invocation names may differ only in case even when the host filesystem
+    // is case-insensitive. Keep their physical fixture paths distinct.
+    for (relative, name) in [
+        ("exact/requested.md", "CaseSkill"),
+        ("exact/decoy.md", "caseskill"),
+        ("exact/dotted.md", "Review.Tools"),
+    ] {
         entries.push(create_skill_entry(
             &test_dir,
-            &format!("exact/{name}.md"),
+            relative,
             name,
             "source-main",
             Some(10),
@@ -759,7 +765,10 @@ fn local_explicit_resolution() {
     );
     let roster = ResolvedRoster::resolve(entries, false, &cx, &clock).unwrap();
 
-    for name in ["CaseSkill", "Review.Tools"] {
+    for (relative, name) in [
+        ("exact/requested.md", "CaseSkill"),
+        ("exact/dotted.md", "Review.Tools"),
+    ] {
         let request = ExplicitResolutionRequest {
             user_prompt: Some(format!("Please use skill {name}.")),
             ..Default::default()
@@ -775,7 +784,7 @@ fn local_explicit_resolution() {
             skills[0].id,
             SkillId::from_source(
                 &SourceId::new("source-main").unwrap(),
-                &LogicalSkillKey::new(format!("exact/{name}.md")).unwrap(),
+                &LogicalSkillKey::new(relative).unwrap(),
             )
         );
     }
