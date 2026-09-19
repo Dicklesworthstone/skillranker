@@ -36,6 +36,9 @@ warnings, `warnings_omitted`, and `elapsed_ms`.
 
 Each skill separates `skill_id`, display `name`, validated `invocation_name`,
 nullable local `path`, and a 64-character lowercase hexadecimal `content_hash`.
+`sr rank` also labels each skill's `visibility` as `verified` or `unverified`.
+Claude's documented precedence is provisional, so its results are
+`unverified`, and the decision carries an `unverified-visibility` warning.
 Reserved `__none__` is never a skill ID. The schema validates identity syntax;
 only the roster/publication boundary can establish that a target is loadable.
 

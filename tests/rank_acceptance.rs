@@ -344,6 +344,13 @@ fn a_useful_evaluation_ranks_after_wide_and_rerank() {
         .map(|w| w["kind"].as_str().unwrap())
         .collect();
     assert!(!kinds.contains(&"malformed-metadata"), "{kinds:?}");
+    // Claude's precedence is provisional: every result says so, and the
+    // decision carries the caveat first, one per resolved binding.
+    for skill in value["skills"].as_array().unwrap() {
+        assert_eq!(skill["visibility"], "unverified", "{skill}");
+    }
+    assert_eq!(value["warnings"][0]["kind"], "unverified-visibility");
+    assert_eq!(value["warnings"][0]["count"], 2);
     // Output reports what ran: real counts, the provider's returned model
     // next to the requested alias, and distinct candidate-set digests.
     assert_eq!(value["roster"]["wide_candidates"], 2);
@@ -399,6 +406,8 @@ fn an_explicit_request_resolves_locally_without_a_provider_call() {
     assert!(served.is_empty(), "explicit resolution sends nothing");
     assert_eq!(value["decision"], "explicit", "{value}");
     assert_eq!(value["skills"][0]["invocation_name"], "alpha");
+    assert_eq!(value["skills"][0]["visibility"], "unverified");
+    assert_eq!(value["warnings"][0]["kind"], "unverified-visibility");
     assert_eq!(usage(&value), (0, 0, 0, 0));
 }
 

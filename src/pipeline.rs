@@ -69,6 +69,24 @@ fn failure(code: u8, kind: &'static str, message: impl Into<String>) -> Pipeline
 
 pub use crate::jev::client::JevTransport;
 
+/// The provisional contract rank resolves Claude skills under: the documented
+/// project-over-personal precedence, not yet verified by conformance evidence.
+const PROVISIONAL_CLAUDE_CONTRACT: &str = "claude-code-documented-unverified";
+
+/// How a result's visibility is labeled: "unverified" for the provisional
+/// Claude contract (and any unverified binding), "verified" only for a
+/// contract backed by evidence.
+fn visibility_label(visibility: &Visibility) -> &'static str {
+    match visibility {
+        Visibility::Verified { contract_version }
+            if contract_version != PROVISIONAL_CLAUDE_CONTRACT =>
+        {
+            "verified"
+        }
+        _ => "unverified",
+    }
+}
+
 /// Trusted executable roots for project-signal tool detection: fixed system
 /// directories, never the process PATH or anything the workspace supplies.
 const TRUSTED_TOOL_ROOTS: [&str; 3] = ["/usr/local/bin", "/usr/bin", "/bin"];
@@ -554,9 +572,12 @@ async fn rank_once(
         }
     }
 
-    // 4. Discover Roster
+    // 4. Discover Roster. Claude's documented precedence (project skills over
+    // personal ones) resolves collisions, but no conformance evidence verifies
+    // it yet. Rank uses it under an explicit provisional label and says so in
+    // every result; withheld, ambiguous and shadowed names stay excluded.
     let visibility = Visibility::Verified {
-        contract_version: "v1".into(),
+        contract_version: PROVISIONAL_CLAUDE_CONTRACT.into(),
     };
     let overrides = BTreeMap::new();
     let roster = if let Some(roster_path) = &args.roster_file {
@@ -1724,15 +1745,29 @@ fn roster_warnings(roster: &ResolvedRoster) -> (Vec<Value>, usize) {
             *sources.entry(code).or_insert(0) += 1;
         }
     }
-    let mut warnings: Vec<Value> = records
+    // The provisional precedence caveat comes first so it is never truncated.
+    let provisional = roster
+        .skills()
+        .iter()
+        .flat_map(|skill| skill.bindings())
+        .filter(|binding| visibility_label(&binding.visibility) == "unverified")
+        .count();
+    let caveat = (provisional > 0).then(|| {
+        json!({
+            "kind": "unverified-visibility",
+            "count": provisional,
+            "message": "Claude's skill precedence is not yet conformance-verified; confirm a suggested skill loads before relying on it",
+        })
+    });
+    let mut warnings: Vec<Value> = caveat
         .into_iter()
-        .map(|(code, count)| {
+        .chain(records.into_iter().map(|(code, count)| {
             json!({
                 "kind": code,
                 "count": count,
                 "message": "Skill records were excluded while resolving the roster",
             })
-        })
+        }))
         .chain(sources.into_iter().map(|(code, count)| {
             json!({
                 "kind": code,
@@ -2271,7 +2306,7 @@ fn build_explicit_document(
         .enumerate()
         .map(|(i, s)| {
             let sk = roster.skills().iter().find(|sk| sk.record().id == s.id);
-            let (name, path_str, content_hash) = if let Some(sk) = sk {
+            let (name, path_str, content_hash, visibility) = if let Some(sk) = sk {
                 let rec = sk.record();
                 let p = match &rec.target {
                     LoadTarget::File(p) => p.as_path().display().to_string(),
@@ -2281,9 +2316,15 @@ fn build_explicit_document(
                     rec.display_name.as_str(),
                     p,
                     rec.source_content.as_str().to_string(),
+                    visibility_label(&rec.visibility),
                 )
             } else {
-                (s.invocation.as_str(), String::new(), String::new())
+                (
+                    s.invocation.as_str(),
+                    String::new(),
+                    String::new(),
+                    "unverified",
+                )
             };
             json!({
                 "rank": i + 1,
@@ -2296,6 +2337,7 @@ fn build_explicit_document(
                 "fits": null,
                 "path": path_str,
                 "content_hash": content_hash,
+                "visibility": visibility,
             })
         })
         .collect();
@@ -2606,6 +2648,7 @@ fn build_ranked_document(
             "fits": el.fit,
             "path": path_str,
             "content_hash": rec.source_content.as_str(),
+            "visibility": visibility_label(&el.skill.binding.visibility),
         }));
     }
 

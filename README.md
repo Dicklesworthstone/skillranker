@@ -740,6 +740,15 @@ source, content hash, load target, metadata, and visibility. Same-name skills
 remain distinct where the harness permits; shadowed or ambiguously invocable
 entries are excluded from hook suggestions.
 
+For Claude, `sr rank` resolves same-name skills by Claude's documented
+precedence (project skills over personal ones). That precedence is not yet
+backed by conformance evidence, so every rank result carries
+`"visibility": "unverified"`, and the decision's first warning is
+`unverified-visibility`: confirm that a suggested skill loads before relying on
+it. `sr roster` and `sr doctor` claim no precedence at all. Names whose
+authority is withheld (for example, a malformed file that could claim the same
+name), ambiguous names and shadowed entries are never suggested.
+
 Invocation restrictions are part of eligibility. Claude skills with
 `disable-model-invocation: true` or an effective user-only restriction are excluded
 from automatic advice; `user-invocable: false` alone does not exclude agent use.
