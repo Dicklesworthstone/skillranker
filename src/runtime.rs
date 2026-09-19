@@ -182,6 +182,10 @@ impl ProcessInvocation {
         min_threads: usize,
         max_threads: usize,
     ) -> Result<Self, RuntimeError> {
+        // Runtime allocation and eager worker startup are work too. In
+        // particular, never spend the cleanup reserve constructing a runtime
+        // that cannot admit even its first request.
+        clock.admit_new_work()?;
         let runtime = RuntimeBuilder::current_thread()
             .blocking_threads(min_threads, max_threads.max(1))
             .build()

@@ -32,6 +32,38 @@ fn entry_clock_starts_before_subsequent_work() {
 }
 
 #[test]
+fn runtime_construction_requires_remaining_work_time() {
+    for (total, reserve) in [(2, 1), (10_000, 9_999)] {
+        let clock = EntryClock::capture_with(
+            DurationMillis::new("total", total, 20_000).unwrap(),
+            DurationMillis::new("reserve", reserve, 20_000).unwrap(),
+        )
+        .unwrap();
+        thread::sleep(Duration::from_millis(5));
+        assert!(clock.admit_new_work().is_err());
+        // Both lazy and explicitly eager pools must refuse construction.
+        for minimum in [0, 2] {
+            match ProcessInvocation::from_clock_with_blocking_pool(clock, minimum, 4) {
+                Err(error) => assert!(matches!(
+                    error,
+                    RuntimeError::Deadline(LimitError::DeadlineExpired { .. })
+                        | RuntimeError::Deadline(LimitError::DeadlineInCleanupReserve { .. })
+                )),
+                Ok(invocation) => {
+                    let _ = invocation.shutdown();
+                    panic!("runtime constructed after its work window closed");
+                }
+            }
+        }
+    }
+
+    let clock = EntryClock::capture().unwrap();
+    let invocation = ProcessInvocation::from_clock(clock).unwrap();
+    invocation.request_cx().unwrap();
+    assert!(invocation.shutdown());
+}
+
+#[test]
 fn new_work_stops_in_cleanup_reserve_but_prior_results_may_emit() {
     let deadline = deadline();
     let start = deadline.start();
