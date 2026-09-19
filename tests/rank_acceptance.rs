@@ -661,6 +661,32 @@ fn bare_rank_needs_latest_to_choose_between_sessions() {
 }
 
 #[test]
+fn bare_rank_does_not_choose_around_an_unresolved_transcript() {
+    let f = Fixture::new(CONSENT);
+    std::fs::create_dir_all(f.root.join("home")).unwrap();
+    let known = f.claude_session("s-known", TASK, false, None);
+    std::fs::write(known.parent().unwrap().join("s-unresolved.jsonl"), "{\n").unwrap();
+    let provider = Provider::start(&f, "useful", &[]);
+    for extra in [&[][..], &["--latest"][..]] {
+        let (code, value) = run_bare(&f, &provider, extra);
+        assert_eq!(code, Some(3), "{value}");
+        assert_eq!(value["error"]["kind"], "insufficient-context", "{value}");
+    }
+    assert!(provider.finish().is_empty(), "uncertain selection sends nothing");
+    // Explicitly choosing the verified file bypasses discovery; an unrelated
+    // unresolved neighbor must not make that valid source unusable.
+    let provider = Provider::start(&f, "useful", &[]);
+    let (code, value) = run_bare(
+        &f,
+        &provider,
+        &["--transcript", known.to_str().unwrap(), "--harness", "claude_code"],
+    );
+    assert_eq!(code, Some(0), "{value}");
+    assert_eq!(value["decision"], "ranked", "{value}");
+    assert_eq!(stages(&provider.finish()), ["wide", "rerank"]);
+}
+
+#[test]
 fn bare_rank_without_a_session_reports_missing_session() {
     let f = Fixture::new(CONSENT);
     std::fs::create_dir_all(f.root.join("home")).unwrap();
