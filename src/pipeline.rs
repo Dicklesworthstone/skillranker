@@ -39,7 +39,9 @@ use crate::jev::{OriginScopedCredential, rerank, wide};
 use crate::output::trace::{StageTrace, TraceEntry, TraceStage};
 use crate::output::{ErrorKind, OutputDocument, OutputKind, SCHEMA_VERSION, TraceCursor};
 use crate::privacy::redaction::Redactor;
-use crate::privacy::{NetworkConsent, ProviderAdmissionRefusal, admit_provider_attempt};
+use crate::privacy::{
+    NetworkConsent, ProviderAdmissionRefusal, StoreAccess, admit_provider_attempt,
+};
 use crate::roster::discovery::claude_code_plan;
 use crate::roster::evidence::{PolicyView, RetrievalView};
 use crate::roster::explicit::{
@@ -284,7 +286,7 @@ fn unavailable_document(
         "cache": evaluated.cache(),
         "model": evaluated.model(),
         "usage": evaluated.usage(),
-        "persistence": "disabled",
+        "persistence": evaluated.persistence(),
         "warnings": warnings,
         "warnings_omitted": warnings_omitted,
         "elapsed_ms": elapsed_ms,
@@ -312,6 +314,7 @@ async fn rank_once(
     // The entry point already folded `--dry-run` into the gate.
     let gate = args.gate;
     let dry_run = gate.policy().flags().dry_run;
+    progress.evaluated.ledger_disabled = matches!(gate.ledger(), StoreAccess::Disabled(_));
 
     // 1. Initial configuration loading and policy receipt capture
     let config_files = ConfigFiles::new(args.workspace.clone(), args.user_config_root.clone());
@@ -659,7 +662,7 @@ async fn rank_once(
                     &normalized_context,
                     &roster,
                     clock.now().as_millis(),
-                    &progress.evaluated.quality,
+                    &progress.evaluated,
                 );
                 if let Some(trace_val) = generate_trace(
                     &args,
@@ -2077,8 +2080,9 @@ fn build_explicit_document(
     context: &NormalizedContext,
     roster: &ResolvedRoster,
     elapsed_ms: u64,
-    quality: &Quality,
+    evaluated: &Evaluated,
 ) -> OutputDocument {
+    let quality = &evaluated.quality;
     let (warnings, warnings_omitted) = roster_warnings(roster);
     let skill_values: Vec<Value> = skills
         .iter()
@@ -2169,7 +2173,7 @@ fn build_explicit_document(
             "output_tokens": 0,
             "unknown_usage_attempts": 0,
         },
-        "persistence": "disabled",
+        "persistence": evaluated.persistence(),
         "warnings": warnings,
         "warnings_omitted": warnings_omitted,
         "elapsed_ms": elapsed_ms,
@@ -2224,6 +2228,10 @@ impl Quality {
 #[derive(Clone, Default)]
 struct Evaluated {
     quality: Quality,
+    /// The ledger effect is disabled for this run (`--no-ledger`,
+    /// `--no-persist` or `--dry-run`). Otherwise recording is unavailable:
+    /// this build has no observation ledger yet.
+    ledger_disabled: bool,
     metrics: ExecutionMetrics,
     eligible: usize,
     wide: usize,
@@ -2241,6 +2249,13 @@ struct Evaluated {
 }
 
 impl Evaluated {
+    fn persistence(&self) -> &'static str {
+        if self.ledger_disabled {
+            "disabled"
+        } else {
+            "unavailable"
+        }
+    }
     fn retrieval(&self) -> &'static str {
         if self.quill {
             "quill-bm25"
@@ -2356,7 +2371,7 @@ fn build_abstain_document(
         "cache": evaluated.cache(),
         "model": evaluated.model(),
         "usage": evaluated.usage(),
-        "persistence": "disabled",
+        "persistence": evaluated.persistence(),
         "warnings": warnings,
         "warnings_omitted": warnings_omitted,
         "elapsed_ms": elapsed_ms,
@@ -2450,7 +2465,7 @@ fn build_ranked_document(
         "cache": evaluated.cache(),
         "model": evaluated.model(),
         "usage": evaluated.usage(),
-        "persistence": "disabled",
+        "persistence": evaluated.persistence(),
         "warnings": warnings,
         "warnings_omitted": warnings_omitted,
         "elapsed_ms": elapsed_ms,

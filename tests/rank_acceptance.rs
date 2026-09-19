@@ -1041,3 +1041,25 @@ fn a_windowed_history_still_ranks_and_says_so() {
     assert_eq!(value["quality"]["prompt_complete"], true);
     assert_eq!(value["quality"]["task_anchor_known"], true);
 }
+
+#[test]
+fn persistence_reports_disabled_only_when_the_user_disabled_it() {
+    let f = Fixture::new(CONSENT);
+    let provider = Provider::start(&f, "low-need", &[]);
+    // --no-ledger (and --no-persist) disable recording.
+    let disabled = rank_args(&provider, f.args(TASK), 10_000).expect("abstain");
+    // By default recording is wanted, but this build has no ledger yet.
+    let default = EffectFlags {
+        no_ledger: false,
+        ..CACHED
+    };
+    let wanted = rank_args(
+        &provider,
+        f.args_with(TASK, "session-1", default, None),
+        10_000,
+    )
+    .expect("abstain");
+    provider.finish();
+    assert_eq!(disabled["persistence"], "disabled", "{disabled}");
+    assert_eq!(wanted["persistence"], "unavailable", "{wanted}");
+}
