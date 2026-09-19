@@ -147,15 +147,23 @@ pub fn associate_tool_events(
     events: &[NormalizedEvent],
     max_excerpt_chars: usize,
 ) -> Vec<AssociatedToolCall> {
+    associate_tool_event_iter(events.iter(), max_excerpt_chars)
+}
+
+fn associate_tool_event_iter<'a>(
+    events: impl Iterator<Item = &'a NormalizedEvent>,
+    max_excerpt_chars: usize,
+) -> Vec<AssociatedToolCall> {
     let mut associated = Vec::new();
-    let mut pending_by_call_id: BTreeMap<String, usize> = BTreeMap::new();
-    let mut pending_by_name: BTreeMap<String, usize> = BTreeMap::new();
-    let mut seen_event_ids: HashSet<String> = HashSet::new();
+    let mut pending_by_call_id = BTreeMap::new();
+    let mut pending_by_name = BTreeMap::new();
+    let mut seen_event_ids = HashSet::new();
 
     for event in events {
-        // Idempotent deduplication by event_id
+        // IDs belong to an agent/branch namespace, not the whole input slice.
+        let scope = (event.agent_id.as_ref(), event.branch_id.as_ref());
         if let Some(eid) = &event.event_id
-            && !seen_event_ids.insert(eid.as_str().to_string())
+            && !seen_event_ids.insert((scope, eid))
         {
             continue;
         }
@@ -197,9 +205,10 @@ pub fn associate_tool_events(
                 });
 
                 if let Some(cid) = &tool.call_id {
-                    pending_by_call_id.insert(cid.as_str().to_string(), idx);
+                    pending_by_call_id.insert((scope, cid), idx);
                 } else {
-                    pending_by_name.insert(tool_name_str.to_string(), idx);
+                    // A name is only a sequential fallback within this turn.
+                    pending_by_name.insert((scope, event.turn_id.as_ref(), tool_name_str), idx);
                 }
             }
             EventKind::ToolResult => {
@@ -213,9 +222,9 @@ pub fn associate_tool_events(
                     .unwrap_or((None, Vec::new()));
 
                 let matched_idx = if let Some(cid) = &tool.call_id {
-                    pending_by_call_id.remove(cid.as_str())
+                    pending_by_call_id.remove(&(scope, cid))
                 } else {
-                    pending_by_name.remove(tool_name_str)
+                    pending_by_name.remove(&(scope, event.turn_id.as_ref(), tool_name_str))
                 };
 
                 if let Some(idx) = matched_idx {
@@ -384,10 +393,18 @@ pub fn extract_load_observations(
     resolver: &impl SkillEvidenceResolver,
     active_branch: Option<&ActiveBranch>,
 ) -> Vec<LoadObservation> {
-    let associated = associate_tool_events(events, DEFAULT_TOOL_EXCERPT_CHARS);
+    // Resolve the lineage before joining calls. A sibling result must not
+    // upgrade an active invocation even when branch labels are absent.
     let active_ids = active_branch.map(|b| b.event_id_set());
+    let associated = associate_tool_event_iter(
+        events.iter().filter(|event| {
+            active_ids
+                .as_ref()
+                .is_none_or(|ids| event.event_id.as_ref().is_some_and(|id| ids.contains(id)))
+        }),
+        DEFAULT_TOOL_EXCERPT_CHARS,
+    );
     let mut observations = Vec::new();
-    let mut seen_keys = HashSet::new();
 
     for call in associated {
         // Enforce branch DAG isolation
@@ -437,18 +454,16 @@ pub fn extract_load_observations(
         };
 
         let event_id = call.invocation_event_id.or(call.result_event_id);
-        let dedup_key = format!("{}:{}", matched.skill_id.as_str(), state as u8);
-
-        if seen_keys.insert(dedup_key) {
-            observations.push(LoadObservation {
-                event_id,
-                skill_id: matched.skill_id,
-                state,
-                source_content: matched.source_content,
-                rendered_content: matched.rendered_content,
-                identity: session_identity.clone(),
-            });
-        }
+        // Association already deduplicates event delivery. Distinct loads of
+        // the same skill are separate observations, even with equal outcomes.
+        observations.push(LoadObservation {
+            event_id,
+            skill_id: matched.skill_id,
+            state,
+            source_content: matched.source_content,
+            rendered_content: matched.rendered_content,
+            identity: session_identity.clone(),
+        });
     }
 
     observations
@@ -461,11 +476,17 @@ pub fn extract_loaded_skill_records(
     active_branch: Option<&ActiveBranch>,
     current_epoch: &ContextEpoch,
 ) -> Vec<LoadedSkillRecord> {
-    let associated = associate_tool_events(events, DEFAULT_TOOL_EXCERPT_CHARS);
     let active_ids = active_branch.map(|b| b.event_id_set());
+    let associated = associate_tool_event_iter(
+        events.iter().filter(|event| {
+            active_ids
+                .as_ref()
+                .is_none_or(|ids| event.event_id.as_ref().is_some_and(|id| ids.contains(id)))
+        }),
+        DEFAULT_TOOL_EXCERPT_CHARS,
+    );
     let epochs = active_branch.map(super::branch::event_epochs);
     let mut records = Vec::new();
-    let mut seen_skills = HashSet::new();
 
     for call in associated {
         // Enforce branch DAG isolation
@@ -516,19 +537,19 @@ pub fn extract_loaded_skill_records(
             (Some(_), None) => continue,
             (None, _) => current_epoch.clone(),
         };
-        if seen_skills.insert(matched.skill_id.clone()) {
-            records.push(LoadedSkillRecord {
-                skill_id: matched.skill_id,
-                event_id,
-                turn_id: call.turn_id,
-                usage_kind: matched.usage_kind,
-                epoch,
-                source_content: matched.source_content,
-                rendered_content: matched.rendered_content,
-                has_dynamic_arguments: matched.has_dynamic_arguments,
-                turn_scoped: matched.turn_scoped,
-            });
-        }
+        // Retain each identified load: an earlier epoch or content revision
+        // cannot erase later evidence that the reference is present again.
+        records.push(LoadedSkillRecord {
+            skill_id: matched.skill_id,
+            event_id,
+            turn_id: call.turn_id,
+            usage_kind: matched.usage_kind,
+            epoch,
+            source_content: matched.source_content,
+            rendered_content: matched.rendered_content,
+            has_dynamic_arguments: matched.has_dynamic_arguments,
+            turn_scoped: matched.turn_scoped,
+        });
     }
 
     records
