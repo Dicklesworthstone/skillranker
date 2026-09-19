@@ -4,7 +4,193 @@ Latest assessment: 2026-09-19. Earlier reviews and receipts are retained below a
 history. Inventory and ownership statements describe their stated snapshots, not
 a frozen release or a product-completion percentage.
 
-## Current assessment — 2026-09-19
+## Current assessment — 2026-09-19, evening integration review
+
+**The standalone core ranker is real. The complete live-session recommendation
+product is not finished, and the current integration is not accepted.** The
+highest-value work is connecting and verifying the existing boundaries, then
+delivering observations and a recorded shadow hook. More ranking features are
+not the present bottleneck. Jev remains the essential inference engine; local
+explicit resolution, demos and previews are not a replacement backend.
+
+This assessment read all 672 lines of AGENTS.md and all 1,994 lines of README.md,
+reviewed the comprehensive plan and relevant contracts, traced command dispatch
+through context, roster, provider, cache and output, and checked live Beads and
+peer evidence. The fresh executable/test snapshot is
+`c9be6a7c5c7ae6936b9dade84fc3aea84c26eec2`. Peers continued changing main during
+the review; later commits require their own receipts. This is a comprehensive
+workflow assessment, not certification of every source line or closed bead.
+The earlier reviews and full G01–G70/I01–I15 requirement crosswalks remain below.
+
+### Current vision-to-code map
+
+`WORKING` means the named path has executable evidence, not whole-phase
+acceptance. `PARTIAL` identifies a connected path with material missing work;
+`UNPROVEN` identifies an external claim lacking qualification.
+
+| Goal / user workflow | Status and source reality | Remaining owner or acceptance boundary |
+|---|---|---|
+| 1. Standalone safe Rust CLI and explicit effects | WORKING core: one package, forbidden unsafe roots, Asupersync, Quill and bundled SQLite; no runtime ms or second inference backend | P0 contracts; P1/P4 acceptance remain separate |
+| 2. Inspect setup without disclosing a session | WORKING `doctor`, config provenance and `capabilities`; key presence is distinct from consent/authentication | `.5.17`/`.5.18`; real onboarding `.7.9` |
+| 3. Inspect, snapshot and compare a roster | WORKING real CLI; private export directory and no-clobber refusal verified | `.3.14`/`.3.15`/`.3.17`; harness qualification remains |
+| 4. Bind discovery to selected harness and roots | WORKING scoped repair `f9f5b7d`: configured Claude roots reach rank; another harness needs an explicit roster | `.5.26` independently verified; visibility remains unverified |
+| 5. Select exact native/normalized session | WORKING bounded core paths and explicit discovery; no implied native advice qualification | `.5.24` and P3 receipts; `sr-fpww` and `.4.7.1` retained as acceptance checks |
+| 6. Read an exact Cass archive | PARTIAL at audited snapshot: module/tests exist, but rank dispatch returns unsupported/7 | `.5.25`; three fresh failing binary tests, owner notified |
+| 7. Honor explicit skill requests locally | WORKING explicit offline resolution and manual-only handling; no Jev call | `.5.11.1`, `.5.14.2`; preserve full explicit list/revalidation |
+| 8. Redact and preview bounded context | WORKING stateless wide/shortlist preview, profiles and disclosure components | P3 and `.5.15`; no proof that reduced disclosure preserves relevance |
+| 9. Quill overflow, Jev wide/rerank and scoring | WORKING connected core with real local TLS tests, none/fit filtering and finite scores | `.5.19`/`.5.21`; live maximum-shape pair `.2.10` still unqualified |
+| 10. Revalidate every publication dependency | WORKING scoped repairs include abstentions and indexed candidates outside the cutoff | `.5.27`, `.5.27.1`; tested under mutation, not a filesystem freeze |
+| 11. Exact cache isolation and reuse | PARTIAL: namespace repair `575d54f` and real reuse tests pass; production coordination differs from fixed helper | New `.5.29` blocks P4; no blanket single-flight guarantee |
+| 12. Explain exclusions and retrieve all pages | PARTIAL: cursor command works, but evaluated-history/answer binding and zero-new-request continuation remain incomplete | `.5.14` reopened after narrow tests passed |
+| 13. Whole-invocation deadline and cleanup | PARTIAL: bounded runtime/leaf tests exist; contention-sensitive startup/shutdown qualification remains | `sr-5n0b` directly blocks `.2.12`; stdin `sr-fpww` blocks P4 |
+| 14. Observe current loads and persist history | PARTIAL library/storage primitives; rank still constructs empty loaded records; no ledger command/schema workflow | `.6.1`–`.6.10`, `.6.26`; `.6.9` explicitly owns transient as well as durable wiring |
+| 15. Record judgments and useful value statistics | NOT_STARTED public workflow; feedback/stats commands rejected | `.6.11`–`.6.13`, `.6.26`; adoption must not become usefulness |
+| 16. Capture and replay surprising cases | PARTIAL contracts/export primitives; `--save-case` deliberately refused, replay absent | `.6.14`–`.6.16`, `.6.27`; frozen evidence, inert paths and no-clobber proof |
+| 17. Evaluate and sample within a budget | PARTIAL synthetic policy oracles; no usable eval command or integrated numerical backends | `.6.17`–`.6.25`, `.6.28`/`.6.29`; all failed/unstarted/unknown cases accounted for |
+| 18. Safe Claude shadow/advisory delivery | NOT_STARTED executable hook/installer; `hook` currently emits CLI error JSON and exit 2 | `.7.1`–`.7.3`, `.7.9`/`.7.11`/`.7.13`; do not install this binary as the proposed hook |
+| 19. Shared attempt allowance, breaker and snoozes | NOT_STARTED user workflows; per-invocation admission is not a durable shared allowance | `.7.4`–`.7.8`/`.7.10`; accounting, recovery and authority tests required |
+| 20. Demonstrated usefulness and operational benefit | UNPROVEN: no accepted relevance, paired harm or representative hook cohorts | `.8.1`–`.8.6`, `.8.9`/`.8.10`; fixtures and unit counts cannot pass these gates |
+| 21. Calibration, priors, rollback and monitoring | NOT_STARTED public workflows; policy/math contracts exist | `.9.1`–`.9.9`; independent labels and held-out benefit remain mandatory |
+| 22. TUI, watch, description/gap tools and retrieval experiments | NOT_STARTED public workflows; `tui = []` is reserved only | `.10.1`–`.10.32` and dedicated proof children; preserve optional scope |
+| 23. Other native harnesses | UNPROVEN; normalized input plus explicit roster is the general boundary | Individual `.10.15`–`.10.20` qualification/implementation chains; six deferred records |
+| 24. Installable qualified Linux/macOS release | UNPROVEN release: GitHub Releases still empty; storage module Linux-gated | `.5.23` macOS, `.8.7` DSR packaging and artifact/install proof |
+
+### Newly exposed integration defects
+
+**Production coordination is not the repaired coordinator helper.** At the
+audited revision, `pipeline::persistent::wait_for_leader` stops waiting when less
+than one second of work remains. A cache miss then falls through to a provider
+call without acquiring a successor lease. An already-completed lease with a
+missing pair has the same problem. Wide/rerank cache writes call
+`CacheStore::record_response`, which checks store incarnation/generation but
+not request lease ownership; completion of the separate `leases.sqlite3` record
+happens afterward. `c70cbd1` correctly repairs the helper's atomic publication,
+but production does not call that helper. `.5.29` owns the actual integration,
+with real two-process TLS/SQLite barriers, stale-owner overwrite refusal, bounded
+follower timeout, complete-pair success and zero-new-usage twins. This is a
+source-confirmed defect; this assessment has not executed its race reproducer.
+RubyCat has claimed the repair.
+
+**Trace continuation is not yet a frozen evaluation.** `TraceQueryScope` hashes
+latest request text, selected flags and thresholds, but omits preceding context,
+task anchor, model and actual evaluated answers. Equal prompt/roster can therefore
+accept a cursor for a different evaluation. `--cursor` reruns ranking and may
+make new provider calls. Six new continuation tests pass but do not test these
+cases. The existing `.5.14` now explicitly requires exact evaluated evidence,
+no additional inference for continuation, and refusal when that evidence cannot
+be recovered. No hidden persistent trace store is permitted under no-persist.
+
+**Cass code was committed without its effective dispatch.** Three fresh
+`cass_session` tests expected success/0, missing-session/3 and unusable-roster/5;
+all received unsupported-source-mode/7. Both committed and working pipeline
+source showed the stub. This is a demonstrated integration failure, not a
+speculative stale-build explanation. CopperWren and MistyCoyote received the
+receipt to reconcile their overlapping pipeline work. CopperWren subsequently
+confirmed the dispatch hunks had been held back during another agent's reservation,
+not lost from an earlier working commit. Their integration remains separate from
+this failed snapshot; no source-overwrite cause is asserted.
+
+**Evidence and dependency drift can hide unfinished work.** The previously
+closed `.5.19` still depends on reopened `.5.14`, while new stdin/tool defects
+were not directly blocking core acceptance. `.5.21` now directly depends on
+trace, Cass, `.5.29`, `sr-fpww` and `.4.7.1`, in addition to its existing gates.
+`sr-5n0b` directly blocks runtime acceptance `.2.12`. This does not erase valid
+earlier focused results or require reopening every ancestor.
+
+### Bridge order and ambition passes
+
+1. **Finish and independently verify the connected core.** Integrate `.5.29`,
+   restore Cass, finish trace identity, retain stdin/tool/runtime proof and
+   qualify the live Jev pair under the approved `0.1` sum tolerance. Freeze a
+   source revision after peer integration, then run core CLI and concurrency
+   journeys. A branch containing passing components but a lost dispatch is not
+   an accepted core.
+2. **Deliver minimum observable shadow operation.** Implement ledger schema,
+   incarnation/generation checks, explicit init, ranking/attempt records and
+   source-scoped observations. Wire transient load evidence even when durable
+   history is disabled. Then implement the dedicated shadow boundary and managed
+   installation with actual harness evidence. Do not enable priors or claim
+   advisory usefulness from recorded loads.
+3. **Make mistakes reproducible and measure value.** Complete capture/replay,
+   feedback and bounded evaluation; collect the already planned independently
+   judged relevance, controlled harm and representative operational cohorts.
+   Preserve every denominator, unknown outcome and paid failed attempt. Use
+   results to decide advisory promotion, not another heuristic feature pass.
+4. **Finish distribution and separately gated optional features.** Qualify macOS
+   filesystem/storage behavior and DSR artifacts. Retain TUI, diagnostics,
+   learning, numerical tooling and adapter experiments under their existing
+   owners; they do not become prerequisites for the useful core.
+
+The first ambition pass strengthens the actual product boundary: one production
+coordination path and reproducible evaluation identity, rather than more isolated
+helper proofs. The second shortens time to useful shadow integration: `.7.1`
+now depends on concrete `.6.4`/`.6.8`/`.6.9` prerequisites instead of waiting for
+the entire evaluator. **Full P5 acceptance `.6.29` is retained as a direct
+prerequisite of P6 acceptance `.7.13`.** No feature, acceptance criterion or
+public-advisory gate was removed. The third checks whether extra features improve
+the next measurable outcome: no new model call, daemon, retrieval engine or UI
+was justified before these existing workflows are connected.
+
+Five refinement passes covered (1) current dispatch versus old status prose,
+(2) causal ownership/publication boundaries, (3) negative tests and honest success
+twins, (4) real dependency ordering and complete vision ownership, and (5) final
+proof scope and graph health. Changes were applied to existing beads/comments
+through `br`; only the previously uncovered production coordination integration
+needed a new bead. Later fixes still need their own tests; this review stops at
+a concrete handoff rather than manufacturing implementation credit.
+
+### Executed evidence and limits
+
+- Required-remote, frozen `c9be6a7`, no working-tree overlay, worker
+  `vmi1153651`: cache identity **5/0**, capabilities **5/0**, then Cass **0/3**.
+  Cargo stopped at Cass. Log `/data/tmp/sr-reality-refresh-tests-20260919.log`,
+  job `j-30027234903327433`, remote exit 101.
+- A separate run of the previously unexecuted targets, on the same frozen
+  source with `--no-fail-fast`: demo **6/0**, rank acceptance **56/0**, rank
+  inputs **15/0**, trace continuation **6/0**; remote exit 0, job
+  `j-30027234903327446`. Log
+  `/data/tmp/sr-reality-refresh-remaining-20260919.log`. Together these are
+  **93 passing and three failing tests**, not a full-suite pass.
+- Retrieved the tested build's CLI, matched worker/local SHA-256
+  `be952a6444fe71daf3b21ea755fcf13816d60a0d488a4e4ed3ec4eba372b222f`,
+  and ran **34 isolated synthetic CLI probes** with cleared credentials,
+  private HOME/XDG and no network opt-in. Demos, doctor/config, capabilities,
+  custom-root dry-run, explicit offline resolution and private roster snapshot/
+  diff succeeded. Fourteen unimplemented commands returned usage/2; save-case
+  also refused. Offline inference returned cache-miss/11, foreign harness without
+  a roster refused/5, and Cass refused/7. Export to a non-private directory and
+  overwrite of an existing snapshot correctly refused/9; the initial diff had
+  no snapshot and refused/7. No cache/data directories were created. Report:
+  `/data/tmp/sr-reality-refresh-smoke-20260919.json`.
+- Historical full receipts remain distinct: `3820bd1` passed **754/0/9 ignored**;
+  CopperWren reports **760/0/9 ignored** for the harness/roots repair. They do not
+  cover the later Cass integration failure. Earlier runtime-shutdown and
+  contention failures remain in `sr-5n0b`; a later pass does not diagnose them.
+- Independent source review accepted the scoped `39296de` tool-association
+  repair and its success/negative tests. Owner's focused **25/0** receipt is not
+  an independently rerun whole-project gate, nor proof of ledger wiring.
+- Live-provider receipts still establish small HTTPS success and separate large
+  stage observations, not a qualified maximum-shape production pair under the
+  current tolerance, measured recommendation quality or hook latency targets.
+  No fresh Jev requests, personal transcript reads, hook installation or release
+  were performed in this assessment.
+- `python3 scripts/validate_public_contracts.py` passes documentation consistency;
+  it explicitly does not execute examples. GitHub Releases returned `[]`.
+  Graph checks found zero active cycles and no dangling dependency IDs. Final
+  `bv --robot-triage` read 228 records and correctly kept P4 unclaimable behind
+  its six then-active blockers. Its history enrichment timed out; graph triage
+  completed, but no complete history-analysis claim is made.
+
+**Backlog coverage:** the G01–G70 and I01–I15 maps still cover the product vision.
+The checked 228-record snapshot had all 29 P5, 13 P6, ten P7 and nine P8 children
+open; P9 had 30 open and six deferred children. These are ownership counts, not
+completion percentages. No major unowned product feature was found. The new
+`.5.29` and existing-bead refinements close specific integration/proof gaps in
+that map. Completing the code tasks is necessary but insufficient: actual Jev,
+harness, platform and independent outcome evidence must also satisfy the named
+gates. Neither this review nor a green Cargo run can supply those observations.
+
+## Historical assessment — 2026-09-19, earlier core review
 
 **SkillRanker now has a real executable ranking pipeline. It is not yet the
 complete, qualified live-session recommendation system described by the README.**
@@ -921,7 +1107,7 @@ Statistical ambition means collecting the right evidence, not adding opaque math
 |---|---|---|
 | G09 | On the exact selected Asupersync features, prove real DNS, trusted-root TLS, authenticated bounded JSON POST, timeout/cancellation and process exit. Use one shared Asupersync `Cx` source with Quill. No accept-all certificates or transparent `ureq` fallback. | Plan:477–489,755–775,1311; `docs/dependencies.md:14–47` |
 | G10 | Canonical trusted HTTPS base origin appends `/v1/systemone` exactly once; reject userinfo/non-root paths/query/fragment. Disable redirects and hidden proxies; scope credentials/cache/allowance by origin. Loopback HTTP is explicitly development-only and credential-free. | Plan:479–489,793–805 |
-| G11 | Validate every requested answer/type and exactly its option IDs; reject duplicates, foreign/missing IDs, non-finite/out-of-range values, invalid usage and bad chosen-option argmax. Distribution sum is positive and within `1e-4`; normalize only rounding drift and retain raw estimates. Enforce decoded/decompressed response bound. | Plan:522–533 |
+| G11 | Validate every requested answer/type and exactly its option IDs; reject duplicates, foreign/missing IDs, non-finite/out-of-range values, invalid usage and bad chosen-option argmax. Distribution sum is positive and within the maintainer-approved `0.1` tolerance; renormalize accepted distributions and retain raw estimates. The earlier `1e-4` bound is superseded. Enforce decoded/decompressed response bound. | Plan:522–533; current AGENTS Jev contract |
 | G12 | One root-owned invocation propagates remaining monotonic time into every leaf; no new work consumes output reserve. Exercise slow stdin, blocking leaves, saturated child pipes, signals, cancellation and broken pipes; terminate/reap owned process tree. Retry only classified transient failures within attempt/deadline limits; preserve unknown paid usage. | Plan:761–791,1127–1155; local proof and separately budgeted live contract smoke are different evidence |
 
 ### P2 — roster, redaction, retrieval; depends P0
