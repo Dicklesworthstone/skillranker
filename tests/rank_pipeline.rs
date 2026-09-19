@@ -171,6 +171,7 @@ fn test_explicit_directive_bypasses_inference() {
         gate,
         source_options,
         require_skills: vec![skillranker::identity::SkillId::new("rust_testing").unwrap()],
+        shortlist_ids: Vec::new(),
         roster_file: None,
         explain: false,
         why_not: None,
@@ -323,6 +324,7 @@ fn test_ranked_flow_with_mock_jev() {
         gate,
         source_options,
         require_skills: Vec::new(),
+        shortlist_ids: Vec::new(),
         roster_file: None,
         explain: false,
         why_not: None,
@@ -434,6 +436,7 @@ fn test_low_need_abstention() {
         gate,
         source_options,
         require_skills: Vec::new(),
+        shortlist_ids: Vec::new(),
         roster_file: None,
         explain: false,
         why_not: None,
@@ -492,6 +495,7 @@ fn test_dry_run_preview_without_network() {
         gate,
         source_options,
         require_skills: Vec::new(),
+        shortlist_ids: Vec::new(),
         roster_file: None,
         explain: false,
         why_not: None,
@@ -505,15 +509,18 @@ fn test_dry_run_preview_without_network() {
         .block_on(async { execute_pipeline(&invocation, &cx, args, None).await })
         .expect("pipeline execution succeeded");
 
-    assert_eq!(doc.kind(), skillranker::output::OutputKind::Decision(Decision::Abstain));
+    assert_eq!(
+        doc.kind(),
+        skillranker::output::OutputKind::Artifact(skillranker::output::ArtifactKind::Preview)
+    );
     assert_eq!(doc.exit_code(), skillranker::output::CliExit::Success);
 
+    // A stateless preview: never an actionable decision, nothing sent.
     let val = doc.as_value();
-    assert_eq!(val["decision"], "abstain");
-    assert_eq!(val["reason"], "dry-run-preview");
-    assert!(val.get("dry_run").is_some());
-    assert_eq!(val["dry_run"]["dry_run"], true);
-    assert_eq!(val["dry_run"]["stage"], "wide");
+    assert_eq!(val["actionable"], false);
+    assert!(val.get("decision").is_none());
+    assert!(val["local_decision"].is_null());
+    assert_eq!(val["provider_request"]["stages"][0]["stage"], "wide");
 }
 
 #[test]
@@ -538,8 +545,11 @@ fn test_cli_bare_sr_and_rank_flags() {
         String::from_utf8_lossy(&output.stderr)
     );
     let val: Value = serde_json::from_slice(&output.stdout).expect("valid JSON");
-    // Explicit directive takes precedence even in dry-run
-    assert_eq!(val["decision"], "explicit");
+    // Explicit directive takes precedence even in dry-run, reported inside the
+    // preview with no provider request.
+    assert_eq!(val["kind"], "preview");
+    assert_eq!(val["local_decision"]["decision"], "explicit");
+    assert!(val["provider_request"].is_null());
 
     // Test 2: Conflict detection (e.g. --offline with --allow-network)
     let output_conflict = Command::new(env!("CARGO_BIN_EXE_sr"))
@@ -677,6 +687,7 @@ fn test_low_fit_abstention() {
         gate,
         source_options,
         require_skills: Vec::new(),
+        shortlist_ids: Vec::new(),
         roster_file: None,
         explain: false,
         why_not: None,
@@ -821,6 +832,7 @@ fn test_none_winner_abstention() {
         gate,
         source_options,
         require_skills: Vec::new(),
+        shortlist_ids: Vec::new(),
         roster_file: None,
         explain: false,
         why_not: None,

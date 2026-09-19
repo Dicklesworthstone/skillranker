@@ -51,6 +51,14 @@
   declaration validation remains distinct from an execution receipt.
 
 ### Added
+- `sr rank --dry-run` prints a non-actionable `preview` artifact:
+  - the exact redacted wide request a matching `--no-persist` run would send,
+    with its byte count, disclosure receipt and effect receipt; or
+  - the local decision (explicit, abstain or unavailable) that ends the run
+    before any request.
+  `--dry-run --shortlist-ids ID,...` also previews the rerank request for a
+  supplied shortlist. Dry runs were reported as an `abstain` decision carrying
+  only the request size.
 - `sr rank` keeps an exact response cache in the owner-only platform cache
   directory. An identical request in the same session is answered without
   contacting Jev, with zero new usage, for up to ten minutes; `--offline` can

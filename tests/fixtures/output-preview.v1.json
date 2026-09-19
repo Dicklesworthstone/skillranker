@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "kind": "preview",
+  "actionable": false,
+  "stateless": true,
+  "effects": {
+    "response_cache": {
+      "state": "disabled",
+      "by": "dry-run"
+    },
+    "ledger": {
+      "state": "disabled",
+      "by": "dry-run"
+    },
+    "runtime_state": {
+      "state": "disabled",
+      "by": "dry-run"
+    },
+    "network": {
+      "state": "blocked",
+      "by": "dry-run"
+    },
+    "unverified_children": false,
+    "cross_process_coordination": false,
+    "stateless": true
+  },
+  "provider_request": {
+    "model": "jev-latest",
+    "stages": [
+      {
+        "stage": "wide",
+        "request_bytes": 279,
+        "request": "{\"model\":\"jev-latest\",\"state\":{\"latest_user_request\":\"Fix the failing rust test.\"},\"questions\":{\"which\":{\"type\":\"choice\",\"instructions\":\"Which listed skill helps with the next step?\",\"criteria\":{\"o_1\":\"Runs and repairs failing rust tests.\",\"__none__\":\"No listed skill helps.\"}}}}",
+        "candidates": 1
+      }
+    ],
+    "trimming": {
+      "dropped_messages": 0,
+      "description_cap": 1000,
+      "omitted_description_scalars": 0,
+      "redactions": 0
+    }
+  },
+  "local_decision": null,
+  "disclosure": {
+    "schema_version": 1,
+    "context_profile": "standard",
+    "context_quality": "complete",
+    "no_tools": false,
+    "categories": [],
+    "total_included": 1,
+    "total_omitted": 0,
+    "total_truncated": 0,
+    "total_redactions": 0,
+    "disclosed_bytes": 26,
+    "disclosed_scalars": 26
+  }
+}

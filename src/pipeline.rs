@@ -37,7 +37,7 @@ use crate::jev::retry::{RetryErrorKind, RetrySession};
 use crate::jev::wide::{Sizes, WideDecision, WideOutcome};
 use crate::jev::{OriginScopedCredential, rerank, wide};
 use crate::output::trace::{StageTrace, TraceEntry, TraceStage};
-use crate::output::{ErrorKind, OutputDocument, SCHEMA_VERSION, TraceCursor};
+use crate::output::{ErrorKind, OutputDocument, OutputKind, SCHEMA_VERSION, TraceCursor};
 use crate::privacy::redaction::Redactor;
 use crate::privacy::{NetworkConsent, ProviderAdmissionRefusal, admit_provider_attempt};
 use crate::roster::discovery::claude_code_plan;
@@ -82,6 +82,9 @@ pub struct RankArgs {
     pub gate: EffectGate,
     pub source_options: SourceOptions,
     pub require_skills: Vec<SkillId>,
+    /// Stage-2 evidence for a dry run: the shortlist whose rerank request to
+    /// preview. A network-free run cannot know the model's own shortlist.
+    pub shortlist_ids: Vec<SkillId>,
     pub roster_file: Option<PathBuf>,
     pub explain: bool,
     pub why_not: Option<SkillId>,
@@ -168,12 +171,43 @@ struct Admitted {
 pub async fn execute_pipeline(
     invocation: &ProcessInvocation,
     cx: &Cx,
-    args: RankArgs,
+    mut args: RankArgs,
     transport: Option<&dyn JevTransport>,
 ) -> Result<OutputDocument, PipelineFailure> {
     let clock = &invocation.clock();
+    // Every effect restriction comes from the gate; `args.dry_run` can only add
+    // the dry-run restriction, never remove one.
+    if args.dry_run && !args.gate.policy().flags().dry_run {
+        let mut flags = args.gate.policy().flags();
+        flags.dry_run = true;
+        args.gate = EffectGate::new(flags, args.gate.scope()).map_err(|conflicts| {
+            let first = conflicts
+                .first()
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "conflicting effect flags".to_owned());
+            failure(2, "invalid-usage", first)
+        })?;
+    }
+    let preview = args.gate.policy().flags().dry_run;
+    if !preview && !args.shortlist_ids.is_empty() {
+        return Err(failure(
+            2,
+            "invalid-usage",
+            "Shortlist IDs are stage-2 evidence for --dry-run only",
+        ));
+    }
+    let effects = args.gate.receipt();
     let mut progress = Progress::default();
-    match rank_once(invocation, clock, cx, args, transport, &mut progress).await {
+    let result = rank_once(invocation, clock, cx, args, transport, &mut progress).await;
+    // A dry run never publishes an actionable decision: a local result that
+    // ends the run before any request is reported inside the preview.
+    let result = match result {
+        Ok(doc) if preview && matches!(doc.kind(), OutputKind::Decision(_)) => {
+            preview_document(None, Some(doc.as_value().clone()), None, &effects)
+        }
+        result => result,
+    };
+    match result {
         Err(failure) => match &progress.admitted {
             Some(admitted) => {
                 let evaluated = Evaluated {
@@ -275,21 +309,8 @@ async fn rank_once(
         )
     })?;
 
-    // Every effect restriction comes from the gate; `args.dry_run` can only add
-    // the dry-run restriction, never remove one.
-    let gate = if args.dry_run && !args.gate.policy().flags().dry_run {
-        let mut flags = args.gate.policy().flags();
-        flags.dry_run = true;
-        EffectGate::new(flags, args.gate.scope()).map_err(|conflicts| {
-            let first = conflicts
-                .first()
-                .map(|c| c.to_string())
-                .unwrap_or_else(|| "conflicting effect flags".to_owned());
-            failure(2, "invalid-usage", first)
-        })?
-    } else {
-        args.gate
-    };
+    // The entry point already folded `--dry-run` into the gate.
+    let gate = args.gate;
     let dry_run = gate.policy().flags().dry_run;
 
     // 1. Initial configuration loading and policy receipt capture
@@ -874,7 +895,7 @@ async fn rank_once(
         redactor,
         ..Default::default()
     };
-    let (rendered_context, _disclosure_receipt) =
+    let (rendered_context, disclosure_receipt) =
         render_context_and_receipt(&normalized_context, &render_opts)
             .map_err(|e| failure(7, "oversized-input", format!("Context render error: {e:?}")))?;
 
@@ -949,56 +970,72 @@ async fn rank_once(
         )
     })?;
 
-    // Check dry-run
+    // A stateless preview: the exact redacted bytes a matching `--no-persist`
+    // run would send. Stage 2 is previewed only for supplied shortlist IDs.
     if dry_run {
-        let dry_run_json = json!({
-            "dry_run": true,
-            "stage": "wide",
-            "request_bytes": wide_builder.bytes().len(),
-            "model": effective.model().as_str(),
-            "candidates": candidate_ids.len(),
-            "trimming": {
-                "dropped_messages": wide_builder.trimming().dropped_messages,
-                "description_cap": wide_builder.trimming().description_cap,
-                "omitted_description_scalars": wide_builder.trimming().omitted_description_scalars,
-                "redactions": wide_builder.trimming().redactions,
+        let mut stages = vec![preview_stage(
+            "wide",
+            wide_builder.bytes(),
+            candidate_ids.len(),
+        )?];
+        if !args.shortlist_ids.is_empty() {
+            let (_, shortlist) = sizes.effective(candidate_ids.len());
+            let mut seen = BTreeSet::new();
+            if args.shortlist_ids.len() > shortlist
+                || args
+                    .shortlist_ids
+                    .iter()
+                    .any(|id| !candidate_ids.contains(id) || !seen.insert(id))
+            {
+                return Err(failure(
+                    2,
+                    "invalid-usage",
+                    format!("Shortlist IDs must be distinct wide candidates, at most {shortlist}"),
+                ));
             }
-        });
-        let mut doc = build_abstain_document(
-            "dry-run-preview",
-            &normalized_context,
-            &roster,
-            clock.now().as_millis(),
-            Some(dry_run_json),
-            &Evaluated {
-                eligible: eligible_count,
-                quill: ran_quill,
-                ..Evaluated::default()
-            },
-        );
-        if let Some(trace_val) = generate_trace(
-            &args,
-            &roster,
-            &normalized_context,
-            Some(&policy_view),
-            &retrieval_view,
-            None,
-            gate_threshold,
-            None,
-            fits_threshold,
-            None,
-            None,
-            false,
-        ) {
-            doc = doc.with_trace(trace_val).map_err(|e| {
+            let rerank_builder = rerank::build(
+                &roster,
+                &args.shortlist_ids,
+                &rendered_context,
+                effective.model().as_str(),
+            )
+            .map_err(|e| {
                 failure(
-                    5,
-                    "contract-violation",
-                    format!("Trace contract error: {e:?}"),
+                    e.kind().exit_code() as u8,
+                    e.kind().as_str(),
+                    format!("Rerank build failed: {e:?}"),
                 )
             })?;
+            stages.push(preview_stage(
+                "rerank",
+                rerank_builder.bytes(),
+                args.shortlist_ids.len(),
+            )?);
         }
-        return Ok(doc);
+        let disclosure = serde_json::to_value(&disclosure_receipt).map_err(|_| {
+            let kind = ErrorKind::OutputLimit;
+            failure(
+                kind.exit_code() as u8,
+                kind.as_str(),
+                "Disclosure receipt could not be encoded",
+            )
+        })?;
+        return preview_document(
+            Some(json!({
+                "model": effective.model().as_str(),
+                "stages": stages,
+                "trimming": {
+                    "dropped_messages": wide_builder.trimming().dropped_messages,
+                    "description_cap": wide_builder.trimming().description_cap,
+                    "omitted_description_scalars":
+                        wide_builder.trimming().omitted_description_scalars,
+                    "redactions": wide_builder.trimming().redactions,
+                },
+            })),
+            None,
+            Some(disclosure),
+            &gate.receipt(),
+        );
     }
 
     // From here on the wide candidate set is committed to a request.
@@ -1543,6 +1580,52 @@ async fn rank_once(
     }
 
     Ok(doc)
+}
+
+/// One previewed provider request: the exact serialized bytes as text.
+fn preview_stage(stage: &str, request: &[u8], candidates: usize) -> Result<Value, PipelineFailure> {
+    let text = std::str::from_utf8(request).map_err(|_| {
+        let kind = ErrorKind::OutputLimit;
+        failure(
+            kind.exit_code() as u8,
+            kind.as_str(),
+            "The request is not valid UTF-8",
+        )
+    })?;
+    Ok(json!({
+        "stage": stage,
+        "request_bytes": request.len(),
+        "request": text,
+        "candidates": candidates,
+    }))
+}
+
+/// The non-actionable dry-run artifact. Exactly one of `provider_request` and
+/// `local_decision` is present; nothing was sent, published or stored.
+fn preview_document(
+    provider_request: Option<Value>,
+    local_decision: Option<Value>,
+    disclosure: Option<Value>,
+    effects: &crate::effects::EffectReceipt,
+) -> Result<OutputDocument, PipelineFailure> {
+    OutputDocument::from_value(json!({
+        "schema_version": SCHEMA_VERSION,
+        "kind": "preview",
+        "actionable": false,
+        "stateless": true,
+        "effects": effects,
+        "provider_request": provider_request,
+        "local_decision": local_decision,
+        "disclosure": disclosure,
+    }))
+    .map_err(|_| {
+        let kind = ErrorKind::OutputLimit;
+        failure(
+            kind.exit_code() as u8,
+            kind.as_str(),
+            "The preview exceeds the output contract",
+        )
+    })
 }
 
 /// Wall-clock milliseconds for cache receipt and freshness. A clock before the

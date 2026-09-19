@@ -12,6 +12,7 @@ const UNAVAILABLE: &str = include_str!("fixtures/output-unavailable.v1.json");
 const REPLAY: &str = include_str!("fixtures/output-replay.v1.json");
 const DEMO: &str = include_str!("fixtures/output-demo.v1.json");
 const REPORT: &str = include_str!("fixtures/output-report.v1.json");
+const PREVIEW: &str = include_str!("fixtures/output-preview.v1.json");
 
 fn value(input: &str) -> Value {
     serde_json::from_str(input).unwrap()
@@ -68,6 +69,11 @@ fn all_decisions_and_artifact_kinds_round_trip_without_becoming_hook_output() {
         (
             REPORT,
             OutputKind::Artifact(ArtifactKind::Report),
+            CliExit::Success,
+        ),
+        (
+            PREVIEW,
+            OutputKind::Artifact(ArtifactKind::Preview),
             CliExit::Success,
         ),
     ] {
@@ -565,4 +571,51 @@ fn trace_pagination_cannot_loop_skip_or_invent_unevaluated_values() {
     valid(v.clone());
     v["trace"]["entries"][0]["value"] = json!(0);
     invalid(v);
+}
+
+#[test]
+fn a_dry_run_preview_is_never_actionable_and_carries_exactly_one_result() {
+    let preview = value(PREVIEW);
+    assert_eq!(
+        valid(preview.clone()).kind(),
+        OutputKind::Artifact(ArtifactKind::Preview)
+    );
+    // A local result that makes no request instead of a request.
+    let mut local = preview.clone();
+    local["provider_request"] = Value::Null;
+    local["disclosure"] = Value::Null;
+    local["local_decision"] = value(EXPLICIT);
+    assert_eq!(valid(local.clone()).exit_code(), CliExit::Success);
+    // An unavailable local result keeps its error exit.
+    let mut failed = local.clone();
+    failed["local_decision"] = value(UNAVAILABLE);
+    assert_eq!(valid(failed).exit_code(), CliExit::Provider);
+    // Refused: both results, neither, an actionable or stateful preview, a
+    // top-level decision, a request whose byte count is not its length, a
+    // request that does not start with the wide stage, and a request without
+    // its disclosure receipt.
+    let mut both = preview.clone();
+    both["local_decision"] = value(EXPLICIT);
+    invalid(both);
+    let mut neither = local;
+    neither["local_decision"] = Value::Null;
+    invalid(neither);
+    let mut actionable = preview.clone();
+    actionable["actionable"] = json!(true);
+    invalid(actionable);
+    let mut stateful = preview.clone();
+    stateful["stateless"] = json!(false);
+    invalid(stateful);
+    let mut decided = preview.clone();
+    decided["decision"] = json!("ranked");
+    invalid(decided);
+    let mut miscounted = preview.clone();
+    miscounted["provider_request"]["stages"][0]["request_bytes"] = json!(1);
+    invalid(miscounted);
+    let mut reordered = preview.clone();
+    reordered["provider_request"]["stages"][0]["stage"] = json!("rerank");
+    invalid(reordered);
+    let mut undisclosed = preview;
+    undisclosed["disclosure"] = Value::Null;
+    invalid(undisclosed);
 }

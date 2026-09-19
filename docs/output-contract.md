@@ -109,8 +109,10 @@ validation is not a secret scanner or a terminal renderer.
 
 ## Non-actionable artifacts
 
-Artifacts require `schema_version: 1`, `kind: demo|replay|report`, and
-`actionable: false`. They have no top-level decision or hook envelope. Demo and
+Artifacts require `schema_version: 1`, `kind: demo|replay|report|preview`,
+and `actionable: false`. Previews are described in
+[stateless dry-run previews](#stateless-dry-run-previews); the rules below
+apply to demo, replay and report artifacts. They have no top-level decision or hook envelope. Demo and
 replay carry a `historical` decision, optionally with a `recomputed` decision;
 a missing historical decision is representable only in a partial run. Historical
 decisions are validated as inert data, including unavailable/error decisions.
@@ -134,6 +136,31 @@ partial/not-established. A known failed gate may be reported even if other work
 is partial. A fatal current error is allowed only in a partial artifact and
 retains its nonzero code; historical errors do not change report execution status.
 Promotion must verify cohort identity and actual evidence as well as these fields.
+
+## Stateless dry-run previews
+
+`sr rank --dry-run` emits a `kind: preview` artifact
+([example](../tests/fixtures/output-preview.v1.json)). It is never actionable,
+has no top-level decision, and always has `stateless: true`. Nothing was sent
+and no key, store, lock or log was created; `effects` is the invocation's effect
+receipt showing that.
+
+A preview carries exactly one of two results:
+
+- `provider_request`: the requests a matching `--no-persist` run would send.
+  `stages` starts with `wide` and adds `rerank` only for explicit
+  `--shortlist-ids` evidence; a network-free run cannot know the model's own
+  shortlist. Each stage has the exact redacted request as `request` text, its
+  `request_bytes` (which must equal the text's length, at most 96 KiB), and its
+  candidate count. `disclosure` is the disclosure receipt for the rendered
+  context. The preview corresponds to `--no-persist`: a persistent run may
+  include additional historical evidence and send different bytes.
+- `local_decision`: the decision that ends the run before any request, such as
+  explicit resolution, local abstention or an unavailable result. The preview's
+  exit is that decision's exit.
+
+Shortlist IDs must be distinct wide candidates, at most the shortlist size, and
+are accepted only with `--dry-run`; anything else is `invalid-usage`.
 
 ## Snapshot-bound traces
 

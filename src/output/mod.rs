@@ -64,6 +64,10 @@ pub enum ArtifactKind {
     Demo,
     Replay,
     Report,
+    /// A stateless `rank --dry-run`: the exact requests a matching
+    /// `--no-persist` run would send, or the local decision that sends none.
+    /// Nothing was sent and no state was written.
+    Preview,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -819,6 +823,9 @@ fn validate_artifact(m: &Map<String, Value>, kind: ArtifactKind) -> Result<CliEx
     if boolean(m, "actionable")? || m.contains_key("decision") {
         return Err(ContractError::InconsistentFields);
     }
+    if kind == ArtifactKind::Preview {
+        return validate_preview(m);
+    }
     let run: RunStatus = enum_field(m, "run_status")?;
     let gate: GateStatus = enum_field(m, "gate_status")?;
     let c = object(field(m, "completeness")?)?;
@@ -874,6 +881,56 @@ fn validate_artifact(m: &Map<String, Value>, kind: ArtifactKind) -> Result<CliEx
         error(object(v)?)
     } else {
         Ok(CliExit::Success)
+    }
+}
+
+/// A preview carries either the stateless run's exact provider requests (wide,
+/// then an optional rerank for supplied shortlist evidence) with the
+/// disclosure receipt, or the local decision that ends the run without a
+/// request; never both. Its exit is that local decision's.
+fn validate_preview(m: &Map<String, Value>) -> Result<CliExit, ContractError> {
+    if !boolean(m, "stateless")? {
+        return Err(ContractError::InconsistentFields);
+    }
+    object(field(m, "effects")?)?;
+    let request = field(m, "provider_request")?;
+    let local = field(m, "local_decision")?;
+    match (request.is_null(), local.is_null()) {
+        (false, true) => {
+            let r = object(request)?;
+            text(field(r, "model")?)?;
+            let stages = array(r, "stages", 2)?;
+            if stages.is_empty() {
+                return Err(ContractError::InvalidField);
+            }
+            let limit = crate::jev::codec::MAX_REQUEST_BYTES as u64;
+            for (index, stage) in stages.iter().enumerate() {
+                let s = object(stage)?;
+                match (index, text(field(s, "stage")?)?) {
+                    (0, "wide") | (1, "rerank") => {}
+                    _ => return Err(ContractError::InconsistentFields),
+                }
+                let bytes = count(s, "request_bytes")?;
+                let body = field(s, "request")?
+                    .as_str()
+                    .ok_or(ContractError::InvalidField)?;
+                if body.len() as u64 != bytes || bytes > limit || body.chars().any(char::is_control)
+                {
+                    return Err(ContractError::InconsistentFields);
+                }
+                if count(s, "candidates")? > 254 {
+                    return Err(ContractError::LimitExceeded);
+                }
+            }
+            object(field(m, "disclosure")?)?;
+            Ok(CliExit::Success)
+        }
+        (true, false) => {
+            let inner = object(local)?;
+            let decision = enum_field(inner, "decision")?;
+            validate_decision(inner, decision)
+        }
+        _ => Err(ContractError::InconsistentFields),
     }
 }
 

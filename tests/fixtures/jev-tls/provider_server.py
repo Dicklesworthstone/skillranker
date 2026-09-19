@@ -89,7 +89,7 @@ def read_request(stream):
         body += block
     assert lines[0] == "POST /v1/systemone HTTP/1.1"
     assert fields["content-type"] == "application/json"
-    return fields, json.loads(body), length
+    return fields, json.loads(body), length, body.decode("utf-8")
 
 
 context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
@@ -116,7 +116,7 @@ while True:
         emit({"handshake_rejected": True})
         connection.close()
         continue
-    fields, request, length = read_request(stream)
+    fields, request, length, body_text = read_request(stream)
     questions = request["questions"]
     stage = "wide" if "which" in questions else "rerank" if "rerank" in questions else "other"
     stages.append(stage)
@@ -146,7 +146,7 @@ while True:
     emit({"stage": stage, "status": int(status.split()[0]), "request_bytes": length,
           "options": len(questions.get("which", questions.get("rerank", {"criteria": {}}))[
               "criteria"]),
-          "authorization": "authorization" in fields})
+          "authorization": "authorization" in fields, "body": body_text})
     try:
         stream.sendall((f"HTTP/1.1 {status}\r\nContent-Type: application/json\r\n{extra}"
                         f"Content-Length: {len(body)}\r\nConnection: close\r\n\r\n").encode()

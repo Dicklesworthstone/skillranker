@@ -1720,8 +1720,9 @@ attachment is essential. Local load observations remain separate; the chosen
 profile and receipt schema enter request provenance. Smaller disclosure alone
 does not establish equivalent recommendation quality.
 
-A second-stage dry run requires explicit shortlist IDs or a validated recorded
-wide answer. It cannot know a model's shortlist without that evidence. The preview
+A second-stage dry run requires explicit shortlist IDs
+(`--dry-run --shortlist-ids ID,...`) or a validated recorded wide answer. It
+cannot know a model's shortlist without that evidence. The preview
 corresponds to `--no-persist`; a persistent run can include additional historical
 evidence and therefore produce a different payload.
 

@@ -160,6 +160,7 @@ impl Fixture {
                 ..Default::default()
             },
             require_skills: Vec::new(),
+            shortlist_ids: Vec::new(),
             roster_file: None,
             explain: false,
             why_not: None,
@@ -689,7 +690,11 @@ fn disabled_persistence_never_creates_a_store() {
         )
         .expect("a decision");
         provider.finish();
-        assert!(value["decision"].is_string());
+        // A dry run answers with a preview; the others with a decision.
+        assert!(
+            value["decision"].is_string() || value["kind"] == "preview",
+            "{value}"
+        );
         assert!(
             !cache.join("cache.sqlite3").exists(),
             "{flags:?} must not create a store"
@@ -706,6 +711,16 @@ fn run_sr(
     provider: &Provider,
     trust_fixture: bool,
     request: &str,
+) -> (Option<i32>, Value) {
+    run_sr_with(f, provider, trust_fixture, request, &[])
+}
+
+fn run_sr_with(
+    f: &Fixture,
+    provider: &Provider,
+    trust_fixture: bool,
+    request: &str,
+    extra: &[&str],
 ) -> (Option<i32>, Value) {
     let ca = f.root.join("fixture-ca.pem");
     std::fs::write(&ca, include_bytes!("fixtures/jev-tls/ca.pem")).unwrap();
@@ -726,7 +741,8 @@ fn run_sr(
             "--context",
             f.context_in("session-1", request).to_str().unwrap(),
             "--json",
-        ]);
+        ])
+        .args(extra);
     if trust_fixture {
         command.env("SSL_CERT_FILE", &ca);
     }
@@ -806,4 +822,148 @@ fn the_sr_binary_never_trusts_the_fixture_without_the_trusted_root() {
     assert_eq!(code, Some(4), "{value}");
     assert_eq!(value["decision"], "unavailable");
     assert_eq!(value["error"]["kind"], "network-failure");
+}
+
+/// A skill's stable ID as `sr roster --json` reports it.
+fn skill_id(f: &Fixture, invocation: &str) -> String {
+    let output = Command::new(env!("CARGO_BIN_EXE_sr"))
+        .env_clear()
+        .env("HOME", f.root.join("home"))
+        .env("XDG_CONFIG_HOME", f.root.join("config"))
+        .current_dir(f.workspace())
+        .args(["roster", "--json"])
+        .output()
+        .unwrap();
+    let listing: Value = serde_json::from_slice(&output.stdout).unwrap();
+    listing["records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["invocation_name"] == invocation)
+        .and_then(|r| r["skill_id"].as_str())
+        .unwrap()
+        .to_owned()
+}
+
+#[test]
+fn the_dry_run_request_is_the_exact_bytes_a_stateless_rank_sends() {
+    let f = Fixture::new(CONSENT);
+    std::fs::create_dir_all(f.root.join("home")).unwrap();
+    let provider = Provider::start(&f, "useful", &[]);
+    let (code, preview) = run_sr_with(&f, &provider, true, TASK, &["--dry-run"]);
+    let (sent_code, ranked) = run_sr_with(&f, &provider, true, TASK, &["--no-persist"]);
+    let served = provider.finish();
+    assert_eq!(code, Some(0), "{preview}");
+    assert_eq!(preview["kind"], "preview");
+    assert_eq!(preview["actionable"], false);
+    assert_eq!(preview["stateless"], true);
+    assert!(preview["local_decision"].is_null());
+    assert_eq!(preview["effects"]["network"]["state"], "blocked");
+    assert!(preview["disclosure"]["disclosed_bytes"].is_u64());
+    assert_eq!(sent_code, Some(0), "{ranked}");
+    assert_eq!(
+        stages(&served),
+        ["wide", "rerank"],
+        "the preview sent nothing"
+    );
+    let previewed = &preview["provider_request"]["stages"][0];
+    assert_eq!(previewed["stage"], "wide");
+    assert_eq!(
+        previewed["request"], served[0]["body"],
+        "the preview is byte-identical to the wide request a --no-persist run sends"
+    );
+    assert_eq!(
+        previewed["request_bytes"].as_u64().unwrap() as usize,
+        served[0]["body"].as_str().unwrap().len()
+    );
+    assert!(
+        !f.cache_dir().join("sr").exists(),
+        "neither the preview nor --no-persist creates a store"
+    );
+}
+
+#[test]
+fn a_dry_run_previews_the_rerank_for_supplied_shortlist_evidence() {
+    let f = Fixture::new(CONSENT);
+    std::fs::create_dir_all(f.root.join("home")).unwrap();
+    let alpha = skill_id(&f, "alpha");
+    let provider = Provider::start(&f, "useful", &[]);
+    let (code, preview) = run_sr_with(
+        &f,
+        &provider,
+        true,
+        TASK,
+        &["--dry-run", "--shortlist-ids", &alpha],
+    );
+    assert!(provider.finish().is_empty(), "a preview sends nothing");
+    assert_eq!(code, Some(0), "{preview}");
+    let stages = preview["provider_request"]["stages"].as_array().unwrap();
+    assert_eq!(stages.len(), 2);
+    assert_eq!(stages[1]["stage"], "rerank");
+    assert_eq!(stages[1]["candidates"], 1);
+    assert!(
+        stages[1]["request"]
+            .as_str()
+            .unwrap()
+            .contains("Runs and repairs failing rust tests."),
+        "the rerank request carries the supplied skill"
+    );
+}
+
+#[test]
+fn absent_or_invalid_stage_two_evidence_is_never_guessed() {
+    let f = Fixture::new(CONSENT);
+    std::fs::create_dir_all(f.root.join("home")).unwrap();
+    let provider = Provider::start(&f, "useful", &[]);
+    // Absent: the preview stops at the wide request.
+    let (code, preview) = run_sr_with(&f, &provider, true, TASK, &["--dry-run"]);
+    assert_eq!(code, Some(0), "{preview}");
+    let stages = preview["provider_request"]["stages"].as_array().unwrap();
+    assert_eq!(stages.len(), 1);
+    // Invalid: an ID that is not a wide candidate, a duplicate, and evidence
+    // outside a dry run are all usage errors.
+    let alpha = skill_id(&f, "alpha");
+    let cases: [&[&str]; 3] = [
+        &["--dry-run", "--shortlist-ids", "s_not_a_candidate"],
+        &[
+            "--dry-run",
+            "--shortlist-ids",
+            &alpha,
+            "--shortlist-ids",
+            &alpha,
+        ],
+        &["--shortlist-ids", &alpha],
+    ];
+    for extra in cases {
+        let (code, value) = run_sr_with(&f, &provider, true, TASK, extra);
+        assert_eq!(code, Some(2), "{extra:?}: {value}");
+        assert_eq!(value["error"]["kind"], "invalid-usage", "{extra:?}");
+    }
+    assert!(provider.finish().is_empty(), "nothing was sent");
+}
+
+#[test]
+fn a_dry_run_reports_a_local_result_without_a_request() {
+    let f = Fixture::new(CONSENT);
+    std::fs::create_dir_all(f.root.join("home")).unwrap();
+    let provider = Provider::start(&f, "useful", &[]);
+    let (code, preview) = run_sr_with(
+        &f,
+        &provider,
+        true,
+        "Please use skill alpha to fix this.",
+        &["--dry-run"],
+    );
+    assert!(provider.finish().is_empty());
+    assert_eq!(code, Some(0), "{preview}");
+    assert_eq!(preview["kind"], "preview");
+    assert!(
+        preview["provider_request"].is_null(),
+        "no request would be made"
+    );
+    assert_eq!(preview["local_decision"]["decision"], "explicit");
+    assert_eq!(
+        preview["local_decision"]["skills"][0]["invocation_name"],
+        "alpha"
+    );
 }

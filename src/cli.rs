@@ -12,7 +12,7 @@ use std::ffi::OsString;
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
-const HELP: &str = "SkillRanker — powered by TypeSafe.ai Jev\n\nUsage: sr [rank] [--context FILE | --transcript FILE --harness NAME | --session PATH]\n                 [--roster FILE] [--require-skill ID] [--dry-run]\n                 [--offline | --allow-network] [--json | --table]\n                 [--top N] [--shortlist M] [--gate FLOAT] [--fits FLOAT]\n                 [--explain] [--why-not ID] [--no-tools] [--no-cache]\n       sr doctor [--json | --table] [--offline | --allow-network]\n       sr doctor --config [--json | --table] [--top N] [--shortlist N]\n       sr roster [--json] [--limit N] [--cursor TOKEN]\n       sr roster --snapshot FILE | --diff FILE\n       sr capabilities [--json]\n       sr demo --case <useful|none|explicit|unavailable> [--json | --table]\n       sr --help | --version\n\nRank the next step of an agent session using TypeSafe Jev.\nRequires your own TypeSafe API key (TYPESAFE_API_KEY) and network consent (--allow-network).\n";
+const HELP: &str = "SkillRanker — powered by TypeSafe.ai Jev\n\nUsage: sr [rank] [--context FILE | --transcript FILE --harness NAME | --session PATH]\n                 [--roster FILE] [--require-skill ID] [--dry-run [--shortlist-ids ID,...]]\n                 [--offline | --allow-network] [--json | --table]\n                 [--top N] [--shortlist M] [--gate FLOAT] [--fits FLOAT]\n                 [--explain] [--why-not ID] [--no-tools] [--no-cache]\n       sr doctor [--json | --table] [--offline | --allow-network]\n       sr doctor --config [--json | --table] [--top N] [--shortlist N]\n       sr roster [--json] [--limit N] [--cursor TOKEN]\n       sr roster --snapshot FILE | --diff FILE\n       sr capabilities [--json]\n       sr demo --case <useful|none|explicit|unavailable> [--json | --table]\n       sr --help | --version\n\nRank the next step of an agent session using TypeSafe Jev.\nRequires your own TypeSafe API key (TYPESAFE_API_KEY) and network consent (--allow-network).\n";
 
 fn command() -> Command {
     let mut doctor = Command::new("doctor")
@@ -128,6 +128,15 @@ fn command() -> Command {
                 .long("dry-run")
                 .conflicts_with_all(["allow-network", "save-case"])
                 .action(ArgAction::SetTrue),
+        )
+        .arg(
+            Arg::new("shortlist-ids")
+                .long("shortlist-ids")
+                .value_name("ID")
+                .num_args(1..)
+                .value_delimiter(',')
+                .action(ArgAction::Append)
+                .requires("dry-run"),
         )
         .arg(
             Arg::new("no-cache")
@@ -641,6 +650,19 @@ fn rank_command(
         }
     }
 
+    // Stage-2 evidence for a dry run; validated against the wide candidates.
+    let mut shortlist_ids = Vec::new();
+    for id in rank_matches
+        .and_then(|m| m.get_many::<String>("shortlist-ids"))
+        .into_iter()
+        .flatten()
+    {
+        shortlist_ids.push(
+            crate::identity::SkillId::new(id)
+                .map_err(|_| invalid("Invalid skill ID for --shortlist-ids"))?,
+        );
+    }
+
     let explain = rank_matches.is_some_and(|m| m.get_flag("explain"));
     let why_not = rank_matches
         .and_then(|m| m.get_one::<String>("why-not"))
@@ -664,6 +686,7 @@ fn rank_command(
         gate,
         source_options,
         require_skills,
+        shortlist_ids,
         roster_file,
         explain,
         why_not,
@@ -685,11 +708,12 @@ fn rank_command(
 
     timely(clock)?;
 
-    if output_doc.kind()
-        == crate::output::OutputKind::Decision(crate::output::Decision::Unavailable)
-    {
+    // An unavailable decision, or a dry-run preview of one, exits with its
+    // error category; the full document is still the JSON output.
+    if output_doc.exit_code() != crate::output::CliExit::Success {
         let code = output_doc.exit_code() as u8;
-        let val = output_doc.as_value();
+        let whole = output_doc.as_value();
+        let val = whole.get("local_decision").unwrap_or(whole);
         let kind = val["error"]["kind"]
             .as_str()
             .and_then(|s| {

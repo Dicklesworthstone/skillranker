@@ -104,7 +104,9 @@ fn dry_run_request_bytes(output: &Output) -> u64 {
         String::from_utf8_lossy(&output.stdout)
     );
     let value: Value = serde_json::from_slice(&output.stdout).unwrap();
-    value["dry_run"]["request_bytes"].as_u64().unwrap()
+    value["provider_request"]["stages"][0]["request_bytes"]
+        .as_u64()
+        .unwrap()
 }
 
 #[test]

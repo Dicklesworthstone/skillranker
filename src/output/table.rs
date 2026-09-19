@@ -355,6 +355,9 @@ fn render_unavailable_view(val: &Value) -> String {
 }
 
 fn render_artifact_view(val: &Value) -> String {
+    if val["kind"] == "preview" {
+        return render_preview_view(val);
+    }
     let mut out = String::new();
     let kind = val["kind"].as_str().unwrap_or("artifact");
     let run_status = val["run_status"].as_str().unwrap_or("unknown");
@@ -364,6 +367,36 @@ fn render_artifact_view(val: &Value) -> String {
     out.push_str("==================\n");
     out.push_str(&format!("Run Status:  {run_status}\n"));
     out.push_str(&format!("Gate Status: {gate_status}\n"));
+    out
+}
+
+/// A stateless dry run: what would be sent, or the local result that sends
+/// nothing. Request bodies stay in `--json` output; the table shows sizes.
+fn render_preview_view(val: &Value) -> String {
+    let mut out = String::from("DRY RUN PREVIEW (stateless; nothing was sent)\n");
+    out.push_str("=============================================\n");
+    let empty = Vec::new();
+    let stages = val["provider_request"]["stages"]
+        .as_array()
+        .unwrap_or(&empty);
+    if stages.is_empty() {
+        let decision = val["local_decision"]["decision"]
+            .as_str()
+            .unwrap_or("unavailable");
+        out.push_str(&format!(
+            "Resolved locally: {decision}. No provider request would be made.\n"
+        ));
+        return out;
+    }
+    for stage in stages {
+        out.push_str(&format!(
+            "{:<7} {} bytes, {} candidates\n",
+            stage["stage"].as_str().unwrap_or("?"),
+            stage["request_bytes"].as_u64().unwrap_or(0),
+            stage["candidates"].as_u64().unwrap_or(0)
+        ));
+    }
+    out.push_str("Use --json to see the exact redacted request bodies.\n");
     out
 }
 
