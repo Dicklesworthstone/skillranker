@@ -339,12 +339,13 @@ fn all_p4_invariants_verified() {
     );
     let err_doc = invocation
         .runtime()
-        .block_on(async { execute_pipeline(&invocation, &cx, missing_args, None).await });
-    assert!(err_doc.is_err(), "missing required skill must fail");
-    let (code, kind, msg) = err_doc.unwrap_err();
-    assert_eq!(code, 8);
-    assert_eq!(kind, "missing-explicit-skill");
-    assert!(msg.contains("non_existent_skill"));
+        .block_on(async { execute_pipeline(&invocation, &cx, missing_args, None).await })
+        .expect("missing required skill produces structured failure document");
+    assert_eq!(err_doc.exit_code(), CliExit::Roster);
+    let val = err_doc.as_value();
+    assert_eq!(val["error"]["kind"], "unresolved-explicit");
+    let unresolved = val["error"]["unresolved"].as_array().expect("unresolved array");
+    assert_eq!(unresolved[0]["reference"], "non_existent_skill");
 
     // =========================================================================
     // Invariant 3: Two-Stage Jev Ranking with Mock Transport
