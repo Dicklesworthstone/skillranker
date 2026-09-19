@@ -793,20 +793,9 @@ async fn rank_once(
                 clock.now().as_millis(),
                 &progress.evaluated,
             );
-            if let Some(trace_val) = generate_trace(
-                &args,
-                &roster,
-                &normalized_context,
-                None,
-                &RetrievalView::NotEvaluated,
-                None,
-                gate_threshold,
-                None,
-                fits_threshold,
-                None,
-                None,
-                true,
-            ) {
+            if let Some(trace_val) =
+                generate_explicit_trace(&args, &roster, &normalized_context, &skills)
+            {
                 doc = doc.with_trace(trace_val).map_err(|e| {
                     failure(
                         5,
@@ -2936,6 +2925,79 @@ fn generate_trace(
         entries.extend(skill_entries);
     }
 
+    trace_page(roster, context, entries)
+}
+
+/// Explicit resolution bypasses advisory admission and every inference stage.
+/// Its trace must come from the resolved targets, not a hypothetical advisory
+/// run (which would reject manual-only skills the user is allowed to request).
+fn generate_explicit_trace(
+    args: &RankArgs,
+    roster: &ResolvedRoster,
+    context: &NormalizedContext,
+    resolved: &[ResolvedExplicitSkill],
+) -> Option<Value> {
+    if !args.explain && args.why_not.is_none() {
+        return None;
+    }
+    let targets: Vec<&SkillId> = match &args.why_not {
+        Some(target) => vec![target],
+        None => resolved.iter().map(|skill| &skill.id).collect(),
+    };
+    let mut entries = Vec::new();
+    for target in targets {
+        let resolution = match roster.exact_id(target) {
+            ExactResolution::Missing => roster.exact_name(target.as_str()),
+            other => other,
+        };
+        let selected = match resolution {
+            ExactResolution::Resolved { id, .. } => resolved.iter().any(|skill| &skill.id == id),
+            _ => false,
+        };
+        let present = selected
+            || roster.skills().iter().any(|skill| {
+                skill.record().id == *target
+                    || skill.bindings().iter().any(|binding| {
+                        binding.id == *target || binding.invocation.as_str() == target.as_str()
+                    })
+            });
+        entries.push(if present {
+            TraceEntry::passed(
+                target.clone(),
+                TraceStage::Discovery,
+                "discovered",
+                None,
+                None,
+            )
+        } else {
+            TraceEntry::not_in_snapshot(target.clone())
+        });
+        for stage in &TraceStage::ALL[1..] {
+            let reason = if selected {
+                match stage {
+                    TraceStage::Visibility => Some("explicit-invocation-permitted"),
+                    TraceStage::LocalPolicy => Some("explicit-requirement-resolved"),
+                    // This is the prepared decision, not proof of stdout delivery.
+                    TraceStage::Publication => Some("explicit-ready-for-publication"),
+                    _ => None,
+                }
+            } else {
+                None
+            };
+            entries.push(match reason {
+                Some(reason) => TraceEntry::passed(target.clone(), *stage, reason, None, None),
+                None => TraceEntry::not_evaluated(target.clone(), *stage),
+            });
+        }
+    }
+    trace_page(roster, context, entries)
+}
+
+fn trace_page(
+    roster: &ResolvedRoster,
+    context: &NormalizedContext,
+    mut entries: Vec<TraceEntry>,
+) -> Option<Value> {
     let snapshot_id = crate::roster::evidence::snapshot_id(roster);
     let query_bytes = context.current_request.text.as_str().as_bytes();
     let query_id = ContentHash::from_bytes(query_bytes);

@@ -185,6 +185,14 @@ Each entry records stable `skill_id`, stage, status, nullable finite `value` and
 `threshold`, and nullable reason. Lexical scores may exceed one; these generic
 trace operands are not probability fields.
 
+An explicit decision traces the resolved requirements by default. A requested
+manual-only skill passes explicit visibility; advisory eligibility is not run.
+Quill, wide, fit/none, and ordering stages are `not-evaluated` with null operands
+and reason. Publication means the explicit decision is ready to emit, not that
+stdout delivery was acknowledged. With `--why-not`, an unrequested target has
+only snapshot membership evidence; no advisory evaluation or publication is
+claimed for it. An unknown target remains `not-in-snapshot`.
+
 Stages are `discovery`, `visibility`, `local-policy`, `quill-admission`,
 `wide-shortlist`, `fit-none`, `ordering`, and `publication`. Statuses are `passed`,
 `excluded`, `not-evaluated`, and `not-in-snapshot`. The latter two require null
