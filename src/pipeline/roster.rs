@@ -1,8 +1,10 @@
 //! Reload the same selected inventory at capture and publication boundaries.
 use super::{PROVISIONAL_CLAUDE_CONTRACT, PipelineFailure, failure};
+use crate::identity::HarnessId;
 use crate::identity::SkillId;
+use crate::privacy::SkillRoot;
 use crate::roster::Visibility;
-use crate::roster::discovery::claude_code_plan;
+use crate::roster::discovery::claude_code_plan_with_roots;
 use crate::roster::import::{ImportError, import_authorized, read_roster_file};
 use crate::roster::resolution::{ResolutionError, ResolvedRoster, resolve_claude_plan};
 use crate::roster::revalidation::{Dependencies, RevalidationError, capture, revalidate};
@@ -15,6 +17,10 @@ pub(super) struct Source<'a> {
     pub workspace: &'a Path,
     pub home: Option<&'a Path>,
     pub manifest: Option<&'a Path>,
+    /// Effective `roster.roots`, inspected like `sr roster` does.
+    pub configured: &'a [SkillRoot],
+    /// The session's harness. Discovery follows Claude's layout only.
+    pub harness: &'a HarnessId,
 }
 
 impl Source<'_> {
@@ -26,12 +32,25 @@ impl Source<'_> {
         clock
             .admit_new_work()
             .map_err(|_| validation_error(RevalidationError::Deadline))?;
-        let plan = claude_code_plan(
+        // Another harness's skills are not in Claude's directories: without a
+        // supplied roster, ranking them against Claude's would suggest skills
+        // that session cannot load.
+        if self.manifest.is_none() && self.harness.as_str() != crate::adapter::CLAUDE_CODE_ID {
+            return Err(failure(
+                5,
+                "unusable-roster",
+                "Skill discovery follows Claude Code's layout only; supply --roster for this harness",
+            ));
+        }
+        // Configured roots take the same provisional label as Claude's own:
+        // they can be suggested, and are always reported as unverified.
+        let plan = claude_code_plan_with_roots(
             self.workspace,
             self.home,
             Visibility::Verified {
                 contract_version: PROVISIONAL_CLAUDE_CONTRACT.into(),
             },
+            self.configured,
         )
         .map_err(|_| failure(5, "unusable-roster", "Failed to create roster source plan"))?;
         let overrides = BTreeMap::new();
@@ -134,6 +153,7 @@ mod tests {
         root: PathBuf,
         clock: EntryClock,
         invocation: ProcessInvocation,
+        harness: HarnessId,
     }
 
     impl Fixture {
@@ -158,6 +178,7 @@ mod tests {
                 root,
                 clock,
                 invocation,
+                harness: HarnessId::new(crate::adapter::CLAUDE_CODE_ID).unwrap(),
             };
             fixture.skill(
                 "alpha",
@@ -173,6 +194,8 @@ mod tests {
                 workspace: &self.root,
                 home: None,
                 manifest: manifest.then_some(Path::new("roster.json")),
+                configured: &[],
+                harness: &self.harness,
             }
         }
 

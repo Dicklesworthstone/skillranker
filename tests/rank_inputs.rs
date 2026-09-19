@@ -602,3 +602,96 @@ fn a_transcript_longer_than_its_tail_window_reports_windowed_history() {
     assert_eq!(value["quality"]["history_windowed"], true, "{value}");
     assert_eq!(value["quality"]["source_gaps"], false, "{value}");
 }
+
+/// A normalized context declaring `harness`, whose request is `request`.
+fn context_for(f: &Fixture, harness: &str, request: &str) -> PathBuf {
+    let path = f.workspace().join(format!("context-{harness}.json"));
+    let context = json!({
+        "schema_version": 1, "harness": harness, "producer_id": "synthetic-test",
+        "workspace_root": f.workspace().to_string_lossy(), "session_id": "session-1",
+        "agent_id": null, "branch_id": null, "context_epoch": null,
+        "current_request": {"event_id": "request-1", "text": request,
+                            "attachments_omitted": false, "essential_attachment_missing": false},
+        "events": [{"event_id": "request-1", "parent_id": null, "turn_id": "turn-1",
+                    "agent_id": null, "branch_id": null, "role": "user", "kind": "message",
+                    "timestamp_unix_ms": null, "text": request, "tool": null}],
+        "explicit_skill_references": [], "supplied_loads": []
+    });
+    std::fs::write(&path, serde_json::to_vec(&context).unwrap()).unwrap();
+    path
+}
+
+#[test]
+fn rank_sees_configured_roots_like_sr_roster() {
+    let f = Fixture::new();
+    let custom = f.workspace().join("custom/team-review");
+    std::fs::create_dir_all(&custom).unwrap();
+    std::fs::write(
+        custom.join("SKILL.md"),
+        "---\nname: team-review\ndescription: Reviews pull requests the team way.\n---\nBody.\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(f.workspace().join(".sr")).unwrap();
+    std::fs::write(
+        f.workspace().join(".sr/config.toml"),
+        "[roster]\nroots=['custom']\n",
+    )
+    .unwrap();
+    // An explicit request for a configured skill resolves, labeled unverified.
+    let request = context_for(&f, "claude_code", "Please use skill team-review here.");
+    let output = f.run(&[
+        "rank",
+        "--context",
+        request.to_str().unwrap(),
+        "--offline",
+        "--json",
+    ]);
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(output.status.code(), Some(0), "{value}");
+    assert_eq!(value["decision"], "explicit", "{value}");
+    assert_eq!(
+        value["skills"][0]["invocation_name"], "team-review",
+        "{value}"
+    );
+    assert_eq!(value["skills"][0]["visibility"], "unverified", "{value}");
+    // An advisory preview offers it alongside the default Claude skills.
+    let request = context_for(&f, "claude_code", "Review this pull request for problems.");
+    let output = f.run(&[
+        "rank",
+        "--context",
+        request.to_str().unwrap(),
+        "--dry-run",
+        "--json",
+    ]);
+    let preview = previewed_request(&output);
+    assert!(
+        preview.contains("Reviews pull requests the team way"),
+        "{preview}"
+    );
+    assert!(preview.contains("alpha helps with rust tests"), "{preview}");
+}
+
+#[test]
+fn another_harness_needs_a_supplied_roster() {
+    let f = Fixture::new();
+    // Claude's directories hold skills, but this is a Codex session.
+    let request = context_for(&f, "codex", "Review this pull request for problems.");
+    let (code, kind) = f.error_kind(&[
+        "rank",
+        "--context",
+        request.to_str().unwrap(),
+        "--offline",
+        "--json",
+    ]);
+    assert_eq!((code, kind.as_str()), (Some(5), "unusable-roster"));
+    // Honest twin: the same request from a Claude session previews normally.
+    let request = context_for(&f, "claude_code", "Review this pull request for problems.");
+    let output = f.run(&[
+        "rank",
+        "--context",
+        request.to_str().unwrap(),
+        "--dry-run",
+        "--json",
+    ]);
+    assert!(previewed_request(&output).contains("alpha helps with rust tests"));
+}

@@ -625,8 +625,11 @@ pub fn claude_code_plan(
 
 /// Add effective configured skill roots to local Claude-layout inspection.
 /// Configuration grants read access, not a verified harness load/precedence
-/// contract: additional bindings always remain unverified. Project-relative
-/// paths are opened beneath the workspace descriptor, including symlinks.
+/// contract. Inspection passes `Visibility::Unverified`. Rank passes its
+/// provisional label, so configured skills can be suggested but are reported
+/// as unverified. Configured roots rank below every declared root.
+/// Project-relative paths are opened beneath the workspace descriptor,
+/// including symlinks.
 pub fn claude_code_plan_with_roots(
     workspace: &Path,
     user_home: Option<&Path>,
@@ -638,7 +641,7 @@ pub fn claude_code_plan_with_roots(
     if configured.len() > 64 {
         return Err(DiscoveryError::InvalidRootPath);
     }
-    let mut plan = claude_code_plan(workspace, user_home, visibility)?;
+    let mut plan = claude_code_plan(workspace, user_home, visibility.clone())?;
     if configured.is_empty() {
         return Ok(plan);
     }
@@ -678,7 +681,7 @@ pub fn claude_code_plan_with_roots(
             source.clone(),
             kind,
             0,
-            Visibility::Unverified,
+            visibility.clone(),
             CLAUDE_SKILL_FILE,
         )?;
         match opened {

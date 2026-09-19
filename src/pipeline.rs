@@ -709,6 +709,8 @@ async fn rank_once(
         workspace: &args.workspace,
         home: args.home.as_deref(),
         manifest: args.roster_file.as_deref(),
+        configured: effective.roster_roots(),
+        harness: &normalized_context.harness,
     };
     let roster = roster_source.load(cx, clock)?;
 

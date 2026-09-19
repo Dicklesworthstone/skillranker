@@ -797,13 +797,16 @@ conditioned on stale alternatives. These are last-validation observations, not a
 freeze of the filesystem; the harness still checks its later load. A supplied
 roster replaces discovery but grants no new path access or invocation permissions.
 
-`sr roster` and the roster check in `sr doctor` also inspect directories from
-`roster.roots` in trusted-user and project configuration. Each directory uses the
-`<skill-name>/SKILL.md` layout. Project roots stay inside the workspace, including
-when symlinks are involved; trusted-user configuration can name absolute roots.
-Configured roots extend the default Claude directories, and aliases of an
-already opened directory are deduplicated. Reading a custom root does not prove
-that the harness can invoke its skills: those entries remain unverified.
+`sr rank`, `sr roster` and the roster check in `sr doctor` also read directories
+from `roster.roots` in trusted-user and project configuration. Each directory
+uses the `<skill-name>/SKILL.md` layout. Project roots stay inside the workspace,
+including when symlinks are involved; trusted-user configuration can name
+absolute roots. Configured roots extend the default Claude directories, rank below
+them when names collide, and aliases of an already opened directory are
+deduplicated. Reading a custom root does not prove that the harness can invoke
+its skills: `sr rank` can suggest them, but always reports them as
+`"visibility": "unverified"`. Discovery follows Claude Code's layout, so a
+session from another harness needs an explicit `--roster FILE`.
 
 `sr roster --snapshot FILE` explicitly exports an owner-only manifest, bounded
 to 32 MiB and 10,000 records, without implicitly overwriting an existing file.

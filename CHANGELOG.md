@@ -4,6 +4,12 @@
 
 ### Fixed
 
+- `sr rank` reads configured `roster.roots` as `sr roster` does. Their
+  skills can be suggested or requested, are reported as unverified, and rank
+  below Claude's own directories. Previously a configured skill was listed
+  by `sr roster` but invisible to rank. A session from a harness other than
+  Claude Code is now refused (`unusable-roster`, exit 5) unless it supplies
+  `--roster`, instead of being ranked against Claude's skills.
 - The response cache and single-flight leases now also key on where a
   session came from (native transcript, normalized import or cass), its
   producer, its agent and the active native branch. Identical redacted
