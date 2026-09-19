@@ -14,10 +14,6 @@
 //! 5. `--no-cache`, `--no-persist`, and storage unavailable paths preserve documented behavior.
 
 use serde_json::{Value, json};
-use skillranker::cache::{
-    CoordinationKey, CoordinationPolicy, FencingGeneration, LeaseAcquisition, LeaseCoordinator,
-    PublishOutcome, SqliteLeaseCoordinator,
-};
 use std::io::{BufRead, BufReader};
 use std::os::unix::fs::DirBuilderExt;
 use std::path::PathBuf;
@@ -115,6 +111,10 @@ impl Fixture {
     }
 
     fn sr_command(&self, provider: &Provider, extra: &[&str]) -> Command {
+        self.sr_command_at(provider.port, extra)
+    }
+
+    fn sr_command_at(&self, port: u16, extra: &[&str]) -> Command {
         let ca = self.root.join("fixture-ca.pem");
         std::fs::write(&ca, include_bytes!("fixtures/jev-tls/ca.pem")).unwrap();
         let mut command = Command::new(env!("CARGO_BIN_EXE_sr"));
@@ -124,10 +124,7 @@ impl Fixture {
             .env("XDG_CONFIG_HOME", self.root.join("config"))
             .env("XDG_CACHE_HOME", self.cache_dir())
             .env("TYPESAFE_API_KEY", "synthetic-acceptance-canary")
-            .env(
-                "TYPESAFE_ENDPOINT",
-                format!("https://localhost:{}", provider.port),
-            )
+            .env("TYPESAFE_ENDPOINT", format!("https://localhost:{port}"))
             .env("SSL_CERT_FILE", &ca)
             .current_dir(self.workspace())
             .args(["rank", "--json"]);
@@ -237,14 +234,18 @@ fn stages(served: &[Value]) -> Vec<&str> {
 fn ordinary_two_consumer_success_incurs_one_pair_and_subsequent_exact_offline_reuse() {
     let f = Fixture::new(CONSENT);
     f.claude_session("session-coord-1", TASK);
-    let provider = Provider::start(&f, "useful", &[]);
+    let marker = f.root.join("concurrent-wide-started");
+    let provider = Provider::start(
+        &f,
+        "slow-wide+write-on-wide",
+        &[marker.as_os_str(), "1".as_ref()],
+    );
 
     // Process A starts and leads
     let mut cmd_a = f.sr_command(&provider, &[]);
     let child_a = cmd_a.stdout(Stdio::piped()).spawn().unwrap();
 
-    // Small sleep so Process A establishes the lease as leader
-    std::thread::sleep(Duration::from_millis(100));
+    wait_for_marker(&marker);
 
     // Process B starts concurrently with same request
     let mut cmd_b = f.sr_command(&provider, &[]);
@@ -271,6 +272,9 @@ fn ordinary_two_consumer_success_incurs_one_pair_and_subsequent_exact_offline_re
 
     assert_eq!(val_a["decision"], "ranked");
     assert_eq!(val_b["decision"], "ranked");
+    assert_eq!(val_a["usage"]["requests"], 2);
+    assert_eq!(val_b["usage"]["requests"], 0);
+    assert_eq!(val_b["usage"]["http_attempts"], 0);
 
     let port = provider.port;
     let served = provider.finish();
@@ -278,21 +282,7 @@ fn ordinary_two_consumer_success_incurs_one_pair_and_subsequent_exact_offline_re
     assert_eq!(stages(&served), ["wide", "rerank"]);
 
     // Process C: subsequent exact offline reuse
-    let mut cmd_c = f.sr_command(
-        &Provider {
-            child: Command::new("true").spawn().unwrap(),
-            lines: BufReader::new(
-                Command::new("true")
-                    .stdout(Stdio::piped())
-                    .spawn()
-                    .unwrap()
-                    .stdout
-                    .unwrap(),
-            ),
-            port,
-        },
-        &["--offline"],
-    );
+    let mut cmd_c = f.sr_command_at(port, &["--offline"]);
     let out_c = cmd_c.output().unwrap();
     eprintln!("out_c status: {:?}", out_c.status);
     eprintln!("out_c stderr: {}", String::from_utf8_lossy(&out_c.stderr));
@@ -300,21 +290,26 @@ fn ordinary_two_consumer_success_incurs_one_pair_and_subsequent_exact_offline_re
     assert_eq!(out_c.status.code(), Some(0));
     let val_c: Value = serde_json::from_slice(&out_c.stdout).unwrap();
     assert_eq!(val_c["decision"], "ranked");
+    assert_eq!(val_c["usage"]["http_attempts"], 0);
+    assert_eq!(val_c["usage"]["requests"], 0);
 }
 
 #[test]
 fn follower_nearing_deadline_while_leader_active_makes_zero_provider_attempts() {
     let f = Fixture::new(CONSENT);
     f.claude_session("session-coord-2", TASK);
-    // Slow provider: wide request takes 2.5s
-    let provider = Provider::start(&f, "slow-wide", &["".as_ref(), "2.5".as_ref()]);
+    let marker = f.root.join("follower-wide-started");
+    let provider = Provider::start(
+        &f,
+        "slow-wide+write-on-wide",
+        &[marker.as_os_str(), "2.5".as_ref()],
+    );
 
     // Leader starts with 6s timeout
     let mut cmd_leader = f.sr_command(&provider, &["--timeout-ms", "6000"]);
     let child_leader = cmd_leader.stdout(Stdio::piped()).spawn().unwrap();
 
-    // Ensure leader acquires lease and starts wide evaluation
-    std::thread::sleep(Duration::from_millis(200));
+    wait_for_marker(&marker);
 
     // Follower starts with tight 600ms timeout
     let mut cmd_follower = f.sr_command(&provider, &["--timeout-ms", "600"]);
@@ -328,101 +323,204 @@ fn follower_nearing_deadline_while_leader_active_makes_zero_provider_attempts() 
     // Only the leader called the provider (1 wide, 1 rerank)
     assert_eq!(stages(&served), ["wide", "rerank"]);
 
-    // Follower made 0 provider attempts
-    let val_f: Value = serde_json::from_slice(&out_follower.stdout).unwrap_or(Value::Null);
-    if let Some(dec) = val_f["decision"].as_str() {
-        assert_eq!(dec, "unavailable");
+    assert_eq!(out_follower.status.code(), Some(6));
+    let val_f: Value = serde_json::from_slice(&out_follower.stdout).unwrap();
+    assert_eq!(val_f["decision"], "unavailable");
+    assert_eq!(val_f["usage"]["http_attempts"], 0);
+    assert_eq!(val_f["usage"]["requests"], 0);
+}
+
+fn wait_for_marker(marker: &std::path::Path) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while !marker.exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "leader never reached provider"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+// Keep a stopped child owned even if an assertion fails.
+struct OwnedRank(Option<Child>);
+impl OwnedRank {
+    fn wait(mut self) -> std::process::Output {
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
+        loop {
+            if self.0.as_mut().unwrap().try_wait().unwrap().is_some() {
+                return self.0.take().unwrap().wait_with_output().unwrap();
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "rank child did not terminate"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+}
+impl Drop for OwnedRank {
+    fn drop(&mut self) {
+        if let Some(child) = &mut self.0 {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
     }
 }
 
 #[test]
 fn stale_leader_superseded_cannot_overwrite_newer_cache_or_complete_lease() {
     let f = Fixture::new(CONSENT);
-    let cache_dir = f.cache_dir();
-    let leases_path = cache_dir.join("leases.sqlite3");
-
-    let coordinator = SqliteLeaseCoordinator::open(&leases_path).unwrap();
-    let key = CoordinationKey::from_bytes([0x42; 32]);
-    let policy = CoordinationPolicy::default();
-
-    let now = 1_000_000u64;
-    // Leader A acquires
-    let acq_a = coordinator.acquire(key, now, &policy).unwrap();
-    let LeaseAcquisition::Leading(leader_a) = acq_a else {
-        panic!("expected Leader A Leading");
-    };
-    assert_eq!(leader_a.fencing_generation, FencingGeneration(1));
-
-    // Advance time past lease expiry
-    let later = now + policy.lease_ttl_ms + 100;
-
-    // Leader B reacquires as successor
-    let acq_b = coordinator.acquire(key, later, &policy).unwrap();
-    let LeaseAcquisition::Leading(leader_b) = acq_b else {
-        panic!("expected Leader B Leading");
-    };
-    assert_eq!(leader_b.fencing_generation, FencingGeneration(2));
-
-    // Leader B completes and publishes successfully
-    let outcome_b = coordinator
-        .complete(
-            leader_b.key,
-            leader_b.owner_token,
-            leader_b.fencing_generation,
-            later,
-        )
-        .unwrap();
-    assert_eq!(outcome_b, PublishOutcome::Published);
-
-    // Leader A attempts to complete after B published: MUST BE SUPERSEDED
-    let outcome_a = coordinator
-        .complete(
-            leader_a.key,
-            leader_a.owner_token,
-            leader_a.fencing_generation,
-            later + 100,
-        )
-        .unwrap();
-    assert!(
-        matches!(outcome_a, PublishOutcome::Superseded { .. }),
-        "stale Leader A must be superseded and cannot overwrite or complete B's lease"
+    f.claude_session("stale-owner", TASK);
+    let marker = f.root.join("wide-started");
+    let provider = Provider::start(
+        &f,
+        "slow-wide+write-on-wide",
+        &[marker.as_os_str(), "2".as_ref()],
     );
+    let spawn = || {
+        let mut command = f.sr_command(&provider, &["--timeout-ms", "12000"]);
+        OwnedRank(Some(
+            command
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap(),
+        ))
+    };
+    let a = spawn();
+    wait_for_marker(&marker);
+    let pid = nix::unistd::Pid::from_raw(i32::try_from(a.0.as_ref().unwrap().id()).unwrap());
+    nix::sys::signal::kill(pid, nix::sys::signal::Signal::SIGSTOP).unwrap();
+    let leases_path = f.cache_dir().join("sr/leases.sqlite3");
+    let conn = rusqlite::Connection::open(&leases_path).unwrap();
+    conn.busy_timeout(Duration::from_millis(25)).unwrap();
+    // A is stopped after sending its wide request and before receiving it.
+    // Advance durable lease expiry, then let a real successor run and publish.
+    assert_eq!(
+        conn.execute(
+            "UPDATE sr_coordination_leases SET expires_at_unix_ms=0 WHERE is_completed=0",
+            []
+        )
+        .unwrap(),
+        1
+    );
+    let b = spawn().wait();
+    assert_eq!(
+        b.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&b.stderr)
+    );
+    assert_eq!(
+        serde_json::from_slice::<Value>(&b.stdout).unwrap()["decision"],
+        "ranked"
+    );
+    let cache = rusqlite::Connection::open(f.cache_dir().join("sr/cache.sqlite3")).unwrap();
+    let snapshot = || {
+        cache.prepare("SELECT stage, fingerprint, response, received_at_unix_ms FROM sr_cache_response ORDER BY stage,fingerprint")
+            .unwrap().query_map([], |r| Ok((r.get::<_,String>(0)?, r.get::<_,Vec<u8>>(1)?, r.get::<_,Vec<u8>>(2)?, r.get::<_,i64>(3)?)))
+            .unwrap().collect::<Result<Vec<_>,_>>().unwrap()
+    };
+    let bodies = snapshot();
+    assert_eq!(bodies.len(), 2, "successor must publish a complete pair");
+    let completed: (i64, i64) = conn
+        .query_row(
+            "SELECT fencing_generation,is_completed FROM sr_coordination_leases",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(completed, (2, 1));
+    nix::sys::signal::kill(pid, nix::sys::signal::Signal::SIGCONT).unwrap();
+    let a = a.wait();
+    assert_eq!(
+        a.status.code(),
+        Some(6),
+        "{}",
+        String::from_utf8_lossy(&a.stderr)
+    );
+    assert_eq!(
+        serde_json::from_slice::<Value>(&a.stdout).unwrap()["decision"],
+        "unavailable"
+    );
+    assert_eq!(
+        snapshot(),
+        bodies,
+        "resumed stale owner overwrote successor cache"
+    );
+    let after: (i64, i64) = conn
+        .query_row(
+            "SELECT fencing_generation,is_completed FROM sr_coordination_leases",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(after, completed);
+    assert_eq!(stages(&provider.finish()), ["wide", "wide", "rerank"]);
 }
 
 #[test]
 fn completed_lease_with_absent_pair_reacquires_leadership_before_fresh_evaluation() {
     let f = Fixture::new(CONSENT);
-    let cache_dir = f.cache_dir();
-    let leases_path = cache_dir.join("leases.sqlite3");
-
-    let coordinator = SqliteLeaseCoordinator::open(&leases_path).unwrap();
-    let key = CoordinationKey::from_bytes([0x77; 32]);
-    let policy = CoordinationPolicy::default();
-
-    let now = 1_000_000u64;
-    let acq = coordinator.acquire(key, now, &policy).unwrap();
-    let LeaseAcquisition::Leading(leader) = acq else {
-        panic!("expected Leading");
+    f.claude_session("expired-pair", TASK);
+    let provider = Provider::start(&f, "useful", &[]);
+    let run = || {
+        let mut command = f.sr_command(&provider, &["--timeout-ms", "12000"]);
+        OwnedRank(Some(
+            command
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap(),
+        ))
+        .wait()
     };
-
-    // Mark completed in leases
-    coordinator
-        .complete(
-            leader.key,
-            leader.owner_token,
-            leader.fencing_generation,
-            now + 50,
+    let first = run();
+    assert_eq!(
+        first.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    let cache = rusqlite::Connection::open(f.cache_dir().join("sr/cache.sqlite3")).unwrap();
+    // Expire only rerank, preserving the exact key, namespace and wide answer.
+    assert_eq!(
+        cache
+            .execute(
+                "UPDATE sr_cache_response SET received_at_unix_ms=0 WHERE stage='rerank'",
+                []
+            )
+            .unwrap(),
+        1
+    );
+    let second = run();
+    assert_eq!(
+        second.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+    assert_eq!(
+        serde_json::from_slice::<Value>(&second.stdout).unwrap()["decision"],
+        "ranked"
+    );
+    let leases = rusqlite::Connection::open(f.cache_dir().join("sr/leases.sqlite3")).unwrap();
+    let state: (i64, i64, i64) = leases
+        .query_row(
+            "SELECT count(*),max(fencing_generation),min(is_completed) FROM sr_coordination_leases",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .unwrap();
-
-    // Reacquire when cache is absent/expired: must succeed with bumped generation
-    let reacquired = coordinator
-        .force_reacquire(key, now + 100, &policy)
-        .unwrap();
-    let LeaseAcquisition::Leading(new_leader) = reacquired else {
-        panic!("expected Leading on force_reacquire");
-    };
-    assert_eq!(new_leader.fencing_generation, FencingGeneration(2));
+    assert_eq!(
+        state,
+        (1, 2, 1),
+        "same request must reacquire the completed lease"
+    );
+    assert_eq!(
+        stages(&provider.finish()),
+        ["wide", "rerank", "wide", "rerank"]
+    );
 }
 
 #[test]

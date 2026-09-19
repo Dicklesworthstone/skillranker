@@ -232,18 +232,20 @@ pub async fn execute_pipeline(
     let result = rank_once(invocation, clock, cx, args, transport, &mut progress).await;
     // Release a led lease on every path. Followers then find the recorded
     // pair, or send themselves when this run recorded nothing.
-    let mut completion_superseded = false;
+    let mut completion_failed = false;
     if let Some((leases, leader)) = progress.lease.take()
-        && let Some(crate::cache::PublishOutcome::Superseded { .. }) =
-            persistent::complete(invocation, cx, &leases, &leader)
+        && !matches!(
+            persistent::complete(invocation, cx, &leases, &leader),
+            Some(crate::cache::PublishOutcome::Published)
+        )
     {
-        completion_superseded = true;
+        completion_failed = true;
     }
-    if completion_superseded {
+    if completion_failed && result.is_ok() {
         return Err(failure(
             6,
             "timeout",
-            "Leader was superseded by successor before lease completion",
+            "Leader ownership could not be confirmed at lease completion",
         ));
     }
     // Include final validation and lease release in reported latency. A lease
@@ -1619,15 +1621,6 @@ async fn rank_once(
             )
         })?;
     if wide_fresh {
-        if let Some((ref leases, ref leader)) = progress.lease
-            && !persistent::is_lease_valid(invocation, cx, leases, leader)
-        {
-            return Err(failure(
-                6,
-                "timeout",
-                "Leader lease expired or superseded before response cache publication",
-            ));
-        }
         persistent::record(
             &mut store,
             invocation,
@@ -1639,7 +1632,8 @@ async fn rank_once(
                 &wide_response,
                 active_model,
             ),
-        );
+            progress.lease.as_ref(),
+        )?;
     }
     progress.evaluated.wide_returned = Some(wide_response.returned_model.clone());
     progress.evaluated.needs_skill = Some(wide_outcome.needs_skill);
@@ -1768,15 +1762,6 @@ async fn rank_once(
     })?;
 
     if rerank_fresh {
-        if let Some((ref leases, ref leader)) = progress.lease
-            && !persistent::is_lease_valid(invocation, cx, leases, leader)
-        {
-            return Err(failure(
-                6,
-                "timeout",
-                "Leader lease expired or superseded before response cache publication",
-            ));
-        }
         let rerank_fp = fingerprint(
             RequestStage::Rerank,
             &shortlist_digests(&shortlisted),
@@ -1794,7 +1779,8 @@ async fn rank_once(
                 &rerank_response,
                 active_model,
             ),
-        );
+            progress.lease.as_ref(),
+        )?;
     }
     progress.evaluated.rerank_returned = Some(rerank_response.returned_model.clone());
     progress.evaluated.choice_confidence = Some(rerank_outcome.choice_confidence);
@@ -2293,32 +2279,6 @@ mod persistent {
         .value
     }
 
-    pub(super) fn is_lease_valid(
-        invocation: &ProcessInvocation,
-        cx: &Cx,
-        path: &Path,
-        leader: &LeaderContext,
-    ) -> bool {
-        let path = path.to_path_buf();
-        let leader = leader.clone();
-        run_blocking_leaf(
-            invocation,
-            cx,
-            BlockingLeafKind::Database,
-            false,
-            move || match coordinator(&path).map(|c| c.check_lease(leader.key)) {
-                Some(Ok(Some(record))) => {
-                    record.owner_token == leader.owner_token
-                        && record.fencing_generation == leader.fencing_generation
-                        && !record.is_completed
-                        && wall_clock_ms() < record.expires_at_unix_ms
-                }
-                _ => false,
-            },
-        )
-        .is_ok_and(|outcome| outcome.value)
-    }
-
     pub(super) fn complete(
         invocation: &ProcessInvocation,
         cx: &Cx,
@@ -2421,14 +2381,32 @@ mod persistent {
         cx: &Cx,
         namespace: [u8; 32],
         entry: CachedResponseEntry,
-    ) {
+        fence: Option<&(std::path::PathBuf, LeaderContext)>,
+    ) -> Result<(), super::PipelineFailure> {
         let Some(Store(store)) = slot.take() else {
-            return;
+            return Ok(());
         };
-        let now = entry.received_at_unix_ms;
-        if let Ok(store) = store.record_response(invocation, cx, namespace, entry, now) {
-            *slot = Some(Store(store));
+        let result = match fence {
+            Some(fence) => {
+                store.record_response_fenced(invocation, cx, namespace, entry, fence.clone())
+            }
+            None => {
+                let now = entry.received_at_unix_ms;
+                store.record_response(invocation, cx, namespace, entry, now)
+            }
+        };
+        match result {
+            Ok(store) => *slot = Some(Store(store)),
+            Err(_) if fence.is_some() => {
+                return Err(super::failure(
+                    6,
+                    "timeout",
+                    "Leader cache publication could not verify and retain lease ownership",
+                ));
+            }
+            Err(_) => {}
         }
+        Ok(())
     }
 }
 
@@ -2462,15 +2440,6 @@ mod persistent {
         _: CoordinationKey,
     ) -> Option<LeaseAcquisition> {
         None
-    }
-
-    pub(super) fn is_lease_valid(
-        _: &ProcessInvocation,
-        _: &Cx,
-        _: &Path,
-        _: &LeaderContext,
-    ) -> bool {
-        false
     }
 
     pub(super) async fn wait_for_leader(
@@ -2532,7 +2501,9 @@ mod persistent {
         _: &Cx,
         _: [u8; 32],
         _: CachedResponseEntry,
-    ) {
+        _: Option<&(std::path::PathBuf, LeaderContext)>,
+    ) -> Result<(), super::PipelineFailure> {
+        Ok(())
     }
 }
 
