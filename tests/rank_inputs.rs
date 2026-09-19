@@ -432,7 +432,7 @@ fn rank_stdin(f: &Fixture, input: Vec<u8>, hold_open: bool) -> (Output, bool) {
         .spawn()
         .unwrap();
     let mut pipe = child.stdin.take().unwrap();
-    let (release, held) = std::sync::mpsc::channel();
+    let (release, held) = std::sync::mpsc::channel::<()>();
     let writer = std::thread::spawn(move || {
         let result = pipe.write_all(&input);
         if hold_open {
