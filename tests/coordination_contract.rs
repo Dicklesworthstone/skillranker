@@ -19,8 +19,8 @@ use rusqlite::Connection;
 use skillranker::cache::{
     CacheKey, CacheNamespace, CachedResponseEntry, CandidateDigest, CoordinateRequestQuery,
     CoordinationKey, CoordinationPolicy, DEFAULT_CACHE_TTL_SECS, DEFAULT_LEASE_TTL_MS,
-    FencingGeneration, LeaseAcquisition, LeaseCoordinator, MemoryCoordinator,
-    MemoryResponseCache, PublishOutcome, RequestFingerprint, RequestFingerprintInput, RequestStage,
+    FencingGeneration, LeaseAcquisition, LeaseCoordinator, MemoryCoordinator, MemoryResponseCache,
+    PublishOutcome, RequestFingerprint, RequestFingerprintInput, RequestStage,
     SingleFlightCoordinator, SqliteLeaseCoordinator, SqliteResponseCache,
     compute_request_fingerprint,
 };

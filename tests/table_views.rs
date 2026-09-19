@@ -35,7 +35,8 @@ struct CliFixture {
 impl CliFixture {
     fn new() -> Self {
         let id = FIXTURE_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let root = std::env::temp_dir().join(format!("sr-table-test-{}-{}", std::process::id(), id));
+        let root =
+            std::env::temp_dir().join(format!("sr-table-test-{}-{}", std::process::id(), id));
         let workspace = root.join("workspace");
         let skills_dir = workspace.join(".claude/skills");
         fs::create_dir_all(&skills_dir).unwrap();
@@ -87,7 +88,9 @@ impl CliFixture {
         let file = skill_dir.join("SKILL.md");
         fs::write(
             &file,
-            format!("---\nname: {display_name}\ndescription: Test skill {name}\n---\nBody of {name}\n"),
+            format!(
+                "---\nname: {display_name}\ndescription: Test skill {name}\n---\nBody of {name}\n"
+            ),
         )
         .unwrap();
         file
@@ -155,7 +158,10 @@ fn test_malicious_ansi_and_control_sequence_sanitization() {
 
     // Terminal clear / cursor repositioning escape codes
     let cursor_tamper = "\x1b[2J\x1b[H\x1b[?25lEvil Terminal Manipulation";
-    assert_eq!(sanitize_terminal_text(cursor_tamper), "Evil Terminal Manipulation");
+    assert_eq!(
+        sanitize_terminal_text(cursor_tamper),
+        "Evil Terminal Manipulation"
+    );
 
     // OSC 8 Hyperlink injection
     let osc_link = "\x1b]8;;https://attacker.example.com/payload\x07Click Here\x1b]8;;\x07";
@@ -303,7 +309,8 @@ fn test_cli_format_dispatch_table_vs_json() {
         &[],
     );
     assert_eq!(out_conflict.status.code(), Some(2));
-    let val_conflict: Value = serde_json::from_slice(&out_conflict.stdout).expect("error JSON stdout");
+    let val_conflict: Value =
+        serde_json::from_slice(&out_conflict.stdout).expect("error JSON stdout");
     assert_eq!(val_conflict["error"]["code"], 2);
     assert_eq!(val_conflict["error"]["kind"], "invalid-usage");
 
@@ -320,6 +327,7 @@ fn test_cli_format_dispatch_table_vs_json() {
         &[],
     );
     assert_eq!(out_default.status.code(), Some(0));
-    let val_default: Value = serde_json::from_slice(&out_default.stdout).expect("valid JSON default on pipe");
+    let val_default: Value =
+        serde_json::from_slice(&out_default.stdout).expect("valid JSON default on pipe");
     assert_eq!(val_default["decision"], "explicit");
 }

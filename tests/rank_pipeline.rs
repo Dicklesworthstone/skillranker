@@ -139,8 +139,18 @@ fn test_clock() -> EntryClock {
 fn test_explicit_directive_bypasses_inference() {
     let (_root, workspace) = create_test_env();
     let skills_dir = workspace.join(".claude/skills");
-    create_skill(&skills_dir, "rust_testing", "Runs cargo test suites", "Use cargo test.");
-    create_skill(&skills_dir, "git_helper", "Git workflow automation", "Use git commands.");
+    create_skill(
+        &skills_dir,
+        "rust_testing",
+        "Runs cargo test suites",
+        "Use cargo test.",
+    );
+    create_skill(
+        &skills_dir,
+        "git_helper",
+        "Git workflow automation",
+        "Use git commands.",
+    );
 
     let ctx_file = create_context_file(&workspace, "Please use skill: rust_testing to run tests");
 
@@ -159,8 +169,10 @@ fn test_explicit_directive_bypasses_inference() {
     };
     let gate = EffectGate::new(flags, Scope::Rank).unwrap();
 
-    let mut source_options = SourceOptions::default();
-    source_options.context = Some(LocalPath::new(ctx_file));
+    let source_options = SourceOptions {
+        context: Some(LocalPath::new(ctx_file)),
+        ..Default::default()
+    };
 
     let args = RankArgs {
         workspace: workspace.clone(),
@@ -185,7 +197,10 @@ fn test_explicit_directive_bypasses_inference() {
         .block_on(async { execute_pipeline(&invocation, &cx, args, None).await })
         .expect("pipeline execution succeeded");
 
-    assert_eq!(doc.kind(), skillranker::output::OutputKind::Decision(Decision::Explicit));
+    assert_eq!(
+        doc.kind(),
+        skillranker::output::OutputKind::Decision(Decision::Explicit)
+    );
     assert_eq!(doc.exit_code(), skillranker::output::CliExit::Success);
 
     let val = doc.as_value();
@@ -201,8 +216,18 @@ fn test_explicit_directive_bypasses_inference() {
 fn test_ranked_flow_with_mock_jev() {
     let (_root, workspace) = create_test_env();
     let skills_dir = workspace.join(".claude/skills");
-    create_skill(&skills_dir, "skill_a", "Skill Alpha description", "Skill Alpha body");
-    create_skill(&skills_dir, "skill_b", "Skill Beta description", "Skill Beta body");
+    create_skill(
+        &skills_dir,
+        "skill_a",
+        "Skill Alpha description",
+        "Skill Alpha body",
+    );
+    create_skill(
+        &skills_dir,
+        "skill_b",
+        "Skill Beta description",
+        "Skill Beta body",
+    );
 
     let ctx_file = create_context_file(&workspace, "Help me refactor the pipeline");
 
@@ -221,8 +246,10 @@ fn test_ranked_flow_with_mock_jev() {
     };
     let gate = EffectGate::new(flags, Scope::Rank).unwrap();
 
-    let mut source_options = SourceOptions::default();
-    source_options.context = Some(LocalPath::new(ctx_file));
+    let source_options = SourceOptions {
+        context: Some(LocalPath::new(ctx_file)),
+        ..Default::default()
+    };
 
     let mut sources = ConfigSources::default();
     sources
@@ -243,7 +270,16 @@ fn test_ranked_flow_with_mock_jev() {
         let first_choice = q_which.keys().next().unwrap().clone();
 
         let mut phase_probs = serde_json::Map::new();
-        for p in ["planning", "implementing", "debugging", "testing", "reviewing", "releasing", "conversing", "other"] {
+        for p in [
+            "planning",
+            "implementing",
+            "debugging",
+            "testing",
+            "reviewing",
+            "releasing",
+            "conversing",
+            "other",
+        ] {
             phase_probs.insert(p.into(), json!(0.125));
         }
 
@@ -338,7 +374,10 @@ fn test_ranked_flow_with_mock_jev() {
         .block_on(async { execute_pipeline(&invocation, &cx, args, Some(&mock_transport)).await })
         .expect("pipeline execution succeeded");
 
-    assert_eq!(doc.kind(), skillranker::output::OutputKind::Decision(Decision::Ranked));
+    assert_eq!(
+        doc.kind(),
+        skillranker::output::OutputKind::Decision(Decision::Ranked)
+    );
     assert_eq!(doc.exit_code(), skillranker::output::CliExit::Success);
 
     let val = doc.as_value();
@@ -355,7 +394,12 @@ fn test_ranked_flow_with_mock_jev() {
 fn test_low_need_abstention() {
     let (_root, workspace) = create_test_env();
     let skills_dir = workspace.join(".claude/skills");
-    create_skill(&skills_dir, "skill_a", "Skill Alpha description", "Skill Alpha body");
+    create_skill(
+        &skills_dir,
+        "skill_a",
+        "Skill Alpha description",
+        "Skill Alpha body",
+    );
 
     let ctx_file = create_context_file(&workspace, "Simple query not needing skills");
 
@@ -374,8 +418,10 @@ fn test_low_need_abstention() {
     };
     let gate = EffectGate::new(flags, Scope::Rank).unwrap();
 
-    let mut source_options = SourceOptions::default();
-    source_options.context = Some(LocalPath::new(ctx_file));
+    let source_options = SourceOptions {
+        context: Some(LocalPath::new(ctx_file)),
+        ..Default::default()
+    };
 
     let mut sources = ConfigSources::default();
     sources
@@ -396,7 +442,16 @@ fn test_low_need_abstention() {
         let first_choice = q_which.keys().next().unwrap().clone();
 
         let mut phase_probs = serde_json::Map::new();
-        for p in ["planning", "implementing", "debugging", "testing", "reviewing", "releasing", "conversing", "other"] {
+        for p in [
+            "planning",
+            "implementing",
+            "debugging",
+            "testing",
+            "reviewing",
+            "releasing",
+            "conversing",
+            "other",
+        ] {
             phase_probs.insert(p.into(), json!(0.125));
         }
 
@@ -450,7 +505,10 @@ fn test_low_need_abstention() {
         .block_on(async { execute_pipeline(&invocation, &cx, args, Some(&mock_transport)).await })
         .expect("pipeline execution succeeded");
 
-    assert_eq!(doc.kind(), skillranker::output::OutputKind::Decision(Decision::Abstain));
+    assert_eq!(
+        doc.kind(),
+        skillranker::output::OutputKind::Decision(Decision::Abstain)
+    );
     assert_eq!(doc.exit_code(), skillranker::output::CliExit::Success);
 
     let val = doc.as_value();
@@ -464,7 +522,12 @@ fn test_low_need_abstention() {
 fn test_dry_run_preview_without_network() {
     let (_root, workspace) = create_test_env();
     let skills_dir = workspace.join(".claude/skills");
-    create_skill(&skills_dir, "skill_a", "Skill Alpha description", "Skill Alpha body");
+    create_skill(
+        &skills_dir,
+        "skill_a",
+        "Skill Alpha description",
+        "Skill Alpha body",
+    );
 
     let ctx_file = create_context_file(&workspace, "Perform dry-run preview");
 
@@ -483,8 +546,10 @@ fn test_dry_run_preview_without_network() {
     };
     let gate = EffectGate::new(flags, Scope::Rank).unwrap();
 
-    let mut source_options = SourceOptions::default();
-    source_options.context = Some(LocalPath::new(ctx_file));
+    let source_options = SourceOptions {
+        context: Some(LocalPath::new(ctx_file)),
+        ..Default::default()
+    };
 
     let args = RankArgs {
         workspace: workspace.clone(),
@@ -527,13 +592,26 @@ fn test_dry_run_preview_without_network() {
 fn test_cli_bare_sr_and_rank_flags() {
     let (_root, workspace) = create_test_env();
     let skills_dir = workspace.join(".claude/skills");
-    create_skill(&skills_dir, "skill_a", "Skill Alpha description", "Skill Alpha body");
+    create_skill(
+        &skills_dir,
+        "skill_a",
+        "Skill Alpha description",
+        "Skill Alpha body",
+    );
     let ctx_file = create_context_file(&workspace, "Use skill: skill_a");
 
     // Test 1: CLI dry run with explicit context
     let output = Command::new(env!("CARGO_BIN_EXE_sr"))
         .current_dir(&workspace)
-        .args(&["rank", "--context", ctx_file.to_str().unwrap(), "--require-skill", "skill_a", "--dry-run", "--json"])
+        .args([
+            "rank",
+            "--context",
+            ctx_file.to_str().unwrap(),
+            "--require-skill",
+            "skill_a",
+            "--dry-run",
+            "--json",
+        ])
         .output()
         .expect("execute sr binary");
 
@@ -554,7 +632,7 @@ fn test_cli_bare_sr_and_rank_flags() {
     // Test 2: Conflict detection (e.g. --offline with --allow-network)
     let output_conflict = Command::new(env!("CARGO_BIN_EXE_sr"))
         .current_dir(&workspace)
-        .args(&["rank", "--offline", "--allow-network"])
+        .args(["rank", "--offline", "--allow-network"])
         .output()
         .expect("execute sr binary");
 
@@ -567,7 +645,12 @@ fn test_cli_bare_sr_and_rank_flags() {
 fn test_low_fit_abstention() {
     let (_root, workspace) = create_test_env();
     let skills_dir = workspace.join(".claude/skills");
-    create_skill(&skills_dir, "skill_a", "Skill Alpha description", "Skill Alpha body");
+    create_skill(
+        &skills_dir,
+        "skill_a",
+        "Skill Alpha description",
+        "Skill Alpha body",
+    );
 
     let ctx_file = create_context_file(&workspace, "Help me refactor the pipeline");
 
@@ -586,8 +669,10 @@ fn test_low_fit_abstention() {
     };
     let gate = EffectGate::new(flags, Scope::Rank).unwrap();
 
-    let mut source_options = SourceOptions::default();
-    source_options.context = Some(LocalPath::new(ctx_file));
+    let source_options = SourceOptions {
+        context: Some(LocalPath::new(ctx_file)),
+        ..Default::default()
+    };
 
     let mut sources = ConfigSources::default();
     sources
@@ -608,7 +693,16 @@ fn test_low_fit_abstention() {
         let first_choice = q_which.keys().next().unwrap().clone();
 
         let mut phase_probs = serde_json::Map::new();
-        for p in ["planning", "implementing", "debugging", "testing", "reviewing", "releasing", "conversing", "other"] {
+        for p in [
+            "planning",
+            "implementing",
+            "debugging",
+            "testing",
+            "reviewing",
+            "releasing",
+            "conversing",
+            "other",
+        ] {
             phase_probs.insert(p.into(), json!(0.125));
         }
 
@@ -701,7 +795,10 @@ fn test_low_fit_abstention() {
         .block_on(async { execute_pipeline(&invocation, &cx, args, Some(&mock_transport)).await })
         .expect("pipeline execution succeeded");
 
-    assert_eq!(doc.kind(), skillranker::output::OutputKind::Decision(Decision::Abstain));
+    assert_eq!(
+        doc.kind(),
+        skillranker::output::OutputKind::Decision(Decision::Abstain)
+    );
     assert_eq!(doc.exit_code(), skillranker::output::CliExit::Success);
 
     let val = doc.as_value();
@@ -713,7 +810,12 @@ fn test_low_fit_abstention() {
 fn test_none_winner_abstention() {
     let (_root, workspace) = create_test_env();
     let skills_dir = workspace.join(".claude/skills");
-    create_skill(&skills_dir, "skill_a", "Skill Alpha description", "Skill Alpha body");
+    create_skill(
+        &skills_dir,
+        "skill_a",
+        "Skill Alpha description",
+        "Skill Alpha body",
+    );
 
     let ctx_file = create_context_file(&workspace, "Help me refactor the pipeline");
 
@@ -732,8 +834,10 @@ fn test_none_winner_abstention() {
     };
     let gate = EffectGate::new(flags, Scope::Rank).unwrap();
 
-    let mut source_options = SourceOptions::default();
-    source_options.context = Some(LocalPath::new(ctx_file));
+    let source_options = SourceOptions {
+        context: Some(LocalPath::new(ctx_file)),
+        ..Default::default()
+    };
 
     let mut sources = ConfigSources::default();
     sources
@@ -754,7 +858,16 @@ fn test_none_winner_abstention() {
         let first_choice = q_which.keys().next().unwrap().clone();
 
         let mut phase_probs = serde_json::Map::new();
-        for p in ["planning", "implementing", "debugging", "testing", "reviewing", "releasing", "conversing", "other"] {
+        for p in [
+            "planning",
+            "implementing",
+            "debugging",
+            "testing",
+            "reviewing",
+            "releasing",
+            "conversing",
+            "other",
+        ] {
             phase_probs.insert(p.into(), json!(0.125));
         }
 
@@ -846,11 +959,13 @@ fn test_none_winner_abstention() {
         .block_on(async { execute_pipeline(&invocation, &cx, args, Some(&mock_transport)).await })
         .expect("pipeline execution succeeded");
 
-    assert_eq!(doc.kind(), skillranker::output::OutputKind::Decision(Decision::Abstain));
+    assert_eq!(
+        doc.kind(),
+        skillranker::output::OutputKind::Decision(Decision::Abstain)
+    );
     assert_eq!(doc.exit_code(), skillranker::output::CliExit::Success);
 
     let val = doc.as_value();
     assert_eq!(val["decision"], "abstain");
     assert_eq!(val["reason"], "no-shortlist-match");
 }
-

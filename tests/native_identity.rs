@@ -226,7 +226,10 @@ fn supported_native_block_shapes_preserve_text_and_tool_associations() {
     assert_eq!(tool.call_id.unwrap().as_str(), "call-read-01");
     assert_eq!(tool.name.as_str(), "read_file");
     assert_eq!(tool.status, ToolStatus::Attempted);
-    assert_eq!(tool.arguments.unwrap().as_str(), "{\"path\":\"src/main.rs\"}");
+    assert_eq!(
+        tool.arguments.unwrap().as_str(),
+        "{\"path\":\"src/main.rs\"}"
+    );
 
     // 2. User message with content array: tool_result
     let tool_res_record = json!({
@@ -391,7 +394,8 @@ fn descriptor_bound_snapshot_detects_path_traversal() {
     let invocation = ProcessInvocation::enter().unwrap();
     let cx = invocation.request_cx().unwrap();
     let traversal_path = Path::new("some/dir/../../etc/passwd");
-    let err = snapshot_jsonl(&invocation, &cx, traversal_path, None, CursorKind::Ranking).unwrap_err();
+    let err =
+        snapshot_jsonl(&invocation, &cx, traversal_path, None, CursorKind::Ranking).unwrap_err();
     assert_eq!(err, JsonlError::UnsafePath);
     assert!(invocation.shutdown());
 }

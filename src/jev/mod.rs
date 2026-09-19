@@ -8,8 +8,8 @@
 pub mod admission;
 pub mod client;
 pub mod codec;
-pub mod rerank;
 pub mod endpoint;
+pub mod rerank;
 pub mod retry;
 pub mod wide;
 

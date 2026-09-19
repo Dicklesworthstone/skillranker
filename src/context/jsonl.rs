@@ -160,7 +160,10 @@ fn read_snapshot(
     previous: Option<&JsonlCursor>,
     kind: CursorKind,
 ) -> Result<JsonlSnapshot, JsonlError> {
-    if path.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+    if path
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
         return Err(JsonlError::UnsafePath);
     }
     let link_meta = fs::symlink_metadata(path).map_err(|_| JsonlError::Io)?;
@@ -467,7 +470,10 @@ fn parse_native_content(
     default_kind: EventKind,
 ) -> Option<ParsedContent> {
     // 1. Dedicated tool invocation or result record (top-level)
-    if matches!(default_kind, EventKind::ToolInvocation | EventKind::ToolResult) {
+    if matches!(
+        default_kind,
+        EventKind::ToolInvocation | EventKind::ToolResult
+    ) {
         let call_id = native_identity(object, &["call_id", "tool_use_id", "id"], ToolCallId::new)?;
         let call_id = call_id?;
         let name = string_field(object, &["name", "tool_name"]);
@@ -605,7 +611,11 @@ fn parse_blocks(
             }
             "tool_use" => {
                 let name = block_obj.get("name").and_then(Value::as_str)?;
-                let call_id = native_identity(block_obj, &["call_id", "tool_use_id", "id"], ToolCallId::new)?;
+                let call_id = native_identity(
+                    block_obj,
+                    &["call_id", "tool_use_id", "id"],
+                    ToolCallId::new,
+                )?;
                 let arguments = if let Some(input) = block_obj.get("input") {
                     match input {
                         Value::String(s) => Some(PrivateText::new(s.clone())),
@@ -629,7 +639,11 @@ fn parse_blocks(
                 kind = EventKind::ToolInvocation;
             }
             "tool_result" => {
-                let call_id = native_identity(block_obj, &["call_id", "tool_use_id", "id"], ToolCallId::new)?;
+                let call_id = native_identity(
+                    block_obj,
+                    &["call_id", "tool_use_id", "id"],
+                    ToolCallId::new,
+                )?;
                 let status = match block_obj.get("is_error").and_then(Value::as_bool) {
                     Some(true) => ToolStatus::Failed,
                     Some(false) => ToolStatus::Succeeded,
