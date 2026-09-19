@@ -232,8 +232,19 @@ pub async fn execute_pipeline(
     let result = rank_once(invocation, clock, cx, args, transport, &mut progress).await;
     // Release a led lease on every path. Followers then find the recorded
     // pair, or send themselves when this run recorded nothing.
-    if let Some((leases, leader)) = progress.lease.take() {
-        persistent::complete(invocation, cx, &leases, &leader);
+    let mut completion_superseded = false;
+    if let Some((leases, leader)) = progress.lease.take()
+        && let Some(crate::cache::PublishOutcome::Superseded { .. }) =
+            persistent::complete(invocation, cx, &leases, &leader)
+    {
+        completion_superseded = true;
+    }
+    if completion_superseded {
+        return Err(failure(
+            6,
+            "timeout",
+            "Leader was superseded by successor before lease completion",
+        ));
     }
     // Include final validation and lease release in reported latency. A lease
     // completion is a bounded storage effect, so check publication again after
@@ -1447,8 +1458,22 @@ async fn rank_once(
                 )
                 .await;
                 cached = lookup_pair(&mut store);
+                if cached.is_none()
+                    && let Some(LeaseAcquisition::Leading(leader)) =
+                        persistent::acquire(invocation, cx, clock, &leases, key).await
+                {
+                    progress.lease = Some((leases, leader));
+                }
             }
-            Some(LeaseAcquisition::AlreadyCompleted) => cached = lookup_pair(&mut store),
+            Some(LeaseAcquisition::AlreadyCompleted) => {
+                cached = lookup_pair(&mut store);
+                if cached.is_none()
+                    && let Some(LeaseAcquisition::Leading(leader)) =
+                        persistent::force_reacquire(invocation, cx, &leases, key)
+                {
+                    progress.lease = Some((leases, leader));
+                }
+            }
             None => {}
         }
     }
@@ -1464,6 +1489,17 @@ async fn rank_once(
     let wide_response = match cached {
         Some(response) => response,
         None => {
+            if store.is_some()
+                && matches!(gate.runtime_state(), StoreAccess::Enabled)
+                && args.cache_dir.is_some()
+                && progress.lease.is_none()
+            {
+                return Err(failure(
+                    6,
+                    "timeout",
+                    "Follower deadline reached while request was owned by active leader",
+                ));
+            }
             // Refuse before building a client when policy forbids any send.
             authorize_send(
                 clock,
@@ -1535,6 +1571,15 @@ async fn rank_once(
             )
         })?;
     if wide_fresh {
+        if let Some((ref leases, ref leader)) = progress.lease
+            && !persistent::is_lease_valid(invocation, cx, leases, leader)
+        {
+            return Err(failure(
+                6,
+                "timeout",
+                "Leader lease expired or superseded before response cache publication",
+            ));
+        }
         persistent::record(
             &mut store,
             invocation,
@@ -1668,6 +1713,15 @@ async fn rank_once(
     })?;
 
     if rerank_fresh {
+        if let Some((ref leases, ref leader)) = progress.lease
+            && !persistent::is_lease_valid(invocation, cx, leases, leader)
+        {
+            return Err(failure(
+                6,
+                "timeout",
+                "Leader lease expired or superseded before response cache publication",
+            ));
+        }
         let rerank_fp = fingerprint(
             RequestStage::Rerank,
             &shortlist_digests(&shortlisted),
@@ -2043,8 +2097,8 @@ mod persistent {
     use super::{EffectGate, ProcessInvocation, wall_clock_ms};
     use crate::cache::{
         CacheKey, CachedResponseEntry, CoordinationKey, CoordinationPolicy, FreshnessStatus,
-        LeaderContext, LeaseAcquisition, LeaseCoordinator, RequestFingerprint, RequestStage,
-        SqliteLeaseCoordinator,
+        LeaderContext, LeaseAcquisition, LeaseCoordinator, PublishOutcome, RequestFingerprint,
+        RequestStage, SqliteLeaseCoordinator,
     };
     use crate::runtime::EntryClock;
     use crate::storage::{CacheAccess, CacheLocation, CacheOpen, CacheStore, StoreError};
@@ -2162,30 +2216,80 @@ mod persistent {
         }
     }
 
-    pub(super) fn complete(
+    pub(super) fn force_reacquire(
         invocation: &ProcessInvocation,
         cx: &Cx,
         path: &Path,
-        leader: &LeaderContext,
-    ) {
+        key: CoordinationKey,
+    ) -> Option<LeaseAcquisition> {
         let path = path.to_path_buf();
-        let leader = leader.clone();
-        let _ = run_blocking_leaf(
+        run_blocking_leaf(
             invocation,
             cx,
             BlockingLeafKind::Database,
             false,
             move || {
-                if let Some(coordinator) = coordinator(&path) {
-                    let _ = coordinator.complete(
+                coordinator(&path)?
+                    .force_reacquire(key, wall_clock_ms(), &CoordinationPolicy::default())
+                    .ok()
+            },
+        )
+        .ok()?
+        .value
+    }
+
+    pub(super) fn is_lease_valid(
+        invocation: &ProcessInvocation,
+        cx: &Cx,
+        path: &Path,
+        leader: &LeaderContext,
+    ) -> bool {
+        let path = path.to_path_buf();
+        let leader = leader.clone();
+        run_blocking_leaf(
+            invocation,
+            cx,
+            BlockingLeafKind::Database,
+            false,
+            move || match coordinator(&path).map(|c| c.check_lease(leader.key)) {
+                Some(Ok(Some(record))) => {
+                    record.owner_token == leader.owner_token
+                        && record.fencing_generation == leader.fencing_generation
+                        && !record.is_completed
+                        && wall_clock_ms() < record.expires_at_unix_ms
+                }
+                _ => false,
+            },
+        )
+        .is_ok_and(|outcome| outcome.value)
+    }
+
+    pub(super) fn complete(
+        invocation: &ProcessInvocation,
+        cx: &Cx,
+        path: &Path,
+        leader: &LeaderContext,
+    ) -> Option<PublishOutcome> {
+        let path = path.to_path_buf();
+        let leader = leader.clone();
+        run_blocking_leaf(
+            invocation,
+            cx,
+            BlockingLeafKind::Database,
+            false,
+            move || {
+                coordinator(&path)?
+                    .complete(
                         leader.key,
                         leader.owner_token,
                         leader.fencing_generation,
                         wall_clock_ms(),
-                    );
-                }
+                    )
+                    .ok()
             },
-        );
+        )
+        .ok()
+        .and_then(|outcome| outcome.value)
     }
 
     pub(super) struct Store(CacheStore);
@@ -2278,7 +2382,7 @@ mod persistent {
     use super::{EffectGate, ProcessInvocation};
     use crate::cache::{
         CacheKey, CachedResponseEntry, CoordinationKey, LeaderContext, LeaseAcquisition,
-        RequestFingerprint, RequestStage,
+        PublishOutcome, RequestFingerprint, RequestStage,
     };
     use crate::runtime::EntryClock;
     use asupersync::Cx;
@@ -2296,6 +2400,24 @@ mod persistent {
         None
     }
 
+    pub(super) fn force_reacquire(
+        _: &ProcessInvocation,
+        _: &Cx,
+        _: &Path,
+        _: CoordinationKey,
+    ) -> Option<LeaseAcquisition> {
+        None
+    }
+
+    pub(super) fn is_lease_valid(
+        _: &ProcessInvocation,
+        _: &Cx,
+        _: &Path,
+        _: &LeaderContext,
+    ) -> bool {
+        false
+    }
+
     pub(super) async fn wait_for_leader(
         _: &ProcessInvocation,
         _: &Cx,
@@ -2306,7 +2428,14 @@ mod persistent {
     ) {
     }
 
-    pub(super) fn complete(_: &ProcessInvocation, _: &Cx, _: &Path, _: &LeaderContext) {}
+    pub(super) fn complete(
+        _: &ProcessInvocation,
+        _: &Cx,
+        _: &Path,
+        _: &LeaderContext,
+    ) -> Option<PublishOutcome> {
+        None
+    }
 
     pub(super) enum Store {}
 
