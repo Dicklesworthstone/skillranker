@@ -603,6 +603,8 @@ fn test_cli_bare_sr_and_rank_flags() {
     // Test 1: CLI dry run with explicit context
     let output = Command::new(env!("CARGO_BIN_EXE_sr"))
         .current_dir(&workspace)
+        .env("HOME", _root.join("home"))
+        .env("XDG_CONFIG_HOME", _root.join("config"))
         .args([
             "rank",
             "--context",
@@ -632,6 +634,8 @@ fn test_cli_bare_sr_and_rank_flags() {
     // Test 2: Conflict detection (e.g. --offline with --allow-network)
     let output_conflict = Command::new(env!("CARGO_BIN_EXE_sr"))
         .current_dir(&workspace)
+        .env("HOME", _root.join("home"))
+        .env("XDG_CONFIG_HOME", _root.join("config"))
         .args(["rank", "--offline", "--allow-network"])
         .output()
         .expect("execute sr binary");
