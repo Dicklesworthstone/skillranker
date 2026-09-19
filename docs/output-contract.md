@@ -170,7 +170,7 @@ are accepted only with `--dry-run`; anything else is `invalid-usage`.
 
 ## Snapshot-bound traces
 
-An optional `trace` contains `cursor`, `total`, `entries`, and `next_offset`.
+An optional `trace` contains `cursor`, `total`, `entries`, `next_offset`, and optional `next_cursor`.
 `TraceCursor` binds version, snapshot digest, query digest, and offset.
 `resume(current_snapshot, current_query, total)` rejects changed snapshots or
 queries and invalid offsets. Consumers must supply current expected identities;
@@ -180,7 +180,7 @@ An embedded trace must also match its enclosing decision's roster snapshot.
 
 Pages contain at most 128 entries; traces contain at most 80,000 entries (eight
 stages over the bounded 10,000-skill roster). A nonfinal page must make progress
-and advance exactly by its entry count; a final page has null `next_offset`.
+and advance exactly by its entry count; a final page has null `next_offset` and null `next_cursor`.
 Each entry records stable `skill_id`, stage, status, nullable finite `value` and
 `threshold`, and nullable reason. Lexical scores may exceed one; these generic
 trace operands are not probability fields.

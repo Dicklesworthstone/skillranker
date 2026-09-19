@@ -299,6 +299,7 @@ impl Workspace {
             roster_file: None,
             explain: false,
             why_not: None,
+            cursor: None,
             output_json: true,
             output_table: false,
             dry_run: false,

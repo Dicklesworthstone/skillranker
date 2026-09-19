@@ -12,10 +12,10 @@
 //! 7. ordering: whether the candidate was selected in the top-K ranking.
 //! 8. publication: whether the candidate passed final publication revalidation.
 
-use crate::identity::SkillId;
+use crate::identity::{ContentHash, SkillId};
 use serde::{Deserialize, Serialize};
 
-use super::TraceCursor;
+use super::{ContractError, SCHEMA_VERSION, TraceCursor};
 
 /// The 8 ordered stages in the ranking pipeline.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
@@ -165,5 +165,116 @@ pub struct StageTrace {
     pub cursor: TraceCursor,
     pub total: u64,
     pub next_offset: Option<u64>,
+    #[serde(default)]
+    pub next_cursor: Option<String>,
     pub entries: Vec<TraceEntry>,
+}
+
+impl StageTrace {
+    /// Formats a continuation cursor token if there is a subsequent page.
+    pub fn next_cursor(&self) -> Option<String> {
+        self.next_cursor.clone()
+    }
+}
+
+impl TraceCursor {
+    pub const TOKEN_PREFIX: &'static str = "t1";
+
+    /// Formats this cursor as a string token: `t1.<snapshot_hex>.<query_hex>.<offset>`.
+    pub fn to_token(&self) -> String {
+        format!(
+            "{}.{}.{}.{}",
+            Self::TOKEN_PREFIX,
+            self.snapshot_id.as_str(),
+            self.query_id.as_str(),
+            self.offset
+        )
+    }
+
+    /// Parses a trace cursor from a string token: `t1.<snapshot_hex>.<query_hex>.<offset>`.
+    pub fn from_token(token: &str) -> Result<Self, ContractError> {
+        let mut parts = token.split('.');
+        let (Some(prefix), Some(snapshot_hex), Some(query_hex), Some(offset_str), None) = (
+            parts.next(),
+            parts.next(),
+            parts.next(),
+            parts.next(),
+            parts.next(),
+        ) else {
+            return Err(ContractError::InvalidField);
+        };
+        if prefix != Self::TOKEN_PREFIX {
+            return Err(ContractError::UnsupportedVersion);
+        }
+        let snapshot_id =
+            ContentHash::parse(snapshot_hex).map_err(|_| ContractError::InvalidField)?;
+        let query_id = ContentHash::parse(query_hex).map_err(|_| ContractError::InvalidField)?;
+        let offset = offset_str
+            .parse::<u64>()
+            .map_err(|_| ContractError::InvalidField)?;
+        Ok(Self {
+            schema_version: SCHEMA_VERSION,
+            snapshot_id,
+            query_id,
+            offset,
+        })
+    }
+}
+
+/// Scope parameters that uniquely identify a frozen trace query.
+///
+/// Binds the user request text, target filter (`--why-not`), ranking policy thresholds,
+/// size limits, and explicit requirement/exclusion directives into a deterministic hash.
+#[derive(Clone, Debug)]
+pub struct TraceQueryScope<'a> {
+    pub request_text: &'a str,
+    pub why_not: Option<&'a SkillId>,
+    pub gate_threshold: f64,
+    pub fits_threshold: f64,
+    pub top: usize,
+    pub shortlist: usize,
+    pub require_skills: &'a [SkillId],
+    pub exclude_skills: &'a [SkillId],
+}
+
+impl<'a> TraceQueryScope<'a> {
+    /// Computes the deterministic, frozen ContentHash for this query scope.
+    pub fn compute_id(&self) -> ContentHash {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"sr.trace-query.v1\0");
+        bytes.extend_from_slice(&(self.request_text.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(self.request_text.as_bytes());
+
+        match self.why_not {
+            Some(id) => {
+                bytes.push(1);
+                bytes.extend_from_slice(&(id.as_str().len() as u64).to_le_bytes());
+                bytes.extend_from_slice(id.as_str().as_bytes());
+            }
+            None => bytes.push(0),
+        }
+
+        bytes.extend_from_slice(&self.gate_threshold.to_bits().to_le_bytes());
+        bytes.extend_from_slice(&self.fits_threshold.to_bits().to_le_bytes());
+        bytes.extend_from_slice(&(self.top as u64).to_le_bytes());
+        bytes.extend_from_slice(&(self.shortlist as u64).to_le_bytes());
+
+        let mut sorted_req: Vec<&str> = self.require_skills.iter().map(|s| s.as_str()).collect();
+        sorted_req.sort_unstable();
+        bytes.extend_from_slice(&(sorted_req.len() as u64).to_le_bytes());
+        for s in sorted_req {
+            bytes.extend_from_slice(&(s.len() as u64).to_le_bytes());
+            bytes.extend_from_slice(s.as_bytes());
+        }
+
+        let mut sorted_excl: Vec<&str> = self.exclude_skills.iter().map(|s| s.as_str()).collect();
+        sorted_excl.sort_unstable();
+        bytes.extend_from_slice(&(sorted_excl.len() as u64).to_le_bytes());
+        for s in sorted_excl {
+            bytes.extend_from_slice(&(s.len() as u64).to_le_bytes());
+            bytes.extend_from_slice(s.as_bytes());
+        }
+
+        ContentHash::from_bytes(&bytes)
+    }
 }

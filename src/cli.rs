@@ -12,7 +12,7 @@ use std::ffi::OsString;
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
-const HELP: &str = "SkillRanker — powered by TypeSafe.ai Jev\n\nUsage: sr [rank] [--context FILE | --transcript FILE --harness NAME | --session PATH | --latest]\n                 [--roster FILE] [--require-skill ID] [--dry-run [--shortlist-ids ID,...]]\n                 [--offline | --allow-network] [--json | --table]\n                 [--top N] [--shortlist M] [--gate FLOAT] [--fits FLOAT]\n                 [--explain] [--why-not ID] [--no-tools] [--no-cache]\n       sr doctor [--json | --table] [--offline | --allow-network]\n       sr doctor --config [--json | --table] [--top N] [--shortlist N]\n       sr roster [--json] [--limit N] [--cursor TOKEN]\n       sr roster --snapshot FILE | --diff FILE\n       sr capabilities [--json]\n       sr demo --case <useful|none|explicit|unavailable> [--json | --table]\n       sr --help | --version\n\nRank the next step of an agent session using TypeSafe Jev.\nRequires your own TypeSafe API key (TYPESAFE_API_KEY) and network consent (--allow-network).\n";
+const HELP: &str = "SkillRanker — powered by TypeSafe.ai Jev\n\nUsage: sr [rank] [--context FILE | --transcript FILE --harness NAME | --session PATH | --latest]\n                 [--roster FILE] [--require-skill ID] [--dry-run [--shortlist-ids ID,...]]\n                 [--offline | --allow-network] [--json | --table]\n                 [--top N] [--shortlist M] [--gate FLOAT] [--fits FLOAT]\n                 [--explain] [--why-not ID] [--cursor TOKEN] [--no-tools] [--no-cache]\n       sr doctor [--json | --table] [--offline | --allow-network]\n       sr doctor --config [--json | --table] [--top N] [--shortlist N]\n       sr roster [--json] [--limit N] [--cursor TOKEN]\n       sr roster --snapshot FILE | --diff FILE\n       sr capabilities [--json]\n       sr demo --case <useful|none|explicit|unavailable> [--json | --table]\n       sr --help | --version\n\nRank the next step of an agent session using TypeSafe Jev.\nRequires your own TypeSafe API key (TYPESAFE_API_KEY) and network consent (--allow-network).\n";
 
 fn command() -> Command {
     let mut doctor = Command::new("doctor")
@@ -107,6 +107,12 @@ fn command() -> Command {
         .arg(
             Arg::new("why-not")
                 .long("why-not")
+                .action(ArgAction::Set)
+                .requires("explain"),
+        )
+        .arg(
+            Arg::new("cursor")
+                .long("cursor")
                 .action(ArgAction::Set)
                 .requires("explain"),
         )
@@ -683,6 +689,19 @@ fn rank_command(
         })
         .transpose()?;
 
+    let cursor = rank_matches
+        .and_then(|m| m.get_one::<String>("cursor"))
+        .map(|s| {
+            crate::output::TraceCursor::from_token(s).map_err(|_| {
+                (
+                    2u8,
+                    "invalid-usage",
+                    format!("Invalid trace cursor token: {s}"),
+                )
+            })
+        })
+        .transpose()?;
+
     let args = crate::pipeline::RankArgs {
         workspace,
         user_config_root: user_root,
@@ -696,6 +715,7 @@ fn rank_command(
         roster_file,
         explain,
         why_not,
+        cursor,
         output_json: json_output,
         output_table: !json_output,
         dry_run,

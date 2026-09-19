@@ -39,8 +39,10 @@ use crate::jev::rerank::RerankOutcome;
 use crate::jev::retry::{RetryErrorKind, RetrySession};
 use crate::jev::wide::{Sizes, WideDecision, WideOutcome};
 use crate::jev::{OriginScopedCredential, rerank, wide};
-use crate::output::trace::{StageTrace, TraceEntry, TraceStage};
-use crate::output::{ErrorKind, OutputDocument, OutputKind, SCHEMA_VERSION, TraceCursor};
+use crate::output::{
+    ContractError, ErrorKind, OutputDocument, OutputKind, SCHEMA_VERSION, StageTrace, TraceCursor,
+    TraceEntry, TraceQueryScope, TraceStage,
+};
 use crate::privacy::redaction::Redactor;
 use crate::privacy::{
     NetworkConsent, ProviderAdmissionRefusal, StoreAccess, admit_provider_attempt,
@@ -112,6 +114,7 @@ pub struct RankArgs {
     pub roster_file: Option<PathBuf>,
     pub explain: bool,
     pub why_not: Option<SkillId>,
+    pub cursor: Option<TraceCursor>,
     pub output_json: bool,
     pub output_table: bool,
     pub dry_run: bool,
@@ -701,6 +704,27 @@ async fn rank_once(
         }
     }
 
+    let mut trace_exclude_skills: Vec<SkillId> = Vec::new();
+    for ex in &explicit_exclusions {
+        if let Ok(id) = SkillId::new(ex) {
+            if !trace_exclude_skills.contains(&id) {
+                trace_exclude_skills.push(id);
+            }
+        }
+    }
+
+    let trace_query_scope = TraceQueryScope {
+        request_text: normalized_context.current_request.text.as_str(),
+        why_not: args.why_not.as_ref(),
+        gate_threshold,
+        fits_threshold,
+        top,
+        shortlist,
+        require_skills: &args.require_skills,
+        exclude_skills: &trace_exclude_skills,
+    };
+    let trace_query_id = trace_query_scope.compute_id();
+
     // 4. Discover Roster. Claude's documented precedence (project skills over
     // personal ones) resolves collisions, but no conformance evidence verifies
     // it yet. Rank uses it under an explicit provisional label and says so in
@@ -786,7 +810,7 @@ async fn rank_once(
                 &progress.evaluated,
             );
             if let Some(trace_val) =
-                generate_explicit_trace(&args, &roster, &normalized_context, &skills)
+                generate_explicit_trace(&args, &roster, &trace_query_id, &skills)?
             {
                 doc = doc.with_trace(trace_val).map_err(|e| {
                     failure(
@@ -917,7 +941,7 @@ async fn rank_once(
                 if let Some(trace_val) = generate_trace(
                     &args,
                     &roster,
-                    &normalized_context,
+                    &trace_query_id,
                     Some(&policy_view),
                     &RetrievalView::NotEvaluated,
                     None,
@@ -927,7 +951,7 @@ async fn rank_once(
                     None,
                     None,
                     false,
-                ) {
+                )? {
                     doc = doc.with_trace(trace_val).map_err(|e| {
                         failure(
                             5,
@@ -1014,7 +1038,7 @@ async fn rank_once(
         if let Some(trace_val) = generate_trace(
             &args,
             &roster,
-            &normalized_context,
+            &trace_query_id,
             Some(&policy_view),
             &retrieval_view,
             None,
@@ -1024,7 +1048,7 @@ async fn rank_once(
             None,
             None,
             false,
-        ) {
+        )? {
             doc = doc.with_trace(trace_val).map_err(|e| {
                 failure(
                     5,
@@ -1538,7 +1562,7 @@ async fn rank_once(
             if let Some(trace_val) = generate_trace(
                 &args,
                 &roster,
-                &normalized_context,
+                &trace_query_id,
                 Some(&policy_view),
                 &retrieval_view,
                 Some(&wide_outcome),
@@ -1548,7 +1572,7 @@ async fn rank_once(
                 None,
                 None,
                 false,
-            ) {
+            )? {
                 doc = doc.with_trace(trace_val).map_err(|e| {
                     failure(
                         5,
@@ -1691,7 +1715,7 @@ async fn rank_once(
                 if let Some(trace_val) = generate_trace(
                     &args,
                     &roster,
-                    &normalized_context,
+                    &trace_query_id,
                     Some(&policy_view),
                     &retrieval_view,
                     Some(&wide_outcome),
@@ -1701,7 +1725,7 @@ async fn rank_once(
                     Some(&evaluation),
                     None,
                     false,
-                ) {
+                )? {
                     doc = doc.with_trace(trace_val).map_err(|e| {
                         failure(
                             5,
@@ -1775,7 +1799,7 @@ async fn rank_once(
     if let Some(trace_val) = generate_trace(
         &args,
         &roster,
-        &normalized_context,
+        &trace_query_id,
         Some(&policy_view),
         &retrieval_view,
         Some(&wide_outcome),
@@ -1785,7 +1809,7 @@ async fn rank_once(
         Some(&evaluation),
         Some(&scored_ranking),
         true,
-    ) {
+    )? {
         doc = doc.with_trace(trace_val).map_err(|e| {
             failure(
                 5,
@@ -2885,7 +2909,7 @@ fn build_ranked_document(
 fn generate_trace(
     args: &RankArgs,
     roster: &ResolvedRoster,
-    context: &NormalizedContext,
+    query_id: &ContentHash,
     policy: Option<&PolicyView<'_>>,
     retrieval: &RetrievalView<'_>,
     wide_outcome: Option<&WideOutcome<'_>>,
@@ -2895,9 +2919,9 @@ fn generate_trace(
     evaluation: Option<&Evaluation<'_>>,
     ranking: Option<&Ranking>,
     publication_passed: bool,
-) -> Option<Value> {
+) -> Result<Option<Value>, PipelineFailure> {
     if !args.explain && args.why_not.is_none() {
-        return None;
+        return Ok(None);
     }
 
     let mut targets: Vec<SkillId> = Vec::new();
@@ -2953,7 +2977,8 @@ fn generate_trace(
         entries.extend(skill_entries);
     }
 
-    trace_page(roster, context, entries)
+    let snapshot_id = crate::roster::evidence::snapshot_id(roster);
+    trace_page(args.cursor.as_ref(), snapshot_id, query_id.clone(), entries)
 }
 
 /// Explicit resolution bypasses advisory admission and every inference stage.
@@ -2962,11 +2987,11 @@ fn generate_trace(
 fn generate_explicit_trace(
     args: &RankArgs,
     roster: &ResolvedRoster,
-    context: &NormalizedContext,
+    query_id: &ContentHash,
     resolved: &[ResolvedExplicitSkill],
-) -> Option<Value> {
+) -> Result<Option<Value>, PipelineFailure> {
     if !args.explain && args.why_not.is_none() {
-        return None;
+        return Ok(None);
     }
     let targets: Vec<&SkillId> = match &args.why_not {
         Some(target) => vec![target],
@@ -3018,38 +3043,87 @@ fn generate_explicit_trace(
             });
         }
     }
-    trace_page(roster, context, entries)
+    let snapshot_id = crate::roster::evidence::snapshot_id(roster);
+    trace_page(args.cursor.as_ref(), snapshot_id, query_id.clone(), entries)
 }
 
 fn trace_page(
-    roster: &ResolvedRoster,
-    context: &NormalizedContext,
-    mut entries: Vec<TraceEntry>,
-) -> Option<Value> {
-    let snapshot_id = crate::roster::evidence::snapshot_id(roster);
-    let query_bytes = context.current_request.text.as_str().as_bytes();
-    let query_id = ContentHash::from_bytes(query_bytes);
+    cursor: Option<&TraceCursor>,
+    snapshot_id: ContentHash,
+    query_id: ContentHash,
+    entries: Vec<TraceEntry>,
+) -> Result<Option<Value>, PipelineFailure> {
     let total = entries.len() as u64;
-    // Explanation pages cannot invalidate an otherwise valid ranking. Keep the
-    // complete count so consumers can distinguish a first page from a full trace.
-    entries.truncate(crate::output::MAX_TRACE_PAGE_ITEMS);
-    let next_offset = ((entries.len() as u64) < total).then_some(entries.len() as u64);
+
+    let offset = match cursor {
+        Some(c) => match c.resume(&snapshot_id, &query_id, total) {
+            Ok(off) => off as usize,
+            Err(ContractError::SnapshotChanged) => {
+                return Err(failure(
+                    5,
+                    "roster-changed",
+                    "The roster or query changed between trace pages.",
+                ));
+            }
+            Err(ContractError::UnsupportedVersion) => {
+                return Err(failure(
+                    2,
+                    "invalid-usage",
+                    "Unsupported trace cursor schema version.",
+                ));
+            }
+            Err(ContractError::InvalidField) | Err(_) => {
+                return Err(failure(
+                    2,
+                    "invalid-usage",
+                    "Cursor offset exceeds total trace entries.",
+                ));
+            }
+        },
+        None => 0,
+    };
+
+    let start = offset;
+    let end = (start + crate::output::MAX_TRACE_PAGE_ITEMS).min(entries.len());
+    let page_entries = if start <= entries.len() {
+        entries[start..end].to_vec()
+    } else {
+        Vec::new()
+    };
+    let next_offset = if end < entries.len() {
+        Some(end as u64)
+    } else {
+        None
+    };
+
+    let next_cursor = next_offset.map(|off| {
+        TraceCursor {
+            schema_version: SCHEMA_VERSION,
+            snapshot_id: snapshot_id.clone(),
+            query_id: query_id.clone(),
+            offset: off,
+        }
+        .to_token()
+    });
 
     let trace_cursor = TraceCursor {
-        schema_version: 1,
+        schema_version: SCHEMA_VERSION,
         snapshot_id,
         query_id,
-        offset: 0,
+        offset: start as u64,
     };
 
     let stage_trace = StageTrace {
         cursor: trace_cursor,
         total,
         next_offset,
-        entries,
+        next_cursor,
+        entries: page_entries,
     };
 
-    serde_json::to_value(stage_trace).ok()
+    serde_json::to_value(stage_trace)
+        .map(Some)
+        .map_err(|e| failure(5, "contract-violation", format!("Trace serialization error: {e:?}")))
 }
 
 #[allow(clippy::too_many_arguments)]

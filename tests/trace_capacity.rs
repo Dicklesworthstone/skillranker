@@ -233,6 +233,7 @@ fn check_capacity(count: usize) {
             roster_file: None,
             explain,
             why_not,
+            cursor: None,
             output_json: true,
             output_table: false,
             dry_run: false,
