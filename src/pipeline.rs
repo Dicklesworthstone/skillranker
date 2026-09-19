@@ -358,6 +358,32 @@ fn unavailable_document(
     OutputDocument::from_value(val).ok()
 }
 
+fn compute_context_digest(ctx: &NormalizedContext) -> ContentHash {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(b"sr.norm-context.v1\0");
+    bytes.extend_from_slice(ctx.harness.as_str().as_bytes());
+    bytes.push(0);
+    if let Some(s) = &ctx.session_id {
+        bytes.extend_from_slice(s.as_str().as_bytes());
+    }
+    bytes.push(0);
+    if let Some(b) = &ctx.branch_id {
+        bytes.extend_from_slice(b.as_str().as_bytes());
+    }
+    bytes.push(0);
+    if let Some(e) = &ctx.context_epoch {
+        bytes.extend_from_slice(e.as_str().as_bytes());
+    }
+    bytes.push(0);
+    bytes.extend_from_slice(ctx.current_request.text.as_str().as_bytes());
+    bytes.push(0);
+    bytes.extend_from_slice(&(ctx.events.len() as u64).to_le_bytes());
+    if let Ok(evt_json) = serde_json::to_vec(&ctx.events) {
+        bytes.extend_from_slice(&evt_json);
+    }
+    ContentHash::from_bytes(&bytes)
+}
+
 async fn rank_once(
     invocation: &ProcessInvocation,
     clock: &EntryClock,
@@ -730,6 +756,7 @@ async fn rank_once(
         }
     }
 
+    let context_hash = compute_context_digest(&normalized_context);
     let trace_query_scope = TraceQueryScope {
         request_text: normalized_context.current_request.text.as_str(),
         why_not: args.why_not.as_ref(),
@@ -739,8 +766,11 @@ async fn rank_once(
         shortlist,
         require_skills: &args.require_skills,
         exclude_skills: &trace_exclude_skills,
+        context_hash: Some(context_hash),
+        model: Some(effective.model().as_str()),
+        endpoint: effective.endpoint().map(|e| e.as_str()),
+        evaluation_hash: None,
     };
-    let trace_query_id = trace_query_scope.compute_id();
 
     // 4. Discover Roster. Claude's documented precedence (project skills over
     // personal ones) resolves collisions, but no conformance evidence verifies
@@ -770,6 +800,17 @@ async fn rank_once(
         warnings,
         warnings_omitted,
     });
+
+    let current_snapshot_id = crate::roster::evidence::snapshot_id(&roster);
+    if let Some(cursor) = &args.cursor
+        && cursor.snapshot_id != current_snapshot_id
+    {
+        return Err(failure(
+            5,
+            "roster-changed",
+            "The roster or query changed between trace pages.",
+        ));
+    }
 
     // 5. Explicit directives resolve locally, bypassing Jev and Quill. The
     // resolver runs even without a positive request: exclusions from the prompt,
@@ -827,7 +868,7 @@ async fn rank_once(
                 &progress.evaluated,
             );
             if let Some(trace_val) =
-                generate_explicit_trace(&args, &roster, &trace_query_id, &skills)?
+                generate_explicit_trace(&args, &roster, &trace_query_scope, &skills)?
             {
                 doc = doc.with_trace(trace_val).map_err(|e| {
                     failure(
@@ -958,7 +999,7 @@ async fn rank_once(
                 if let Some(trace_val) = generate_trace(
                     &args,
                     &roster,
-                    &trace_query_id,
+                    &trace_query_scope,
                     Some(&policy_view),
                     &RetrievalView::NotEvaluated,
                     None,
@@ -1055,7 +1096,7 @@ async fn rank_once(
         if let Some(trace_val) = generate_trace(
             &args,
             &roster,
-            &trace_query_id,
+            &trace_query_scope,
             Some(&policy_view),
             &retrieval_view,
             None,
@@ -1489,6 +1530,13 @@ async fn rank_once(
     let wide_response = match cached {
         Some(response) => response,
         None => {
+            if args.cursor.is_some() {
+                return Err(failure(
+                    11,
+                    "cache-miss",
+                    "Trace continuation requires exact cached evaluation evidence",
+                ));
+            }
             if store.is_some()
                 && matches!(gate.runtime_state(), StoreAccess::Enabled)
                 && args.cache_dir.is_some()
@@ -1613,7 +1661,7 @@ async fn rank_once(
             if let Some(trace_val) = generate_trace(
                 &args,
                 &roster,
-                &trace_query_id,
+                &trace_query_scope,
                 Some(&policy_view),
                 &retrieval_view,
                 Some(&wide_outcome),
@@ -1681,6 +1729,13 @@ async fn rank_once(
             response
         }
         None => {
+            if args.cursor.is_some() {
+                return Err(failure(
+                    11,
+                    "cache-miss",
+                    "Trace continuation requires exact cached evaluation evidence",
+                ));
+            }
             let Some(active) = session.as_mut() else {
                 return Err(failure(
                     11,
@@ -1775,7 +1830,7 @@ async fn rank_once(
                 if let Some(trace_val) = generate_trace(
                     &args,
                     &roster,
-                    &trace_query_id,
+                    &trace_query_scope,
                     Some(&policy_view),
                     &retrieval_view,
                     Some(&wide_outcome),
@@ -1859,7 +1914,7 @@ async fn rank_once(
     if let Some(trace_val) = generate_trace(
         &args,
         &roster,
-        &trace_query_id,
+        &trace_query_scope,
         Some(&policy_view),
         &retrieval_view,
         Some(&wide_outcome),
@@ -3044,7 +3099,7 @@ fn build_ranked_document(
 fn generate_trace(
     args: &RankArgs,
     roster: &ResolvedRoster,
-    query_id: &ContentHash,
+    query_scope: &TraceQueryScope<'_>,
     policy: Option<&PolicyView<'_>>,
     retrieval: &RetrievalView<'_>,
     wide_outcome: Option<&WideOutcome<'_>>,
@@ -3112,8 +3167,13 @@ fn generate_trace(
         entries.extend(skill_entries);
     }
 
+    let eval_hash = crate::output::compute_entries_hash(&entries);
+    let mut scope = query_scope.clone();
+    scope.evaluation_hash = Some(eval_hash);
+    let query_id = scope.compute_id();
+
     let snapshot_id = crate::roster::evidence::snapshot_id(roster);
-    trace_page(args.cursor.as_ref(), snapshot_id, query_id.clone(), entries)
+    trace_page(args.cursor.as_ref(), snapshot_id, query_id, entries)
 }
 
 /// Explicit resolution bypasses advisory admission and every inference stage.
@@ -3122,7 +3182,7 @@ fn generate_trace(
 fn generate_explicit_trace(
     args: &RankArgs,
     roster: &ResolvedRoster,
-    query_id: &ContentHash,
+    query_scope: &TraceQueryScope<'_>,
     resolved: &[ResolvedExplicitSkill],
 ) -> Result<Option<Value>, PipelineFailure> {
     if !args.explain && args.why_not.is_none() {
@@ -3178,8 +3238,13 @@ fn generate_explicit_trace(
             });
         }
     }
+    let eval_hash = crate::output::compute_entries_hash(&entries);
+    let mut scope = query_scope.clone();
+    scope.evaluation_hash = Some(eval_hash);
+    let query_id = scope.compute_id();
+
     let snapshot_id = crate::roster::evidence::snapshot_id(roster);
-    trace_page(args.cursor.as_ref(), snapshot_id, query_id.clone(), entries)
+    trace_page(args.cursor.as_ref(), snapshot_id, query_id, entries)
 }
 
 fn trace_page(

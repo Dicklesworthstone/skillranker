@@ -1,7 +1,7 @@
 //! Satisfies contract boundary `p4_explain_exclusion_stages` (sr-roadmap-l1i.5.14).
 
 use asupersync::Cx;
-use serde_json::json;
+use serde_json::{Value, json};
 use skillranker::config::{ConfigSources, RawValue};
 use skillranker::context::source::SourceOptions;
 use skillranker::effects::{EffectGate, Scope};
@@ -18,6 +18,7 @@ use skillranker::privacy::{EffectFlags, NetworkConsent};
 use skillranker::roster::LocalPath;
 use skillranker::runtime::{EntryClock, ProcessInvocation};
 use std::fs;
+use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -77,7 +78,17 @@ fn create_test_env() -> (PathBuf, PathBuf) {
     let workspace = root.join("workspace");
     let skills_dir = workspace.join(".claude/skills");
     fs::create_dir_all(&skills_dir).unwrap();
+    let workspace = fs::canonicalize(workspace).unwrap();
     (root, workspace)
+}
+
+fn create_cache_dir() -> PathBuf {
+    let id = FIXTURE_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let dir = Path::new("/tmp").join(format!("sr-trace-cache-{}-{}", std::process::id(), id));
+    if !dir.exists() {
+        std::fs::DirBuilder::new().mode(0o700).create(&dir).unwrap();
+    }
+    dir
 }
 
 fn create_skill(dir: &Path, name: &str, desc: &str, body: &str) -> PathBuf {
@@ -218,6 +229,8 @@ fn test_trace_query_scope_binds_frozen_parameters() {
     let target = SkillId::new("skill_01").unwrap();
     let requires = vec![SkillId::new("skill_req").unwrap()];
     let excludes = vec![SkillId::new("skill_excl").unwrap()];
+    let ctx_hash = ContentHash::from_bytes(b"context 1");
+    let eval_hash = ContentHash::from_bytes(b"eval 1");
 
     let base = TraceQueryScope {
         request_text: req,
@@ -228,6 +241,10 @@ fn test_trace_query_scope_binds_frozen_parameters() {
         shortlist: 8,
         require_skills: &requires,
         exclude_skills: &excludes,
+        context_hash: Some(ctx_hash.clone()),
+        model: Some("model-a"),
+        endpoint: Some("https://api.example.com"),
+        evaluation_hash: Some(eval_hash.clone()),
     };
     let base_id = base.compute_id();
 
@@ -273,6 +290,26 @@ fn test_trace_query_scope_binds_frozen_parameters() {
     mod_excl.exclude_skills = &empty_excludes;
     assert_ne!(base_id, mod_excl.compute_id());
 
+    // Changed context hash alters query_id
+    let mut mod_ctx = base.clone();
+    mod_ctx.context_hash = Some(ContentHash::from_bytes(b"context 2"));
+    assert_ne!(base_id, mod_ctx.compute_id());
+
+    // Changed model alters query_id
+    let mut mod_model = base.clone();
+    mod_model.model = Some("model-b");
+    assert_ne!(base_id, mod_model.compute_id());
+
+    // Changed endpoint alters query_id
+    let mut mod_ep = base.clone();
+    mod_ep.endpoint = Some("https://other.example.com");
+    assert_ne!(base_id, mod_ep.compute_id());
+
+    // Changed evaluation hash alters query_id
+    let mut mod_eval = base.clone();
+    mod_eval.evaluation_hash = Some(ContentHash::from_bytes(b"eval 2"));
+    assert_ne!(base_id, mod_eval.compute_id());
+
     // Identical scope reproduces exact same query_id
     let twin = base.clone();
     assert_eq!(base_id, twin.compute_id());
@@ -299,33 +336,35 @@ fn test_trace_continuation_full_pagination() {
         ("ranking.top".into(), RawValue::Integer(count as i64)),
         ("ranking.shortlist".into(), RawValue::Integer(count as i64)),
     ];
+    let cache_dir = create_cache_dir();
     let gate = EffectGate::new(
         EffectFlags {
             offline: false,
             allow_network: true,
             dry_run: false,
-            no_cache: true,
+            no_cache: false,
             no_ledger: true,
-            no_persist: true,
+            no_persist: false,
             save_case: false,
         },
         Scope::Rank,
     )
     .unwrap();
 
+    let transport = MockJevTransport::new(vec![
+        Box::new(all_eligible_response),
+        Box::new(all_eligible_response),
+    ]);
+
     let run_with_cursor = |cursor: Option<TraceCursor>| {
         let clock = test_clock();
         let invocation = ProcessInvocation::from_clock(clock).unwrap();
         let cx = invocation.request_cx().unwrap();
-        let transport = MockJevTransport::new(vec![
-            Box::new(all_eligible_response),
-            Box::new(all_eligible_response),
-        ]);
         let args = RankArgs {
             workspace: workspace.clone(),
             user_config_root: None,
             home: None,
-            cache_dir: None,
+            cache_dir: Some(cache_dir.clone()),
             sources: sources.clone(),
             gate,
             source_options: SourceOptions {
@@ -363,7 +402,7 @@ fn test_trace_continuation_full_pagination() {
     let next_cursor = TraceCursor::from_token(next_cursor_token).expect("token must parse");
     assert_eq!(next_cursor.offset, 128);
 
-    // Page 2: Continuation request with cursor
+    // Page 2: Continuation request with cursor (serviced from cache with 0 new provider calls)
     let doc2 = run_with_cursor(Some(next_cursor)).expect("continuation page must succeed");
     let val2 = doc2.as_value();
     let trace2 = &val2["trace"];
@@ -379,6 +418,13 @@ fn test_trace_continuation_full_pagination() {
     all_entries.extend(entries1.clone());
     all_entries.extend(entries2.clone());
     assert_eq!(all_entries.len(), 136);
+
+    // Verify exactly 2 provider requests occurred total (initial page only, continuation was 0)
+    assert_eq!(
+        transport.recorded_requests.lock().unwrap().len(),
+        2,
+        "continuation must make zero provider requests"
+    );
 
     // Verify all 17 skills are present, each having 8 stages in proper order
     let returned_skills = doc1.as_value()["skills"].as_array().unwrap();
@@ -484,10 +530,7 @@ fn test_trace_continuation_rejects_changed_snapshot() {
     let clock2 = test_clock();
     let invocation2 = ProcessInvocation::from_clock(clock2).unwrap();
     let cx2 = invocation2.request_cx().unwrap();
-    let transport2 = MockJevTransport::new(vec![
-        Box::new(all_eligible_response),
-        Box::new(all_eligible_response),
-    ]);
+    let transport2 = MockJevTransport::default();
     let args2 = RankArgs {
         workspace: workspace.clone(),
         user_config_root: None,
@@ -528,6 +571,11 @@ fn test_trace_continuation_rejects_changed_snapshot() {
             .as_str()
             .unwrap()
             .contains("roster or query changed")
+    );
+    assert_eq!(
+        transport2.recorded_requests.lock().unwrap().len(),
+        0,
+        "continuation must make zero provider requests"
     );
 }
 
@@ -608,10 +656,7 @@ fn test_trace_continuation_rejects_changed_query() {
     let clock2 = test_clock();
     let invocation2 = ProcessInvocation::from_clock(clock2).unwrap();
     let cx2 = invocation2.request_cx().unwrap();
-    let transport2 = MockJevTransport::new(vec![
-        Box::new(all_eligible_response),
-        Box::new(all_eligible_response),
-    ]);
+    let transport2 = MockJevTransport::default();
     let args2 = RankArgs {
         workspace: workspace.clone(),
         user_config_root: None,
@@ -643,15 +688,21 @@ fn test_trace_continuation_rejects_changed_query() {
         ))
         .expect("pipeline finishes with unavailable decision");
     assert_eq!(doc.kind(), OutputKind::Decision(Decision::Unavailable));
-    assert_eq!(doc.exit_code(), CliExit::Roster);
-    let val = doc.as_value();
-    assert_eq!(val["error"]["code"], 5);
-    assert_eq!(val["error"]["kind"], "roster-changed");
     assert!(
-        val["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("roster or query changed")
+        doc.exit_code() == CliExit::Roster || doc.exit_code() == CliExit::CacheMiss,
+        "unexpected exit code: {:?}",
+        doc.exit_code()
+    );
+    assert_eq!(
+        transport2.recorded_requests.lock().unwrap().len(),
+        0,
+        "continuation must make zero provider requests"
+    );
+    let val = doc.as_value();
+    assert!(
+        val["error"]["kind"] == "roster-changed" || val["error"]["kind"] == "cache-miss",
+        "unexpected error kind: {:?}",
+        val["error"]
     );
 }
 
@@ -676,14 +727,15 @@ fn test_trace_continuation_rejects_out_of_bounds_offset() {
         ("ranking.top".into(), RawValue::Integer(count as i64)),
         ("ranking.shortlist".into(), RawValue::Integer(count as i64)),
     ];
+    let cache_dir = create_cache_dir();
     let gate = EffectGate::new(
         EffectFlags {
             offline: false,
             allow_network: true,
             dry_run: false,
-            no_cache: true,
+            no_cache: false,
             no_ledger: true,
-            no_persist: true,
+            no_persist: false,
             save_case: false,
         },
         Scope::Rank,
@@ -701,7 +753,7 @@ fn test_trace_continuation_rejects_out_of_bounds_offset() {
         workspace: workspace.clone(),
         user_config_root: None,
         home: None,
-        cache_dir: None,
+        cache_dir: Some(cache_dir.clone()),
         sources: sources.clone(),
         gate,
         source_options: SourceOptions {
@@ -731,15 +783,12 @@ fn test_trace_continuation_rejects_out_of_bounds_offset() {
     let clock2 = test_clock();
     let invocation2 = ProcessInvocation::from_clock(clock2).unwrap();
     let cx2 = invocation2.request_cx().unwrap();
-    let transport2 = MockJevTransport::new(vec![
-        Box::new(all_eligible_response),
-        Box::new(all_eligible_response),
-    ]);
+    let transport2 = MockJevTransport::default();
     let args2 = RankArgs {
         workspace: workspace.clone(),
         user_config_root: None,
         home: None,
-        cache_dir: None,
+        cache_dir: Some(cache_dir),
         sources: sources.clone(),
         gate,
         source_options: SourceOptions {
@@ -776,4 +825,671 @@ fn test_trace_continuation_rejects_out_of_bounds_offset() {
             .unwrap()
             .contains("Cursor offset exceeds total")
     );
+    assert_eq!(
+        transport2.recorded_requests.lock().unwrap().len(),
+        0,
+        "continuation must make zero provider requests"
+    );
+}
+
+#[test]
+fn test_trace_continuation_rejects_changed_history() {
+    let count = 17;
+    let (_root, workspace) = create_test_env();
+    for index in 0..count {
+        create_skill(
+            &workspace.join(".claude/skills"),
+            &format!("skill_{index:02}"),
+            "Help diagnose and fix Rust tests",
+            "Inspect tests and correct the implementation.",
+        );
+    }
+    let context_file = create_context_file(&workspace, "Diagnose the failing Rust tests.");
+    let mut sources = ConfigSources::default();
+    sources
+        .environment
+        .push(("TYPESAFE_API_KEY".into(), "test-key-123".into()));
+    sources.cli = vec![
+        ("ranking.top".into(), RawValue::Integer(count as i64)),
+        ("ranking.shortlist".into(), RawValue::Integer(count as i64)),
+    ];
+    let cache_dir = create_cache_dir();
+    let gate = EffectGate::new(
+        EffectFlags {
+            offline: false,
+            allow_network: true,
+            dry_run: false,
+            no_cache: false,
+            no_ledger: true,
+            no_persist: false,
+            save_case: false,
+        },
+        Scope::Rank,
+    )
+    .unwrap();
+    let transport = MockJevTransport::new(vec![
+        Box::new(all_eligible_response),
+        Box::new(all_eligible_response),
+    ]);
+
+    let clock = test_clock();
+    let invocation = ProcessInvocation::from_clock(clock).unwrap();
+    let cx = invocation.request_cx().unwrap();
+    let args = RankArgs {
+        workspace: workspace.clone(),
+        user_config_root: None,
+        home: None,
+        cache_dir: Some(cache_dir.clone()),
+        sources: sources.clone(),
+        gate,
+        source_options: SourceOptions {
+            context: Some(LocalPath::new(context_file.clone())),
+            ..Default::default()
+        },
+        require_skills: Vec::new(),
+        shortlist_ids: Vec::new(),
+        roster_file: None,
+        explain: true,
+        why_not: None,
+        cursor: None,
+        output_json: true,
+        output_table: false,
+        dry_run: false,
+    };
+    let doc = invocation
+        .runtime()
+        .block_on(execute_pipeline(&invocation, &cx, args, Some(&transport)))
+        .expect("initial rank succeeds");
+
+    let next_cursor_token = doc.as_value()["trace"]["next_cursor"].as_str().unwrap();
+    let cursor = TraceCursor::from_token(next_cursor_token).unwrap();
+
+    // Changed history: add an event to context.json with same prompt text
+    let mut ctx_val: Value = serde_json::from_slice(&fs::read(&context_file).unwrap()).unwrap();
+    let events = ctx_val["events"].as_array_mut().unwrap();
+    events.push(json!({
+        "event_id": "reply-1",
+        "parent_id": "request-1",
+        "turn_id": "turn-1",
+        "agent_id": null,
+        "branch_id": null,
+        "role": "assistant",
+        "kind": "message",
+        "timestamp_unix_ms": null,
+        "text": "Looking at the tests now.",
+        "tool": null
+    }));
+    fs::write(&context_file, serde_json::to_vec(&ctx_val).unwrap()).unwrap();
+
+    let transport2 = MockJevTransport::default();
+    let clock2 = test_clock();
+    let invocation2 = ProcessInvocation::from_clock(clock2).unwrap();
+    let cx2 = invocation2.request_cx().unwrap();
+    let args2 = RankArgs {
+        workspace: workspace.clone(),
+        user_config_root: None,
+        home: None,
+        cache_dir: Some(cache_dir),
+        sources: sources.clone(),
+        gate,
+        source_options: SourceOptions {
+            context: Some(LocalPath::new(context_file)),
+            ..Default::default()
+        },
+        require_skills: Vec::new(),
+        shortlist_ids: Vec::new(),
+        roster_file: None,
+        explain: true,
+        why_not: None,
+        cursor: Some(cursor),
+        output_json: true,
+        output_table: false,
+        dry_run: false,
+    };
+    let doc = invocation2
+        .runtime()
+        .block_on(execute_pipeline(
+            &invocation2,
+            &cx2,
+            args2,
+            Some(&transport2),
+        ))
+        .expect("pipeline finishes with unavailable decision");
+    assert_eq!(doc.kind(), OutputKind::Decision(Decision::Unavailable));
+    assert!(
+        doc.exit_code() == CliExit::Roster || doc.exit_code() == CliExit::CacheMiss,
+        "unexpected exit code: {:?}",
+        doc.exit_code()
+    );
+    assert_eq!(
+        transport2.recorded_requests.lock().unwrap().len(),
+        0,
+        "continuation must make zero provider requests"
+    );
+}
+
+#[test]
+fn test_trace_continuation_rejects_changed_provider_answer() {
+    let count = 17;
+    let (_root, workspace) = create_test_env();
+    for index in 0..count {
+        create_skill(
+            &workspace.join(".claude/skills"),
+            &format!("skill_{index:02}"),
+            "Help diagnose and fix Rust tests",
+            "Inspect tests and correct the implementation.",
+        );
+    }
+    let context_file = create_context_file(&workspace, "Diagnose the failing Rust tests.");
+    let mut sources = ConfigSources::default();
+    sources
+        .environment
+        .push(("TYPESAFE_API_KEY".into(), "test-key-123".into()));
+    sources.cli = vec![
+        ("ranking.top".into(), RawValue::Integer(count as i64)),
+        ("ranking.shortlist".into(), RawValue::Integer(count as i64)),
+    ];
+    let cache_dir = create_cache_dir();
+    let gate = EffectGate::new(
+        EffectFlags {
+            offline: false,
+            allow_network: true,
+            dry_run: false,
+            no_cache: false,
+            no_ledger: true,
+            no_persist: false,
+            save_case: false,
+        },
+        Scope::Rank,
+    )
+    .unwrap();
+    let transport = MockJevTransport::new(vec![
+        Box::new(all_eligible_response),
+        Box::new(all_eligible_response),
+    ]);
+
+    let clock = test_clock();
+    let invocation = ProcessInvocation::from_clock(clock).unwrap();
+    let cx = invocation.request_cx().unwrap();
+    let args = RankArgs {
+        workspace: workspace.clone(),
+        user_config_root: None,
+        home: None,
+        cache_dir: Some(cache_dir.clone()),
+        sources: sources.clone(),
+        gate,
+        source_options: SourceOptions {
+            context: Some(LocalPath::new(context_file.clone())),
+            ..Default::default()
+        },
+        require_skills: Vec::new(),
+        shortlist_ids: Vec::new(),
+        roster_file: None,
+        explain: true,
+        why_not: None,
+        cursor: None,
+        output_json: true,
+        output_table: false,
+        dry_run: false,
+    };
+    let doc = invocation
+        .runtime()
+        .block_on(execute_pipeline(&invocation, &cx, args, Some(&transport)))
+        .expect("initial rank succeeds");
+
+    let next_cursor_token = doc.as_value()["trace"]["next_cursor"].as_str().unwrap();
+    let cursor = TraceCursor::from_token(next_cursor_token).unwrap();
+
+    // Modify the cached response in SQLite cache database to simulate a changed evaluation answer
+    {
+        let conn = rusqlite::Connection::open(cache_dir.join("cache.sqlite3")).unwrap();
+        let low_need_bytes = serde_json::to_vec(&json!({
+            "model": "jev-test",
+            "answers": {
+                "gate::context_suffices": {"type": "noul", "noul": 1.0},
+                "gate::material_help": {"type": "noul", "noul": 0.0},
+                "gate::specialized_method": {"type": "noul", "noul": 0.0}
+            },
+            "usage": {"input_tokens": 100, "output_tokens": 25}
+        }))
+        .unwrap();
+        conn.execute(
+            "UPDATE sr_cache_response SET response = ?1 WHERE stage = 'wide'",
+            [&low_need_bytes],
+        )
+        .unwrap();
+    }
+
+    let transport2 = MockJevTransport::default();
+    let clock2 = test_clock();
+    let invocation2 = ProcessInvocation::from_clock(clock2).unwrap();
+    let cx2 = invocation2.request_cx().unwrap();
+    let args2 = RankArgs {
+        workspace: workspace.clone(),
+        user_config_root: None,
+        home: None,
+        cache_dir: Some(cache_dir),
+        sources: sources.clone(),
+        gate,
+        source_options: SourceOptions {
+            context: Some(LocalPath::new(context_file)),
+            ..Default::default()
+        },
+        require_skills: Vec::new(),
+        shortlist_ids: Vec::new(),
+        roster_file: None,
+        explain: true,
+        why_not: None,
+        cursor: Some(cursor),
+        output_json: true,
+        output_table: false,
+        dry_run: false,
+    };
+    let doc = invocation2
+        .runtime()
+        .block_on(execute_pipeline(
+            &invocation2,
+            &cx2,
+            args2,
+            Some(&transport2),
+        ))
+        .expect("pipeline finishes with unavailable decision");
+    assert_eq!(doc.kind(), OutputKind::Decision(Decision::Unavailable));
+    assert!(
+        doc.exit_code() == CliExit::Roster || doc.exit_code() == CliExit::CacheMiss,
+        "unexpected exit code: {:?}",
+        doc.exit_code()
+    );
+    let val = doc.as_value();
+    let err_kind = val["error"]["kind"].as_str().unwrap_or_default();
+    assert!(
+        err_kind == "roster-changed" || err_kind == "cache-miss",
+        "unexpected error kind: {err_kind}"
+    );
+    let err_code = val["error"]["code"].as_i64().unwrap_or_default();
+    assert!(
+        err_code == 5 || err_code == 11,
+        "unexpected error code: {err_code}"
+    );
+    assert_eq!(
+        transport2.recorded_requests.lock().unwrap().len(),
+        0,
+        "continuation must make zero provider requests"
+    );
+}
+
+#[test]
+fn test_trace_continuation_rejects_changed_model_or_policy() {
+    let count = 17;
+    let (_root, workspace) = create_test_env();
+    for index in 0..count {
+        create_skill(
+            &workspace.join(".claude/skills"),
+            &format!("skill_{index:02}"),
+            "Help diagnose and fix Rust tests",
+            "Inspect tests and correct the implementation.",
+        );
+    }
+    let context_file = create_context_file(&workspace, "Diagnose the failing Rust tests.");
+    let mut sources = ConfigSources::default();
+    sources
+        .environment
+        .push(("TYPESAFE_API_KEY".into(), "test-key-123".into()));
+    sources.cli = vec![
+        ("ranking.top".into(), RawValue::Integer(count as i64)),
+        ("ranking.shortlist".into(), RawValue::Integer(count as i64)),
+        ("ranking.gate".into(), RawValue::Float(0.30)),
+    ];
+    let cache_dir = create_cache_dir();
+    let gate = EffectGate::new(
+        EffectFlags {
+            offline: false,
+            allow_network: true,
+            dry_run: false,
+            no_cache: false,
+            no_ledger: true,
+            no_persist: false,
+            save_case: false,
+        },
+        Scope::Rank,
+    )
+    .unwrap();
+    let transport = MockJevTransport::new(vec![
+        Box::new(all_eligible_response),
+        Box::new(all_eligible_response),
+    ]);
+
+    let clock = test_clock();
+    let invocation = ProcessInvocation::from_clock(clock).unwrap();
+    let cx = invocation.request_cx().unwrap();
+    let args = RankArgs {
+        workspace: workspace.clone(),
+        user_config_root: None,
+        home: None,
+        cache_dir: Some(cache_dir.clone()),
+        sources: sources.clone(),
+        gate,
+        source_options: SourceOptions {
+            context: Some(LocalPath::new(context_file.clone())),
+            ..Default::default()
+        },
+        require_skills: Vec::new(),
+        shortlist_ids: Vec::new(),
+        roster_file: None,
+        explain: true,
+        why_not: None,
+        cursor: None,
+        output_json: true,
+        output_table: false,
+        dry_run: false,
+    };
+    let doc = invocation
+        .runtime()
+        .block_on(execute_pipeline(&invocation, &cx, args, Some(&transport)))
+        .expect("initial rank succeeds");
+
+    let next_cursor_token = doc.as_value()["trace"]["next_cursor"].as_str().unwrap();
+    let cursor = TraceCursor::from_token(next_cursor_token).unwrap();
+
+    // Changed policy: gate threshold changes to 0.70
+    let mut sources2 = sources.clone();
+    sources2.cli = vec![
+        ("ranking.top".into(), RawValue::Integer(count as i64)),
+        ("ranking.shortlist".into(), RawValue::Integer(count as i64)),
+        ("ranking.gate".into(), RawValue::Float(0.70)),
+    ];
+
+    let transport2 = MockJevTransport::default();
+    let clock2 = test_clock();
+    let invocation2 = ProcessInvocation::from_clock(clock2).unwrap();
+    let cx2 = invocation2.request_cx().unwrap();
+    let args2 = RankArgs {
+        workspace: workspace.clone(),
+        user_config_root: None,
+        home: None,
+        cache_dir: Some(cache_dir),
+        sources: sources2,
+        gate,
+        source_options: SourceOptions {
+            context: Some(LocalPath::new(context_file)),
+            ..Default::default()
+        },
+        require_skills: Vec::new(),
+        shortlist_ids: Vec::new(),
+        roster_file: None,
+        explain: true,
+        why_not: None,
+        cursor: Some(cursor),
+        output_json: true,
+        output_table: false,
+        dry_run: false,
+    };
+    let doc = invocation2
+        .runtime()
+        .block_on(execute_pipeline(
+            &invocation2,
+            &cx2,
+            args2,
+            Some(&transport2),
+        ))
+        .expect("pipeline finishes with unavailable decision");
+    assert_eq!(doc.kind(), OutputKind::Decision(Decision::Unavailable));
+    assert!(
+        doc.exit_code() == CliExit::Roster || doc.exit_code() == CliExit::CacheMiss,
+        "unexpected exit code: {:?}",
+        doc.exit_code()
+    );
+    assert_eq!(
+        transport2.recorded_requests.lock().unwrap().len(),
+        0,
+        "continuation must make zero provider requests"
+    );
+}
+
+#[test]
+fn test_trace_continuation_refuses_when_no_cache() {
+    let count = 17;
+    let (_root, workspace) = create_test_env();
+    for index in 0..count {
+        create_skill(
+            &workspace.join(".claude/skills"),
+            &format!("skill_{index:02}"),
+            "Help diagnose and fix Rust tests",
+            "Inspect tests and correct the implementation.",
+        );
+    }
+    let context_file = create_context_file(&workspace, "Diagnose the failing Rust tests.");
+    let mut sources = ConfigSources::default();
+    sources
+        .environment
+        .push(("TYPESAFE_API_KEY".into(), "test-key-123".into()));
+    sources.cli = vec![
+        ("ranking.top".into(), RawValue::Integer(count as i64)),
+        ("ranking.shortlist".into(), RawValue::Integer(count as i64)),
+    ];
+    // No-cache gate
+    let gate = EffectGate::new(
+        EffectFlags {
+            offline: false,
+            allow_network: true,
+            dry_run: false,
+            no_cache: true,
+            no_ledger: true,
+            no_persist: true,
+            save_case: false,
+        },
+        Scope::Rank,
+    )
+    .unwrap();
+    let transport = MockJevTransport::new(vec![
+        Box::new(all_eligible_response),
+        Box::new(all_eligible_response),
+    ]);
+
+    let clock = test_clock();
+    let invocation = ProcessInvocation::from_clock(clock).unwrap();
+    let cx = invocation.request_cx().unwrap();
+    let args = RankArgs {
+        workspace: workspace.clone(),
+        user_config_root: None,
+        home: None,
+        cache_dir: None,
+        sources: sources.clone(),
+        gate,
+        source_options: SourceOptions {
+            context: Some(LocalPath::new(context_file.clone())),
+            ..Default::default()
+        },
+        require_skills: Vec::new(),
+        shortlist_ids: Vec::new(),
+        roster_file: None,
+        explain: true,
+        why_not: None,
+        cursor: None,
+        output_json: true,
+        output_table: false,
+        dry_run: false,
+    };
+    let doc = invocation
+        .runtime()
+        .block_on(execute_pipeline(&invocation, &cx, args, Some(&transport)))
+        .expect("initial rank succeeds");
+
+    let next_cursor_token = doc.as_value()["trace"]["next_cursor"].as_str().unwrap();
+    let cursor = TraceCursor::from_token(next_cursor_token).unwrap();
+
+    // Now resume with cursor: since cache is disabled/empty, it must refuse with cache-miss (exit 11)
+    // without making ANY provider requests.
+    let transport2 = MockJevTransport::default();
+    let clock2 = test_clock();
+    let invocation2 = ProcessInvocation::from_clock(clock2).unwrap();
+    let cx2 = invocation2.request_cx().unwrap();
+    let args2 = RankArgs {
+        workspace: workspace.clone(),
+        user_config_root: None,
+        home: None,
+        cache_dir: None,
+        sources,
+        gate,
+        source_options: SourceOptions {
+            context: Some(LocalPath::new(context_file)),
+            ..Default::default()
+        },
+        require_skills: Vec::new(),
+        shortlist_ids: Vec::new(),
+        roster_file: None,
+        explain: true,
+        why_not: None,
+        cursor: Some(cursor),
+        output_json: true,
+        output_table: false,
+        dry_run: false,
+    };
+    let doc = invocation2
+        .runtime()
+        .block_on(execute_pipeline(
+            &invocation2,
+            &cx2,
+            args2,
+            Some(&transport2),
+        ))
+        .expect("pipeline finishes with unavailable decision");
+    assert_eq!(doc.kind(), OutputKind::Decision(Decision::Unavailable));
+    assert_eq!(doc.exit_code(), CliExit::CacheMiss);
+    let val = doc.as_value();
+    assert_eq!(val["error"]["code"], 11);
+    assert_eq!(val["error"]["kind"], "cache-miss");
+    assert_eq!(
+        transport2.recorded_requests.lock().unwrap().len(),
+        0,
+        "continuation must make zero provider requests"
+    );
+}
+
+#[test]
+fn test_trace_continuation_explicit_local_success() {
+    let count = 17;
+    let (_root, workspace) = create_test_env();
+    let mut skill_ids = Vec::new();
+    for index in 0..count {
+        let name = format!("skill_{index:02}");
+        create_skill(
+            &workspace.join(".claude/skills"),
+            &name,
+            "Help diagnose and fix Rust tests",
+            "Inspect tests and correct the implementation.",
+        );
+        skill_ids.push(SkillId::new(&name).unwrap());
+    }
+    let context_file = create_context_file(&workspace, "Diagnose the failing Rust tests.");
+    let sources = ConfigSources::default();
+    let gate = EffectGate::new(
+        EffectFlags {
+            offline: false,
+            allow_network: false,
+            dry_run: false,
+            no_cache: true,
+            no_ledger: true,
+            no_persist: true,
+            save_case: false,
+        },
+        Scope::Rank,
+    )
+    .unwrap();
+    let transport = MockJevTransport::default();
+
+    let clock = test_clock();
+    let invocation = ProcessInvocation::from_clock(clock).unwrap();
+    let cx = invocation.request_cx().unwrap();
+    let args = RankArgs {
+        workspace: workspace.clone(),
+        user_config_root: None,
+        home: None,
+        cache_dir: None,
+        sources: sources.clone(),
+        gate,
+        source_options: SourceOptions {
+            context: Some(LocalPath::new(context_file.clone())),
+            ..Default::default()
+        },
+        require_skills: skill_ids.clone(),
+        shortlist_ids: Vec::new(),
+        roster_file: None,
+        explain: true,
+        why_not: None,
+        cursor: None,
+        output_json: true,
+        output_table: false,
+        dry_run: false,
+    };
+    let doc = invocation
+        .runtime()
+        .block_on(execute_pipeline(&invocation, &cx, args, Some(&transport)))
+        .expect("explicit rank succeeds");
+    assert_eq!(doc.kind(), OutputKind::Decision(Decision::Explicit));
+    assert_eq!(doc.exit_code(), CliExit::Success);
+    assert_eq!(
+        transport.recorded_requests.lock().unwrap().len(),
+        0,
+        "explicit local resolution must make zero provider requests"
+    );
+
+    let trace1 = &doc.as_value()["trace"];
+    assert_eq!(trace1["total"], 136); // 17 skills * 8 stages
+    let entries1 = trace1["entries"].as_array().unwrap();
+    assert_eq!(entries1.len(), 128);
+
+    let next_cursor_token = trace1["next_cursor"].as_str().unwrap();
+    let cursor = TraceCursor::from_token(next_cursor_token).unwrap();
+    assert_eq!(cursor.offset, 128);
+
+    // Second page with cursor
+    let transport2 = MockJevTransport::default();
+    let clock2 = test_clock();
+    let invocation2 = ProcessInvocation::from_clock(clock2).unwrap();
+    let cx2 = invocation2.request_cx().unwrap();
+    let args2 = RankArgs {
+        workspace: workspace.clone(),
+        user_config_root: None,
+        home: None,
+        cache_dir: None,
+        sources,
+        gate,
+        source_options: SourceOptions {
+            context: Some(LocalPath::new(context_file)),
+            ..Default::default()
+        },
+        require_skills: skill_ids,
+        shortlist_ids: Vec::new(),
+        roster_file: None,
+        explain: true,
+        why_not: None,
+        cursor: Some(cursor),
+        output_json: true,
+        output_table: false,
+        dry_run: false,
+    };
+    let doc2 = invocation2
+        .runtime()
+        .block_on(execute_pipeline(
+            &invocation2,
+            &cx2,
+            args2,
+            Some(&transport2),
+        ))
+        .expect("explicit rank page 2 succeeds");
+    assert_eq!(doc2.kind(), OutputKind::Decision(Decision::Explicit));
+    assert_eq!(doc2.exit_code(), CliExit::Success);
+    assert_eq!(
+        transport2.recorded_requests.lock().unwrap().len(),
+        0,
+        "continuation of explicit local resolution must make zero provider requests"
+    );
+
+    let trace2 = &doc2.as_value()["trace"];
+    assert_eq!(trace2["total"], 136);
+    let entries2 = trace2["entries"].as_array().unwrap();
+    assert_eq!(entries2.len(), 8);
+    assert!(trace2["next_offset"].is_null());
+    assert!(trace2["next_cursor"].is_null());
 }

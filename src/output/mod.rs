@@ -16,7 +16,9 @@ use std::io::{self, Write};
 pub mod table;
 pub mod trace;
 
-pub use trace::{StageTrace, TraceEntry, TraceQueryScope, TraceStage, TraceStatus};
+pub use trace::{
+    StageTrace, TraceEntry, TraceQueryScope, TraceStage, TraceStatus, compute_entries_hash,
+};
 
 pub const SCHEMA_VERSION: u64 = 1;
 pub const MAX_OUTPUT_BYTES: usize = 2 * crate::limits::MIB;

@@ -224,7 +224,8 @@ impl TraceCursor {
 /// Scope parameters that uniquely identify a frozen trace query.
 ///
 /// Binds the user request text, target filter (`--why-not`), ranking policy thresholds,
-/// size limits, and explicit requirement/exclusion directives into a deterministic hash.
+/// size limits, explicit requirement/exclusion directives, context digest, active model/endpoint,
+/// and the evaluated trace outcomes into a deterministic hash.
 #[derive(Clone, Debug)]
 pub struct TraceQueryScope<'a> {
     pub request_text: &'a str,
@@ -235,13 +236,17 @@ pub struct TraceQueryScope<'a> {
     pub shortlist: usize,
     pub require_skills: &'a [SkillId],
     pub exclude_skills: &'a [SkillId],
+    pub context_hash: Option<ContentHash>,
+    pub model: Option<&'a str>,
+    pub endpoint: Option<&'a str>,
+    pub evaluation_hash: Option<ContentHash>,
 }
 
 impl<'a> TraceQueryScope<'a> {
     /// Computes the deterministic, frozen ContentHash for this query scope.
     pub fn compute_id(&self) -> ContentHash {
         let mut bytes = Vec::new();
-        bytes.extend_from_slice(b"sr.trace-query.v1\0");
+        bytes.extend_from_slice(b"sr.trace-query.v2\0");
         bytes.extend_from_slice(&(self.request_text.len() as u64).to_le_bytes());
         bytes.extend_from_slice(self.request_text.as_bytes());
 
@@ -275,6 +280,76 @@ impl<'a> TraceQueryScope<'a> {
             bytes.extend_from_slice(s.as_bytes());
         }
 
+        match &self.context_hash {
+            Some(ch) => {
+                bytes.push(1);
+                bytes.extend_from_slice(ch.as_str().as_bytes());
+            }
+            None => bytes.push(0),
+        }
+
+        match self.model {
+            Some(m) => {
+                bytes.push(1);
+                bytes.extend_from_slice(&(m.len() as u64).to_le_bytes());
+                bytes.extend_from_slice(m.as_bytes());
+            }
+            None => bytes.push(0),
+        }
+
+        match self.endpoint {
+            Some(e) => {
+                bytes.push(1);
+                bytes.extend_from_slice(&(e.len() as u64).to_le_bytes());
+                bytes.extend_from_slice(e.as_bytes());
+            }
+            None => bytes.push(0),
+        }
+
+        match &self.evaluation_hash {
+            Some(eh) => {
+                bytes.push(1);
+                bytes.extend_from_slice(eh.as_str().as_bytes());
+            }
+            None => bytes.push(0),
+        }
+
         ContentHash::from_bytes(&bytes)
     }
+}
+
+/// Computes a deterministic ContentHash over trace entries to bind the evaluated stage outcomes.
+pub fn compute_entries_hash(entries: &[TraceEntry]) -> ContentHash {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(b"sr.trace-entries.v1\0");
+    bytes.extend_from_slice(&(entries.len() as u64).to_le_bytes());
+    for entry in entries {
+        bytes.extend_from_slice(entry.skill_id.as_str().as_bytes());
+        bytes.push(0);
+        bytes.extend_from_slice(entry.stage.as_str().as_bytes());
+        bytes.push(0);
+        bytes.extend_from_slice(entry.status.as_str().as_bytes());
+        bytes.push(0);
+        if let Some(v) = entry.value {
+            bytes.push(1);
+            bytes.extend_from_slice(&v.to_bits().to_le_bytes());
+        } else {
+            bytes.push(0);
+        }
+        if let Some(t) = entry.threshold {
+            bytes.push(1);
+            bytes.extend_from_slice(&t.to_bits().to_le_bytes());
+        } else {
+            bytes.push(0);
+        }
+        if let Some(r) = &entry.reason {
+            bytes.push(1);
+            bytes.extend_from_slice(&(r.len() as u64).to_le_bytes());
+            bytes.extend_from_slice(r.as_bytes());
+        } else {
+            bytes.push(0);
+        }
+        bytes.push(0xFF);
+    }
+    ContentHash::from_bytes(&bytes)
 }
