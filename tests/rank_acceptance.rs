@@ -337,6 +337,13 @@ fn a_useful_evaluation_ranks_after_wide_and_rerank() {
     assert_eq!(usage(&value), (2, 2, 220, 55));
     assert_eq!(value["quality"]["history_windowed"], false);
     assert_eq!(value["quality"]["prompt_complete"], true);
+    let kinds: Vec<&str> = value["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|w| w["kind"].as_str().unwrap())
+        .collect();
+    assert!(!kinds.contains(&"malformed-metadata"), "{kinds:?}");
     // Output reports what ran: real counts, the provider's returned model
     // next to the requested alias, and distinct candidate-set digests.
     assert_eq!(value["roster"]["wide_candidates"], 2);
@@ -414,6 +421,14 @@ fn a_partial_roster_still_ranks_a_verified_target() {
         .map(|s| s["invocation_name"].as_str().unwrap())
         .collect();
     assert!(!names.contains(&"broken"), "{names:?}");
+    // The exclusion is disclosed as a bounded warning, not silently dropped.
+    let malformed = value["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|w| w["kind"] == "malformed-metadata")
+        .unwrap_or_else(|| panic!("{value}"));
+    assert_eq!(malformed["count"], 1);
 }
 
 #[test]

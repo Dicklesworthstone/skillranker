@@ -166,6 +166,8 @@ struct Admitted {
     total: usize,
     partial: bool,
     snapshot_id: ContentHash,
+    warnings: Vec<Value>,
+    warnings_omitted: usize,
 }
 
 /// Assembles and executes the two-stage rank pipeline. Failures before input
@@ -234,6 +236,7 @@ fn unavailable_document(
     evaluated: &Evaluated,
     elapsed_ms: u64,
 ) -> Option<OutputDocument> {
+    let (warnings, warnings_omitted) = (&admitted.warnings, admitted.warnings_omitted);
     let (code, kind, message) = failure;
     let kind = ErrorKind::ALL
         .iter()
@@ -282,8 +285,8 @@ fn unavailable_document(
         "model": evaluated.model(),
         "usage": evaluated.usage(),
         "persistence": "disabled",
-        "warnings": [],
-        "warnings_omitted": 0,
+        "warnings": warnings,
+        "warnings_omitted": warnings_omitted,
         "elapsed_ms": elapsed_ms,
         "error": error,
     });
@@ -592,6 +595,7 @@ async fn rank_once(
         })?
     };
 
+    let (warnings, warnings_omitted) = roster_warnings(&roster);
     progress.admitted = Some(Admitted {
         event_id: normalized_context
             .current_request
@@ -602,6 +606,8 @@ async fn rank_once(
         total: roster.skills().len(),
         partial: roster.is_partial(),
         snapshot_id: crate::roster::evidence::snapshot_id(&roster),
+        warnings,
+        warnings_omitted,
     });
 
     // 5. Explicit Directives Check (bypasses Jev and Quill)
@@ -1657,6 +1663,48 @@ async fn rank_once(
     Ok(doc)
 }
 
+/// Roster coverage gaps as bounded warnings: records excluded while resolving
+/// discovered files, and sources that could not be fully observed, by stable
+/// code and count. A normally absent optional root is not a gap. Paths and
+/// skill text never appear.
+fn roster_warnings(roster: &ResolvedRoster) -> (Vec<Value>, usize) {
+    let mut records: BTreeMap<&'static str, usize> = BTreeMap::new();
+    for (_, error) in roster.diagnostics() {
+        *records
+            .entry(crate::roster::evidence::record_code(*error))
+            .or_insert(0) += 1;
+    }
+    let mut sources: BTreeMap<&'static str, usize> = BTreeMap::new();
+    for diagnostic in roster.source_diagnostics() {
+        let code = crate::roster::evidence::source_code(diagnostic);
+        if code != "root-missing" {
+            *sources.entry(code).or_insert(0) += 1;
+        }
+    }
+    let mut warnings: Vec<Value> = records
+        .into_iter()
+        .map(|(code, count)| {
+            json!({
+                "kind": code,
+                "count": count,
+                "message": "Skill records were excluded while resolving the roster",
+            })
+        })
+        .chain(sources.into_iter().map(|(code, count)| {
+            json!({
+                "kind": code,
+                "count": count,
+                "message": "A skill source was not fully observed",
+            })
+        }))
+        .collect();
+    let omitted = warnings
+        .len()
+        .saturating_sub(crate::output::MAX_WARNING_DETAILS);
+    warnings.truncate(crate::output::MAX_WARNING_DETAILS);
+    (warnings, omitted)
+}
+
 /// A typed input failure whose exit comes from its public error kind.
 fn input_failure(kind: ErrorKind, message: &str) -> PipelineFailure {
     failure(kind.exit_code() as u8, kind.as_str(), message)
@@ -2031,6 +2079,7 @@ fn build_explicit_document(
     elapsed_ms: u64,
     quality: &Quality,
 ) -> OutputDocument {
+    let (warnings, warnings_omitted) = roster_warnings(roster);
     let skill_values: Vec<Value> = skills
         .iter()
         .enumerate()
@@ -2121,8 +2170,8 @@ fn build_explicit_document(
             "unknown_usage_attempts": 0,
         },
         "persistence": "disabled",
-        "warnings": [],
-        "warnings_omitted": 0,
+        "warnings": warnings,
+        "warnings_omitted": warnings_omitted,
         "elapsed_ms": elapsed_ms,
     });
 
@@ -2268,6 +2317,7 @@ fn build_abstain_document(
     evaluated: &Evaluated,
 ) -> OutputDocument {
     let quality = &evaluated.quality;
+    let (warnings, warnings_omitted) = roster_warnings(roster);
     let event_id = context
         .current_request
         .event_id
@@ -2307,8 +2357,8 @@ fn build_abstain_document(
         "model": evaluated.model(),
         "usage": evaluated.usage(),
         "persistence": "disabled",
-        "warnings": [],
-        "warnings_omitted": 0,
+        "warnings": warnings,
+        "warnings_omitted": warnings_omitted,
         "elapsed_ms": elapsed_ms,
     });
 
@@ -2332,6 +2382,7 @@ fn build_ranked_document(
     elapsed_ms: u64,
 ) -> Result<OutputDocument, PipelineFailure> {
     let quality = &evaluated.quality;
+    let (warnings, warnings_omitted) = roster_warnings(roster);
     let mut skill_values = Vec::new();
     for (i, scored) in ranking.returned.iter().enumerate() {
         let el = &eligible[scored.index];
@@ -2400,8 +2451,8 @@ fn build_ranked_document(
         "model": evaluated.model(),
         "usage": evaluated.usage(),
         "persistence": "disabled",
-        "warnings": [],
-        "warnings_omitted": 0,
+        "warnings": warnings,
+        "warnings_omitted": warnings_omitted,
         "elapsed_ms": elapsed_ms,
     });
 
