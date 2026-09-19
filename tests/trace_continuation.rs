@@ -382,7 +382,7 @@ fn test_trace_continuation_full_pagination() {
     let returned_skills = doc1.as_value()["skills"].as_array().unwrap();
     assert_eq!(returned_skills.len(), count);
     for skill_val in returned_skills {
-        let skill_id = skill_val["id"].as_str().unwrap();
+        let skill_id = skill_val["skill_id"].as_str().unwrap();
         let skill_entries: Vec<_> = all_entries
             .iter()
             .filter(|e| e["skill_id"] == skill_id)
