@@ -841,6 +841,14 @@ impl CacheStore {
     }
 }
 
+fn cache_wall_clock_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .and_then(|elapsed| u64::try_from(elapsed.as_millis()).ok())
+        .unwrap_or(u64::MAX)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -895,12 +903,4 @@ mod tests {
             Err(StoreError::UnqualifiedEngine)
         );
     }
-}
-
-fn cache_wall_clock_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()
-        .and_then(|elapsed| u64::try_from(elapsed.as_millis()).ok())
-        .unwrap_or(u64::MAX)
 }

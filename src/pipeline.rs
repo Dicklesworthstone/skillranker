@@ -1690,8 +1690,8 @@ async fn rank_once(
                 format!("Wide evaluation failed: {e:?}"),
             )
         })?;
-    if wide_fresh {
-        if !persistent::record(
+    if wide_fresh
+        && !persistent::record(
             &mut store,
             invocation,
             cx,
@@ -1703,9 +1703,9 @@ async fn rank_once(
                 active_model,
             ),
             progress.lease.as_ref(),
-        )? {
-            progress.cache_recording_failures += 1;
-        }
+        )?
+    {
+        progress.cache_recording_failures += 1;
     }
     progress.evaluated.wide_returned = Some(wide_response.returned_model.clone());
     progress.evaluated.needs_skill = Some(wide_outcome.needs_skill);
