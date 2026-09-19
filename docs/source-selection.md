@@ -69,13 +69,21 @@ character that is not ASCII alphanumeric. Discovery therefore tries each
 spelling, and a name alone admits nothing:
 
 - Only top-level regular `*.jsonl` files are opened, without following
-  symlinks, and each is read for at most 64 KiB.
+  symlinks. Each is read for at most 64 KiB from its start and, for recency,
+  at most 64 KiB from its end.
 - A transcript is a candidate only when its first recorded `cwd` is exactly
   the workspace and a record carries its file name as `sessionId`. All session
   IDs present in the bounded head must agree. Records use the bounded,
   duplicate-key-rejecting JSON decoder. That session ID is the candidate's
   identity; the head check does not verify records beyond the head.
-- Recency is the file's modification time.
+- Recency is the last complete record's recorded `timestamp`
+  (`YYYY-MM-DDTHH:MM:SS[.fraction]Z`, parsed strictly), not the file's
+  modification time. With no valid recorded time, recency is unknown, and
+  `--latest` treats the choice as ambiguous.
+- A file read to its end that claims its own session ID but never records a
+  `cwd` holds no conversation turn. Claude leaves such stubs, containing only
+  session metadata. It is not a candidate and does not make the inventory
+  incomplete. Read only in part, the same evidence stays unresolved.
 - At most 1,000 transcripts are examined. Reaching that bound, or an unreadable
   directory or transcript, leaves the inventory incomplete. Malformed records,
   conflicting identity, and heads with no complete attribution also leave it

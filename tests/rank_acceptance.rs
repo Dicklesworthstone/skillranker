@@ -161,6 +161,23 @@ impl Fixture {
         newer_encoding: bool,
         cwd: Option<&str>,
     ) -> PathBuf {
+        self.claude_session_at(
+            session,
+            request,
+            newer_encoding,
+            cwd,
+            "2026-09-19T10:00:00Z",
+        )
+    }
+    /// A session whose records were written at `recorded`.
+    fn claude_session_at(
+        &self,
+        session: &str,
+        request: &str,
+        newer_encoding: bool,
+        cwd: Option<&str>,
+        recorded: &str,
+    ) -> PathBuf {
         let workspace = std::fs::canonicalize(self.workspace()).unwrap();
         let workspace = workspace.to_str().unwrap();
         let name: String = if newer_encoding {
@@ -176,7 +193,7 @@ impl Fixture {
         let cwd = cwd.unwrap_or(workspace);
         let record = |n: u8, parent: Option<String>, text: &str| {
             json!({"type": "user", "uuid": format!("{session}-{n}"), "parentUuid": parent,
-                   "cwd": cwd, "sessionId": session,
+                   "cwd": cwd, "sessionId": session, "timestamp": recorded,
                    "message": {"role": "user", "content": text}})
             .to_string()
         };
@@ -635,15 +652,17 @@ fn bare_rank_uses_the_only_session_of_this_workspace() {
 fn bare_rank_needs_latest_to_choose_between_sessions() {
     let f = Fixture::new(CONSENT);
     std::fs::create_dir_all(f.root.join("home")).unwrap();
-    let older = f.claude_session("s-older", TASK, false, None);
+    // Recency is the last recorded time, not the file's: the newer session
+    // was written most recently but its file looks an hour older.
+    f.claude_session_at("s-older", TASK, false, None, "2026-09-19T09:00:00Z");
+    let newer = f.claude_session_at("s-newer", RELEASE, true, None, "2026-09-19T10:00:00Z");
     let hour_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(3_600);
     std::fs::File::options()
         .write(true)
-        .open(older)
+        .open(newer)
         .unwrap()
         .set_modified(hour_ago)
         .unwrap();
-    f.claude_session("s-newer", RELEASE, true, None);
     let provider = Provider::start(&f, "useful", &[]);
     let (code, value) = run_bare(&f, &provider, &[]);
     assert_eq!(code, Some(3), "{value}");
@@ -658,6 +677,33 @@ fn bare_rank_needs_latest_to_choose_between_sessions() {
     let body = served[0]["body"].as_str().unwrap();
     assert!(body.contains("changelog entry for version 2.4"), "{body}");
     assert!(!body.contains("find and repair the failing test"), "{body}");
+}
+
+#[test]
+fn bare_rank_is_not_blocked_by_an_empty_stub_session() {
+    let f = Fixture::new(CONSENT);
+    std::fs::create_dir_all(f.root.join("home")).unwrap();
+    let known = f.claude_session("s-known", TASK, false, None);
+    // Claude leaves stubs holding only session metadata, never a working
+    // directory: read whole, one is proven to hold no conversation turn.
+    let stub = [
+        json!({"type": "last-prompt", "sessionId": "s-stub"}),
+        json!({"type": "ai-title", "sessionId": "s-stub"}),
+        json!({"type": "permission-mode", "sessionId": "s-stub"}),
+    ]
+    .map(|record| record.to_string() + "\n")
+    .concat();
+    std::fs::write(known.parent().unwrap().join("s-stub.jsonl"), stub).unwrap();
+    let provider = Provider::start(&f, "useful", &[]);
+    let (code, value) = run_bare(&f, &provider, &[]);
+    let served = provider.finish();
+    assert_eq!(code, Some(0), "{value}");
+    assert_eq!(
+        value["warnings"][0]["kind"], "discovered-session",
+        "{value}"
+    );
+    assert_eq!(value["warnings"][0]["count"], 1);
+    assert_eq!(stages(&served), ["wide", "rerank"]);
 }
 
 #[test]

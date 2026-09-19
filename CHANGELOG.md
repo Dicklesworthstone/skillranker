@@ -80,11 +80,14 @@
   - A transcript counts only when its own records name this workspace as
     their first working directory and carry its file name as the session ID.
   - One session is used and disclosed as `discovered-session`. Several
-    sessions need `--latest` (now accepted), which picks the most recently
-    modified one and discloses it as `latest-session`. No session is
+    sessions need `--latest` (now accepted), which picks the one with the
+    latest recorded activity and discloses it as `latest-session`. No session is
     `missing-session`.
   - An explicit `--transcript` with the same attribution gets a durable
     session identity, so its exact repeats are served from the cache.
+  - An unreadable or unresolved transcript makes discovery incomplete rather
+    than being skipped. A stub Claude leaves with only session metadata and no
+    working directory, read in full, is not a session and blocks nothing.
 - `sr rank --dry-run` prints a non-actionable `preview` artifact:
   - the exact redacted wide request a matching `--no-persist` run would send,
     with its byte count, disclosure receipt and effect receipt; or

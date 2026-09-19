@@ -21,7 +21,7 @@ use nix::sys::stat::{FileStat, Mode, SFlag, fstat};
 use serde_json::Value;
 use std::collections::BTreeSet;
 use std::ffi::OsStr;
-use std::io::Read;
+use std::io::{Read, Seek, SeekFrom};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
@@ -29,6 +29,8 @@ use std::path::{Path, PathBuf};
 pub const MAX_TRANSCRIPTS: usize = 1_000;
 /// Bytes read from the start of a transcript to establish its identity.
 pub const HEAD_BYTES: usize = 64 * 1024;
+/// Bytes read from the end of a transcript to find its last recorded time.
+pub const TAIL_BYTES: usize = 64 * 1024;
 
 /// Directory names Claude has used for `workspace`: older versions replaced
 /// only `/`, newer ones every character that is not ASCII alphanumeric.
@@ -52,12 +54,22 @@ pub fn project_directories(workspace: &Path) -> Vec<String> {
 /// recorded working directory is exactly `workspace` and a record carries
 /// `stem` as its session ID. Only complete lines count.
 pub fn attribution(head: &[u8], stem: &str, workspace: &str) -> Option<SessionId> {
-    checked_attribution(head, stem, workspace).ok().flatten()
+    checked_attribution(head, stem, workspace, false)
+        .ok()
+        .flatten()
 }
 
-/// `Ok(None)` proves another workspace; `Err` means attribution is unresolved.
-/// Never turn unreadable or ambiguous evidence into an absent candidate.
-fn checked_attribution(head: &[u8], stem: &str, workspace: &str) -> Result<Option<SessionId>, ()> {
+/// `Ok(None)` proves the file is not a candidate: it records another
+/// workspace, or, read `whole`, it claims this session but never recorded a
+/// working directory, so it holds no conversation turn to rank. `Err` means
+/// attribution is unresolved. Never turn unreadable or ambiguous evidence
+/// into an absent candidate.
+fn checked_attribution(
+    head: &[u8],
+    stem: &str,
+    workspace: &str,
+    whole: bool,
+) -> Result<Option<SessionId>, ()> {
     if head.len() > HEAD_BYTES {
         return Err(());
     }
@@ -84,11 +96,87 @@ fn checked_attribution(head: &[u8], stem: &str, workspace: &str) -> Result<Optio
             claimed = true;
         }
     }
-    if in_workspace && claimed {
-        SessionId::new(stem).map(Some).map_err(|_| ())
-    } else {
-        Err(())
+    match (in_workspace, claimed) {
+        (true, true) => SessionId::new(stem).map(Some).map_err(|_| ()),
+        (false, true) if whole => Ok(None),
+        _ => Err(()),
     }
+}
+
+/// The last complete record's recorded `timestamp`, from a bounded tail read.
+/// Unknown when no complete record in the tail carries a valid one.
+fn last_recorded_ms(file: &mut std::fs::File, size: u64) -> Option<i64> {
+    let start = size.saturating_sub(TAIL_BYTES as u64);
+    file.seek(SeekFrom::Start(start)).ok()?;
+    let mut tail = Vec::with_capacity(TAIL_BYTES);
+    file.by_ref()
+        .take(TAIL_BYTES as u64)
+        .read_to_end(&mut tail)
+        .ok()?;
+    let end = tail.iter().rposition(|byte| *byte == b'\n')?;
+    // A tail that starts inside the file begins with a partial record.
+    let skip = usize::from(start > 0);
+    tail[..end]
+        .split(|byte| *byte == b'\n')
+        .skip(skip)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .find_map(|line| match crate::adapter::decode_json(line, TAIL_BYTES) {
+            Ok(Value::Object(record)) => record
+                .get("timestamp")
+                .and_then(Value::as_str)
+                .and_then(parse_utc_ms),
+            _ => None,
+        })
+}
+
+/// Milliseconds since the Unix epoch for `YYYY-MM-DDTHH:MM:SS[.fraction]Z`.
+pub fn parse_utc_ms(text: &str) -> Option<i64> {
+    let utc = text.strip_suffix('Z')?;
+    let (date_time, fraction) = match utc.split_once('.') {
+        Some((_, "")) => return None,
+        Some((date_time, fraction)) => (date_time, fraction),
+        None => (utc, ""),
+    };
+    let bytes = date_time.as_bytes();
+    let separators = [(4, b'-'), (7, b'-'), (10, b'T'), (13, b':'), (16, b':')];
+    if bytes.len() != 19 || separators.iter().any(|(at, byte)| bytes[*at] != *byte) {
+        return None;
+    }
+    let field = |range: std::ops::Range<usize>| -> Option<i64> {
+        let digits = date_time.get(range)?;
+        digits
+            .bytes()
+            .all(|byte| byte.is_ascii_digit())
+            .then(|| digits.parse().ok())?
+    };
+    let (year, month, day) = (field(0..4)?, field(5..7)?, field(8..10)?);
+    let (hour, minute, second) = (field(11..13)?, field(14..16)?, field(17..19)?);
+    let millis = if fraction.is_empty() {
+        0
+    } else {
+        if fraction.len() > 9 || !fraction.bytes().all(|byte| byte.is_ascii_digit()) {
+            return None;
+        }
+        format!("{fraction:0<3}")[..3].parse::<i64>().ok()?
+    };
+    if !(1..=12).contains(&month)
+        || !(1..=31).contains(&day)
+        || hour > 23
+        || minute > 59
+        || second > 60
+    {
+        return None;
+    }
+    // Days from the civil calendar (proleptic Gregorian), 1970-01-01 = 0.
+    let shifted = if month <= 2 { year - 1 } else { year };
+    let era = shifted.div_euclid(400);
+    let year_of_era = shifted - era * 400;
+    let day_of_year = (153 * ((month + 9) % 12) + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    let days = era * 146_097 + day_of_era - 719_468;
+    Some(((days * 24 + hour) * 60 + minute) * 60_000 + second * 1_000 + millis)
 }
 
 /// The session of an explicitly selected transcript, when its own records
@@ -163,7 +251,7 @@ pub fn discover_claude_sessions(
                     inventory.complete = false;
                     return inventory;
                 }
-                let (session, modified, identity) = match probe(&directory, name, cwd) {
+                let (session, recorded, identity) = match probe(&directory, name, cwd) {
                     Ok(Some(candidate)) => candidate,
                     Ok(None) => continue,
                     Err(()) => {
@@ -189,7 +277,7 @@ pub fn discover_claude_sessions(
                         branch: None,
                         epoch: None,
                     },
-                    last_activity_unix_ms: Some(modified),
+                    last_activity_unix_ms: recorded,
                     remote: false,
                 });
             }
@@ -198,9 +286,9 @@ pub fn discover_claude_sessions(
     inventory
 }
 
-/// Attribution, modification time and file identity of one regular file,
-/// opened without following symlinks and read only for its head.
-type ProbedSession = (SessionId, i64, (u64, u64));
+/// Attribution, last recorded time and file identity of one regular file,
+/// opened without following symlinks and read only for its head and tail.
+type ProbedSession = (SessionId, Option<i64>, (u64, u64));
 
 fn probe(
     directory: &AuthorizedRoot,
@@ -215,28 +303,27 @@ fn probe(
     if SFlag::from_bits_truncate(stat.st_mode) & SFlag::S_IFMT != SFlag::S_IFREG {
         return Err(());
     }
+    let mut file = std::fs::File::from(fd);
     let mut head = Vec::with_capacity(HEAD_BYTES);
-    std::fs::File::from(fd)
+    file.by_ref()
         .take(HEAD_BYTES as u64)
         .read_to_end(&mut head)
         .map_err(|_| ())?;
-    let Some(session) = checked_attribution(&head, stem, workspace)? else {
+    let size = file_size(&stat);
+    // Only a file read to its end can prove it holds no conversation turn.
+    let whole = size <= HEAD_BYTES as u64 && head.len() as u64 == size;
+    let Some(session) = checked_attribution(&head, stem, workspace, whole)? else {
         return Ok(None);
     };
-    Ok(Some((
-        session,
-        modified_unix_ms(&stat),
-        file_identity(&stat),
-    )))
+    let recorded = last_recorded_ms(&mut file, size);
+    Ok(Some((session, recorded, file_identity(&stat))))
 }
 
 // Stat field widths differ by platform: these casts are identity on Linux and
 // widening on macOS.
 #[allow(clippy::unnecessary_cast)]
-fn modified_unix_ms(stat: &FileStat) -> i64 {
-    (stat.st_mtime as i64)
-        .saturating_mul(1_000)
-        .saturating_add(stat.st_mtime_nsec as i64 / 1_000_000)
+fn file_size(stat: &FileStat) -> u64 {
+    stat.st_size.max(0) as u64
 }
 
 #[allow(clippy::unnecessary_cast)]
@@ -278,5 +365,49 @@ mod tests {
         // A later change of directory does not disown the session.
         let moved = own + &line(serde_json::json!({"cwd": "/tmp", "sessionId": "s-1"}));
         assert!(attribution(moved.as_bytes(), "s-1", WORKSPACE).is_some());
+    }
+
+    #[test]
+    fn a_whole_stub_that_never_recorded_a_directory_is_not_a_candidate() {
+        let stub = line(serde_json::json!({"type": "ai-title", "sessionId": "s-1"}));
+        assert_eq!(
+            checked_attribution(stub.as_bytes(), "s-1", WORKSPACE, true),
+            Ok(None)
+        );
+        // Read only in part, the same bytes prove nothing; unclaimed or
+        // malformed whole files stay unresolved too.
+        assert!(checked_attribution(stub.as_bytes(), "s-1", WORKSPACE, false).is_err());
+        let unclaimed = line(serde_json::json!({"type": "ai-title"}));
+        assert!(checked_attribution(unclaimed.as_bytes(), "s-1", WORKSPACE, true).is_err());
+        assert!(checked_attribution(b"not json\n", "s-1", WORKSPACE, true).is_err());
+    }
+
+    #[test]
+    fn recorded_times_parse_strictly_as_utc() {
+        assert_eq!(parse_utc_ms("1970-01-01T00:00:00Z"), Some(0));
+        assert_eq!(
+            parse_utc_ms("2026-09-17T11:37:24.088Z"),
+            Some(1_789_645_044_088)
+        );
+        assert_eq!(
+            parse_utc_ms("2000-02-29T23:59:59.999Z"),
+            Some(951_868_799_999)
+        );
+        assert_eq!(
+            parse_utc_ms("2026-09-17T11:37:24.5Z"),
+            Some(1_789_645_044_500)
+        );
+        for invalid in [
+            "2026-09-17 11:37:24Z",
+            "2026-09-17T11:37:24+02:00",
+            "2026-09-17T11:37:24",
+            "2026-13-01T00:00:00Z",
+            "2026-09-17T24:00:00Z",
+            "2026-09-17T11:37:24.Z",
+            "2026-09-17T11:37:24.08aZ",
+            "+026-09-17T11:37:24Z",
+        ] {
+            assert_eq!(parse_utc_ms(invalid), None, "{invalid}");
+        }
     }
 }
