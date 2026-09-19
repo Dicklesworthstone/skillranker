@@ -1027,7 +1027,15 @@ async fn rank_once(
 
     // 8. Capture roster dependencies for final revalidation
     let mut content_scope = BTreeSet::new();
-    for candidate in &candidate_skills {
+    // Quill's cutoff depends on the indexed inventory, not just its winners.
+    // Conservatively retain every visible binding when retrieval ran: a skill
+    // omitted from the wide set may become relevant while Jev is evaluating it.
+    let content_candidates = if ran_quill {
+        &initial_advisory
+    } else {
+        &candidate_skills
+    };
+    for candidate in content_candidates {
         content_scope.insert(candidate.binding.id.clone());
     }
     let dependencies = roster::capture_dependencies(&roster, &content_scope, clock)?;
