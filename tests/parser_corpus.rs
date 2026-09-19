@@ -14,37 +14,37 @@
 //! - Bounded output document serialization and terminal text sanitization.
 //! - Fixed-seed deterministic fuzz smoke campaign runner (1,500 iterations).
 
-use asupersync::runtime::RuntimeBuilder;
 use asupersync::Budget;
+use asupersync::runtime::RuntimeBuilder;
 use serde_json::json;
 use skillranker::cache::{
-    compute_decision_fingerprint, compute_request_fingerprint, CacheKey, CacheNamespace,
-    CandidateDigest, DecisionFingerprintInput, RankingPolicySnapshot, RequestFingerprintInput,
-    RequestStage,
+    CacheKey, CacheNamespace, CandidateDigest, DecisionFingerprintInput, RankingPolicySnapshot,
+    RequestFingerprintInput, RequestStage, compute_decision_fingerprint,
+    compute_request_fingerprint,
 };
-use skillranker::config::{ConfigSources, RawValue, ResolvedConfig, MAX_STRING_VALUE_BYTES};
-use skillranker::context::jsonl::{parse_line, snapshot_jsonl, CursorKind, SkipKind};
+use skillranker::config::{ConfigSources, MAX_STRING_VALUE_BYTES, RawValue, ResolvedConfig};
+use skillranker::context::jsonl::{CursorKind, SkipKind, parse_line, snapshot_jsonl};
 use skillranker::identity::{
     AdapterId, AdapterVersion, BranchId, ContentHash, ContextEpoch, HarnessId, SessionId, SkillId,
     WorkspaceId,
 };
-use skillranker::jev::codec::{CodecError, Request, MAX_REQUEST_BYTES};
+use skillranker::jev::codec::{CodecError, MAX_REQUEST_BYTES, Request};
 use skillranker::limits::*;
 use skillranker::output::table::sanitize_terminal_text;
 use skillranker::output::{
-    sanitize_diagnostic_text, ErrorKind, OutputDocument, MAX_OUTPUT_BYTES, MAX_TEXT_BYTES,
+    ErrorKind, MAX_OUTPUT_BYTES, MAX_TEXT_BYTES, OutputDocument, sanitize_diagnostic_text,
 };
 use skillranker::roster::explicit::{
-    parse_prompt_directives, resolve_explicit_requirements, ExplicitResolutionRequest,
-    ExplicitResolutionResult, UnresolvedReason,
+    ExplicitResolutionRequest, ExplicitResolutionResult, UnresolvedReason, parse_prompt_directives,
+    resolve_explicit_requirements,
 };
 use skillranker::roster::resolution::ResolvedRoster;
-use skillranker::roster::retrieval::{compile_query, QueryInput};
-use skillranker::roster::{parse_skill_metadata, FrontmatterError};
+use skillranker::roster::retrieval::{QueryInput, compile_query};
+use skillranker::roster::{FrontmatterError, parse_skill_metadata};
 use skillranker::runtime::ProcessInvocation;
 use skillranker::scoring::{
-    clip, log_odds, rank, Input, ScoringError, Weights, EPSILON, W_FIT_MAX, W_PHASE_MAX,
-    W_PRIOR_MAX,
+    EPSILON, Input, ScoringError, W_FIT_MAX, W_PHASE_MAX, W_PRIOR_MAX, Weights, clip, log_odds,
+    rank,
 };
 
 // ==============================================================================
@@ -178,10 +178,12 @@ fn test_normalized_context_and_jsonl_tail_fuzz_boundaries() {
     let snapshot3 = snapshot_jsonl(&invocation, &cx, &file_path, None, CursorKind::Ranking)
         .expect("snapshot succeeds");
     assert_eq!(snapshot3.events.len(), 1);
-    assert!(snapshot3
-        .skipped
-        .iter()
-        .any(|s| matches!(s.kind, SkipKind::Oversize)));
+    assert!(
+        snapshot3
+            .skipped
+            .iter()
+            .any(|s| matches!(s.kind, SkipKind::Oversize))
+    );
 
     let _ = invocation.shutdown();
     let _ = std::fs::remove_dir_all(&temp_dir);
@@ -457,9 +459,11 @@ fn test_explicit_directive_resolution_adversarial_inputs() {
     let res = resolve_explicit_requirements(&req, &empty_roster);
     match res {
         Ok(ExplicitResolutionResult::Unavailable { unresolved }) => {
-            assert!(unresolved
-                .iter()
-                .any(|u| u.reason == UnresolvedReason::ConflictingDirective));
+            assert!(
+                unresolved
+                    .iter()
+                    .any(|u| u.reason == UnresolvedReason::ConflictingDirective)
+            );
         }
         other => panic!("expected unavailable due to conflict, got: {other:?}"),
     }
@@ -758,11 +762,7 @@ fn test_deterministic_fuzz_smoke_campaign_runner() {
                     let text: String = (0..len)
                         .map(|_| {
                             let b = (rng.next_u32() % 128) as u8;
-                            if b.is_ascii() {
-                                b as char
-                            } else {
-                                ' '
-                            }
+                            if b.is_ascii() { b as char } else { ' ' }
                         })
                         .collect();
                     let _ = parse_prompt_directives(&text); // must never panic
@@ -807,17 +807,14 @@ fn test_deterministic_fuzz_smoke_campaign_runner() {
                     // Fuzz terminal text sanitizer
                     let len = (rng.next_u32() % 256) as usize;
                     let text: String = (0..len)
-                        .map(|_| {
-                            let ch = match rng.next_u32() % 10 {
-                                0 => '\x1b',
-                                1 => '\r',
-                                2 => '\n',
-                                3 => '\t',
-                                4 => '\x07',
-                                5 => '\x08',
-                                _ => ((rng.next_u32() % 95) + 32) as u8 as char,
-                            };
-                            ch
+                        .map(|_| match rng.next_u32() % 10 {
+                            0 => '\x1b',
+                            1 => '\r',
+                            2 => '\n',
+                            3 => '\t',
+                            4 => '\x07',
+                            5 => '\x08',
+                            _ => ((rng.next_u32() % 95) + 32) as u8 as char,
                         })
                         .collect();
                     let sanitized = sanitize_terminal_text(&text);
