@@ -76,6 +76,21 @@ impl EntryClock {
         Ok(Self { started, deadline })
     }
 
+    /// The same entry instant with another total deadline, for a deadline
+    /// chosen by configuration read after entry. Expiry is still measured from
+    /// process entry, and the cleanup reserve is unchanged.
+    pub fn with_total(self, total: DurationMillis) -> Result<Self, RuntimeError> {
+        let deadline = InvocationDeadline::new(
+            MonotonicMillis::from_millis(0),
+            total,
+            self.deadline.cleanup_reserve(),
+        )?;
+        Ok(Self {
+            started: self.started,
+            deadline,
+        })
+    }
+
     pub fn now(&self) -> MonotonicMillis {
         let elapsed = self.started.elapsed();
         let ms = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX);

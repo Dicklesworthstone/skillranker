@@ -4,6 +4,18 @@
 
 ### Fixed
 
+- `sr rank` honors `--timeout-ms`, `SR_TIMEOUT_MS` and trusted
+  `ranking.timeout_ms`. The deadline still runs from process entry. Before
+  this fix every rank used the 3,000 ms default, whatever was configured.
+- Concurrent identical `sr rank` runs share one provider evaluation even when
+  they open a new cache at the same moment. A run that met SQLite busy while
+  opening the response cache or the lease store, or while reading the
+  leader's lease, used to send its own evaluation. It now retries briefly
+  within its budget, and a failed lease read no longer ends a follower's wait.
+- User exclusions reach every rank path. "Don't use skill X" in the prompt
+  or in an earlier turn now removes X before any provider request. A request
+  for a skill that is also excluded, by configuration or directive, is refused
+  as a conflicting directive (`unresolved-explicit`, exit 5), not granted.
 - `sr rank` retries transient provider failures (429, 5xx, connection errors)
   within one per-invocation allowance of two logical requests and four HTTP
   attempts. It honors `Retry-After` and the entry deadline, and never retries

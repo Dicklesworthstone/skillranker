@@ -1032,7 +1032,7 @@ async fn rank_once(
     // scope them. Otherwise fingerprints are keyed with fresh randomness and
     // nothing outlives this invocation. An unusable store degrades to that.
     let mut store = match (&args.cache_dir, &normalized_context.session_id) {
-        (Some(dir), Some(_)) => persistent::Store::open(invocation, cx, &gate, dir),
+        (Some(dir), Some(_)) => persistent::Store::open(invocation, cx, clock, &gate, dir).await,
         _ => None,
     };
     let cache_key = match &store {
@@ -1274,7 +1274,7 @@ async fn rank_once(
     {
         let leases = dir.join(persistent::LEASES_FILE);
         let key = CoordinationKey::compute(&cache_key, &cache_ns, &wide_req_fp);
-        match persistent::acquire(invocation, cx, &leases, key) {
+        match persistent::acquire(invocation, cx, clock, &leases, key).await {
             Some(LeaseAcquisition::Leading(leader)) => progress.lease = Some((leases, leader)),
             Some(LeaseAcquisition::Following(follower)) => {
                 persistent::wait_for_leader(
@@ -1904,7 +1904,7 @@ mod persistent {
         SqliteLeaseCoordinator,
     };
     use crate::runtime::EntryClock;
-    use crate::storage::{CacheAccess, CacheLocation, CacheOpen, CacheStore};
+    use crate::storage::{CacheAccess, CacheLocation, CacheOpen, CacheStore, StoreError};
     use asupersync::Cx;
     use std::path::Path;
     use std::time::Duration;
@@ -1930,7 +1930,30 @@ mod persistent {
         SqliteLeaseCoordinator::open(path).ok()
     }
 
-    pub(super) fn acquire(
+    /// Acquire the lease, retrying briefly: two processes opening the lease
+    /// store at once can meet SQLite busy beyond its 25 ms wait. Without a
+    /// lease the run sends uncoordinated, so give up only after a few tries,
+    /// on cancellation, or while a second of budget remains for its own work.
+    pub(super) async fn acquire(
+        invocation: &ProcessInvocation,
+        cx: &Cx,
+        clock: &EntryClock,
+        path: &Path,
+        key: CoordinationKey,
+    ) -> Option<LeaseAcquisition> {
+        for _ in 0..5 {
+            if let Some(acquisition) = try_acquire(invocation, cx, path, key) {
+                return Some(acquisition);
+            }
+            if cx.is_cancel_requested() || clock.remaining_before_cleanup().as_millis() < 1_000 {
+                break;
+            }
+            asupersync::time::sleep(asupersync::time::wall_now(), Duration::from_millis(10)).await;
+        }
+        None
+    }
+
+    fn try_acquire(
         invocation: &ProcessInvocation,
         cx: &Cx,
         path: &Path,
@@ -1952,7 +1975,9 @@ mod persistent {
         .value
     }
 
-    /// True once the lease is gone, completed or expired.
+    /// True once the lease is gone, completed or expired. A failed read (for
+    /// example SQLite busy) is not settlement: the caller keeps waiting within
+    /// the lease and its budget rather than sending a duplicate evaluation.
     fn settled(invocation: &ProcessInvocation, cx: &Cx, path: &Path, key: CoordinationKey) -> bool {
         let path = path.to_path_buf();
         run_blocking_leaf(
@@ -1964,10 +1989,11 @@ mod persistent {
                 Some(Ok(Some(lease))) => {
                     lease.is_completed || wall_clock_ms() >= lease.expires_at_unix_ms
                 }
-                _ => true,
+                Some(Ok(None)) => true,
+                Some(Err(_)) | None => false,
             },
         )
-        .map_or(true, |outcome| outcome.value)
+        .is_ok_and(|outcome| outcome.value)
     }
 
     /// Wait for a leader's lease to settle, within the lease and while at
@@ -2022,21 +2048,38 @@ mod persistent {
     pub(super) struct Store(CacheStore);
 
     impl Store {
-        pub(super) fn open(
+        /// Open the store, retrying briefly while another process holds its
+        /// lock (two processes initializing it at once): an unopened store
+        /// means no cache and no single flight for this run.
+        pub(super) async fn open(
             invocation: &ProcessInvocation,
             cx: &Cx,
+            clock: &EntryClock,
             gate: &EffectGate,
             dir: &Path,
         ) -> Option<Self> {
-            match gate.open_cache(
-                invocation,
-                cx,
-                CacheAccess::Initialize,
-                CacheLocation::Directory(dir.to_path_buf()),
-            ) {
-                Ok(CacheOpen::Ready(store)) => Some(Self(*store)),
-                _ => None,
+            for _ in 0..5 {
+                match gate.open_cache(
+                    invocation,
+                    cx,
+                    CacheAccess::Initialize,
+                    CacheLocation::Directory(dir.to_path_buf()),
+                ) {
+                    Ok(CacheOpen::Ready(store)) => return Some(Self(*store)),
+                    Err(StoreError::Busy)
+                        if !cx.is_cancel_requested()
+                            && clock.remaining_before_cleanup().as_millis() >= 1_000 =>
+                    {
+                        asupersync::time::sleep(
+                            asupersync::time::wall_now(),
+                            Duration::from_millis(10),
+                        )
+                        .await;
+                    }
+                    _ => return None,
+                }
             }
+            None
         }
         pub(super) const fn key(&self) -> CacheKey {
             self.0.fingerprint_key()
@@ -2100,9 +2143,10 @@ mod persistent {
 
     pub(super) const LEASES_FILE: &str = "leases.sqlite3";
 
-    pub(super) fn acquire(
+    pub(super) async fn acquire(
         _: &ProcessInvocation,
         _: &Cx,
+        _: &EntryClock,
         _: &Path,
         _: CoordinationKey,
     ) -> Option<LeaseAcquisition> {
@@ -2124,9 +2168,10 @@ mod persistent {
     pub(super) enum Store {}
 
     impl Store {
-        pub(super) fn open(
+        pub(super) async fn open(
             _: &ProcessInvocation,
             _: &Cx,
+            _: &EntryClock,
             _: &EffectGate,
             _: &Path,
         ) -> Option<Self> {

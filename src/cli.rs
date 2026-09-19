@@ -4,7 +4,7 @@ use crate::authorized_read::{AuthorizedRoot, AuthorizedRoots, ReadError};
 use crate::config::{
     ConfigSources, MAX_LAYER_ENTRIES, RawValue, ResolvedConfig, SettingKey, ValueSource,
 };
-use crate::limits::CONFIG_FILE_BYTES;
+use crate::limits::{CONFIG_FILE_BYTES, DurationMillis};
 use crate::runtime::EntryClock;
 use clap::{Arg, ArgAction, Command};
 use serde_json::{Value, json};
@@ -695,6 +695,19 @@ fn rank_command(
         dry_run,
     };
 
+    // The whole-invocation deadline is configurable (--timeout-ms,
+    // SR_TIMEOUT_MS, trusted ranking.timeout_ms) but still ends relative to
+    // process entry. Invalid configuration keeps the default here; the
+    // pipeline's authoritative load reports it.
+    let timeout_ms = ConfigFiles::new(args.workspace.clone(), args.user_config_root.clone())
+        .load(clock, args.sources.clone())
+        .map_or(clock.deadline().total().as_millis(), |resolved| {
+            resolved.effective().timeout_ms()
+        });
+    let clock = &DurationMillis::new("timeout_ms", timeout_ms, crate::config::MAX_TIMEOUT_MS)
+        .map_err(crate::runtime::RuntimeError::from)
+        .and_then(|total| clock.with_total(total))
+        .map_err(|_| invalid("Invalid ranking deadline"))?;
     timely(clock)?;
     let invocation = crate::runtime::ProcessInvocation::from_clock(*clock)
         .map_err(|_| (6u8, "timeout", "Local runtime unavailable".into()))?;

@@ -298,7 +298,14 @@ fn rank_args(provider: &Provider, args: RankArgs, total_ms: u64) -> Outcome {
     let result = invocation
         .runtime()
         .block_on(async { execute_pipeline(&invocation, &cx, args, Some(&client)).await });
-    assert!(invocation.shutdown(), "owned runtime must shut down");
+    // Shutdown may only use the time left before expiry; record both so a
+    // failure shows whether draining or a late return exhausted it.
+    let returned_ms = clock.now().as_millis();
+    let left_ms = clock.remaining_until_expiry().as_millis();
+    assert!(
+        invocation.shutdown(),
+        "owned runtime must shut down: returned at {returned_ms} ms of {total_ms}, {left_ms} ms left"
+    );
     result
         .map(|doc| doc.as_value().clone())
         .map_err(|(code, kind, _)| (code, kind))
@@ -877,6 +884,40 @@ fn run_sr_with(
 }
 
 #[test]
+fn the_sr_binary_honors_a_longer_configured_deadline() {
+    // Trusted user configuration allows 15 s; the wide answer takes 3.5 s,
+    // longer than the default 3 s deadline.
+    let f = Fixture::new(&format!("{CONSENT}[ranking]\ntimeout_ms = 15000\n"));
+    std::fs::create_dir_all(f.root.join("home")).unwrap();
+    let provider = Provider::start(&f, "slow-wide", &["".as_ref(), "3.5".as_ref()]);
+    let (code, value) = run_sr_with(&f, &provider, true, TASK, &[]);
+    let served = provider.finish();
+    assert_eq!(stages(&served), ["wide", "rerank"]);
+    assert_eq!(code, Some(0), "{value}");
+    assert_eq!(value["decision"], "ranked", "{value}");
+}
+
+#[test]
+fn the_sr_binary_honors_a_shorter_timeout_flag() {
+    // The wide answer takes 2 s, inside the default 3 s deadline but not
+    // inside the requested 800 ms.
+    let f = Fixture::new(CONSENT);
+    std::fs::create_dir_all(f.root.join("home")).unwrap();
+    let provider = Provider::start(&f, "slow-wide", &["".as_ref(), "2".as_ref()]);
+    let started = std::time::Instant::now();
+    let (code, value) = run_sr_with(&f, &provider, true, TASK, &["--timeout-ms", "800"]);
+    let elapsed = started.elapsed();
+    let (served, _) = provider.finish_with_rejections();
+    assert!(!stages(&served).contains(&"rerank"), "{served:?}");
+    assert_eq!(code, Some(6), "{value}");
+    assert_eq!(value["error"]["kind"], "timeout", "{value}");
+    assert!(
+        elapsed < std::time::Duration::from_millis(2_000),
+        "the requested deadline, not the provider, ends the run: {elapsed:?}"
+    );
+}
+
+#[test]
 fn the_sr_binary_ranks_over_real_tls_and_serves_its_repeat_from_cache() {
     let f = Fixture::new(CONSENT);
     std::fs::create_dir_all(f.root.join("home")).unwrap();
@@ -1171,11 +1212,15 @@ fn concurrent_identical_requests_share_one_provider_evaluation() {
     // The wide answer takes long enough that the second process arrives
     // while the first still holds the single-flight lease.
     let provider = Provider::start(&f, "slow-wide", &["".as_ref(), "1.2".as_ref()]);
+    // Single flight, not latency, is under test: a generous deadline keeps a
+    // loaded host from ending the follower's wait early, in which case it
+    // rightly sends itself.
+    const TIMEOUT: &[&str] = &["--timeout-ms", "20000"];
     // Build both commands first: building one writes the context file, which
     // must not change under a running process.
     let mut commands = [
-        sr_command(&f, &provider, true, TASK, &[]),
-        sr_command(&f, &provider, true, TASK, &[]),
+        sr_command(&f, &provider, true, TASK, TIMEOUT),
+        sr_command(&f, &provider, true, TASK, TIMEOUT),
     ];
     let children: Vec<_> = commands
         .iter_mut()
