@@ -386,13 +386,24 @@ fn parse_yaml_frontmatter(yaml: &str) -> Result<FrontmatterFields, FrontmatterEr
 
         let colon_pos = line.find(':').ok_or(FrontmatterError::InvalidYamlSyntax)?;
         let key = line[..colon_pos].trim().to_ascii_lowercase();
+        // Accepted spellings share one field identity. Checking only the raw
+        // key would let an alias overwrite an earlier invocation restriction.
+        let key = match key.as_str() {
+            "disable_model_invocation" => "disable-model-invocation",
+            "user_invocable" => "user-invocable",
+            "usage_kind" => "usage",
+            "alias" => "aliases",
+            "tag" => "tags",
+            "phase" => "phases",
+            other => other,
+        };
         let value_after_colon = line[colon_pos + 1..].trim();
 
-        if !seen_keys.insert(key.clone()) {
+        if !seen_keys.insert(key.to_owned()) {
             return Err(FrontmatterError::DuplicateKey);
         }
 
-        match key.as_str() {
+        match key {
             "name" => {
                 require_scalar_value(value_after_colon)?;
                 let (val, next_idx) = parse_scalar_or_block(value_after_colon, &lines, idx + 1)?;
@@ -405,17 +416,17 @@ fn parse_yaml_frontmatter(yaml: &str) -> Result<FrontmatterFields, FrontmatterEr
                 fields.description = val.trim().to_string();
                 idx = next_idx;
             }
-            "disable-model-invocation" | "disable_model_invocation" => {
+            "disable-model-invocation" => {
                 let (val, next_idx) = parse_scalar_or_block(value_after_colon, &lines, idx + 1)?;
                 fields.disable_model_invocation = parse_boolean(&val)?;
                 idx = next_idx;
             }
-            "user-invocable" | "user_invocable" => {
+            "user-invocable" => {
                 let (val, next_idx) = parse_scalar_or_block(value_after_colon, &lines, idx + 1)?;
                 fields.user_invocable = parse_boolean(&val)?;
                 idx = next_idx;
             }
-            "usage" | "usage_kind" => {
+            "usage" => {
                 let (val, next_idx) = parse_scalar_or_block(value_after_colon, &lines, idx + 1)?;
                 let lower = val.trim().to_ascii_lowercase();
                 fields.usage_kind = match lower.as_str() {
@@ -430,17 +441,17 @@ fn parse_yaml_frontmatter(yaml: &str) -> Result<FrontmatterFields, FrontmatterEr
                 fields.forked_context = val.trim().eq_ignore_ascii_case("fork");
                 idx = next_idx;
             }
-            "aliases" | "alias" => {
+            "aliases" => {
                 let (list, next_idx) = parse_list_or_flow(value_after_colon, &lines, idx + 1)?;
                 fields.aliases = list;
                 idx = next_idx;
             }
-            "tags" | "tag" => {
+            "tags" => {
                 let (list, next_idx) = parse_list_or_flow(value_after_colon, &lines, idx + 1)?;
                 fields.tags = list;
                 idx = next_idx;
             }
-            "phases" | "phase" => {
+            "phases" => {
                 let (list, next_idx) = parse_list_or_flow(value_after_colon, &lines, idx + 1)?;
                 fields.phases = list;
                 idx = next_idx;
