@@ -1,10 +1,222 @@
 # SkillRanker reality check and bridge plan
 
-Latest assessment: 2026-09-18. Earlier 2026-09-17 reviews and receipts are retained
-below as history. Inventory and ownership statements describe their stated
-snapshots, not a frozen release or a product-completion percentage.
+Latest assessment: 2026-09-19. Earlier reviews and receipts are retained below as
+history. Inventory and ownership statements describe their stated snapshots, not
+a frozen release or a product-completion percentage.
 
-## Current assessment — 2026-09-18, evening source review
+## Current assessment — 2026-09-19
+
+**SkillRanker now has a real executable ranking pipeline. It is not yet the
+complete, qualified live-session recommendation system described by the README.**
+The previous assessment's central claim that `rank` is not reachable is obsolete.
+The immediate bottleneck is correctness and qualification of the connected core,
+followed by durable observations and a real shadow hook. More optional features
+will not close those gaps.
+
+This review read all of AGENTS.md and README.md, reviewed the comprehensive plan,
+command dispatch, context/roster/cache/provider/publication boundaries, capability
+and evaluation contracts, recent commits, historical sessions and live Beads.
+It used the `reality-check-for-project` skill and retained the existing vision,
+70-goal and I01–I15 crosswalks below. This is a workflow and architecture assessment,
+not an exhaustive security audit of every source line. The executed Rust/CLI
+snapshot is `29dddb8cd3ca62a8808c96dc0b33c65aed1ff8a2`; subsequent peer changes
+are separately identified. README keeps the requested finished-product voice.
+
+### What works, and what the evidence establishes
+
+| Workflow | Actual implementation | Current proof boundary |
+|---|---|---|
+| Configuration and inspection | `doctor`, `doctor --config`, roster listing/snapshot/diff, capabilities | Real CLI dispatch and focused tests; configured roots work in inspection but are not connected to ranking |
+| Local explicit requirements | Bounded context input, exact skill resolution and offline explicit output | Actual binary returned explicit success without credentials or persistent state; this is local resolution, not key-free probabilistic ranking |
+| Rank preparation | Normalized/native Claude input, redaction, disclosure, bounded Quill overflow, dry-run wide/explicit-shortlist preparation | Source plus subprocess tests and direct no-network preview; inventory and native identity qualifications remain |
+| Jev ranking | Owned Asupersync transport, sequential wide/rerank, gates, none/fit eligibility, scoring and JSON/table output are connected | Synthetic transport/CLI tests establish integration; live maximum-shape pair and operational qualification remain open |
+| Exact response reuse | Protected fingerprints, SQLite-backed response storage, coordination and cache-only refusal are connected | Existing focused cache tests cover important paths; identity omissions and competing-process failure prevent blanket isolation/reliability acceptance |
+| Explanation and demonstration | Four non-actionable demo cases and stage/why-not trace data | Demos execute; `.5.14` remains open for complete trace pagination/query identity, not a claim that all explanation promises are finished |
+| Session archive input | Cass capability-checked library adapter exists | `rank --session PATH` still returns `unsupported-source-mode`, exit 7; `.5.25` owns wiring |
+| Persistent observations and feedback | Storage primitives and contracts exist | No observation-ledger schema or reachable ledger/observe/feedback/stats workflow; ranking reports ledger disabled/unavailable |
+| Capture, replay and evaluation | Artifact schemas, synthetic oracles, policy validators and export primitives | No complete save-case/replay/eval command; fixtures are not measured usefulness evidence |
+| Claude integration | Context adapter and hook contracts | No reachable dedicated hook or managed installer, no verified real shadow/advisory deployment |
+| Learning, monitoring and UI | Contracts/plans | Calibration/monitor/TUI are not reachable; `tui = []` supplies no implementation |
+| Distribution and other platforms | Linux binary builds through RCH | GitHub Releases returned `[]`; Linux-gated storage prevents inferring macOS support from Rust portability |
+
+TypeSafe.ai's Jev remains the essential ranking engine. Live ranking requires the
+user's own TypeSafe API key and separate trusted network consent. The successful
+offline explicit/demo/preview paths do not replace it. This audit did not retrieve
+credentials, send session content, make fresh Jev calls, install hooks or release
+artifacts.
+
+### Three newly identified core acceptance gaps
+
+All three are now open bugs and explicit blockers of `sr-roadmap-l1i.5.21`.
+Their acceptance criteria require the real integration boundary and both refusal
+and honest-success cases, not just helper tests.
+
+1. **Rank does not bind discovery to effective roots and harness — `.5.26`.**
+   `src/pipeline/roster.rs::Source::load` always constructs a Claude plan and does
+   not consume effective `roster.roots` or the normalized harness. A direct CLI
+   reproduction on the frozen binary configured `custom/alpha`: `sr roster`
+   listed it, but rank dry-run returned `empty-roster`, exit 5. Adding only
+   `.claude/skills/beta` and changing normalized harness to `codex` produced a
+   wide preview containing beta. Inspection correctly labels the custom inventory
+   unverified; the repair must preserve that distinction rather than declare all
+   configured files loadable. The closed `sr-odcb` inspection fix does not fix rank.
+2. **Abstention paths bypass final dependency checks — `.5.27`.**
+   Source review found wide `LowNeed` refreshes policy but does not revalidate
+   roster; the post-rerank `Verdict::Abstain` returns before both final roster
+   validation and publication policy refresh. Local all-excluded paths need the
+   same audit. Positive ranked/explicit publication tests do not prove negative
+   decisions remain valid after roster or policy changes. This is source evidence;
+   this audit did not execute a deterministic mid-flight race reproduction.
+3. **Cache/lease identity omits producer and agent binding — `.5.28`.**
+   The pipeline namespace includes harness/workspace/session and supplied branch/
+   epoch, but not normalized producer/agent identity; adapter identity is not set.
+   Native normalized construction sets branch to `None` rather than carrying the
+   resolved branch. Those private identity fields also do not appear in provider
+   request bytes. The earlier `sr-yac4` repair correctly framed included fields;
+   it cannot distinguish omitted fields. Actual cross-producer reuse remains to
+   be reproduced through rank, with same-identity reuse as the positive twin.
+
+These are concrete gaps in already connected code, not additional product scope.
+A large count of passing component tests did not expose them. Keep their proof
+classes distinct: the first has a direct CLI reproduction; the other two have
+specific source paths and require behavioral reproduction before repair closure.
+
+### Live-provider and concurrency qualifications
+
+The existing live receipts in [the Jev spike](jev-contract-spike.md) establish a
+small successful production HTTPS request, intermittent large-wide results and a
+separate successful large rerank. The successful 32-candidate rerank was an
+explicit evaluation-stage probe, not evidence that a production wide/rerank pair
+completed. A 255-option wide response totaled approximately 0.99 and was rejected
+under the previous `1e-4` sum tolerance. That is historical evidence of the former
+contract, not a permanent provider failure.
+
+Concurrent commit `5ae2431` changes the accepted total deviation to `0.1`, retains
+raw values and uses normalized probabilities downstream. This audit's 82-test
+receipt and copied binary predate that change. The new policy can address the
+observed rejection, but does not itself prove a successful full-size live pair,
+end-to-end budget compliance or ranking quality. `.2.10` and P1 acceptance `.2.12`
+remain the qualification owners. Do not silently widen the claim from a decoded
+response to a useful recommendation.
+
+Preserve both full-suite results: the earlier frozen `b509af2` run passed 723
+reported tests with nine ignored entries, while a later run on that production
+base plus the roster-test overlay stopped at the competing-process coordination
+test with child exit 101 (179 reported passes, one failure, two ignored entries).
+Its discarded child diagnostics do not establish the cause. `.5.10.1` now owns
+retained diagnostics and deterministic synchronization. The owner subsequently
+identified a plausible late-child/initial-cache-hit assertion race; this is not
+retrospective proof of the original failure. `sr-5n0b` separately tracks load-
+sensitive runtime startup/shutdown behavior. Neither is cleared by this audit's
+focused pass. The coordinator owner also reproduced expired/late calls at the
+library boundary (`.5.10.2`) and identified stale-owner cache publication before
+fenced completion (`.5.10.3`). That helper is not called by the production pipeline;
+its fixes must not be credited as end-to-end rank proof.
+
+### What remains between the current CLI and the promised product
+
+The source has one coherent Rust package with mostly pure normalization,
+validation, retrieval and scoring behind visible effect boundaries. The principal
+architecture choices are in place: Asupersync, bundled SQLite and bounded Quill,
+without a second inference backend. The missing work is concentrated at the
+integration and evidence boundaries:
+
+- **Core acceptance:** repair `.5.26`–`.5.28`; finish native context/discovery
+  verification (`.5.24`, `.5.24.2`), stdin proof (`sr-fpww`), trace completeness,
+  Cass wiring, coordination/runtime failures and revised live Jev qualification.
+  The actual installed harness's visibility/precedence must be verified rather
+  than inferred from familiar directories.
+- **Observation and reproducibility:** implement the P5 ledger, cursors, load
+  attribution, feedback, capture/replay and evaluator. Current rank initializes
+  empty loaded-reference records; the promised observation-based suppression and
+  learning loop are not connected merely because context models exist.
+- **Real session delivery:** implement P6's quiet shadow hook, managed settings
+  edits, bounded delivery/accounting and operational controls, then exercise the
+  actual harness. The audited binary treats `hook` as ordinary invalid usage with
+  JSON stdout and exit 2. It must not be installed as the proposed fail-open hook.
+- **Demonstrated benefit:** collect the planned independently judged relevance
+  holdout, controlled harm cohort and representative hook invocations. The
+  checked-in synthetic cases are contract oracles, not the required 300-family,
+  150-family or 500-invocation cohorts. Passing tests proves neither useful
+  recommendations nor latency/cost/harm targets on real sessions.
+- **Release and optional work:** native macOS storage/build tests, DSR artifacts
+  and installation verification remain. Priors/calibration/monitoring, TUI,
+  watch/description experiments and other native adapters keep their own gates.
+  They should not delay a trustworthy, useful core and measured shadow workflow.
+
+The refreshed inventory contained 225 records: 103 closed, 108 open, seven in
+progress, one blocked and six deferred. This includes concurrent peer additions
+and is not a completion percentage. All 29 P5 children, 13 P6 children, ten P7
+children and nine P8 children were open in that snapshot. Existing P9 records
+cover later interfaces/experiments and explicitly defer six native implementation/
+proof tasks pending qualification. No new giant roadmap is needed.
+
+**Would completing the backlog close the vision?** The phase and I01–I15 maps
+already cover the major promised workflows. They can close the planned scope if
+acceptance includes actual integration and independent external evidence. The
+three new bugs were necessary because earlier narrow closures did not cover the
+whole connected boundary. Implementing open code tasks alone cannot manufacture
+labeled cohorts, live service behavior, installed-harness support or platform
+receipts. Unknown future defects remain possible; this review does not certify
+all closed beads.
+
+### Bridge sequence and refinement decisions
+
+1. Finish the core acceptance blockers with one coordinated build lane and exact
+   source receipts. Prioritize harness/roster authority and cache isolation;
+   include all abstention paths. Finish the revised live pair and retained
+   concurrency diagnostics before claiming P4 acceptance.
+2. Deliver the minimum complete P5 observation/capture/replay path against actual
+   persisted state, then the real P6 shadow hook. Keep optional learning disabled
+   and failures nonblocking. Do not substitute synthetic fixtures for the real
+   observation and delivery boundaries.
+3. Run the existing independent relevance, harm and operational protocols. Use
+   the results to decide advisory promotion and tune policy; do not design more
+   clever ranking machinery before learning whether the current one helps.
+4. Complete release/platform proof and separately gated optional capabilities.
+   Keep the full vision in its existing owners rather than quietly removing it.
+
+Refinement in this pass changed the existing assessment in place. The first pass
+reconciled command and phase claims; the second followed authority and publication
+paths and found the three bugs; the third challenged proof strength and preserved
+both failing and passing receipts. A fourth checked existing owner coverage to
+avoid duplicate ledger/hook/evaluation work. The final graph check found zero
+active dependency cycles after the new core blockers. The ambition is stronger
+observable delivery, not a new architecture or more routine model calls.
+
+### Verification from this assessment
+
+- Required-remote clean-overlay run on `29dddb8`, worker `vmi1153651`, passed
+  **82 tests / 0 failures / 0 ignored** across `capabilities_contract`,
+  `demo_contract`, `native_identity`, `rank_acceptance`, `rank_inputs` and
+  `transcript_request`. Receipt overlay fingerprint:
+  `fe0d5151031be8fda7951fe7fe1f42f7ce344018fdb3ed21e6ada866b230b195`.
+  Log: `/data/tmp/sr-reality-current-tests-20260919.log`.
+- Retrieved that run's `sr` executable and matched remote/local SHA-256:
+  `30dd63dd41259a07bea1284131fcf750fc233ec7dd3dccbaccc2216aca036853`.
+  Executed **22 isolated synthetic CLI probes** with cleared credentials,
+  private HOME/XDG paths and no opted-in network. Capabilities, doctor, all four
+  demos, default dry-run and explicit offline resolution succeeded; offline
+  inference returned cache-miss/11; Cass returned unsupported-source-mode/7;
+  nine missing commands returned invalid-usage/2. The configured-root and foreign-
+  harness probes reproduced `.5.26`. These are observations, not 22 product gates.
+  No cache/data directories were created. Report:
+  `/data/tmp/sr-reality-smoke-20260919.json`.
+- `python3 scripts/validate_public_contracts.py` passed documentation consistency
+  checks. It does not execute README examples or certify the report's findings.
+- `br dep cycles --json` found zero active cycles; `bv --robot-triage` completed.
+  GitHub Releases returned an empty array. No release or macOS test was performed.
+- No source code, README product copy or existing test assertion was changed by
+  this assessment. Three gap Beads and the existing bridge report are the durable
+  changes. Peer edits and their evidence remain separately owned. This is a
+  self-reviewed assessment, not independent certification of every closed task.
+
+This section serves Jeffrey's explicit reality-check request and the core
+acceptance decision. Retire its current-status authority when a newer
+revision-bound assessment supersedes it; preserve historical receipts under the
+repository's no-deletion rule. The review itself earns no implementation credit.
+
+## Historical assessment — 2026-09-18, evening source review
 
 **The local inspection CLI works, and substantial ranking components now exist,
 but there is still no executable next-step recommendation workflow.** The most
