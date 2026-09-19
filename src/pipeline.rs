@@ -163,7 +163,6 @@ struct Progress {
 struct Admitted {
     event_id: String,
     harness: String,
-    attachments_omitted: bool,
     total: usize,
     partial: bool,
     snapshot_id: ContentHash,
@@ -257,14 +256,8 @@ fn unavailable_document(
         "decision": "unavailable",
         "reason": kind.as_str(),
         "harness": admitted.harness,
-        "context_quality": "complete",
-        "quality": {
-            "prompt_complete": true,
-            "task_anchor_known": true,
-            "history_windowed": true,
-            "attachments_omitted": admitted.attachments_omitted,
-            "source_gaps": false,
-        },
+        "context_quality": evaluated.quality.summary(),
+        "quality": evaluated.quality.flags(),
         "roster": {
             "total": admitted.total,
             "eligible": evaluated.eligible,
@@ -489,9 +482,45 @@ async fn rank_once(
 
     let redactor = Redactor::default();
     let anchor_res = resolve_task_anchor(&normalized_context, None, &redactor);
+    // An evaluation needs a task anchor. A terse continuation without an
+    // antecedent, an uninspectable request or contradictory directives never
+    // reaches ranking.
     let task_anchor_text = match &anchor_res {
         crate::context::anchor::AnchorResolution::Established(a) => a.text.as_str(),
-        _ => "",
+        crate::context::anchor::AnchorResolution::MissingTaskContext { .. } => {
+            return Err(input_failure(
+                ErrorKind::InsufficientContext,
+                "The request continues a task whose instruction is not in the context",
+            ));
+        }
+        crate::context::anchor::AnchorResolution::OversizedInput { .. } => {
+            return Err(input_failure(
+                ErrorKind::OversizedInput,
+                "The request is too large to inspect",
+            ));
+        }
+        crate::context::anchor::AnchorResolution::ConflictingDirectives { .. } => {
+            return Err(input_failure(
+                ErrorKind::UnresolvedExplicit,
+                "The context both requires and excludes the same skill",
+            ));
+        }
+    };
+    let has_history = normalized_context
+        .events
+        .iter()
+        .any(|e| e.event_id.is_none() || e.event_id != normalized_context.current_request.event_id);
+    progress.evaluated.quality = Quality {
+        summary: if has_history {
+            crate::output::ContextQuality::Complete
+        } else {
+            crate::output::ContextQuality::PromptOnly
+        },
+        prompt_complete: !normalized_context
+            .current_request
+            .essential_attachment_missing,
+        attachments_omitted: normalized_context.current_request.attachments_omitted,
+        ..Quality::default()
     };
 
     // Combine explicit skill directives from CLI flags, context, and anchor
@@ -570,7 +599,6 @@ async fn rank_once(
             .as_ref()
             .map_or_else(|| "event-0".to_owned(), |e| e.as_str().to_owned()),
         harness: normalized_context.harness.as_str().to_owned(),
-        attachments_omitted: normalized_context.current_request.attachments_omitted,
         total: roster.skills().len(),
         partial: roster.is_partial(),
         snapshot_id: crate::roster::evidence::snapshot_id(&roster),
@@ -625,6 +653,7 @@ async fn rank_once(
                     &normalized_context,
                     &roster,
                     clock.now().as_millis(),
+                    &progress.evaluated.quality,
                 );
                 if let Some(trace_val) = generate_trace(
                     &args,
@@ -763,7 +792,7 @@ async fn rank_once(
                     None,
                     &Evaluated {
                         eligible: admission.admitted.len(),
-                        ..Evaluated::default()
+                        ..progress.evaluated.clone()
                     },
                 );
                 if let Some(trace_val) = generate_trace(
@@ -849,7 +878,7 @@ async fn rank_once(
             &Evaluated {
                 eligible: eligible_count,
                 quill: ran_quill,
-                ..Evaluated::default()
+                ..progress.evaluated.clone()
             },
         );
         if let Some(trace_val) = generate_trace(
@@ -907,8 +936,43 @@ async fn rank_once(
         ..Default::default()
     };
     let (rendered_context, disclosure_receipt) =
-        render_context_and_receipt(&normalized_context, &render_opts)
-            .map_err(|e| failure(7, "oversized-input", format!("Context render error: {e:?}")))?;
+        render_context_and_receipt(&normalized_context, &render_opts).map_err(|e| match e {
+            crate::context::render::RenderContextError::UnsupportedContext(_) => input_failure(
+                ErrorKind::InsufficientContext,
+                "The request depends on content that is not in the context",
+            ),
+            crate::context::render::RenderContextError::Redaction(_)
+            | crate::context::render::RenderContextError::SecretsDetected(_) => input_failure(
+                ErrorKind::UnsupportedInput,
+                "The context could not be made safe to send",
+            ),
+            crate::context::render::RenderContextError::Serialization(_) => input_failure(
+                ErrorKind::OversizedInput,
+                "The context could not be rendered within its bounds",
+            ),
+        })?;
+    // Report the rendered input truthfully. Essential content that is missing,
+    // or a latest request that had to be truncated, cannot support a ranked
+    // result, so nothing is sent.
+    let category = |c: crate::privacy::receipt::SourceCategory| {
+        disclosure_receipt
+            .categories
+            .iter()
+            .find(|r| r.category == c)
+            .map_or((0, 0), |r| (r.omitted_count, r.truncated_count))
+    };
+    let (_, request_truncated) = category(crate::privacy::receipt::SourceCategory::UserRequest);
+    let (history_omitted, history_truncated) =
+        category(crate::privacy::receipt::SourceCategory::MessageHistory);
+    progress.evaluated.quality.summary = rendered_context.context_quality;
+    progress.evaluated.quality.prompt_complete &= request_truncated == 0;
+    progress.evaluated.quality.history_windowed = history_omitted + history_truncated > 0;
+    if rendered_context.is_unsupported_context() || request_truncated > 0 {
+        return Err(input_failure(
+            ErrorKind::InsufficientContext,
+            "The request or its essential context does not fit the admitted input",
+        ));
+    }
 
     // 10. The exact response cache. Persistent entries need a trusted cache
     // directory, an enabled response-cache effect and a session identity to
@@ -1056,7 +1120,7 @@ async fn rank_once(
         quill: ran_quill,
         wide_set_id: Some(candidate_set_id("wide", candidate_skills.iter())),
         requested_model: Some(effective.model().as_str().to_owned()),
-        ..Evaluated::default()
+        ..progress.evaluated.clone()
     };
 
     // The request identity binds the exact serialized request (context,
@@ -1593,6 +1657,11 @@ async fn rank_once(
     Ok(doc)
 }
 
+/// A typed input failure whose exit comes from its public error kind.
+fn input_failure(kind: ErrorKind, message: &str) -> PipelineFailure {
+    failure(kind.exit_code() as u8, kind.as_str(), message)
+}
+
 /// One previewed provider request: the exact serialized bytes as text.
 fn preview_stage(stage: &str, request: &[u8], candidates: usize) -> Result<Value, PipelineFailure> {
     let text = std::str::from_utf8(request).map_err(|_| {
@@ -1960,6 +2029,7 @@ fn build_explicit_document(
     context: &NormalizedContext,
     roster: &ResolvedRoster,
     elapsed_ms: u64,
+    quality: &Quality,
 ) -> OutputDocument {
     let skill_values: Vec<Value> = skills
         .iter()
@@ -2008,14 +2078,8 @@ fn build_explicit_document(
         "decision": "explicit",
         "reason": "user-required",
         "harness": context.harness.as_str(),
-        "context_quality": "complete",
-        "quality": {
-            "prompt_complete": true,
-            "task_anchor_known": true,
-            "history_windowed": true,
-            "attachments_omitted": context.current_request.attachments_omitted,
-            "source_gaps": false,
-        },
+        "context_quality": quality.summary(),
+        "quality": quality.flags(),
         "roster": {
             "total": roster.skills().len(),
             "eligible": roster.skills().len(),
@@ -2065,10 +2129,52 @@ fn build_explicit_document(
     OutputDocument::from_value(val).expect("valid explicit document")
 }
 
+/// The admitted input's quality. Before rendering it describes the full
+/// bounded input that explicit resolution and local policy read; afterwards,
+/// the rendered context and its disclosure receipt.
+#[derive(Clone)]
+struct Quality {
+    summary: crate::output::ContextQuality,
+    prompt_complete: bool,
+    task_anchor_known: bool,
+    history_windowed: bool,
+    attachments_omitted: bool,
+    source_gaps: bool,
+}
+
+impl Default for Quality {
+    fn default() -> Self {
+        Self {
+            summary: crate::output::ContextQuality::Complete,
+            prompt_complete: true,
+            task_anchor_known: true,
+            history_windowed: false,
+            attachments_omitted: false,
+            source_gaps: false,
+        }
+    }
+}
+
+impl Quality {
+    fn summary(&self) -> Value {
+        serde_json::to_value(self.summary).unwrap_or(Value::Null)
+    }
+    fn flags(&self) -> Value {
+        json!({
+            "prompt_complete": self.prompt_complete,
+            "task_anchor_known": self.task_anchor_known,
+            "history_windowed": self.history_windowed,
+            "attachments_omitted": self.attachments_omitted,
+            "source_gaps": self.source_gaps,
+        })
+    }
+}
+
 /// What an invocation actually executed before its decision: real counts and
 /// usage, and only the stage estimates and model identities that exist.
 #[derive(Clone, Default)]
 struct Evaluated {
+    quality: Quality,
     metrics: ExecutionMetrics,
     eligible: usize,
     wide: usize,
@@ -2161,6 +2267,7 @@ fn build_abstain_document(
     dry_run: Option<Value>,
     evaluated: &Evaluated,
 ) -> OutputDocument {
+    let quality = &evaluated.quality;
     let event_id = context
         .current_request
         .event_id
@@ -2174,14 +2281,8 @@ fn build_abstain_document(
         "decision": "abstain",
         "reason": reason,
         "harness": context.harness.as_str(),
-        "context_quality": "complete",
-        "quality": {
-            "prompt_complete": true,
-            "task_anchor_known": true,
-            "history_windowed": true,
-            "attachments_omitted": context.current_request.attachments_omitted,
-            "source_gaps": false,
-        },
+        "context_quality": quality.summary(),
+        "quality": quality.flags(),
         "roster": {
             "total": roster.skills().len(),
             "eligible": evaluated.eligible,
@@ -2230,6 +2331,7 @@ fn build_ranked_document(
     evaluated: &Evaluated,
     elapsed_ms: u64,
 ) -> Result<OutputDocument, PipelineFailure> {
+    let quality = &evaluated.quality;
     let mut skill_values = Vec::new();
     for (i, scored) in ranking.returned.iter().enumerate() {
         let el = &eligible[scored.index];
@@ -2272,14 +2374,8 @@ fn build_ranked_document(
         "decision": "ranked",
         "reason": "eligible-candidates",
         "harness": context.harness.as_str(),
-        "context_quality": "complete",
-        "quality": {
-            "prompt_complete": true,
-            "task_anchor_known": true,
-            "history_windowed": true,
-            "attachments_omitted": context.current_request.attachments_omitted,
-            "source_gaps": false,
-        },
+        "context_quality": quality.summary(),
+        "quality": quality.flags(),
         "roster": {
             "total": roster.skills().len(),
             "eligible": evaluated.eligible,

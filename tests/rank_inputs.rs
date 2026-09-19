@@ -353,3 +353,96 @@ fn project_signals_reach_the_request_unless_the_profile_is_minimal() {
     let minimal = [&base[..], &["--context-profile", "minimal"]].concat();
     assert!(!previewed_request(&f.run(&minimal)).contains("Cargo.toml"));
 }
+
+impl Fixture {
+    /// A context with prior user messages and an optional missing-essential flag.
+    fn conversation(&self, request: &str, history: &[&str], essential_missing: bool) {
+        let message = |id: String, text: &str| {
+            json!({"event_id": id, "parent_id": null, "turn_id": "turn-1", "agent_id": null,
+                   "branch_id": null, "role": "user", "kind": "message",
+                   "timestamp_unix_ms": null, "text": text, "tool": null})
+        };
+        let mut events: Vec<Value> = history
+            .iter()
+            .enumerate()
+            .map(|(i, text)| message(format!("earlier-{i}"), text))
+            .collect();
+        events.push(message("current".into(), request));
+        let context = json!({
+            "schema_version": 1,
+            "harness": "claude_code",
+            "producer_id": "synthetic-test",
+            "workspace_root": self.workspace().to_string_lossy(),
+            "session_id": "session-1",
+            "agent_id": null,
+            "branch_id": null,
+            "context_epoch": null,
+            "current_request": {"event_id": "current", "text": request,
+                                "attachments_omitted": essential_missing,
+                                "essential_attachment_missing": essential_missing},
+            "events": events,
+            "explicit_skill_references": [],
+            "supplied_loads": []
+        });
+        std::fs::write(
+            self.workspace().join("context.json"),
+            serde_json::to_vec(&context).unwrap(),
+        )
+        .unwrap();
+    }
+}
+
+fn failure_kind(output: &Output) -> (Option<i32>, String) {
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let error = if value["error"].is_object() {
+        &value["error"]
+    } else {
+        &value["local_decision"]["error"]
+    };
+    (
+        output.status.code(),
+        error["kind"].as_str().unwrap_or("").to_owned(),
+    )
+}
+
+#[test]
+fn input_that_cannot_support_an_evaluation_is_never_ranked() {
+    let f = Fixture::new();
+    let offline = ["rank", "--context", "context.json", "--offline", "--json"];
+    // A terse continuation with no antecedent instruction.
+    f.conversation("continue", &[], false);
+    assert_eq!(
+        failure_kind(&f.run(&offline)),
+        (Some(7), "insufficient-context".to_owned())
+    );
+    // Twin: with the instruction in history, the same request is evaluated
+    // and only the offline cache miss stops it.
+    f.conversation("continue", &["Fix the failing rust test."], false);
+    assert_eq!(
+        failure_kind(&f.run(&offline)),
+        (Some(11), "cache-miss".to_owned())
+    );
+    // Essential attached content is missing.
+    f.conversation("Fix the bug in the attached screenshot.", &[], true);
+    assert_eq!(
+        failure_kind(&f.run(&offline)),
+        (Some(7), "insufficient-context".to_owned())
+    );
+    // The latest request does not fit the rendering budget.
+    f.conversation(&"Fix the failing rust test. ".repeat(20), &[], false);
+    let small = [&offline[..], &["--budget-chars", "200"]].concat();
+    assert_eq!(
+        failure_kind(&f.run(&small)),
+        (Some(7), "insufficient-context".to_owned())
+    );
+    // The context both requires and excludes the same skill.
+    f.conversation(
+        "Don't use skill alpha.",
+        &["Please use skill alpha."],
+        false,
+    );
+    assert_eq!(
+        failure_kind(&f.run(&offline)),
+        (Some(5), "unresolved-explicit".to_owned())
+    );
+}

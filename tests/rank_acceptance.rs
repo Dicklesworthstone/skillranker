@@ -335,6 +335,8 @@ fn a_useful_evaluation_ranks_after_wide_and_rerank() {
     assert_eq!(value["decision"], "ranked", "{value}");
     assert!(!value["skills"].as_array().unwrap().is_empty());
     assert_eq!(usage(&value), (2, 2, 220, 55));
+    assert_eq!(value["quality"]["history_windowed"], false);
+    assert_eq!(value["quality"]["prompt_complete"], true);
     // Output reports what ran: real counts, the provider's returned model
     // next to the requested alias, and distinct candidate-set digests.
     assert_eq!(value["roster"]["wide_candidates"], 2);
@@ -986,4 +988,41 @@ fn a_dry_run_reports_a_local_abstention_without_a_request() {
     );
     assert_eq!(preview["local_decision"]["decision"], "abstain");
     assert_eq!(preview["local_decision"]["usage"]["requests"], 0);
+}
+
+#[test]
+fn a_windowed_history_still_ranks_and_says_so() {
+    let f = Fixture::new(CONSENT);
+    let provider = Provider::start(&f, "useful", &[]);
+    let args = f.args(TASK);
+    // Replace the context with thirty earlier turns: more than the renderer's
+    // message window, so history is deliberately bounded.
+    let message = |id: String, text: String| {
+        json!({"event_id": id, "parent_id": null, "turn_id": "turn-1", "agent_id": null,
+               "branch_id": null, "role": "user", "kind": "message",
+               "timestamp_unix_ms": null, "text": text, "tool": null})
+    };
+    let mut events: Vec<Value> = (0..30)
+        .map(|i| message(format!("earlier-{i}"), format!("Step {i}: ran cargo test.")))
+        .collect();
+    events.push(message("request-1".into(), TASK.into()));
+    let context = json!({
+        "schema_version": 1, "harness": "claude_code", "producer_id": "synthetic-test",
+        "workspace_root": f.workspace().to_string_lossy(), "session_id": "session-1",
+        "agent_id": null, "branch_id": null, "context_epoch": null,
+        "current_request": {"event_id": "request-1", "text": TASK,
+                            "attachments_omitted": false, "essential_attachment_missing": false},
+        "events": events, "explicit_skill_references": [], "supplied_loads": []
+    });
+    std::fs::write(
+        f.workspace().join("context.json"),
+        serde_json::to_vec(&context).unwrap(),
+    )
+    .unwrap();
+    let value = rank_args(&provider, args, 10_000).expect("ranked");
+    assert_eq!(stages(&provider.finish()), ["wide", "rerank"]);
+    assert_eq!(value["decision"], "ranked", "{value}");
+    assert_eq!(value["quality"]["history_windowed"], true);
+    assert_eq!(value["quality"]["prompt_complete"], true);
+    assert_eq!(value["quality"]["task_anchor_known"], true);
 }
