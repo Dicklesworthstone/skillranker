@@ -741,11 +741,12 @@ fn a_cached_wide_answer_is_never_paired_with_a_fresh_rerank() {
     let f = Fixture::new(CONSENT);
     let cache = f.cache_dir();
     // The first run records its wide answer, then its rerank never arrives.
-    let late = Provider::start(&f, "late-rerank", &["".as_ref(), "4".as_ref()]);
+    // Its budget leaves a loaded host time to reach the wide send.
+    let late = Provider::start(&f, "late-rerank", &["".as_ref(), "8".as_ref()]);
     let first = rank_args(
         &late,
         f.args_with(TASK, "session-1", CACHED, Some(cache.clone())),
-        2_000,
+        5_000,
     );
     assert_eq!(stages(&late.finish()), ["wide", "rerank"]);
     unavailable(first, 6, "timeout");
