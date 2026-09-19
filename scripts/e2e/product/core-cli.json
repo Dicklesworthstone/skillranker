@@ -1,0 +1,117 @@
+{
+  "schema_version": 1,
+  "suite": "core-cli",
+  "tier": "rust-product-integration",
+  "targets": [
+    "cli_contract",
+    "demo_contract",
+    "json_envelopes",
+    "output_contract",
+    "rank_pipeline",
+    "stage_trace",
+    "table_views"
+  ],
+  "cases": [
+    {
+      "id": "unknown-flag-rejected",
+      "assertions": [
+        "strict_cli_parsing"
+      ],
+      "tests": [
+        "cli_contract::strict_flags_and_provenance"
+      ]
+    },
+    {
+      "id": "config-precedence-verified",
+      "assertions": [
+        "strict_cli_parsing"
+      ],
+      "tests": [
+        "cli_contract::strict_flags_and_provenance"
+      ]
+    },
+    {
+      "id": "two-stage-rank-pipeline",
+      "assertions": [
+        "pipeline_assembly_verified"
+      ],
+      "tests": [
+        "rank_pipeline::test_explicit_directive_bypasses_inference",
+        "rank_pipeline::test_ranked_flow_with_mock_jev",
+        "rank_pipeline::test_low_need_abstention",
+        "rank_pipeline::test_low_fit_abstention",
+        "rank_pipeline::test_none_winner_abstention",
+        "rank_pipeline::test_dry_run_preview_without_network",
+        "rank_pipeline::test_cli_bare_sr_and_rank_flags"
+      ]
+    },
+    {
+      "id": "versioned-failure-envelopes",
+      "assertions": [
+        "bounded_versioned_json_verified"
+      ],
+      "tests": [
+        "json_envelopes::test_all_28_error_kinds_and_documented_exit_categories",
+        "json_envelopes::test_control_character_sanitization_and_length_bounding",
+        "json_envelopes::test_unresolved_explicit_skill_references",
+        "json_envelopes::test_cli_binary_failure_envelopes",
+        "json_envelopes::test_artifact_report_semantics_never_imply_passed_gates",
+        "output_contract::all_decisions_and_artifact_kinds_round_trip_without_becoming_hook_output",
+        "output_contract::every_stable_error_kind_has_the_documented_exit_category"
+      ]
+    },
+    {
+      "id": "table-and-decision-views",
+      "assertions": [
+        "safe_readable_tables_verified"
+      ],
+      "tests": [
+        "table_views::test_narrow_and_wide_unicode_display_cells",
+        "table_views::test_malicious_ansi_and_control_sequence_sanitization",
+        "table_views::test_ranked_table_rendering",
+        "table_views::test_explicit_directive_decision_view",
+        "table_views::test_abstain_and_unavailable_decision_views",
+        "table_views::test_cli_format_dispatch_table_vs_json"
+      ]
+    },
+    {
+      "id": "stage-trace-and-why-not",
+      "assertions": [
+        "exclusion_stages_explained"
+      ],
+      "tests": [
+        "stage_trace::test_paired_runs_identical_evaluation_with_and_without_explain",
+        "stage_trace::test_unknown_skill_id_produces_not_in_snapshot_without_broadening_discovery",
+        "stage_trace::test_early_exclusion_marks_subsequent_stages_not_evaluated",
+        "stage_trace::test_every_exclusion_reason_with_success_twin",
+        "stage_trace::test_stage_trace_contract_and_round_trip",
+        "stage_trace::test_table_view_trace_rendering_and_recovery_hints"
+      ]
+    },
+    {
+      "id": "dry-run-zero-network-zero-mutation",
+      "assertions": [
+        "stateless_preview"
+      ],
+      "tests": [
+        "rank_pipeline::test_dry_run_preview_without_network"
+      ]
+    },
+    {
+      "id": "demo-inert-envelope",
+      "assertions": [
+        "non_actionable_envelope"
+      ],
+      "tests": [
+        "demo_contract::offline_demo"
+      ]
+    },
+    {
+      "id": "full-core-cli-suite",
+      "assertions": [
+        "p4_gate_passed"
+      ],
+      "tests": "all"
+    }
+  ]
+}

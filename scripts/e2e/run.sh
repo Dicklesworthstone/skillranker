@@ -9,4 +9,12 @@ if [ "${1-}" = "--suite" ] && [ "${2-}" = "context" ]; then
     shift 2
     exec "$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)/context.sh" "$@"
 fi
+if [ "${1-}" = "--suite" ] && [ "${2-}" = "core-cli" ]; then
+    shift 2
+    exec "$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)/core-cli.sh" "$@"
+fi
+if [ "${1-}" = "--suite" ] && [ "${2-}" = "cache" ]; then
+    shift 2
+    exec "$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)/cache.sh" "$@"
+fi
 exec /usr/bin/python3 -I -B "$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)/runner.py" "$@"
