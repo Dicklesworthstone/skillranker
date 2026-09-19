@@ -672,14 +672,22 @@ fn bare_rank_does_not_choose_around_an_unresolved_transcript() {
         assert_eq!(code, Some(3), "{value}");
         assert_eq!(value["error"]["kind"], "insufficient-context", "{value}");
     }
-    assert!(provider.finish().is_empty(), "uncertain selection sends nothing");
+    assert!(
+        provider.finish().is_empty(),
+        "uncertain selection sends nothing"
+    );
     // Explicitly choosing the verified file bypasses discovery; an unrelated
     // unresolved neighbor must not make that valid source unusable.
     let provider = Provider::start(&f, "useful", &[]);
     let (code, value) = run_bare(
         &f,
         &provider,
-        &["--transcript", known.to_str().unwrap(), "--harness", "claude_code"],
+        &[
+            "--transcript",
+            known.to_str().unwrap(),
+            "--harness",
+            "claude_code",
+        ],
     );
     assert_eq!(code, Some(0), "{value}");
     assert_eq!(value["decision"], "ranked", "{value}");

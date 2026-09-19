@@ -71,11 +71,16 @@ spelling, and a name alone admits nothing:
 - Only top-level regular `*.jsonl` files are opened, without following
   symlinks, and each is read for at most 64 KiB.
 - A transcript is a candidate only when its first recorded `cwd` is exactly
-  the workspace and a record carries its file name as `sessionId`. That
-  session ID is the candidate's identity.
+  the workspace and a record carries its file name as `sessionId`. All session
+  IDs present in the bounded head must agree. Records use the bounded,
+  duplicate-key-rejecting JSON decoder. That session ID is the candidate's
+  identity; the head check does not verify records beyond the head.
 - Recency is the file's modification time.
 - At most 1,000 transcripts are examined. Reaching that bound, or an unreadable
-  directory, leaves the inventory incomplete.
+  directory or transcript, leaves the inventory incomplete. Malformed records,
+  conflicting identity, and heads with no complete attribution also leave it
+  incomplete. Neither bare rank nor `--latest` chooses around an unresolved
+  file. A verified first `cwd` naming another workspace excludes that file.
 - The same file reached through two names or roots counts once.
 
 An explicit `--transcript` path gets the same attribution when its records name

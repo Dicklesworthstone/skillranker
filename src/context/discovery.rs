@@ -52,25 +52,43 @@ pub fn project_directories(workspace: &Path) -> Vec<String> {
 /// recorded working directory is exactly `workspace` and a record carries
 /// `stem` as its session ID. Only complete lines count.
 pub fn attribution(head: &[u8], stem: &str, workspace: &str) -> Option<SessionId> {
-    let end = head.iter().rposition(|byte| *byte == b'\n')?;
+    checked_attribution(head, stem, workspace).ok().flatten()
+}
+
+/// `Ok(None)` proves another workspace; `Err` means attribution is unresolved.
+/// Never turn unreadable or ambiguous evidence into an absent candidate.
+fn checked_attribution(head: &[u8], stem: &str, workspace: &str) -> Result<Option<SessionId>, ()> {
+    if head.len() > HEAD_BYTES {
+        return Err(());
+    }
+    let end = head.iter().rposition(|byte| *byte == b'\n').ok_or(())?;
     let mut in_workspace = false;
     let mut claimed = false;
     for line in head[..end].split(|byte| *byte == b'\n') {
-        let Ok(Value::Object(record)) = serde_json::from_slice::<Value>(line) else {
-            continue;
+        let Value::Object(record) =
+            crate::adapter::decode_json(line, HEAD_BYTES).map_err(|_| ())?
+        else {
+            return Err(());
         };
-        if !in_workspace && let Some(cwd) = record.get("cwd").and_then(Value::as_str) {
+        if !in_workspace && let Some(cwd) = record.get("cwd") {
+            let cwd = cwd.as_str().ok_or(())?;
             if cwd != workspace {
-                return None;
+                return Ok(None);
             }
             in_workspace = true;
         }
-        claimed |= record.get("sessionId").and_then(Value::as_str) == Some(stem);
-        if in_workspace && claimed {
-            return SessionId::new(stem).ok();
+        if let Some(session) = record.get("sessionId") {
+            if session.as_str() != Some(stem) {
+                return Err(());
+            }
+            claimed = true;
         }
     }
-    None
+    if in_workspace && claimed {
+        SessionId::new(stem).map(Some).map_err(|_| ())
+    } else {
+        Err(())
+    }
 }
 
 /// The session of an explicitly selected transcript, when its own records
@@ -78,7 +96,10 @@ pub fn attribution(head: &[u8], stem: &str, workspace: &str) -> Option<SessionId
 pub fn transcript_session(path: &Path, workspace: &Path) -> Option<SessionId> {
     let (parent, name) = (path.parent()?, path.file_name()?);
     let directory = AuthorizedRoot::open_absolute(parent).ok()?;
-    probe(&directory, name, workspace.to_str()?).map(|(session, _, _)| session)
+    probe(&directory, name, workspace.to_str()?)
+        .ok()
+        .flatten()
+        .map(|(session, _, _)| session)
 }
 
 /// This workspace's Claude sessions under `roots` (Claude projects
@@ -142,8 +163,13 @@ pub fn discover_claude_sessions(
                     inventory.complete = false;
                     return inventory;
                 }
-                let Some((session, modified, identity)) = probe(&directory, name, cwd) else {
-                    continue;
+                let (session, modified, identity) = match probe(&directory, name, cwd) {
+                    Ok(Some(candidate)) => candidate,
+                    Ok(None) => continue,
+                    Err(()) => {
+                        inventory.complete = false;
+                        continue;
+                    }
                 };
                 // The same file reached through two directory names or roots
                 // is one session, not a duplicate.
@@ -174,25 +200,34 @@ pub fn discover_claude_sessions(
 
 /// Attribution, modification time and file identity of one regular file,
 /// opened without following symlinks and read only for its head.
+type ProbedSession = (SessionId, i64, (u64, u64));
+
 fn probe(
     directory: &AuthorizedRoot,
     name: &OsStr,
     workspace: &str,
-) -> Option<(SessionId, i64, (u64, u64))> {
-    let stem = std::str::from_utf8(name.as_bytes().strip_suffix(b".jsonl")?).ok()?;
+) -> Result<Option<ProbedSession>, ()> {
+    let stem =
+        std::str::from_utf8(name.as_bytes().strip_suffix(b".jsonl").ok_or(())?).map_err(|_| ())?;
     let flags = OFlag::O_RDONLY | OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK | OFlag::O_CLOEXEC;
-    let fd = openat(directory.as_fd(), name, flags, Mode::empty()).ok()?;
-    let stat = fstat(&fd).ok()?;
+    let fd = openat(directory.as_fd(), name, flags, Mode::empty()).map_err(|_| ())?;
+    let stat = fstat(&fd).map_err(|_| ())?;
     if SFlag::from_bits_truncate(stat.st_mode) & SFlag::S_IFMT != SFlag::S_IFREG {
-        return None;
+        return Err(());
     }
     let mut head = Vec::with_capacity(HEAD_BYTES);
     std::fs::File::from(fd)
         .take(HEAD_BYTES as u64)
         .read_to_end(&mut head)
-        .ok()?;
-    let session = attribution(&head, stem, workspace)?;
-    Some((session, modified_unix_ms(&stat), file_identity(&stat)))
+        .map_err(|_| ())?;
+    let Some(session) = checked_attribution(&head, stem, workspace)? else {
+        return Ok(None);
+    };
+    Ok(Some((
+        session,
+        modified_unix_ms(&stat),
+        file_identity(&stat),
+    )))
 }
 
 // Stat field widths differ by platform: these casts are identity on Linux and
