@@ -589,6 +589,9 @@ fn rank_command(
 
     let workspace = std::env::current_dir().map_err(|_| invalid("Workspace is unavailable"))?;
     let user_root = user_config_root()?;
+    let home = std::env::var_os("HOME")
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from);
 
     let stdin_supplied = is_stdin_supplied();
     let context = rank_matches
@@ -652,6 +655,7 @@ fn rank_command(
     let args = crate::pipeline::RankArgs {
         workspace,
         user_config_root: user_root,
+        home,
         sources,
         gate,
         source_options,

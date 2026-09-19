@@ -165,6 +165,7 @@ fn test_explicit_directive_bypasses_inference() {
     let args = RankArgs {
         workspace: workspace.clone(),
         user_config_root: None,
+        home: None,
         sources: ConfigSources::default(),
         gate,
         source_options,
@@ -315,6 +316,7 @@ fn test_ranked_flow_with_mock_jev() {
     let args = RankArgs {
         workspace: workspace.clone(),
         user_config_root: None,
+        home: None,
         sources,
         gate,
         source_options,
@@ -424,6 +426,7 @@ fn test_low_need_abstention() {
     let args = RankArgs {
         workspace: workspace.clone(),
         user_config_root: None,
+        home: None,
         sources,
         gate,
         source_options,
@@ -480,6 +483,7 @@ fn test_dry_run_preview_without_network() {
     let args = RankArgs {
         workspace: workspace.clone(),
         user_config_root: None,
+        home: None,
         sources: ConfigSources::default(),
         gate,
         source_options,
@@ -663,6 +667,7 @@ fn test_low_fit_abstention() {
     let args = RankArgs {
         workspace: workspace.clone(),
         user_config_root: None,
+        home: None,
         sources,
         gate,
         source_options,
@@ -805,6 +810,7 @@ fn test_none_winner_abstention() {
     let args = RankArgs {
         workspace: workspace.clone(),
         user_config_root: None,
+        home: None,
         sources,
         gate,
         source_options,

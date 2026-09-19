@@ -314,6 +314,7 @@ fn test_paired_runs_identical_evaluation_with_and_without_explain() {
     let args_a = RankArgs {
         workspace: workspace.clone(),
         user_config_root: None,
+        home: None,
         sources: sources.clone(),
         gate,
         source_options: source_options.clone(),
@@ -338,6 +339,7 @@ fn test_paired_runs_identical_evaluation_with_and_without_explain() {
     let args_b = RankArgs {
         workspace: workspace.clone(),
         user_config_root: None,
+        home: None,
         sources: sources.clone(),
         gate,
         source_options: source_options.clone(),
@@ -362,6 +364,7 @@ fn test_paired_runs_identical_evaluation_with_and_without_explain() {
     let args_c = RankArgs {
         workspace: workspace.clone(),
         user_config_root: None,
+        home: None,
         sources,
         gate,
         source_options,
@@ -456,6 +459,7 @@ fn test_unknown_skill_id_produces_not_in_snapshot_without_broadening_discovery()
     let args = RankArgs {
         workspace: workspace.clone(),
         user_config_root: None,
+        home: None,
         sources,
         gate,
         source_options,
@@ -559,6 +563,7 @@ fn test_early_exclusion_marks_subsequent_stages_not_evaluated() {
     let args = RankArgs {
         workspace: workspace.clone(),
         user_config_root: None,
+        home: None,
         sources,
         gate,
         source_options,
@@ -649,6 +654,7 @@ fn test_every_exclusion_reason_with_success_twin() {
     let args_ex = RankArgs {
         workspace: workspace.clone(),
         user_config_root: None,
+        home: None,
         sources: sources.clone(),
         gate,
         source_options: source_options.clone(),
@@ -684,6 +690,7 @@ fn test_every_exclusion_reason_with_success_twin() {
     let args_el = RankArgs {
         workspace: workspace.clone(),
         user_config_root: None,
+        home: None,
         sources,
         gate,
         source_options,
@@ -748,6 +755,7 @@ fn test_stage_trace_contract_and_round_trip() {
     let args = RankArgs {
         workspace: workspace.clone(),
         user_config_root: None,
+        home: None,
         sources,
         gate,
         source_options,
@@ -822,6 +830,7 @@ fn test_table_view_trace_rendering_and_recovery_hints() {
     let args = RankArgs {
         workspace: workspace.clone(),
         user_config_root: None,
+        home: None,
         sources,
         gate,
         source_options,

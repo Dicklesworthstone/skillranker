@@ -338,7 +338,11 @@ fn test_cli_binary_failure_envelopes() {
     });
     fs::write(&empty_ctx, serde_json::to_vec(&ctx_data).unwrap()).unwrap();
 
+    // An empty roster needs an empty home too: user skills live in
+    // $HOME/.claude/skills, so the ambient home must not leak in.
     let out_empty = Command::new(env!("CARGO_BIN_EXE_sr"))
+        .env_clear()
+        .env("HOME", f.root.join("empty_home"))
         .current_dir(&empty_workspace)
         .args([
             "rank",

@@ -4,6 +4,16 @@
 
 ### Fixed
 
+- `sr rank` discovers and revalidates Claude user skills in
+  `$HOME/.claude/skills`, as `sr roster` does. It had looked under the
+  configuration root, so personal skills were invisible to ranking.
+- Rank decisions report what actually ran. Abstentions after a wide or rerank
+  call carry their real usage, stage estimates and returned models instead of
+  zeros and nulls. Ranked output reports real candidate counts, digests of the
+  evaluated candidate sets rather than fixed placeholders, and the provider's
+  returned model next to the requested alias.
+- Withdrawing trusted network consent before a pending send refuses it as
+  `network-denied` (exit 8), as documented, rather than `superseded`.
 - `sr rank` reads `--context`, stdin and `--roster` as bounded regular files:
   an oversized context is `oversized-input`, and a FIFO, device or symlink
   leaving its directory is refused with a typed error instead of blocking or

@@ -219,3 +219,52 @@ fn a_dry_run_refuses_cass_before_any_child_or_read() {
     assert_eq!((code, kind.as_str()), (Some(7), "unsupported-source-mode"));
     assert!(!Path::new("/synthetic/session.jsonl").exists());
 }
+
+#[test]
+fn claude_user_skills_come_from_home_not_the_config_root() {
+    let f = Fixture::new();
+    f.context("context.json", "ok");
+    // A user-level skill exists only under $HOME/.claude/skills.
+    let dir = f.root.join("home/.claude/skills/gamma");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("SKILL.md"),
+        "---\ndescription: gamma formats rust code.\n---\nBody.\n",
+    )
+    .unwrap();
+    let output = f.run(&[
+        "rank",
+        "--context",
+        "context.json",
+        "--require-skill",
+        "gamma",
+        "--offline",
+        "--json",
+    ]);
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(output.status.code(), Some(0), "{value}");
+    assert_eq!(value["decision"], "explicit");
+    assert_eq!(value["skills"][0]["invocation_name"], "gamma");
+    // Negative twin: the same skill under the configuration root is not a
+    // Claude skill root and stays invisible.
+    let g = Fixture::new();
+    g.context("context.json", "ok");
+    let dir = g.root.join("config/.claude/skills/gamma");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("SKILL.md"),
+        "---\ndescription: gamma formats rust code.\n---\nBody.\n",
+    )
+    .unwrap();
+    let output = g.run(&[
+        "rank",
+        "--context",
+        "context.json",
+        "--require-skill",
+        "gamma",
+        "--offline",
+        "--json",
+    ]);
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_ne!(value["decision"], "explicit", "{value}");
+}

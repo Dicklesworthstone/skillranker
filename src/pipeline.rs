@@ -29,7 +29,7 @@ use crate::eligibility::{Eligible, Evaluation, LoadedState, Verdict, admit, afte
 use crate::identity::{ContentHash, EventId, HarnessId, SessionId, SkillId, WorkspaceId};
 use crate::jev::client::{JevClient, TransportError, TransportErrorKind};
 use crate::jev::codec::{Request, Response};
-use crate::jev::endpoint::EndpointConfig;
+use crate::jev::endpoint::{CanonicalOrigin, EndpointConfig};
 use crate::jev::rerank::{RerankOutcome, RerankRequest};
 use crate::jev::wide::{Sizes, WideDecision, WideOutcome, WideRequest};
 use crate::jev::{OriginScopedCredential, rerank, wide};
@@ -75,6 +75,12 @@ pub trait JevTransport: Send + Sync {
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<Response, TransportError>> + Send + 'a>,
     >;
+
+    /// The origin the credential is bound to when this transport reaches a
+    /// real endpoint. In-memory test transports have none and get no credential.
+    fn origin(&self) -> Option<&CanonicalOrigin> {
+        None
+    }
 }
 
 impl JevTransport for JevClient {
@@ -90,6 +96,10 @@ impl JevTransport for JevClient {
     > {
         Box::pin(self.send(request, credential, consent, cx, clock))
     }
+
+    fn origin(&self) -> Option<&CanonicalOrigin> {
+        Some(JevClient::origin(self))
+    }
 }
 
 /// Parameters for running the ranking pipeline.
@@ -97,6 +107,9 @@ impl JevTransport for JevClient {
 pub struct RankArgs {
     pub workspace: PathBuf,
     pub user_config_root: Option<PathBuf>,
+    /// The user's home directory: Claude's user skills live in its
+    /// `.claude/skills`, not under the configuration root.
+    pub home: Option<PathBuf>,
     pub sources: ConfigSources,
     pub gate: EffectGate,
     pub source_options: SourceOptions,
@@ -406,18 +419,14 @@ pub async fn execute_pipeline(
                 format!("Failed to read roster file: {e}"),
             )
         })?;
-        let plan = claude_code_plan(
-            &args.workspace,
-            args.user_config_root.as_deref(),
-            visibility.clone(),
-        )
-        .map_err(|e| {
-            failure(
-                5,
-                "unusable-roster",
-                format!("Failed to create discovery plan: {e}"),
-            )
-        })?;
+        let plan = claude_code_plan(&args.workspace, args.home.as_deref(), visibility.clone())
+            .map_err(|e| {
+                failure(
+                    5,
+                    "unusable-roster",
+                    format!("Failed to create discovery plan: {e}"),
+                )
+            })?;
         import_authorized(&bytes, &plan, &overrides, cx, clock).map_err(|e| {
             failure(
                 5,
@@ -426,18 +435,14 @@ pub async fn execute_pipeline(
             )
         })?
     } else {
-        let plan = claude_code_plan(
-            &args.workspace,
-            args.user_config_root.as_deref(),
-            visibility.clone(),
-        )
-        .map_err(|e| {
-            failure(
-                5,
-                "unusable-roster",
-                format!("Failed to create discovery plan: {e}"),
-            )
-        })?;
+        let plan = claude_code_plan(&args.workspace, args.home.as_deref(), visibility.clone())
+            .map_err(|e| {
+                failure(
+                    5,
+                    "unusable-roster",
+                    format!("Failed to create discovery plan: {e}"),
+                )
+            })?;
         resolve_claude_plan(&plan, &overrides, cx, clock).map_err(|e| {
             failure(
                 5,
@@ -632,6 +637,10 @@ pub async fn execute_pipeline(
                     &roster,
                     clock.now().as_millis(),
                     None,
+                    &Evaluated {
+                        eligible: admission.admitted.len(),
+                        ..Evaluated::default()
+                    },
                 );
                 if let Some(trace_val) = generate_trace(
                     &args,
@@ -668,6 +677,8 @@ pub async fn execute_pipeline(
             }
         }
     }
+
+    let eligible_count = admission.admitted.len();
 
     // 7. Bounded Quill retrieval if > 254 candidates
     let (candidate_skills, ran_quill, quill_method) = if admission.admitted.len()
@@ -710,6 +721,11 @@ pub async fn execute_pipeline(
             &roster,
             clock.now().as_millis(),
             None,
+            &Evaluated {
+                eligible: eligible_count,
+                quill: ran_quill,
+                ..Evaluated::default()
+            },
         );
         if let Some(trace_val) = generate_trace(
             &args,
@@ -831,6 +847,11 @@ pub async fn execute_pipeline(
             &roster,
             clock.now().as_millis(),
             Some(dry_run_json),
+            &Evaluated {
+                eligible: eligible_count,
+                quill: ran_quill,
+                ..Evaluated::default()
+            },
         );
         if let Some(trace_val) = generate_trace(
             &args,
@@ -951,6 +972,17 @@ pub async fn execute_pipeline(
                 format!("Wide evaluation failed: {e:?}"),
             )
         })?;
+    let wide_facts = Evaluated {
+        eligible: eligible_count,
+        wide: candidate_skills.len(),
+        quill: ran_quill,
+        wide_set_id: Some(candidate_set_id("wide", candidate_skills.iter())),
+        requested_model: Some(effective.model().as_str()),
+        wide_returned: Some(wide_response.returned_model.as_str()),
+        needs_skill: Some(wide_outcome.needs_skill),
+        phase: dominant_phase(&wide_outcome.phase),
+        ..Evaluated::default()
+    };
 
     let shortlisted = match &wide_outcome.decision {
         WideDecision::LowNeed => {
@@ -983,6 +1015,10 @@ pub async fn execute_pipeline(
                 &roster,
                 clock.now().as_millis(),
                 None,
+                &Evaluated {
+                    metrics: metrics.clone(),
+                    ..wide_facts.clone()
+                },
             );
             if let Some(trace_val) = generate_trace(
                 &args,
@@ -1074,6 +1110,18 @@ pub async fn execute_pipeline(
                     &roster,
                     clock.now().as_millis(),
                     None,
+                    &Evaluated {
+                        metrics: metrics.clone(),
+                        shortlist: shortlisted.len(),
+                        rerank_set_id: Some(candidate_set_id(
+                            "rerank",
+                            shortlisted.iter().map(|s| &s.skill),
+                        )),
+                        rerank_returned: Some(rerank_response.returned_model.as_str()),
+                        choice_confidence: Some(rerank_outcome.choice_confidence),
+                        none_probability: Some(rerank_outcome.none_probability),
+                        ..wide_facts.clone()
+                    },
                 );
                 if let Some(trace_val) = generate_trace(
                     &args,
@@ -1139,7 +1187,7 @@ pub async fn execute_pipeline(
     let reval_outcome = revalidate_claude(
         &dependencies,
         &args.workspace,
-        args.user_config_root.as_deref(),
+        args.home.as_deref(),
         visibility,
         &overrides,
         cx,
@@ -1213,8 +1261,16 @@ pub async fn execute_pipeline(
         &rerank_outcome,
         &normalized_context,
         &roster,
-        &metrics,
-        effective.model().as_str(),
+        &Evaluated {
+            metrics: metrics.clone(),
+            shortlist: shortlisted.len(),
+            rerank_set_id: Some(candidate_set_id(
+                "rerank",
+                shortlisted.iter().map(|s| &s.skill),
+            )),
+            rerank_returned: Some(rerank_response.returned_model.as_str()),
+            ..wide_facts.clone()
+        },
         clock.now().as_millis(),
     )?;
 
@@ -1263,13 +1319,6 @@ async fn execute_provider_wide(
         receipt,
         PolicyBoundary::ProviderAdmission,
     )?;
-    if let Revalidation::Superseded(fields) = reval {
-        return Err(failure(
-            3,
-            "superseded",
-            format!("Policy changed before wide send: {fields:?}"),
-        ));
-    }
     if let Revalidation::InvalidConfiguration = reval {
         return Err(failure(
             2,
@@ -1277,9 +1326,10 @@ async fn execute_provider_wide(
             "Configuration invalid before wide send",
         ));
     }
-    *receipt = refreshed.receipt(gate.policy());
-
-    let consent = receipt.network_consent();
+    // Withdrawn consent refuses this unsent request as a privacy failure; any
+    // other relevant change supersedes the evaluation.
+    let current = refreshed.receipt(gate.policy());
+    let consent = current.network_consent();
     if !matches!(consent, NetworkConsent::Authorized(_)) {
         return Err(failure(
             8,
@@ -1287,6 +1337,14 @@ async fn execute_provider_wide(
             "Network transmission is not authorized",
         ));
     }
+    if let Revalidation::Superseded(fields) = reval {
+        return Err(failure(
+            3,
+            "superseded",
+            format!("Policy changed before wide send: {fields:?}"),
+        ));
+    }
+    *receipt = current;
 
     let credential = resolved_config.credential();
     if credential.is_none() {
@@ -1296,36 +1354,15 @@ async fn execute_provider_wide(
     metrics.requests += 1;
     metrics.http_attempts += 1;
 
-    let response = if let Some(t) = transport {
-        t.send(wide_req.request(), None, consent, cx, clock)
-            .await
-            .map_err(map_transport_error)?
-    } else {
-        let endpoint_config = match resolved_config.effective().endpoint() {
-            Some(ep) => EndpointConfig::from_override(ep).map_err(|e| {
-                failure(
-                    2,
-                    "invalid-configuration",
-                    format!("Invalid endpoint: {e:?}"),
-                )
-            })?,
-            None => EndpointConfig::production(),
-        };
-        let client = JevClient::new(endpoint_config).map_err(|e| {
-            failure(
-                2,
-                "invalid-configuration",
-                format!("Client init failed: {e}"),
-            )
-        })?;
-        let scoped_cred =
-            OriginScopedCredential::bind(credential.unwrap().clone(), client.origin())
-                .map_err(|_| failure(4, "authentication", "Credential origin mismatch"))?;
-        client
-            .send(wide_req.request(), Some(&scoped_cred), consent, cx, clock)
-            .await
-            .map_err(map_transport_error)?
-    };
+    let response = send_one(
+        wide_req.request(),
+        resolved_config,
+        consent,
+        transport,
+        cx,
+        clock,
+    )
+    .await?;
 
     metrics.input_tokens += response.usage.input_tokens;
     metrics.output_tokens += response.usage.output_tokens;
@@ -1352,13 +1389,6 @@ async fn execute_provider_rerank(
         receipt,
         PolicyBoundary::ProviderAdmission,
     )?;
-    if let Revalidation::Superseded(fields) = reval {
-        return Err(failure(
-            3,
-            "superseded",
-            format!("Policy changed before rerank send: {fields:?}"),
-        ));
-    }
     if let Revalidation::InvalidConfiguration = reval {
         return Err(failure(
             2,
@@ -1366,9 +1396,10 @@ async fn execute_provider_rerank(
             "Configuration invalid before rerank send",
         ));
     }
-    *receipt = refreshed.receipt(gate.policy());
-
-    let consent = receipt.network_consent();
+    // Withdrawn consent refuses this unsent request as a privacy failure; any
+    // other relevant change supersedes the evaluation.
+    let current = refreshed.receipt(gate.policy());
+    let consent = current.network_consent();
     if !matches!(consent, NetworkConsent::Authorized(_)) {
         return Err(failure(
             8,
@@ -1376,6 +1407,14 @@ async fn execute_provider_rerank(
             "Network transmission is not authorized",
         ));
     }
+    if let Revalidation::Superseded(fields) = reval {
+        return Err(failure(
+            3,
+            "superseded",
+            format!("Policy changed before rerank send: {fields:?}"),
+        ));
+    }
+    *receipt = current;
 
     let credential = resolved_config.credential();
     if credential.is_none() {
@@ -1385,41 +1424,69 @@ async fn execute_provider_rerank(
     metrics.requests += 1;
     metrics.http_attempts += 1;
 
-    let response = if let Some(t) = transport {
-        t.send(rerank_req.request(), None, consent, cx, clock)
-            .await
-            .map_err(map_transport_error)?
-    } else {
-        let endpoint_config = match resolved_config.effective().endpoint() {
-            Some(ep) => EndpointConfig::from_override(ep).map_err(|e| {
-                failure(
-                    2,
-                    "invalid-configuration",
-                    format!("Invalid endpoint: {e:?}"),
-                )
-            })?,
-            None => EndpointConfig::production(),
-        };
-        let client = JevClient::new(endpoint_config).map_err(|e| {
-            failure(
-                2,
-                "invalid-configuration",
-                format!("Client init failed: {e}"),
-            )
-        })?;
-        let scoped_cred =
-            OriginScopedCredential::bind(credential.unwrap().clone(), client.origin())
-                .map_err(|_| failure(4, "authentication", "Credential origin mismatch"))?;
-        client
-            .send(rerank_req.request(), Some(&scoped_cred), consent, cx, clock)
-            .await
-            .map_err(map_transport_error)?
-    };
+    let response = send_one(
+        rerank_req.request(),
+        resolved_config,
+        consent,
+        transport,
+        cx,
+        clock,
+    )
+    .await?;
 
     metrics.input_tokens += response.usage.input_tokens;
     metrics.output_tokens += response.usage.output_tokens;
 
     Ok(response)
+}
+
+/// Send one request through `transport`, or through a client for the effective
+/// endpoint. A transport that reaches a real origin gets the credential scoped
+/// to that origin, so an injected client takes the same path as production.
+async fn send_one(
+    request: &Request,
+    resolved_config: &ResolvedConfig,
+    consent: NetworkConsent,
+    transport: Option<&dyn JevTransport>,
+    cx: &Cx,
+    clock: &EntryClock,
+) -> Result<Response, PipelineFailure> {
+    let credential = resolved_config
+        .credential()
+        .ok_or_else(|| failure(4, "authentication", "Missing TYPESAFE_API_KEY"))?;
+    let owned;
+    let transport: &dyn JevTransport = match transport {
+        Some(transport) => transport,
+        None => {
+            let endpoint = match resolved_config.effective().endpoint() {
+                Some(ep) => EndpointConfig::from_override(ep).map_err(|e| {
+                    failure(
+                        2,
+                        "invalid-configuration",
+                        format!("Invalid endpoint: {e:?}"),
+                    )
+                })?,
+                None => EndpointConfig::production(),
+            };
+            owned = JevClient::new(endpoint).map_err(|e| {
+                failure(
+                    2,
+                    "invalid-configuration",
+                    format!("Client init failed: {e}"),
+                )
+            })?;
+            &owned
+        }
+    };
+    let scoped = transport
+        .origin()
+        .map(|origin| OriginScopedCredential::bind(credential.clone(), origin))
+        .transpose()
+        .map_err(|_| failure(4, "authentication", "Credential origin mismatch"))?;
+    transport
+        .send(request, scoped.as_ref(), consent, cx, clock)
+        .await
+        .map_err(map_transport_error)
 }
 
 fn map_transport_error(e: TransportError) -> PipelineFailure {
@@ -1554,12 +1621,101 @@ fn build_explicit_document(
     OutputDocument::from_value(val).expect("valid explicit document")
 }
 
+/// What an invocation actually executed before its decision: real counts and
+/// usage, and only the stage estimates and model identities that exist.
+#[derive(Clone, Default)]
+struct Evaluated<'a> {
+    metrics: ExecutionMetrics,
+    eligible: usize,
+    wide: usize,
+    shortlist: usize,
+    quill: bool,
+    wide_set_id: Option<ContentHash>,
+    rerank_set_id: Option<ContentHash>,
+    requested_model: Option<&'a str>,
+    wide_returned: Option<&'a str>,
+    rerank_returned: Option<&'a str>,
+    needs_skill: Option<f64>,
+    phase: Option<&'a str>,
+    choice_confidence: Option<f64>,
+    none_probability: Option<f64>,
+}
+
+impl Evaluated<'_> {
+    fn retrieval(&self) -> &'static str {
+        if self.quill {
+            "quill-bm25"
+        } else if self.wide == 0 {
+            "not-evaluated"
+        } else {
+            "full"
+        }
+    }
+    fn usage(&self) -> Value {
+        json!({
+            "requests": self.metrics.requests,
+            "http_attempts": self.metrics.http_attempts,
+            "input_tokens": self.metrics.input_tokens,
+            "output_tokens": self.metrics.output_tokens,
+            "unknown_usage_attempts": self.metrics.unknown_usage_attempts,
+        })
+    }
+    fn cache(&self) -> Value {
+        json!({
+            "hit": self.metrics.cache_hit,
+            "wide_hit": self.metrics.wide_hit,
+            "rerank_hit": self.metrics.rerank_hit,
+            "age_ms": self.metrics.cache_age_ms,
+            "stale": false,
+        })
+    }
+    fn model(&self) -> Value {
+        json!({
+            "requested": self.requested_model,
+            "wide_returned": self.wide_returned,
+            "rerank_returned": self.rerank_returned,
+            "immutable_revision": null,
+        })
+    }
+}
+
+/// Digest of one evaluated candidate set: its stage and every member's stable
+/// ID and content hash, in stable-ID order.
+fn candidate_set_id<'a>(
+    stage: &str,
+    members: impl IntoIterator<Item = &'a AdvisorySkill<'a>>,
+) -> ContentHash {
+    let mut members: Vec<(&str, &str)> = members
+        .into_iter()
+        .map(|m| (m.binding.id.as_str(), m.record.source_content.as_str()))
+        .collect();
+    members.sort_unstable();
+    let mut bytes = Vec::new();
+    for part in std::iter::once(stage)
+        .chain(std::iter::once("skillranker.candidate-set.v1"))
+        .chain(members.iter().flat_map(|(id, hash)| [*id, *hash]))
+    {
+        bytes.extend_from_slice(&(part.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(part.as_bytes());
+    }
+    ContentHash::from_bytes(&bytes)
+}
+
+/// The dominant declared phase, when the wide stage evaluated one.
+fn dominant_phase(phase: &BTreeMap<String, f64>) -> Option<&str> {
+    phase
+        .iter()
+        .max_by(|a, b| a.1.total_cmp(b.1))
+        .map(|(p, _)| p.as_str())
+}
+
 fn build_abstain_document(
     reason: &str,
     context: &NormalizedContext,
     roster: &ResolvedRoster,
     elapsed_ms: u64,
     dry_run: Option<Value>,
+    evaluated: &Evaluated<'_>,
 ) -> OutputDocument {
     let event_id = context
         .current_request
@@ -1584,44 +1740,27 @@ fn build_abstain_document(
         },
         "roster": {
             "total": roster.skills().len(),
-            "eligible": roster.skills().len(),
-            "wide_candidates": 0,
-            "shortlist": 0,
+            "eligible": evaluated.eligible,
+            "wide_candidates": evaluated.wide,
+            "shortlist": evaluated.shortlist,
             "partial": roster.is_partial(),
-            "retrieval": "not-evaluated",
+            "retrieval": evaluated.retrieval(),
             "provenance": {
                 "snapshot_id": crate::roster::evidence::snapshot_id(roster).as_str(),
                 "policy_version": "ranking-v1",
-                "wide_set_id": null,
-                "rerank_set_id": null,
+                "wide_set_id": evaluated.wide_set_id.as_ref().map(ContentHash::as_str),
+                "rerank_set_id": evaluated.rerank_set_id.as_ref().map(ContentHash::as_str),
             }
         },
-        "needs_skill": null,
-        "choice_confidence": null,
-        "none_probability": null,
-        "phase": null,
+        "needs_skill": evaluated.needs_skill,
+        "choice_confidence": evaluated.choice_confidence,
+        "none_probability": evaluated.none_probability,
+        "phase": evaluated.phase,
         "skills": [],
         "omitted_rank_mass": null,
-        "cache": {
-            "hit": false,
-            "wide_hit": false,
-            "rerank_hit": false,
-            "age_ms": null,
-            "stale": false,
-        },
-        "model": {
-            "requested": null,
-            "wide_returned": null,
-            "rerank_returned": null,
-            "immutable_revision": null,
-        },
-        "usage": {
-            "requests": 0,
-            "http_attempts": 0,
-            "input_tokens": 0,
-            "output_tokens": 0,
-            "unknown_usage_attempts": 0,
-        },
+        "cache": evaluated.cache(),
+        "model": evaluated.model(),
+        "usage": evaluated.usage(),
         "persistence": "disabled",
         "warnings": [],
         "warnings_omitted": 0,
@@ -1644,8 +1783,7 @@ fn build_ranked_document(
     rerank_outcome: &RerankOutcome<'_>,
     context: &NormalizedContext,
     roster: &ResolvedRoster,
-    metrics: &ExecutionMetrics,
-    model: &str,
+    evaluated: &Evaluated<'_>,
     elapsed_ms: u64,
 ) -> Result<OutputDocument, PipelineFailure> {
     let mut skill_values = Vec::new();
@@ -1684,13 +1822,6 @@ fn build_ranked_document(
         .map(|e| e.as_str())
         .unwrap_or("event-0");
 
-    let phase_str = wide_outcome
-        .phase
-        .iter()
-        .max_by(|a, b| a.1.total_cmp(b.1))
-        .map(|(p, _)| p.as_str())
-        .unwrap_or("other");
-
     let val = json!({
         "schema_version": SCHEMA_VERSION,
         "event_id": event_id,
@@ -1707,44 +1838,27 @@ fn build_ranked_document(
         },
         "roster": {
             "total": roster.skills().len(),
-            "eligible": eligible.len(),
-            "wide_candidates": shortlisted.len(),
-            "shortlist": shortlisted.len(),
+            "eligible": evaluated.eligible,
+            "wide_candidates": evaluated.wide,
+            "shortlist": evaluated.shortlist,
             "partial": roster.is_partial(),
-            "retrieval": "full",
+            "retrieval": evaluated.retrieval(),
             "provenance": {
                 "snapshot_id": crate::roster::evidence::snapshot_id(roster).as_str(),
                 "policy_version": "ranking-v1",
-                "wide_set_id": "000000000000000000000000000000000000000000000000000000000000000b",
-                "rerank_set_id": "000000000000000000000000000000000000000000000000000000000000000c",
+                "wide_set_id": evaluated.wide_set_id.as_ref().map(ContentHash::as_str),
+                "rerank_set_id": evaluated.rerank_set_id.as_ref().map(ContentHash::as_str),
             }
         },
         "needs_skill": wide_outcome.needs_skill,
         "choice_confidence": rerank_outcome.choice_confidence,
         "none_probability": rerank_outcome.none_probability,
-        "phase": phase_str,
+        "phase": dominant_phase(&wide_outcome.phase).unwrap_or("other"),
         "skills": skill_values,
         "omitted_rank_mass": ranking.omitted_mass,
-        "cache": {
-            "hit": metrics.cache_hit,
-            "wide_hit": metrics.wide_hit,
-            "rerank_hit": metrics.rerank_hit,
-            "age_ms": metrics.cache_age_ms,
-            "stale": false,
-        },
-        "model": {
-            "requested": model,
-            "wide_returned": model,
-            "rerank_returned": model,
-            "immutable_revision": null,
-        },
-        "usage": {
-            "requests": metrics.requests,
-            "http_attempts": metrics.http_attempts,
-            "input_tokens": metrics.input_tokens,
-            "output_tokens": metrics.output_tokens,
-            "unknown_usage_attempts": metrics.unknown_usage_attempts,
-        },
+        "cache": evaluated.cache(),
+        "model": evaluated.model(),
+        "usage": evaluated.usage(),
         "persistence": "disabled",
         "warnings": [],
         "warnings_omitted": 0,
