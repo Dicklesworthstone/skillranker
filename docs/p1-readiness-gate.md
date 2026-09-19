@@ -102,10 +102,17 @@ startup, which `sr-5n0b` measured at 718-852 ms of runtime construction on an
 otherwise idle worker and more on a busy one. Once startup approaches the
 budget, `cli::timely` refuses the run with exit 6 before any work begins.
 
-Such a refusal is correct product behavior, so a contended failure is not
+Such a refusal is correct product behavior, so that particular failure is not
 evidence of a product defect, and a pass on a loaded machine is not evidence
 that the timing assertions hold. A full-suite acceptance run therefore
 qualifies only when its worker runs no concurrent foreign builds.
+
+This qualification covers pre-admission refusals of that shape. It must not be
+read as classifying every timing failure as environmental: a run that exceeds
+its budget *after* admission, or that fails to drain within the cleanup
+reserve, is a different class with its own open investigation, including
+SilentFinch's finding that the production CLI never called bounded
+`ProcessInvocation::shutdown` and relied on `Drop`.
 
 | Condition | Source | Worker | Result |
 |---|---|---|---|
@@ -119,6 +126,16 @@ their tight budgets and are not exempt from this qualification:
 `the_sr_binary_honors_a_shorter_timeout_flag` (800 ms) and
 `the_sr_binary_honors_a_longer_configured_deadline` (15 s configured against a
 3.5 s answer).
+
+The two runs are not a controlled A/B, and the comparison is only partly clean.
+`3a63db9..99de43e` changes exactly three files: `src/pipeline.rs` (the cass
+dispatch arm) and the two test files above. So for the two rank tests the
+budget change is a confound, and their pass at `99de43e` does not by itself
+show that load caused the earlier failure. `subprocess_contract` and
+`transport_failures` are untouched across those revisions, which makes their
+red-on-loaded / green-on-quiet result consistent with load — consistent with,
+not proof of, since an unreproduced intermittent failure has no established
+cause either way.
 
 Limits of this qualification: the green run above is the author's own, so it is
 not independent verification; it does not show that `sr`'s startup cost is
