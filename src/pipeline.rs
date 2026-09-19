@@ -441,7 +441,12 @@ async fn rank_once(
         SelectionReason::Explicit | SelectionReason::InteractiveChoice => None,
     };
 
-    // Ingest normalized context or native transcript
+    // Ingest normalized context or native transcript. A transcript read only
+    // from its tail has windowed history; one with an unfinished last record,
+    // an unread backlog, oversized or duplicate-key records, or tool results
+    // whose invocations the read window does not explain has source gaps.
+    let mut transcript_windowed = false;
+    let mut transcript_gaps = false;
     let normalized_context = match source_selection.target() {
         SourceTarget::NormalizedFile(path) => {
             let bytes = read_input_file(
@@ -523,6 +528,14 @@ async fn rank_once(
                     },
                 )?;
 
+            transcript_windowed = snapshot.truncated_history;
+            transcript_gaps = snapshot.incomplete_tail
+                || snapshot.unread_backlog
+                || snapshot
+                    .skipped
+                    .iter()
+                    .any(|record| record.kind != crate::context::jsonl::SkipKind::Corrupt)
+                || (snapshot.missing_tool_counterpart && !snapshot.truncated_history);
             let events = snapshot.events;
             // The current request is the latest user message. Keeping its
             // native event identity lets rendering send it once, not again as
@@ -609,7 +622,9 @@ async fn rank_once(
         .iter()
         .any(|e| e.event_id.is_none() || e.event_id != normalized_context.current_request.event_id);
     progress.evaluated.quality = Quality {
-        summary: if has_history {
+        summary: if transcript_gaps {
+            crate::output::ContextQuality::Partial
+        } else if has_history {
             crate::output::ContextQuality::Complete
         } else {
             crate::output::ContextQuality::PromptOnly
@@ -617,7 +632,9 @@ async fn rank_once(
         prompt_complete: !normalized_context
             .current_request
             .essential_attachment_missing,
+        history_windowed: transcript_windowed,
         attachments_omitted: normalized_context.current_request.attachments_omitted,
+        source_gaps: transcript_gaps,
         ..Quality::default()
     };
 
@@ -1085,9 +1102,17 @@ async fn rank_once(
     let (_, request_truncated) = category(crate::privacy::receipt::SourceCategory::UserRequest);
     let (history_omitted, history_truncated) =
         category(crate::privacy::receipt::SourceCategory::MessageHistory);
-    progress.evaluated.quality.summary = rendered_context.context_quality;
-    progress.evaluated.quality.prompt_complete &= request_truncated == 0;
-    progress.evaluated.quality.history_windowed = history_omitted + history_truncated > 0;
+    let quality = &mut progress.evaluated.quality;
+    quality.summary = match rendered_context.context_quality {
+        crate::output::ContextQuality::Complete | crate::output::ContextQuality::PromptOnly
+            if quality.source_gaps =>
+        {
+            crate::output::ContextQuality::Partial
+        }
+        rendered => rendered,
+    };
+    quality.prompt_complete &= request_truncated == 0;
+    quality.history_windowed |= history_omitted + history_truncated > 0;
     if rendered_context.is_unsupported_context() || request_truncated > 0 {
         return Err(input_failure(
             ErrorKind::InsufficientContext,

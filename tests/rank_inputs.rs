@@ -446,3 +446,61 @@ fn input_that_cannot_support_an_evaluation_is_never_ranked() {
         (Some(5), "unresolved-explicit".to_owned())
     );
 }
+
+/// A Claude transcript: `filler` earlier user records of `filler_bytes` text
+/// each, then an explicit request, then `tail` verbatim (for example an
+/// unfinished record).
+fn transcript(f: &Fixture, filler: usize, filler_bytes: usize, tail: &str) -> PathBuf {
+    let record = |n: usize, text: &str| {
+        json!({"type": "user", "uuid": format!("u-{n}"), "parentUuid": null,
+               "message": {"role": "user", "content": text}})
+        .to_string()
+    };
+    let mut lines: Vec<String> = (0..filler)
+        .map(|n| record(n, &"earlier context ".repeat(filler_bytes / 16)))
+        .collect();
+    lines.push(record(filler, "Please use skill alpha to fix this."));
+    let path = f.workspace().join("session.jsonl");
+    std::fs::write(&path, lines.join("\n") + "\n" + tail).unwrap();
+    path
+}
+
+fn transcript_quality(f: &Fixture, path: &Path) -> Value {
+    let output = f.run(&[
+        "rank",
+        "--transcript",
+        path.to_str().unwrap(),
+        "--harness",
+        "claude_code",
+        "--offline",
+        "--json",
+    ]);
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(output.status.code(), Some(0), "{value}");
+    assert_eq!(value["decision"], "explicit", "{value}");
+    value
+}
+
+#[test]
+fn a_transcript_read_with_gaps_reports_them() {
+    let f = Fixture::new();
+    // Honest twin: a clean transcript is complete, with no gaps.
+    let clean = transcript_quality(&f, &transcript(&f, 2, 64, ""));
+    assert_eq!(clean["context_quality"], "complete", "{clean}");
+    assert_eq!(clean["quality"]["source_gaps"], false);
+    assert_eq!(clean["quality"]["history_windowed"], false);
+    // An unfinished last record may be the real latest request.
+    let unfinished = transcript(&f, 2, 64, r#"{"type": "user", "message": {"role": "#);
+    let value = transcript_quality(&f, &unfinished);
+    assert_eq!(value["context_quality"], "partial", "{value}");
+    assert_eq!(value["quality"]["source_gaps"], true, "{value}");
+}
+
+#[test]
+fn a_transcript_longer_than_its_tail_window_reports_windowed_history() {
+    let f = Fixture::new();
+    // About 2.4 MiB: the bounded 2 MiB tail read cannot include the start.
+    let value = transcript_quality(&f, &transcript(&f, 120, 20 * 1024, ""));
+    assert_eq!(value["quality"]["history_windowed"], true, "{value}");
+    assert_eq!(value["quality"]["source_gaps"], false, "{value}");
+}
