@@ -28,6 +28,8 @@ const STDERR_BYTES: usize = 16 * 1024;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CassError {
     UnsupportedSourceMode,
+    /// No `cass` executable in the standard install locations.
+    NotInstalled,
     InvalidRequest,
     UnsupportedProducer,
     RemoteSource,
@@ -40,6 +42,7 @@ impl fmt::Display for CassError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Self::UnsupportedSourceMode => "cass is unavailable in this source mode; supply a direct transcript or normalized input",
+            Self::NotInstalled => "cass is not installed in ~/.local/bin, ~/.cargo/bin, /usr/local/bin or /usr/bin",
             Self::InvalidRequest => "invalid trusted cass request",
             Self::UnsupportedProducer => "cass version or capabilities are not qualified",
             Self::RemoteSource => "remote cass source is not permitted",
@@ -74,6 +77,60 @@ impl fmt::Debug for CassConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("CassConfig(<private>)")
     }
+}
+
+/// Configuration without setup:
+/// - the executable is the first regular `cass` file in `~/.local/bin`,
+///   `~/.cargo/bin`, `/usr/local/bin` or `/usr/bin`, trusted within that
+///   directory;
+/// - the database is `database` when given (from `CASS_DB_PATH`), else cass's
+///   own default under the data directory (`$XDG_DATA_HOME` or
+///   `~/.local/share`);
+/// - the digest is BLAKE3 over the executable's bytes, streamed and bounded.
+pub fn default_config(
+    home: Option<&Path>,
+    data_home: Option<&Path>,
+    database: Option<&Path>,
+    workspace: &Path,
+) -> Result<CassConfig, CassError> {
+    const MAX_EXECUTABLE_BYTES: u64 = 512 * 1024 * 1024;
+    let mut bins: Vec<PathBuf> = home
+        .map(|home| vec![home.join(".local/bin"), home.join(".cargo/bin")])
+        .unwrap_or_default();
+    bins.extend([PathBuf::from("/usr/local/bin"), PathBuf::from("/usr/bin")]);
+    let (path, bin) = bins
+        .iter()
+        .map(|bin| (bin.join("cass"), bin))
+        .find(|(path, _)| path.is_file())
+        .ok_or(CassError::NotInstalled)?;
+    let executable = TrustedExecutable::resolve(&path, std::slice::from_ref(bin))?;
+    let database = match database.filter(|path| path.is_absolute()) {
+        Some(path) => path.to_path_buf(),
+        None => data_home
+            .filter(|path| path.is_absolute())
+            .map(Path::to_path_buf)
+            .or_else(|| home.map(|home| home.join(".local/share")))
+            .ok_or(CassError::InvalidRequest)?
+            .join("cass/cass.db"),
+    };
+    let mut hasher = blake3::Hasher::new();
+    let file = std::fs::File::open(&path).map_err(|_| CassError::InvalidRequest)?;
+    let read = std::io::copy(
+        &mut std::io::Read::take(file, MAX_EXECUTABLE_BYTES + 1),
+        &mut hasher,
+    )
+    .map_err(|_| CassError::InvalidRequest)?;
+    if read > MAX_EXECUTABLE_BYTES {
+        return Err(CassError::LimitExceeded);
+    }
+    let binary_digest = ContentHash::parse(hasher.finalize().to_hex().to_string())
+        .map_err(|_| CassError::InvalidRequest)?;
+    Ok(CassConfig {
+        executable,
+        directory: workspace.to_path_buf(),
+        database,
+        binary_digest,
+    })
 }
 
 pub struct CassAdapter {

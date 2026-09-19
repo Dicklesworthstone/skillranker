@@ -96,6 +96,11 @@
   declaration validation remains distinct from an execution receipt.
 
 ### Added
+- `sr rank --session PATH` ranks an exact cass session. It needs no setup:
+  `sr` finds an installed cass 0.8.0 in the standard bin directories, uses
+  cass's own database (or `CASS_DB_PATH`), and computes the binary's digest.
+  The path must be a session cass records for this workspace, and its agent
+  decides the harness. It was refused as unavailable before.
 - Bare `sr rank` discovers the workspace's Claude Code session under
   `$HOME/.claude/projects` and trusted-user `context.transcript_roots`:
   - A transcript counts only when its own records name this workspace as

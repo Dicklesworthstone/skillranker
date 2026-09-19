@@ -1935,8 +1935,12 @@ No. Priors are disabled by default and use judged usefulness when enabled.
 Unobserved loads do not become automatic negative labels or ignore penalties.
 
 **Do I need cass or meta_skill?**
-Cass is optional for session archive access. Meta_skill is a source of selected
-reusable code, not a runtime dependency or feedback service.
+Cass is optional for session archive access. `sr rank --session PATH` finds an
+installed `cass` 0.8.0 in `~/.local/bin`, `~/.cargo/bin`, `/usr/local/bin` or
+`/usr/bin`, and uses its own database (`CASS_DB_PATH`, or the platform data
+directory). The path must be a session cass records for the current workspace;
+its agent decides the harness. Meta_skill is a source of selected reusable
+code, not a runtime dependency or feedback service.
 
 **Does `--no-ledger` make the run stateless?**
 No. It disables ledger and ingestion-cursor access, observations, labels, and

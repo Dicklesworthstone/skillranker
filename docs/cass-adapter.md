@@ -6,10 +6,22 @@ subprocess runner. It probes the installed producer, runs bounded `sessions` or
 It does not index, start a daemon, contact Jev, install a hook, or select the
 latest session implicitly. CLI dispatch is a separate integration boundary.
 
-The caller supplies a trusted resolved executable, its independently qualified
-binary digest, an absolute working directory, and an explicit database path.
-Those values must come from trusted local configuration, never transcript text.
-The adapter does not hash a potentially large executable inside the request.
+The caller supplies a trusted resolved executable, its binary digest, an
+absolute working directory, and an explicit database path. Those values come
+from the local installation and trusted environment, never transcript text.
+`default_config` needs no setup:
+- the executable is the first regular `cass` in `~/.local/bin`, `~/.cargo/bin`,
+  `/usr/local/bin` or `/usr/bin`, trusted within that directory;
+- the database is `CASS_DB_PATH`, or cass's default `cass/cass.db` under
+  `$XDG_DATA_HOME` or `~/.local/share`;
+- the digest is BLAKE3 over the executable's bytes, streamed and capped at
+  512 MiB.
+
+`sr rank --session PATH` uses it. The selected path must appear in cass's
+listing for the exact workspace, whose agent names the harness (`claude`
+becomes `claude_code`). The export is then projected into normalized events.
+No durable session identity is claimed, so that run's cache and lease
+namespace stays private.
 The caller is responsible for keeping executable provenance current.
 
 ## Producer and process boundary
