@@ -286,3 +286,71 @@ fn termination_observer_rejects_a_live_child() {
         "live sleeping process was accepted as terminated"
     );
 }
+
+// Eight MiB needs at least 1024 8-KiB passes. Sleeping after every
+// successful pass cannot fit this work budget, even with zero spawn overhead.
+fn bulk_invocation() -> ProcessInvocation {
+    ProcessInvocation::from_clock(
+        EntryClock::capture_with(
+            DurationMillis::new("total", 1200, 3000).unwrap(),
+            DurationMillis::new("cleanup", 200, 3000).unwrap(),
+        )
+        .unwrap(),
+    )
+    .unwrap()
+}
+
+#[test]
+fn bulk_output_preserves_exact_cap_and_rejects_one_extra_byte() {
+    use skillranker::subprocess::MAX_PIPE_BYTES;
+    for extra in [0, 1] {
+        let invocation = bulk_invocation();
+        let cx = invocation.request_cx().unwrap();
+        let bytes = (MAX_PIPE_BYTES + extra).to_string();
+        let mut child = request("/usr/bin/head", &["-c", &bytes, "/dev/zero"]);
+        child.stdout_limit = MAX_PIPE_BYTES;
+        let result = invocation
+            .runtime()
+            .block_on(run(&cx, &invocation.clock(), child));
+        eprintln!(
+            "case=bulk-output extra={extra} elapsed_ms={} accepted={}",
+            invocation.clock().now().as_millis(),
+            result.is_ok()
+        );
+        if extra == 0 {
+            let output = result.unwrap();
+            assert!(output.status.success());
+            assert_eq!(output.stdout.len(), MAX_PIPE_BYTES);
+            assert!(output.stdout.iter().all(|byte| *byte == 0));
+            assert!(output.stderr.is_empty());
+        } else {
+            assert_eq!(result.unwrap_err(), SubprocessError::OutputLimit);
+        }
+        assert!(invocation.shutdown());
+    }
+}
+
+#[test]
+fn bulk_stdin_and_stdout_make_progress_together() {
+    use skillranker::subprocess::MAX_PIPE_BYTES;
+    let mut child = request("/bin/cat", &[]);
+    child.stdin = (0..MAX_PIPE_BYTES).map(|i| (i % 251) as u8).collect();
+    child.stdout_limit = MAX_PIPE_BYTES;
+    let expected = child.stdin.clone();
+    let invocation = bulk_invocation();
+    let cx = invocation.request_cx().unwrap();
+    let output = invocation
+        .runtime()
+        .block_on(run(&cx, &invocation.clock(), child))
+        .unwrap();
+    eprintln!(
+        "case=bulk-duplex bytes={} elapsed_ms={}",
+        output.stdout.len(),
+        invocation.clock().now().as_millis()
+    );
+    assert!(output.status.success());
+    assert_eq!(output.stdout, expected);
+    assert!(output.stderr.is_empty());
+    assert!(!output.stdin_closed_early);
+    assert!(invocation.shutdown());
+}

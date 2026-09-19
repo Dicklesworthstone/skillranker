@@ -232,6 +232,7 @@ pub async fn run(
             if let Err(error) = check_work(cx, clock) {
                 break Err(error);
             }
+            let before = (out.len(), err.len(), offset);
             let step = {
                 let mut task = Context::from_waker(Waker::noop());
                 read_pipe(&mut stdout, &mut out, request.stdout_limit, &mut task)
@@ -288,7 +289,17 @@ pub async fn run(
                     stdin_closed_early: early,
                 });
             }
-            asupersync::time::sleep(asupersync::time::wall_now(), Duration::from_millis(1)).await;
+            if (out.len(), err.len(), offset) != before {
+                // Each pass services all three pipes and rechecks the deadline.
+                // Yield fairly without imposing a timer delay on every 8 KiB:
+                // a large, ready export must not spend its budget sleeping.
+                asupersync::runtime::yield_now().await;
+            } else {
+                // Pipe polls use a noop waker, so idle children still require
+                // bounded polling. Back off only when no bytes moved.
+                asupersync::time::sleep(asupersync::time::wall_now(), Duration::from_millis(1))
+                    .await;
+            }
         };
         drop((input, stdout, stderr));
         owner.cleanup()?;
