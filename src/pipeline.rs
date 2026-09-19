@@ -462,18 +462,28 @@ async fn rank_once(
         SourceTarget::NormalizedStdin => {
             let limit = crate::limits::NORMALIZED_CONTEXT_JSON_BYTES.max();
             let mut bytes = Vec::new();
-            std::io::Read::read_to_end(
-                &mut std::io::Read::take(std::io::stdin().lock(), limit as u64 + 1),
-                &mut bytes,
-            )
-            .map_err(|_| failure(7, "malformed-input", "Failed to read context from stdin"))?;
-            if bytes.len() > limit {
-                return Err(failure(
-                    7,
-                    "oversized-input",
-                    "Normalized context on stdin exceeds 1 MiB",
-                ));
-            }
+            crate::runtime::read_stdin_platform_before_cleanup(clock, limit, &mut bytes).map_err(
+                |error| match error {
+                    crate::runtime::RuntimeError::StdinTimeout => failure(
+                        6,
+                        "timeout",
+                        "Normalized stdin reached the ranking deadline",
+                    ),
+                    crate::runtime::RuntimeError::Deadline(
+                        crate::limits::LimitError::AboveLimit { .. },
+                    ) => failure(
+                        7,
+                        "oversized-input",
+                        "Normalized context on stdin exceeds 1 MiB",
+                    ),
+                    crate::runtime::RuntimeError::UnboundedLeaf => failure(
+                        7,
+                        "unsupported-input",
+                        "Bounded stdin is unavailable on this platform",
+                    ),
+                    _ => failure(7, "malformed-input", "Failed to read context from stdin"),
+                },
+            )?;
             parse_normalized_context(&bytes).map_err(|e| {
                 failure(
                     7,
