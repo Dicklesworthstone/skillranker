@@ -457,4 +457,13 @@ fn claude_records_the_user_did_not_submit_are_context_not_requests() {
             "{extra}"
         );
     }
+    // Explicit human provenance outranks the text heuristics: a typed prompt
+    // may quote an interrupt marker or command output.
+    for text in [
+        "[Request interrupted by user] happens when I press Esc; why?",
+        "<local-command-stdout>Login successful</local-command-stdout> means what?",
+    ] {
+        let typed = json!({"promptSource": "typed", "origin": {"kind": "human"}});
+        assert_eq!(user(typed, text).role, Role::User, "{text}");
+    }
 }
