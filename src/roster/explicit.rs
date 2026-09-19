@@ -133,7 +133,7 @@ pub fn parse_prompt_directives(prompt: &str) -> Vec<ParsedDirective> {
     let mut directives = Vec::new();
     let sanitized = strip_quotes_and_code_blocks(prompt);
 
-    for segment in sanitized.split(['\n', ';', '.']) {
+    for segment in directive_segments(&sanitized) {
         let trimmed = segment.trim();
         if trimmed.is_empty() {
             continue;
@@ -167,6 +167,7 @@ pub fn parse_prompt_directives(prompt: &str) -> Vec<ParsedDirective> {
 
         // Check exclusions first ("do not use skill X", "don't use skill X", "exclude skill X")
         if let Some(target) = extract_natural_directive(
+            trimmed,
             &lower,
             &[
                 "do not use skill ",
@@ -185,6 +186,7 @@ pub fn parse_prompt_directives(prompt: &str) -> Vec<ParsedDirective> {
 
         // Check positive directives ("use skill X", "require skill X", "run skill X", "invoke skill X")
         if let Some(target) = extract_natural_directive(
+            trimmed,
             &lower,
             &[
                 "use skill ",
@@ -204,7 +206,26 @@ pub fn parse_prompt_directives(prompt: &str) -> Vec<ParsedDirective> {
     directives
 }
 
-fn extract_natural_directive(line: &str, prefixes: &[&str]) -> Option<String> {
+/// Internal dots belong to exact invocation names. A terminal dot, or one
+/// followed by whitespace, still separates ordinary prose sentences.
+fn directive_segments(text: &str) -> impl Iterator<Item = &str> {
+    text.match_indices(['\n', ';', '.'])
+        .filter(|(offset, delimiter)| {
+            *delimiter != "."
+                || text[offset + 1..]
+                    .chars()
+                    .next()
+                    .is_none_or(char::is_whitespace)
+        })
+        .chain(std::iter::once((text.len(), "")))
+        .scan(0, |start, (end, delimiter)| {
+            let segment = &text[*start..end];
+            *start = end + delimiter.len();
+            Some(segment)
+        })
+}
+
+fn extract_natural_directive(original: &str, line: &str, prefixes: &[&str]) -> Option<String> {
     for prefix in prefixes {
         if let Some(pos) = line.find(prefix) {
             // Must be at line start or preceded by punctuation/space
@@ -214,7 +235,9 @@ fn extract_natural_directive(line: &str, prefixes: &[&str]) -> Option<String> {
                 || line.as_bytes()[pos - 1] == b';'
                 || line.as_bytes()[pos - 1] == b','
             {
-                let after = &line[pos + prefix.len()..];
+                // ASCII case folding preserves byte offsets, but only the
+                // directive vocabulary is case-insensitive. Targets are exact.
+                let after = &original[pos + prefix.len()..];
                 let first_word = after.split_whitespace().next()?;
                 let target = clean_target_name(first_word);
                 if !target.is_empty() {

@@ -425,6 +425,53 @@ fn concurrent_export_race_prevents_clobber() {
 // -----------------------------------------------------------------------------
 
 #[test]
+fn prompt_directives_preserve_exact_target_identity() {
+    use skillranker::roster::explicit::{DirectiveKind, ParsedDirective, parse_prompt_directives};
+    let expected = vec![
+        ParsedDirective {
+            target: "CaseSkill".into(),
+            kind: DirectiveKind::Require,
+        },
+        ParsedDirective {
+            target: "Review.Tools".into(),
+            kind: DirectiveKind::Require,
+        },
+        ParsedDirective {
+            target: "Other.Tool".into(),
+            kind: DirectiveKind::Exclude,
+        },
+    ];
+    assert_eq!(
+        parse_prompt_directives(
+            "Please USE SKILL CaseSkill. Also require skill Review.Tools; DON'T USE SKILL Other.Tool."
+        ),
+        expected
+    );
+    assert_eq!(
+        parse_prompt_directives(
+            "/USE-SKILL CaseSkill\n/require-skill Review.Tools\n/no-skill Other.Tool"
+        ),
+        expected
+    );
+    assert_eq!(
+        parse_prompt_directives("Use skill naïve.Tools.\u{2003}Use skill Ωmega.Tools."),
+        vec![
+            ParsedDirective {
+                target: "naïve.Tools".into(),
+                kind: DirectiveKind::Require
+            },
+            ParsedDirective {
+                target: "Ωmega.Tools".into(),
+                kind: DirectiveKind::Require
+            },
+        ]
+    );
+    assert!(parse_prompt_directives(
+        "Example: \"Use skill CaseSkill.\"; `require skill Review.Tools`; 'do not use skill Other.Tool'."
+    ).is_empty());
+}
+
+#[test]
 fn local_explicit_resolution() {
     use skillranker::authorized_read::{AuthorizedRoot, AuthorizedRoots};
     use skillranker::identity::{LogicalSkillKey, SkillId, SourceId};
@@ -607,6 +654,18 @@ fn local_explicit_resolution() {
     }
 
     // 2. Manual-only skill
+    for name in ["CaseSkill", "caseskill", "Review.Tools"] {
+        entries.push(create_skill_entry(
+            &test_dir,
+            &format!("exact/{name}.md"),
+            name,
+            "source-main",
+            Some(10),
+            allow,
+            verified.clone(),
+        ));
+    }
+
     entries.push(create_skill_entry(
         &test_dir,
         "skills/manual_tool.md",
@@ -699,6 +758,38 @@ fn local_explicit_resolution() {
         .unwrap(),
     );
     let roster = ResolvedRoster::resolve(entries, false, &cx, &clock).unwrap();
+
+    for name in ["CaseSkill", "Review.Tools"] {
+        let request = ExplicitResolutionRequest {
+            user_prompt: Some(format!("Please use skill {name}.")),
+            ..Default::default()
+        };
+        let ExplicitResolutionResult::Resolved { skills, .. } =
+            resolve_explicit_requirements(&request, &roster).unwrap()
+        else {
+            panic!("exact mixed-case/dotted name was not resolved");
+        };
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].invocation.as_str(), name);
+        assert_eq!(
+            skills[0].id,
+            SkillId::from_source(
+                &SourceId::new("source-main").unwrap(),
+                &LogicalSkillKey::new(format!("exact/{name}.md")).unwrap(),
+            )
+        );
+    }
+    // Excluding the uppercase name must not silently target its lowercase decoy.
+    let request = ExplicitResolutionRequest {
+        cli_required_skills: vec!["CaseSkill".into()],
+        user_prompt: Some("DO NOT USE SKILL CaseSkill.".into()),
+        ..Default::default()
+    };
+    assert!(
+        matches!(resolve_explicit_requirements(&request, &roster).unwrap(),
+        ExplicitResolutionResult::Unavailable { unresolved }
+        if unresolved.len() == 1 && unresolved[0].reason == UnresolvedReason::ConflictingDirective)
+    );
 
     // -------------------------------------------------------------------------
     // Sub-case 2: Single Valid Skill Resolved Offline (Bypasses Jev / Gating)
