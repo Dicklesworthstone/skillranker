@@ -35,8 +35,8 @@ use crate::jev::wide::{Sizes, WideDecision, WideOutcome, WideRequest};
 use crate::jev::{OriginScopedCredential, rerank, wide};
 use crate::output::trace::{StageTrace, TraceEntry, TraceStage};
 use crate::output::{ErrorKind, OutputDocument, SCHEMA_VERSION, TraceCursor};
-use crate::privacy::NetworkConsent;
 use crate::privacy::redaction::Redactor;
+use crate::privacy::{NetworkConsent, ProviderAdmissionRefusal, admit_provider_attempt};
 use crate::roster::discovery::claude_code_plan;
 use crate::roster::evidence::{PolicyView, RetrievalView};
 use crate::roster::explicit::{
@@ -174,12 +174,128 @@ fn read_input_file(
         })
 }
 
-/// Assembles and executes the two-stage rank pipeline.
+/// What an invocation has established so far. Once input is admitted, a
+/// failure is published from this record as a full unavailable decision, so
+/// evaluated stages and incurred usage are never dropped.
+#[derive(Default)]
+struct Progress {
+    admitted: Option<Admitted>,
+    evaluated: Evaluated,
+    metrics: ExecutionMetrics,
+}
+
+/// The admitted session and roster a full decision describes.
+struct Admitted {
+    event_id: String,
+    harness: String,
+    attachments_omitted: bool,
+    total: usize,
+    partial: bool,
+    snapshot_id: ContentHash,
+}
+
+/// Assembles and executes the two-stage rank pipeline. Failures before input
+/// admission are bare typed failures; later ones are full unavailable
+/// decisions carrying the usage already incurred.
 pub async fn execute_pipeline(
     clock: &EntryClock,
     cx: &Cx,
     args: RankArgs,
     transport: Option<&dyn JevTransport>,
+) -> Result<OutputDocument, PipelineFailure> {
+    let mut progress = Progress::default();
+    match rank_once(clock, cx, args, transport, &mut progress).await {
+        Err(failure) => match &progress.admitted {
+            Some(admitted) => {
+                let evaluated = Evaluated {
+                    metrics: progress.metrics.clone(),
+                    ..progress.evaluated.clone()
+                };
+                unavailable_document(&failure, admitted, &evaluated, clock.now().as_millis())
+                    .ok_or(failure)
+            }
+            None => Err(failure),
+        },
+        result => result,
+    }
+}
+
+/// A full unavailable decision for a typed failure after admission, or `None`
+/// when the failure has no matching public error kind and exit code.
+fn unavailable_document(
+    failure: &PipelineFailure,
+    admitted: &Admitted,
+    evaluated: &Evaluated,
+    elapsed_ms: u64,
+) -> Option<OutputDocument> {
+    let (code, kind, message) = failure;
+    let kind = ErrorKind::ALL
+        .iter()
+        .copied()
+        .find(|k| k.as_str() == *kind)?;
+    if kind.exit_code() as u8 != *code {
+        return None;
+    }
+    let error = OutputDocument::failure_with_details(
+        kind,
+        message,
+        "Inspect local readiness and the structured error kind.",
+        false,
+    )
+    .as_value()["error"]
+        .clone();
+    let val = json!({
+        "schema_version": SCHEMA_VERSION,
+        "event_id": admitted.event_id,
+        "decision": "unavailable",
+        "reason": kind.as_str(),
+        "harness": admitted.harness,
+        "context_quality": "complete",
+        "quality": {
+            "prompt_complete": true,
+            "task_anchor_known": true,
+            "history_windowed": true,
+            "attachments_omitted": admitted.attachments_omitted,
+            "source_gaps": false,
+        },
+        "roster": {
+            "total": admitted.total,
+            "eligible": evaluated.eligible,
+            "wide_candidates": evaluated.wide,
+            "shortlist": evaluated.shortlist,
+            "partial": admitted.partial,
+            "retrieval": evaluated.retrieval(),
+            "provenance": {
+                "snapshot_id": admitted.snapshot_id.as_str(),
+                "policy_version": "ranking-v1",
+                "wide_set_id": evaluated.wide_set_id.as_ref().map(ContentHash::as_str),
+                "rerank_set_id": evaluated.rerank_set_id.as_ref().map(ContentHash::as_str),
+            }
+        },
+        "needs_skill": evaluated.needs_skill,
+        "choice_confidence": evaluated.choice_confidence,
+        "none_probability": evaluated.none_probability,
+        "phase": evaluated.phase,
+        "skills": [],
+        "omitted_rank_mass": null,
+        "cache": evaluated.cache(),
+        "model": evaluated.model(),
+        "usage": evaluated.usage(),
+        "persistence": "disabled",
+        "warnings": [],
+        "warnings_omitted": 0,
+        "elapsed_ms": elapsed_ms,
+        "error": error,
+    });
+    OutputDocument::from_value(val).ok()
+}
+
+async fn rank_once(
+    clock: &EntryClock,
+    cx: &Cx,
+    args: RankArgs,
+    transport: Option<&dyn JevTransport>,
+    progress: &mut Progress,
 ) -> Result<OutputDocument, PipelineFailure> {
     clock.admit_new_work().map_err(|_| {
         failure(
@@ -452,6 +568,19 @@ pub async fn execute_pipeline(
         })?
     };
 
+    progress.admitted = Some(Admitted {
+        event_id: normalized_context
+            .current_request
+            .event_id
+            .as_ref()
+            .map_or_else(|| "event-0".to_owned(), |e| e.as_str().to_owned()),
+        harness: normalized_context.harness.as_str().to_owned(),
+        attachments_omitted: normalized_context.current_request.attachments_omitted,
+        total: roster.skills().len(),
+        partial: roster.is_partial(),
+        snapshot_id: crate::roster::evidence::snapshot_id(&roster),
+    });
+
     // 5. Explicit Directives Check (bypasses Jev and Quill)
     if !explicit_directives.is_empty() {
         let explicit_req = ExplicitResolutionRequest {
@@ -679,6 +808,7 @@ pub async fn execute_pipeline(
     }
 
     let eligible_count = admission.admitted.len();
+    progress.evaluated.eligible = eligible_count;
 
     // 7. Bounded Quill retrieval if > 254 candidates
     let (candidate_skills, ran_quill, quill_method) = if admission.admitted.len()
@@ -808,7 +938,6 @@ pub async fn execute_pipeline(
         .collect();
 
     let memory_cache = MemoryResponseCache::new();
-    let mut metrics = ExecutionMetrics::default();
 
     // 11. Stage 1 (Wide) Call or Cache Hit
     let wide_builder = wide::build(
@@ -878,6 +1007,16 @@ pub async fn execute_pipeline(
         return Ok(doc);
     }
 
+    // From here on the wide candidate set is committed to a request.
+    progress.evaluated = Evaluated {
+        eligible: eligible_count,
+        wide: candidate_skills.len(),
+        quill: ran_quill,
+        wide_set_id: Some(candidate_set_id("wide", candidate_skills.iter())),
+        requested_model: Some(effective.model().as_str().to_owned()),
+        ..Evaluated::default()
+    };
+
     // The request identity binds the exact serialized request (context,
     // questions and options) and the endpoint it would be sent to.
     let endpoint = match effective.endpoint() {
@@ -919,8 +1058,8 @@ pub async fn execute_pipeline(
         };
         match memory_cache.get(&lookup_q) {
             Ok(CacheLookupResult::Hit { entry, .. }) => {
-                metrics.wide_hit = true;
-                metrics.cache_hit = true;
+                progress.metrics.wide_hit = true;
+                progress.metrics.cache_hit = true;
                 wide_builder
                     .request()
                     .decode_response(&entry.response_bytes)
@@ -943,7 +1082,7 @@ pub async fn execute_pipeline(
                     &gate,
                     &wide_builder,
                     transport,
-                    &mut metrics,
+                    &mut progress.metrics,
                 )
                 .await?
             }
@@ -958,7 +1097,7 @@ pub async fn execute_pipeline(
             &gate,
             &wide_builder,
             transport,
-            &mut metrics,
+            &mut progress.metrics,
         )
         .await?
     };
@@ -972,17 +1111,9 @@ pub async fn execute_pipeline(
                 format!("Wide evaluation failed: {e:?}"),
             )
         })?;
-    let wide_facts = Evaluated {
-        eligible: eligible_count,
-        wide: candidate_skills.len(),
-        quill: ran_quill,
-        wide_set_id: Some(candidate_set_id("wide", candidate_skills.iter())),
-        requested_model: Some(effective.model().as_str()),
-        wide_returned: Some(wide_response.returned_model.as_str()),
-        needs_skill: Some(wide_outcome.needs_skill),
-        phase: dominant_phase(&wide_outcome.phase),
-        ..Evaluated::default()
-    };
+    progress.evaluated.wide_returned = Some(wide_response.returned_model.clone());
+    progress.evaluated.needs_skill = Some(wide_outcome.needs_skill);
+    progress.evaluated.phase = dominant_phase(&wide_outcome.phase).map(str::to_owned);
 
     let shortlisted = match &wide_outcome.decision {
         WideDecision::LowNeed => {
@@ -1016,8 +1147,8 @@ pub async fn execute_pipeline(
                 clock.now().as_millis(),
                 None,
                 &Evaluated {
-                    metrics: metrics.clone(),
-                    ..wide_facts.clone()
+                    metrics: progress.metrics.clone(),
+                    ..progress.evaluated.clone()
                 },
             );
             if let Some(trace_val) = generate_trace(
@@ -1052,7 +1183,12 @@ pub async fn execute_pipeline(
         .map(|s| s.skill.binding.id.clone())
         .collect();
 
-    // 12. Stage 2 (Rerank)
+    // 12. Stage 2 (Rerank). The shortlist is committed to a request.
+    progress.evaluated.shortlist = shortlisted.len();
+    progress.evaluated.rerank_set_id = Some(candidate_set_id(
+        "rerank",
+        shortlisted.iter().map(|s| &s.skill),
+    ));
     let rerank_builder = rerank::build(
         &roster,
         &shortlist_ids,
@@ -1076,7 +1212,7 @@ pub async fn execute_pipeline(
         &gate,
         &rerank_builder,
         transport,
-        &mut metrics,
+        &mut progress.metrics,
     )
     .await?;
 
@@ -1087,6 +1223,10 @@ pub async fn execute_pipeline(
             format!("Rerank evaluation failed: {e:?}"),
         )
     })?;
+
+    progress.evaluated.rerank_returned = Some(rerank_response.returned_model.clone());
+    progress.evaluated.choice_confidence = Some(rerank_outcome.choice_confidence);
+    progress.evaluated.none_probability = Some(rerank_outcome.none_probability);
 
     // 13. Local Eligibility & Fit Filtering after Rerank
     let shortlisted_advisory: Vec<AdvisorySkill> = shortlisted.iter().map(|s| s.skill).collect();
@@ -1111,16 +1251,8 @@ pub async fn execute_pipeline(
                     clock.now().as_millis(),
                     None,
                     &Evaluated {
-                        metrics: metrics.clone(),
-                        shortlist: shortlisted.len(),
-                        rerank_set_id: Some(candidate_set_id(
-                            "rerank",
-                            shortlisted.iter().map(|s| &s.skill),
-                        )),
-                        rerank_returned: Some(rerank_response.returned_model.as_str()),
-                        choice_confidence: Some(rerank_outcome.choice_confidence),
-                        none_probability: Some(rerank_outcome.none_probability),
-                        ..wide_facts.clone()
+                        metrics: progress.metrics.clone(),
+                        ..progress.evaluated.clone()
                     },
                 );
                 if let Some(trace_val) = generate_trace(
@@ -1262,14 +1394,8 @@ pub async fn execute_pipeline(
         &normalized_context,
         &roster,
         &Evaluated {
-            metrics: metrics.clone(),
-            shortlist: shortlisted.len(),
-            rerank_set_id: Some(candidate_set_id(
-                "rerank",
-                shortlisted.iter().map(|s| &s.skill),
-            )),
-            rerank_returned: Some(rerank_response.returned_model.as_str()),
-            ..wide_facts.clone()
+            metrics: progress.metrics.clone(),
+            ..progress.evaluated.clone()
         },
         clock.now().as_millis(),
     )?;
@@ -1330,13 +1456,7 @@ async fn execute_provider_wide(
     // other relevant change supersedes the evaluation.
     let current = refreshed.receipt(gate.policy());
     let consent = current.network_consent();
-    if !matches!(consent, NetworkConsent::Authorized(_)) {
-        return Err(failure(
-            8,
-            "network-denied",
-            "Network transmission is not authorized",
-        ));
-    }
+    admit_provider_attempt(consent, current.credential()).map_err(admission_refusal)?;
     if let Revalidation::Superseded(fields) = reval {
         return Err(failure(
             3,
@@ -1346,11 +1466,6 @@ async fn execute_provider_wide(
     }
     *receipt = current;
 
-    let credential = resolved_config.credential();
-    if credential.is_none() {
-        return Err(failure(4, "authentication", "Missing TYPESAFE_API_KEY"));
-    }
-
     metrics.requests += 1;
     metrics.http_attempts += 1;
 
@@ -1359,6 +1474,7 @@ async fn execute_provider_wide(
         resolved_config,
         consent,
         transport,
+        metrics,
         cx,
         clock,
     )
@@ -1400,13 +1516,7 @@ async fn execute_provider_rerank(
     // other relevant change supersedes the evaluation.
     let current = refreshed.receipt(gate.policy());
     let consent = current.network_consent();
-    if !matches!(consent, NetworkConsent::Authorized(_)) {
-        return Err(failure(
-            8,
-            "network-denied",
-            "Network transmission is not authorized",
-        ));
-    }
+    admit_provider_attempt(consent, current.credential()).map_err(admission_refusal)?;
     if let Revalidation::Superseded(fields) = reval {
         return Err(failure(
             3,
@@ -1416,11 +1526,6 @@ async fn execute_provider_rerank(
     }
     *receipt = current;
 
-    let credential = resolved_config.credential();
-    if credential.is_none() {
-        return Err(failure(4, "authentication", "Missing TYPESAFE_API_KEY"));
-    }
-
     metrics.requests += 1;
     metrics.http_attempts += 1;
 
@@ -1429,6 +1534,7 @@ async fn execute_provider_rerank(
         resolved_config,
         consent,
         transport,
+        metrics,
         cx,
         clock,
     )
@@ -1443,11 +1549,14 @@ async fn execute_provider_rerank(
 /// Send one request through `transport`, or through a client for the effective
 /// endpoint. A transport that reaches a real origin gets the credential scoped
 /// to that origin, so an injected client takes the same path as production.
+/// An attempt that started but returned no usage may still be billed; it is
+/// counted as unknown usage, never as zero.
 async fn send_one(
     request: &Request,
     resolved_config: &ResolvedConfig,
     consent: NetworkConsent,
     transport: Option<&dyn JevTransport>,
+    metrics: &mut ExecutionMetrics,
     cx: &Cx,
     clock: &EntryClock,
 ) -> Result<Response, PipelineFailure> {
@@ -1486,7 +1595,19 @@ async fn send_one(
     transport
         .send(request, scoped.as_ref(), consent, cx, clock)
         .await
-        .map_err(map_transport_error)
+        .map_err(|error| {
+            if error.http_attempt_started {
+                metrics.unknown_usage_attempts += 1;
+            }
+            map_transport_error(error)
+        })
+}
+
+/// Offline is a cache miss (exit 11), not an authorization failure; missing
+/// consent is a privacy denial (8) and a missing credential is authentication (4).
+fn admission_refusal(refusal: ProviderAdmissionRefusal) -> PipelineFailure {
+    let kind = refusal.kind();
+    failure(kind.exit_code() as u8, kind.as_str(), refusal.to_string())
 }
 
 fn map_transport_error(e: TransportError) -> PipelineFailure {
@@ -1624,7 +1745,7 @@ fn build_explicit_document(
 /// What an invocation actually executed before its decision: real counts and
 /// usage, and only the stage estimates and model identities that exist.
 #[derive(Clone, Default)]
-struct Evaluated<'a> {
+struct Evaluated {
     metrics: ExecutionMetrics,
     eligible: usize,
     wide: usize,
@@ -1632,16 +1753,16 @@ struct Evaluated<'a> {
     quill: bool,
     wide_set_id: Option<ContentHash>,
     rerank_set_id: Option<ContentHash>,
-    requested_model: Option<&'a str>,
-    wide_returned: Option<&'a str>,
-    rerank_returned: Option<&'a str>,
+    requested_model: Option<String>,
+    wide_returned: Option<String>,
+    rerank_returned: Option<String>,
     needs_skill: Option<f64>,
-    phase: Option<&'a str>,
+    phase: Option<String>,
     choice_confidence: Option<f64>,
     none_probability: Option<f64>,
 }
 
-impl Evaluated<'_> {
+impl Evaluated {
     fn retrieval(&self) -> &'static str {
         if self.quill {
             "quill-bm25"
@@ -1715,7 +1836,7 @@ fn build_abstain_document(
     roster: &ResolvedRoster,
     elapsed_ms: u64,
     dry_run: Option<Value>,
-    evaluated: &Evaluated<'_>,
+    evaluated: &Evaluated,
 ) -> OutputDocument {
     let event_id = context
         .current_request
@@ -1783,7 +1904,7 @@ fn build_ranked_document(
     rerank_outcome: &RerankOutcome<'_>,
     context: &NormalizedContext,
     roster: &ResolvedRoster,
-    evaluated: &Evaluated<'_>,
+    evaluated: &Evaluated,
     elapsed_ms: u64,
 ) -> Result<OutputDocument, PipelineFailure> {
     let mut skill_values = Vec::new();

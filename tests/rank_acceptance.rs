@@ -265,6 +265,17 @@ fn usage(value: &Value) -> (u64, u64, u64, u64) {
     )
 }
 
+/// A failure after input admission is a full unavailable decision that keeps
+/// the stages that ran and the usage already incurred.
+fn unavailable(outcome: Outcome, code: u64, kind: &str) -> Value {
+    let value = outcome.expect("a full unavailable decision");
+    assert_eq!(value["decision"], "unavailable", "{value}");
+    assert_eq!(value["error"]["code"], code, "{value}");
+    assert_eq!(value["error"]["kind"], kind, "{value}");
+    assert!(value["skills"].as_array().unwrap().is_empty());
+    value
+}
+
 const TASK: &str = "The rust tests are failing; find and repair the failing test.";
 
 #[test]
@@ -364,7 +375,9 @@ fn a_roster_change_during_rerank_withholds_the_result() {
     let outcome = rank(&f, &provider, TASK, 10_000);
     let served = provider.finish();
     assert_eq!(stages(&served), ["wide", "rerank"]);
-    assert_eq!(outcome, Err((5, "roster-changed")));
+    let value = unavailable(outcome, 5, "roster-changed");
+    assert!(value["none_probability"].is_f64(), "rerank ran");
+    assert_eq!(usage(&value), (2, 2, 220, 55));
 }
 
 #[test]
@@ -383,7 +396,17 @@ fn withdrawn_consent_denies_the_rerank_send() {
         ["wide"],
         "no rerank after consent is withdrawn"
     );
-    assert_eq!(outcome.map_err(|(code, _)| code), Err(8));
+    let value = unavailable(outcome, 8, "network-denied");
+    assert_eq!(
+        value["roster"]["shortlist"], 2,
+        "the shortlist was committed"
+    );
+    assert!(
+        value["model"]["rerank_returned"].is_null(),
+        "rerank never ran"
+    );
+    assert!(value["none_probability"].is_null());
+    assert_eq!(usage(&value), (1, 1, 100, 25));
 }
 
 #[test]
@@ -399,7 +422,8 @@ fn a_changed_exclusion_supersedes_the_evaluation() {
         ["wide"],
         "no rerank under a changed policy"
     );
-    assert_eq!(outcome, Err((3, "superseded")));
+    let value = unavailable(outcome, 3, "superseded");
+    assert_eq!(usage(&value), (1, 1, 100, 25));
 }
 
 #[test]
@@ -423,7 +447,10 @@ fn a_late_rerank_answer_is_never_published() {
     let elapsed = started.elapsed();
     let served = provider.finish();
     assert_eq!(stages(&served), ["wide", "rerank"]);
-    assert_eq!(outcome.map_err(|(code, _)| code), Err(6));
+    let value = unavailable(outcome, 6, "timeout");
+    // The late attempt may have been billed: it is unknown usage, not zero.
+    assert_eq!(usage(&value), (2, 2, 100, 25));
+    assert_eq!(value["usage"]["unknown_usage_attempts"], 1);
     assert!(
         elapsed < std::time::Duration::from_millis(3_500),
         "the deadline, not the provider, ends the run: {elapsed:?}"

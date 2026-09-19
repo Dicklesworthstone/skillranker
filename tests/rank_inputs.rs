@@ -268,3 +268,23 @@ fn claude_user_skills_come_from_home_not_the_config_root() {
     let value: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_ne!(value["decision"], "explicit", "{value}");
 }
+
+#[test]
+fn offline_ranking_without_a_cached_result_is_a_cache_miss() {
+    let f = Fixture::new();
+    f.context("context.json", "ok");
+    let output = f.run(&["rank", "--context", "context.json", "--offline", "--json"]);
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(output.status.code(), Some(11), "{value}");
+    assert_eq!(value["decision"], "unavailable");
+    assert_eq!(value["error"]["kind"], "cache-miss");
+    // Input was admitted, so this is a full decision showing nothing was sent.
+    assert!(value["event_id"].is_string(), "{value}");
+    assert_eq!(value["usage"]["requests"], 0);
+    assert_eq!(value["usage"]["http_attempts"], 0);
+    // Twin: online without trusted consent is a privacy denial instead.
+    let output = f.run(&["rank", "--context", "context.json", "--json"]);
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(output.status.code(), Some(8), "{value}");
+    assert_eq!(value["error"]["kind"], "network-denied");
+}

@@ -4,6 +4,14 @@
 
 ### Fixed
 
+- A rank failure after its input is admitted is a full `unavailable` decision.
+  This covers a superseded policy, withdrawn consent, a roster change, a
+  timeout and a provider failure. The decision keeps the stages that ran and
+  every request, attempt and token already incurred. An attempt that started
+  but returned no usage is counted as unknown usage, not zero.
+- `sr rank --offline` with no cached result reports `cache-miss` (exit 11), as
+  documented, instead of `network-denied`. Provider admission uses the shared
+  admission check for both stages.
 - `sr rank` discovers and revalidates Claude user skills in
   `$HOME/.claude/skills`, as `sr roster` does. It had looked under the
   configuration root, so personal skills were invisible to ranking.
