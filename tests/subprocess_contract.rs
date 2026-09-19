@@ -222,6 +222,45 @@ fn descendant_holding_pipes_is_terminated_after_parent_exits() {
 }
 
 #[test]
+fn parent_exit_reports_input_still_held_by_a_descendant_as_incomplete() {
+    let invocation = ProcessInvocation::enter().unwrap();
+    let cx = invocation.request_cx().unwrap();
+    // A shell background job normally receives /dev/null as stdin. Preserve
+    // the real input pipe explicitly on fd 3, then give it to the descendant.
+    // Its output is closed, so the parent can exit with both output pipes at
+    // EOF while our bounded input pipe still has a live, non-reading reader.
+    let mut child = request(
+        "/bin/sh",
+        &[
+            "-c",
+            "exec 3<&0; /bin/sleep 10 <&3 >/dev/null 2>&1 & printf '%s' $!; exit 0",
+        ],
+    );
+    child.stdin = vec![b'x'; skillranker::subprocess::MAX_PIPE_BYTES];
+    let start = Instant::now();
+    let output = invocation
+        .runtime()
+        .block_on(run(&cx, &invocation.clock(), child))
+        .unwrap();
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    assert!(
+        output.stdin_closed_early,
+        "parent success cannot claim all input was written"
+    );
+    #[cfg(target_os = "linux")]
+    {
+        let pid = std::str::from_utf8(&output.stdout)
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!(terminated_by(pid, start + Duration::from_secs(2)).unwrap());
+    }
+    assert!(start.elapsed() < Duration::from_secs(2));
+    assert!(invocation.shutdown());
+}
+
+#[test]
 fn explicit_cancellation_terminates_live_child() {
     let invocation = ProcessInvocation::enter().unwrap();
     let cx = invocation.request_cx().unwrap();
