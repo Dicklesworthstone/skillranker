@@ -732,13 +732,13 @@ fn run_sr(
     run_sr_with(f, provider, trust_fixture, request, &[])
 }
 
-fn run_sr_with(
+fn sr_command(
     f: &Fixture,
     provider: &Provider,
     trust_fixture: bool,
     request: &str,
     extra: &[&str],
-) -> (Option<i32>, Value) {
+) -> Command {
     let ca = f.root.join("fixture-ca.pem");
     std::fs::write(&ca, include_bytes!("fixtures/jev-tls/ca.pem")).unwrap();
     let mut command = Command::new(env!("CARGO_BIN_EXE_sr"));
@@ -763,6 +763,17 @@ fn run_sr_with(
     if trust_fixture {
         command.env("SSL_CERT_FILE", &ca);
     }
+    command
+}
+
+fn run_sr_with(
+    f: &Fixture,
+    provider: &Provider,
+    trust_fixture: bool,
+    request: &str,
+    extra: &[&str],
+) -> (Option<i32>, Value) {
+    let mut command = sr_command(f, provider, trust_fixture, request, extra);
     let output = command.output().unwrap();
     let text = String::from_utf8_lossy(&output.stdout).into_owned()
         + &String::from_utf8_lossy(&output.stderr);
@@ -1062,4 +1073,54 @@ fn persistence_reports_disabled_only_when_the_user_disabled_it() {
     provider.finish();
     assert_eq!(disabled["persistence"], "disabled", "{disabled}");
     assert_eq!(wanted["persistence"], "unavailable", "{wanted}");
+}
+
+#[test]
+fn concurrent_identical_requests_share_one_provider_evaluation() {
+    let f = Fixture::new(CONSENT);
+    std::fs::create_dir_all(f.root.join("home")).unwrap();
+    // The wide answer takes long enough that the second process arrives
+    // while the first still holds the single-flight lease.
+    let provider = Provider::start(&f, "slow-wide", &["".as_ref(), "1.2".as_ref()]);
+    // Build both commands first: building one writes the context file, which
+    // must not change under a running process.
+    let mut commands = [
+        sr_command(&f, &provider, true, TASK, &[]),
+        sr_command(&f, &provider, true, TASK, &[]),
+    ];
+    let children: Vec<_> = commands
+        .iter_mut()
+        .map(|command| {
+            command
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap()
+        })
+        .collect();
+    let outputs: Vec<_> = children
+        .into_iter()
+        .map(|child| child.wait_with_output().unwrap())
+        .collect();
+    let served = provider.finish();
+    assert_eq!(
+        stages(&served),
+        ["wide", "rerank"],
+        "one provider evaluation for both processes"
+    );
+    let values: Vec<Value> = outputs
+        .iter()
+        .map(|output| {
+            let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(output.status.code(), Some(0), "{value}");
+            assert_eq!(value["decision"], "ranked", "{value}");
+            value
+        })
+        .collect();
+    assert_eq!(values[0]["skills"], values[1]["skills"]);
+    let followers = values.iter().filter(|v| v["cache"]["hit"] == true).count();
+    assert_eq!(
+        followers, 1,
+        "exactly one process was served the leader's pair"
+    );
 }

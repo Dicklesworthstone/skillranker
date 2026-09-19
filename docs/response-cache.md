@@ -59,6 +59,14 @@ directory (`$XDG_CACHE_HOME/sr` or `~/.cache/sr`).
 - **Accounting:** a served pair reports zero new requests, attempts and tokens.
 - **Recording:** fresh answers are recorded after local evaluation, with receipt
   time as wall-clock milliseconds and the ten-minute TTL.
+- **Single flight:** on a miss, one process per exact request (namespace plus
+  wide request fingerprint) sends. It holds a fenced lease in `leases.sqlite3`
+  beside the store; the lease file is owner-only and never holds response
+  bodies. Another process with the same request waits for that lease, keeping
+  at least a second of its own budget, and is then served the recorded pair
+  with zero usage. If the leader recorded nothing, the follower sends itself.
+  The leader releases its lease on every path. `--no-cache` and `--no-persist`
+  disable cross-process sharing.
 - **Failure:** an unusable store never fails ranking; the run continues uncached.
 
 ## Verification

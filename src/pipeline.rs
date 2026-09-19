@@ -11,9 +11,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use crate::cache::{
-    CacheKey, CacheNamespace, CachedResponseEntry, CandidateDigest, DEFAULT_CACHE_TTL_SECS,
-    MemoryResponseCache, RequestFingerprint, RequestFingerprintInput, RequestStage,
-    compute_request_fingerprint,
+    CacheKey, CacheNamespace, CachedResponseEntry, CandidateDigest, CoordinationKey,
+    DEFAULT_CACHE_TTL_SECS, LeaderContext, LeaseAcquisition, MemoryResponseCache,
+    RequestFingerprint, RequestFingerprintInput, RequestStage, compute_request_fingerprint,
 };
 use crate::cli::ConfigFiles;
 use crate::config::{
@@ -159,6 +159,8 @@ struct Progress {
     admitted: Option<Admitted>,
     evaluated: Evaluated,
     metrics: ExecutionMetrics,
+    /// A single-flight lease this invocation leads; completed on every path.
+    lease: Option<(PathBuf, LeaderContext)>,
 }
 
 /// The admitted session and roster a full decision describes.
@@ -206,6 +208,11 @@ pub async fn execute_pipeline(
     let effects = args.gate.receipt();
     let mut progress = Progress::default();
     let result = rank_once(invocation, clock, cx, args, transport, &mut progress).await;
+    // Release a led lease on every path. Followers then find the recorded
+    // pair, or send themselves when this run recorded nothing.
+    if let Some((leases, leader)) = progress.lease.take() {
+        persistent::complete(invocation, cx, &leases, &leader);
+    }
     // A dry run never publishes an actionable decision: a local result that
     // ends the run before any request is reported inside the preview.
     let result = match result {
@@ -1179,49 +1186,82 @@ async fn rank_once(
     // used only when it needs no rerank, or when the rerank answer for its
     // shortlist is cached too: under an unpinned model alias a cached wide
     // answer is never paired with a fresh rerank.
-    let now_unix_ms = wall_clock_ms();
-    let mut cached_rerank: Option<Response> = None;
-    let cached = persistent::lookup(
-        &mut store,
-        invocation,
-        cx,
-        namespace,
-        RequestStage::Wide,
-        wide_req_fp,
-        active_model,
-        now_unix_ms,
-    )
-    .and_then(|(bytes, age_ms)| {
-        let response = wide_builder.request().decode_response(&bytes).ok()?;
-        let outcome = wide::evaluate(&wide_builder, &response, gate_threshold, sizes).ok()?;
-        if let WideDecision::Shortlist(list) = &outcome.decision {
-            let ids: Vec<SkillId> = list.iter().map(|s| s.skill.binding.id.clone()).collect();
-            let builder = rerank::build(&roster, &ids, &rendered_context, active_model).ok()?;
-            let rerank_fp = fingerprint(
-                RequestStage::Rerank,
-                &shortlist_digests(list),
-                builder.bytes(),
-                rerank::RERANK_POLICY_VERSION,
-            );
-            let (bytes, _) = persistent::lookup(
-                &mut store,
+    let lookup_pair =
+        |store: &mut Option<persistent::Store>| -> Option<(Response, u64, Option<Response>)> {
+            let now_unix_ms = wall_clock_ms();
+            let (bytes, age_ms) = persistent::lookup(
+                store,
                 invocation,
                 cx,
                 namespace,
-                RequestStage::Rerank,
-                rerank_fp,
+                RequestStage::Wide,
+                wide_req_fp,
                 active_model,
                 now_unix_ms,
             )?;
-            cached_rerank = Some(builder.request().decode_response(&bytes).ok()?);
+            let response = wide_builder.request().decode_response(&bytes).ok()?;
+            let outcome = wide::evaluate(&wide_builder, &response, gate_threshold, sizes).ok()?;
+            let mut rerank = None;
+            if let WideDecision::Shortlist(list) = &outcome.decision {
+                let ids: Vec<SkillId> = list.iter().map(|s| s.skill.binding.id.clone()).collect();
+                let builder = rerank::build(&roster, &ids, &rendered_context, active_model).ok()?;
+                let rerank_fp = fingerprint(
+                    RequestStage::Rerank,
+                    &shortlist_digests(list),
+                    builder.bytes(),
+                    rerank::RERANK_POLICY_VERSION,
+                );
+                let (bytes, _) = persistent::lookup(
+                    store,
+                    invocation,
+                    cx,
+                    namespace,
+                    RequestStage::Rerank,
+                    rerank_fp,
+                    active_model,
+                    now_unix_ms,
+                )?;
+                rerank = Some(builder.request().decode_response(&bytes).ok()?);
+            }
+            Some((response, age_ms, rerank))
+        };
+    let mut cached = lookup_pair(&mut store);
+    // Single flight: on a miss, one process per exact request sends. Another
+    // process with the same request waits for that lease and is then served
+    // the pair it recorded; if the leader fails, the follower sends itself.
+    // Leases need the persistent cache and persistent runtime state.
+    if cached.is_none()
+        && store.is_some()
+        && matches!(gate.runtime_state(), StoreAccess::Enabled)
+        && let Some(dir) = &args.cache_dir
+    {
+        let leases = dir.join(persistent::LEASES_FILE);
+        let key = CoordinationKey::compute(&cache_key, &cache_ns, &wide_req_fp);
+        match persistent::acquire(invocation, cx, &leases, key) {
+            Some(LeaseAcquisition::Leading(leader)) => progress.lease = Some((leases, leader)),
+            Some(LeaseAcquisition::Following(follower)) => {
+                persistent::wait_for_leader(
+                    invocation,
+                    cx,
+                    clock,
+                    &leases,
+                    key,
+                    follower.lease_expires_at_unix_ms,
+                )
+                .await;
+                cached = lookup_pair(&mut store);
+            }
+            Some(LeaseAcquisition::AlreadyCompleted) => cached = lookup_pair(&mut store),
+            None => {}
         }
-        Some((response, age_ms))
-    });
+    }
+    let mut cached_rerank: Option<Response> = None;
     let wide_fresh = cached.is_none();
-    let cached = cached.map(|(response, age_ms)| {
+    let cached = cached.map(|(response, age_ms, rerank)| {
         progress.metrics.cache_hit = true;
         progress.metrics.wide_hit = true;
         progress.metrics.cache_age_ms = Some(age_ms);
+        cached_rerank = rerank;
         response
     });
     let wide_response = match cached {
@@ -1805,13 +1845,128 @@ fn cache_entry(
 /// run continues uncached.
 #[cfg(target_os = "linux")]
 mod persistent {
-    use super::{EffectGate, ProcessInvocation};
+    use super::{EffectGate, ProcessInvocation, wall_clock_ms};
+    use crate::blocking::{BlockingLeafKind, run_blocking_leaf};
     use crate::cache::{
-        CacheKey, CachedResponseEntry, FreshnessStatus, RequestFingerprint, RequestStage,
+        CacheKey, CachedResponseEntry, CoordinationKey, CoordinationPolicy, FreshnessStatus,
+        LeaderContext, LeaseAcquisition, LeaseCoordinator, RequestFingerprint, RequestStage,
+        SqliteLeaseCoordinator,
     };
+    use crate::runtime::EntryClock;
     use crate::storage::{CacheAccess, CacheLocation, CacheOpen, CacheStore};
     use asupersync::Cx;
     use std::path::Path;
+    use std::time::Duration;
+
+    /// Single-flight leases live beside the cache store in its private
+    /// directory. They never hold response bodies.
+    pub(super) const LEASES_FILE: &str = "leases.sqlite3";
+
+    /// Open the lease coordinator, creating its file owner-only first so
+    /// SQLite and its sidecars inherit private permissions.
+    fn coordinator(path: &Path) -> Option<SqliteLeaseCoordinator> {
+        use std::os::unix::fs::OpenOptionsExt;
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(path)
+        {
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(_) => return None,
+        }
+        SqliteLeaseCoordinator::open(path).ok()
+    }
+
+    pub(super) fn acquire(
+        invocation: &ProcessInvocation,
+        cx: &Cx,
+        path: &Path,
+        key: CoordinationKey,
+    ) -> Option<LeaseAcquisition> {
+        let path = path.to_path_buf();
+        run_blocking_leaf(
+            invocation,
+            cx,
+            BlockingLeafKind::Database,
+            false,
+            move || {
+                coordinator(&path)?
+                    .acquire(key, wall_clock_ms(), &CoordinationPolicy::default())
+                    .ok()
+            },
+        )
+        .ok()?
+        .value
+    }
+
+    /// True once the lease is gone, completed or expired.
+    fn settled(invocation: &ProcessInvocation, cx: &Cx, path: &Path, key: CoordinationKey) -> bool {
+        let path = path.to_path_buf();
+        run_blocking_leaf(
+            invocation,
+            cx,
+            BlockingLeafKind::Database,
+            false,
+            move || match coordinator(&path).map(|c| c.check_lease(key)) {
+                Some(Ok(Some(lease))) => {
+                    lease.is_completed || wall_clock_ms() >= lease.expires_at_unix_ms
+                }
+                _ => true,
+            },
+        )
+        .map_or(true, |outcome| outcome.value)
+    }
+
+    /// Wait for a leader's lease to settle, within the lease and while at
+    /// least a second of this invocation's budget remains for its own work.
+    pub(super) async fn wait_for_leader(
+        invocation: &ProcessInvocation,
+        cx: &Cx,
+        clock: &EntryClock,
+        path: &Path,
+        key: CoordinationKey,
+        expires_at_unix_ms: u64,
+    ) {
+        let path = path.to_path_buf();
+        loop {
+            if cx.is_cancel_requested()
+                || clock.remaining_before_cleanup().as_millis() < 1_000
+                || wall_clock_ms() >= expires_at_unix_ms
+                || settled(invocation, cx, &path, key)
+            {
+                return;
+            }
+            asupersync::time::sleep(asupersync::time::wall_now(), Duration::from_millis(25)).await;
+        }
+    }
+
+    pub(super) fn complete(
+        invocation: &ProcessInvocation,
+        cx: &Cx,
+        path: &Path,
+        leader: &LeaderContext,
+    ) {
+        let path = path.to_path_buf();
+        let leader = leader.clone();
+        let _ = run_blocking_leaf(
+            invocation,
+            cx,
+            BlockingLeafKind::Database,
+            false,
+            move || {
+                if let Some(coordinator) = coordinator(&path) {
+                    let _ = coordinator.complete(
+                        leader.key,
+                        leader.owner_token,
+                        leader.fencing_generation,
+                        wall_clock_ms(),
+                    );
+                }
+            },
+        );
+    }
 
     pub(super) struct Store(CacheStore);
 
@@ -1884,9 +2039,36 @@ mod persistent {
 #[cfg(not(target_os = "linux"))]
 mod persistent {
     use super::{EffectGate, ProcessInvocation};
-    use crate::cache::{CacheKey, CachedResponseEntry, RequestFingerprint, RequestStage};
+    use crate::cache::{
+        CacheKey, CachedResponseEntry, CoordinationKey, LeaderContext, LeaseAcquisition,
+        RequestFingerprint, RequestStage,
+    };
+    use crate::runtime::EntryClock;
     use asupersync::Cx;
     use std::path::Path;
+
+    pub(super) const LEASES_FILE: &str = "leases.sqlite3";
+
+    pub(super) fn acquire(
+        _: &ProcessInvocation,
+        _: &Cx,
+        _: &Path,
+        _: CoordinationKey,
+    ) -> Option<LeaseAcquisition> {
+        None
+    }
+
+    pub(super) async fn wait_for_leader(
+        _: &ProcessInvocation,
+        _: &Cx,
+        _: &EntryClock,
+        _: &Path,
+        _: CoordinationKey,
+        _: u64,
+    ) {
+    }
+
+    pub(super) fn complete(_: &ProcessInvocation, _: &Cx, _: &Path, _: &LeaderContext) {}
 
     pub(super) enum Store {}
 

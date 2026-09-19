@@ -19,6 +19,7 @@ Scenarios:
                   Retry-After: 0
   always-503      every attempt is a 503 with Retry-After: 0
   unauthorized    every attempt is a 401
+  slow-wide       like useful; the wide answer is delayed by TEXT seconds
 """
 
 import json
@@ -126,6 +127,8 @@ while True:
         with target.open("a") as handle:
             handle.write("\nChanged while the provider answered.\n")
     if scenario == "late-rerank" and stage == "rerank":
+        time.sleep(float(text))
+    if scenario == "slow-wide" and stage == "wide":
         time.sleep(float(text))
     status = "200 OK"
     if scenario == "always-503" or (
