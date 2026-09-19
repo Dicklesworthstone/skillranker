@@ -309,3 +309,47 @@ fn shared_ranking_flags_reach_the_rank_command() {
     let value: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(output.status.code(), Some(2), "{value}");
 }
+
+fn git(dir: &Path, args: &[&str]) {
+    let output = Command::new("git")
+        .current_dir(dir)
+        .env_clear()
+        .env("HOME", dir)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .args(["-c", "user.name=t", "-c", "user.email=t@example.invalid"])
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn previewed_request(output: &Output) -> String {
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(output.status.code(), Some(0), "{value}");
+    value["provider_request"]["stages"][0]["request"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+
+#[test]
+fn project_signals_reach_the_request_unless_the_profile_is_minimal() {
+    let f = Fixture::new();
+    let workspace = f.workspace();
+    std::fs::write(workspace.join("Cargo.toml"), "[package]\nname = \"a\"\n").unwrap();
+    git(&workspace, &["init", "-q"]);
+    git(&workspace, &["add", "."]);
+    git(&workspace, &["commit", "-qm", "base"]);
+    std::fs::write(workspace.join("Cargo.toml"), "[package]\nname = \"b\"\n").unwrap();
+    f.context("context.json", "ok");
+    let base = ["rank", "--context", "context.json", "--dry-run", "--json"];
+    // The repository-relative dirty path reaches the provider request.
+    assert!(previewed_request(&f.run(&base)).contains("Cargo.toml"));
+    // The minimal profile omits dirty paths.
+    let minimal = [&base[..], &["--context-profile", "minimal"]].concat();
+    assert!(!previewed_request(&f.run(&minimal)).contains("Cargo.toml"));
+}

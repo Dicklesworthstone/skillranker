@@ -722,7 +722,9 @@ signals with an explicit authorized workspace and trusted executable roots. Its
 250 ms stage intersects the invocation budget; status output is capped at 64 KiB
 and 100 paths. Non-UTF-8/unsafe paths and partial inventories are reported rather
 than treated as complete absence. Results are not serializable provider payloads:
-callers must still redact them. CLI/ranking integration remains separate.
+callers must still redact them. `sr rank` collects them for every evaluation,
+using fixed system directories (`/usr/local/bin`, `/usr/bin`, `/bin`) as its
+trusted executable roots; the minimal context profile omits dirty paths.
 Synchronous filesystem/spawn calls retain the subprocess boundary's documented
 uninterruptible-kernel-I/O limitation.
 

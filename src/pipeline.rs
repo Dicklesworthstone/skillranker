@@ -67,6 +67,10 @@ fn failure(code: u8, kind: &'static str, message: impl Into<String>) -> Pipeline
 
 pub use crate::jev::client::JevTransport;
 
+/// Trusted executable roots for project-signal tool detection: fixed system
+/// directories, never the process PATH or anything the workspace supplies.
+const TRUSTED_TOOL_ROOTS: [&str; 3] = ["/usr/local/bin", "/usr/bin", "/bin"];
+
 /// Parameters for running the ranking pipeline.
 #[derive(Clone, Debug)]
 pub struct RankArgs {
@@ -887,12 +891,19 @@ async fn rank_once(
     })?;
 
     // 9. Render context payload for Jev
+    // Optional local project signals: filename markers, allowlisted tools in
+    // fixed root-owned system directories (never PATH or repository-supplied
+    // roots) and bounded repository-relative dirty paths from the safe Git
+    // helper. Rendering redacts them and the profile may omit them.
+    let tool_roots: Vec<PathBuf> = TRUSTED_TOOL_ROOTS.iter().map(PathBuf::from).collect();
+    let signals = crate::context::signals::collect(cx, clock, &args.workspace, &tool_roots).await;
     let render_opts = RenderContextOptions {
         no_tools: effective.no_tools(),
         context_profile: effective.context_profile(),
         max_messages: effective.messages() as usize,
         max_total_scalars: effective.budget_chars() as usize,
         redactor,
+        project_signals: Some(&signals),
         ..Default::default()
     };
     let (rendered_context, disclosure_receipt) =
