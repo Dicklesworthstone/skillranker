@@ -357,7 +357,9 @@ fn test_trace_continuation_full_pagination() {
     let entries1 = trace1["entries"].as_array().unwrap();
     assert_eq!(entries1.len(), 128);
 
-    let next_cursor_token = trace1["next_cursor"].as_str().expect("next_cursor must be emitted");
+    let next_cursor_token = trace1["next_cursor"]
+        .as_str()
+        .expect("next_cursor must be emitted");
     let next_cursor = TraceCursor::from_token(next_cursor_token).expect("token must parse");
     assert_eq!(next_cursor.offset, 128);
 
@@ -387,7 +389,11 @@ fn test_trace_continuation_full_pagination() {
             .iter()
             .filter(|e| e["skill_id"] == skill_id)
             .collect();
-        assert_eq!(skill_entries.len(), 8, "skill {skill_id} must have 8 entries");
+        assert_eq!(
+            skill_entries.len(),
+            8,
+            "skill {skill_id} must have 8 entries"
+        );
         for (i, stage) in TraceStage::ALL.iter().enumerate() {
             assert_eq!(skill_entries[i]["stage"], stage.as_str());
             assert_eq!(skill_entries[i]["status"], "passed");
@@ -463,9 +469,7 @@ fn test_trace_continuation_rejects_changed_snapshot() {
         .block_on(execute_pipeline(&invocation, &cx, args, Some(&transport)))
         .expect("initial rank succeeds");
 
-    let next_cursor_token = doc.as_value()["trace"]["next_cursor"]
-        .as_str()
-        .unwrap();
+    let next_cursor_token = doc.as_value()["trace"]["next_cursor"].as_str().unwrap();
     let cursor = TraceCursor::from_token(next_cursor_token).unwrap();
 
     // Now alter the snapshot by adding a skill
@@ -507,17 +511,24 @@ fn test_trace_continuation_rejects_changed_snapshot() {
     };
     let doc = invocation2
         .runtime()
-        .block_on(execute_pipeline(&invocation2, &cx2, args2, Some(&transport2)))
+        .block_on(execute_pipeline(
+            &invocation2,
+            &cx2,
+            args2,
+            Some(&transport2),
+        ))
         .expect("pipeline finishes with unavailable decision");
     assert_eq!(doc.kind(), OutputKind::Decision(Decision::Unavailable));
     assert_eq!(doc.exit_code(), CliExit::Roster);
     let val = doc.as_value();
     assert_eq!(val["error"]["code"], 5);
     assert_eq!(val["error"]["kind"], "roster-changed");
-    assert!(val["error"]["message"]
-        .as_str()
-        .unwrap()
-        .contains("roster or query changed"));
+    assert!(
+        val["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("roster or query changed")
+    );
 }
 
 #[test]
@@ -588,9 +599,7 @@ fn test_trace_continuation_rejects_changed_query() {
         .block_on(execute_pipeline(&invocation, &cx, args, Some(&transport)))
         .expect("initial rank succeeds");
 
-    let next_cursor_token = doc.as_value()["trace"]["next_cursor"]
-        .as_str()
-        .unwrap();
+    let next_cursor_token = doc.as_value()["trace"]["next_cursor"].as_str().unwrap();
     let cursor = TraceCursor::from_token(next_cursor_token).unwrap();
 
     // Changed query: different prompt text in context
@@ -626,17 +635,24 @@ fn test_trace_continuation_rejects_changed_query() {
     };
     let doc = invocation2
         .runtime()
-        .block_on(execute_pipeline(&invocation2, &cx2, args2, Some(&transport2)))
+        .block_on(execute_pipeline(
+            &invocation2,
+            &cx2,
+            args2,
+            Some(&transport2),
+        ))
         .expect("pipeline finishes with unavailable decision");
     assert_eq!(doc.kind(), OutputKind::Decision(Decision::Unavailable));
     assert_eq!(doc.exit_code(), CliExit::Roster);
     let val = doc.as_value();
     assert_eq!(val["error"]["code"], 5);
     assert_eq!(val["error"]["kind"], "roster-changed");
-    assert!(val["error"]["message"]
-        .as_str()
-        .unwrap()
-        .contains("roster or query changed"));
+    assert!(
+        val["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("roster or query changed")
+    );
 }
 
 #[test]
@@ -707,9 +723,7 @@ fn test_trace_continuation_rejects_out_of_bounds_offset() {
         .block_on(execute_pipeline(&invocation, &cx, args, Some(&transport)))
         .expect("initial rank succeeds");
 
-    let next_cursor_token = doc.as_value()["trace"]["next_cursor"]
-        .as_str()
-        .unwrap();
+    let next_cursor_token = doc.as_value()["trace"]["next_cursor"].as_str().unwrap();
     let mut cursor = TraceCursor::from_token(next_cursor_token).unwrap();
     // Set offset past total (total is 136)
     cursor.offset = 9999;
@@ -744,15 +758,22 @@ fn test_trace_continuation_rejects_out_of_bounds_offset() {
     };
     let doc = invocation2
         .runtime()
-        .block_on(execute_pipeline(&invocation2, &cx2, args2, Some(&transport2)))
+        .block_on(execute_pipeline(
+            &invocation2,
+            &cx2,
+            args2,
+            Some(&transport2),
+        ))
         .expect("pipeline finishes with unavailable decision");
     assert_eq!(doc.kind(), OutputKind::Decision(Decision::Unavailable));
     assert_eq!(doc.exit_code(), CliExit::Usage);
     let val = doc.as_value();
     assert_eq!(val["error"]["code"], 2);
     assert_eq!(val["error"]["kind"], "invalid-usage");
-    assert!(val["error"]["message"]
-        .as_str()
-        .unwrap()
-        .contains("Cursor offset exceeds total"));
+    assert!(
+        val["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("Cursor offset exceeds total")
+    );
 }

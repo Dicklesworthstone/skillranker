@@ -706,10 +706,10 @@ async fn rank_once(
 
     let mut trace_exclude_skills: Vec<SkillId> = Vec::new();
     for ex in &explicit_exclusions {
-        if let Ok(id) = SkillId::new(ex) {
-            if !trace_exclude_skills.contains(&id) {
-                trace_exclude_skills.push(id);
-            }
+        if let Ok(id) = SkillId::new(ex)
+            && !trace_exclude_skills.contains(&id)
+        {
+            trace_exclude_skills.push(id);
         }
     }
 
@@ -3121,9 +3121,13 @@ fn trace_page(
         entries: page_entries,
     };
 
-    serde_json::to_value(stage_trace)
-        .map(Some)
-        .map_err(|e| failure(5, "contract-violation", format!("Trace serialization error: {e:?}")))
+    serde_json::to_value(stage_trace).map(Some).map_err(|e| {
+        failure(
+            5,
+            "contract-violation",
+            format!("Trace serialization error: {e:?}"),
+        )
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
