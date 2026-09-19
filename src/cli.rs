@@ -1207,8 +1207,13 @@ fn resolve_workspace_roster(
         configured,
     )
     .map_err(|_| unusable("The documented skill roots could not be planned"))?;
-    let invocation = crate::runtime::ProcessInvocation::from_clock(*clock)
-        .map_err(|_| unusable("The local runtime is unavailable"))?;
+    let invocation = crate::runtime::ProcessInvocation::from_clock(*clock).map_err(|error| {
+        if matches!(error, crate::runtime::RuntimeError::Deadline(_)) {
+            (6u8, "timeout", "Local inspection deadline exceeded".into())
+        } else {
+            unusable("The local runtime is unavailable")
+        }
+    })?;
     let outcome = invocation
         .request_cx()
         .map_err(|_| unusable("The local runtime is unavailable"))
@@ -1316,6 +1321,19 @@ mod invocation_cleanup_tests {
     use super::*;
     use crate::runtime::ProcessInvocation;
     use std::time::Duration;
+
+    #[test]
+    fn expired_roster_runtime_is_a_timeout_not_an_invalid_roster() {
+        let clock = EntryClock::capture_with(
+            DurationMillis::new("test_total", 2, 3_000).unwrap(),
+            DurationMillis::new("test_cleanup", 1, 3_000).unwrap(),
+        )
+        .unwrap();
+        std::thread::sleep(Duration::from_millis(5));
+        let workspace = std::env::current_dir().unwrap();
+        let result = resolve_workspace_roster(&clock, &workspace, None, &[]);
+        assert!(matches!(result, Err((6, "timeout", _))), "{result:?}");
+    }
 
     #[test]
     fn unfinished_runtime_cannot_publish_success() {
