@@ -507,3 +507,38 @@ mod pipe_tests {
         }
     }
 }
+
+#[test]
+#[ignore = "bounded runtime startup diagnostic"]
+fn startup_capacity_diagnostic() {
+    use asupersync::runtime::RuntimeBuilder;
+    use std::sync::{Arc, Barrier};
+    use std::time::Instant;
+    for compact in [false, true, true, false] {
+        let barrier = Arc::new(Barrier::new(8));
+        let threads: Vec<_> = (0..8)
+            .map(|_| {
+                let barrier = Arc::clone(&barrier);
+                thread::spawn(move || {
+                    barrier.wait();
+                    let start = Instant::now();
+                    let mut builder = RuntimeBuilder::current_thread().blocking_threads(1, 4);
+                    if compact {
+                        builder = builder.capacity_hints(16, 8, 16);
+                    }
+                    let runtime = builder.build().unwrap();
+                    let built_ms = start.elapsed().as_millis();
+                    let cx = runtime.request_cx_with_budget(asupersync::Budget::new());
+                    runtime.block_on(async {
+                        cx.checkpoint().unwrap();
+                    });
+                    assert!(runtime.shutdown_timeout(Duration::from_secs(1)));
+                    built_ms
+                })
+            })
+            .collect();
+        let mut times: Vec<_> = threads.into_iter().map(|t| t.join().unwrap()).collect();
+        times.sort_unstable();
+        eprintln!("case=startup compact={compact} build_ms={times:?}");
+    }
+}
