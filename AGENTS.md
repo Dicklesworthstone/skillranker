@@ -425,10 +425,12 @@ preflight backup/WAL/temporary space and fail before mutation if it is insuffici
 - Stdout is data; stderr is diagnostics. Keep `capabilities --json` synchronized
   with schemas, adapters/events, compiled features, limits, examples, and exits.
   Distinguish planned commands from implemented capabilities and tested harness
-  versions from unverified ones. The foundation build implements a Rust contract
-  library and a bootstrap `sr` binary with only help and version commands; ranking
-  and integrations remain planned. Record this technical status in the capability
-  contract and verification artifacts while preserving README's requested voice.
+  versions from unverified ones. The binary implements `rank`, `roster`, `doctor`,
+  `demo`, and `capabilities`, in addition to help and version. Implementation is
+  distinct from phase acceptance: consult the live capability registry, Beads and
+  revision-bound evidence for limitations and pending qualification. Hooks,
+  ledger/replay/evaluation, learning and TUI retain their separate gates. Preserve
+  README's requested finished-product voice.
   An empty feature flag does not establish feature implementation. P4 CLI does
   not imply P6 hooks, P8 calibration, or P9 TUI availability. Recorded shadow trials
   require explicit ledger initialization and separate trusted network consent.

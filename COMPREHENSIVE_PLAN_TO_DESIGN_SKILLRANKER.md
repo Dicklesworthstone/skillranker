@@ -526,7 +526,7 @@ The client must parse structured JSON; “no generated prose” does not mean �
 
 - Require one answer of the expected type for every requested question. Reject duplicate JSON keys, missing/foreign option IDs, and mismatched answer maps.
 - Require finite probabilities, Nouls, and confidence in `[0,1]`. Missing values are errors, not zero.
-- Choice distributions must contain exactly the requested options, have a positive total, and sum to one within a documented tolerance (initially `1e-4`). Normalize only rounding drift within tolerance, retain the raw values, and reject larger deviations.
+- Choice distributions must contain exactly the requested options, have a positive total, and sum to one within the maintainer-approved absolute tolerance of `0.1`. Renormalize accepted distributions, retain the raw values, and reject larger deviations. This accommodates observed live totals such as `0.99`; do not revert to the superseded `1e-4` rounding bound.
 - Validate the chosen option against an argmax, allowing exact ties. Apply local deterministic tie-breaking by stable skill ID.
 - Cap response bodies (initially 2 MiB, including decoded/decompressed size), validate usage integers, and reject malformed JSON. Sanitize error bodies before logging.
 - Unknown additive metadata can be ignored; incompatible required fields produce `provider-contract` failure.
@@ -1121,7 +1121,7 @@ FrankenSciPy's inspected stats crate has several numerical transitive dependenci
 
 ## Verification and acceptance
 
-The initial planning baseline on 2026-09-17 preceded implementation. The repository now contains the Rust foundation library, help/version CLI, contract fixtures and evidence runner. The project-local Beads tracker records remaining work. Accepted checks bind to the exact revisions and input hashes in their verification artifacts; they do not automatically cover newer source. P0 library and runner evidence does not establish ranking, live TypeSafe interoperability, native-harness integration, quality, latency or a release. See [the changelog](CHANGELOG.md) and [verification records](docs/verification-p0.md) for the historical foundation checks, and consume each later boundary's own evidence.
+The initial planning baseline on 2026-09-17 preceded implementation. The repository now contains a connected ranking CLI plus roster, doctor, demo and capability inspection, alongside the Rust library, contract fixtures and evidence runner. The [current reality check](docs/reality-check-bridge-plan.md) and project-local Beads distinguish implemented paths, pending repairs and unaccepted phase gates. Accepted checks bind to the exact revisions and input hashes in their verification artifacts; they do not automatically cover newer source. P0 library and runner evidence does not establish ranking, live TypeSafe interoperability, native-harness integration, quality, latency or a release. See [the changelog](CHANGELOG.md) and [verification records](docs/verification-p0.md) for the historical foundation checks, and consume each later boundary's own evidence.
 
 ### Deterministic and adversarial tests
 
