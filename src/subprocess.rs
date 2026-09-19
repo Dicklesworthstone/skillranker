@@ -104,6 +104,8 @@ pub struct ChildOutput {
     pub status: ExitStatus,
     pub stdout: Vec<u8>,
     pub stderr: Vec<u8>,
+    /// Some requested input could not be written before the child exited or
+    /// closed its pipe. A false value proves writes completed, not consumption.
     pub stdin_closed_early: bool,
 }
 impl fmt::Debug for ChildOutput {
@@ -286,7 +288,10 @@ pub async fn run(
                     status: status.take().expect("checked child status"),
                     stdout: out,
                     stderr: err,
-                    stdin_closed_early: early,
+                    // A descendant may hold stdin open until kill_group after
+                    // try_wait reaps the parent. In that case no BrokenPipe has
+                    // been polled, but the unsent suffix is still incomplete.
+                    stdin_closed_early: early || offset < request.stdin.len(),
                 });
             }
             if (out.len(), err.len(), offset) != before {
