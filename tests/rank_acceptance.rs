@@ -967,3 +967,23 @@ fn a_dry_run_reports_a_local_result_without_a_request() {
         "alpha"
     );
 }
+
+#[test]
+fn a_dry_run_reports_a_local_abstention_without_a_request() {
+    // Trusted configuration excludes every skill: local policy ends the run.
+    let f = Fixture::new(&format!(
+        "{CONSENT}[ranking]\nexclude_skills = [\"alpha\", \"beta\"]\n"
+    ));
+    std::fs::create_dir_all(f.root.join("home")).unwrap();
+    let provider = Provider::start(&f, "useful", &[]);
+    let (code, preview) = run_sr_with(&f, &provider, true, TASK, &["--dry-run"]);
+    assert!(provider.finish().is_empty());
+    assert_eq!(code, Some(0), "{preview}");
+    assert_eq!(preview["kind"], "preview");
+    assert!(
+        preview["provider_request"].is_null(),
+        "no request would be made"
+    );
+    assert_eq!(preview["local_decision"]["decision"], "abstain");
+    assert_eq!(preview["local_decision"]["usage"]["requests"], 0);
+}
