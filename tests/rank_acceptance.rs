@@ -16,6 +16,7 @@ use serde_json::{Value, json};
 use skillranker::config::ConfigSources;
 use skillranker::context::source::SourceOptions;
 use skillranker::effects::{EffectGate, Scope};
+use skillranker::identity::HarnessId;
 use skillranker::jev::client::JevClient;
 use skillranker::jev::endpoint::EndpointConfig;
 use skillranker::limits::DurationMillis;
@@ -128,6 +129,26 @@ impl Fixture {
         });
         std::fs::write(&path, serde_json::to_vec(&context).unwrap()).unwrap();
         path
+    }
+    /// A synthetic Claude Code transcript: an earlier user message, then the
+    /// current request, each record with its native identity.
+    fn claude_transcript(&self, name: &str, earlier: &str, request: &str) -> SourceOptions {
+        let path = self.workspace().join(name);
+        let record = |uuid: &str, parent: Option<&str>, text: &str| {
+            json!({"type": "user", "uuid": uuid, "parentUuid": parent,
+                   "message": {"role": "user", "content": text}})
+            .to_string()
+        };
+        let lines = [
+            record("user-1", None, earlier),
+            record("user-2", Some("user-1"), request),
+        ];
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        SourceOptions {
+            transcript: Some(LocalPath::new(path)),
+            harness: Some(HarnessId::new("claude_code").unwrap()),
+            ..Default::default()
+        }
     }
     fn args(&self, request: &str) -> RankArgs {
         self.args_with(request, "session-1", UNCACHED, None)
@@ -496,6 +517,51 @@ fn a_configured_exclusion_conflicts_with_an_explicit_request() {
     );
     assert_eq!(value["unresolved"][0]["reference"], "alpha", "{value}");
     assert_eq!(value["unresolved"][0]["reason"], "restricted", "{value}");
+}
+
+const EARLIER: &str = "Earlier: summarise how the workspace builds.";
+
+#[test]
+fn a_native_transcript_sends_its_latest_request_once() {
+    let f = Fixture::new(CONSENT);
+    let provider = Provider::start(&f, "useful", &[]);
+    // The same conversation as normalized context and as a Claude transcript.
+    let mut normalized = f.args(TASK);
+    let context = f.context_turns("session-1", &[EARLIER], TASK);
+    normalized.source_options.context = Some(LocalPath::new(context));
+    rank_args(&provider, normalized, 10_000).expect("ranked");
+    let mut native = f.args(TASK);
+    native.source_options = f.claude_transcript("claude.jsonl", EARLIER, TASK);
+    let value = rank_args(&provider, native, 10_000).expect("ranked");
+    let served = provider.finish();
+    assert_eq!(stages(&served), ["wide", "rerank", "wide", "rerank"]);
+    assert_eq!(value["decision"], "ranked", "{value}");
+    let count = |body: &Value, text: &str| body.as_str().unwrap().matches(text).count();
+    let request = "find and repair the failing test";
+    assert!(count(&served[2]["body"], "summarise how the workspace builds") > 0);
+    assert_eq!(
+        count(&served[2]["body"], request),
+        count(&served[0]["body"], request),
+        "the transcript's latest request is not repeated as history"
+    );
+}
+
+#[test]
+fn native_transcripts_never_share_a_cached_response() {
+    let f = Fixture::new(CONSENT);
+    let cache = f.cache_dir();
+    let provider = Provider::start(&f, "useful", &[]);
+    // Two sessions whose files, and so request bytes, are identical.
+    for name in ["first.jsonl", "second.jsonl"] {
+        let mut args = f.args_with(TASK, "session-1", CACHED, Some(cache.clone()));
+        args.source_options = f.claude_transcript(name, EARLIER, TASK);
+        let value = rank_args(&provider, args, 10_000).expect("ranked");
+        assert_eq!(value["cache"]["hit"], false, "{name}: {value}");
+    }
+    assert_eq!(
+        stages(&provider.finish()),
+        ["wide", "rerank", "wide", "rerank"]
+    );
 }
 
 #[test]

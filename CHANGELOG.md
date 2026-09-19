@@ -4,6 +4,12 @@
 
 ### Fixed
 
+- `sr rank --transcript` no longer gives every native transcript the same
+  session identity. Two sessions with identical content could share a cached
+  response, and the latest request was sent to Jev twice, once as the request
+  and again as history. The current request now keeps its native event
+  identity. With no native session attribution extracted, a transcript
+  run's cache and single-flight namespace is private to that run.
 - `sr rank` honors `--timeout-ms`, `SR_TIMEOUT_MS` and trusted
   `ranking.timeout_ms`. The deadline still runs from process entry. Before
   this fix every rank used the 3,000 ms default, whatever was configured.

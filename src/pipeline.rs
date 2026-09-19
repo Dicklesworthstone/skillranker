@@ -27,7 +27,7 @@ use crate::context::source::{SelectionOutcome, SourceOptions, SourceTarget};
 use crate::context::{CurrentRequest, NormalizedContext, PrivateText, parse_normalized_context};
 use crate::effects::EffectGate;
 use crate::eligibility::{Eligible, Evaluation, LoadedState, Verdict, admit, after_rerank};
-use crate::identity::{ContentHash, EventId, HarnessId, SessionId, SkillId, WorkspaceId};
+use crate::identity::{ContentHash, HarnessId, SkillId, WorkspaceId};
 use crate::jev::admission::{AttemptBudget, RankingStage};
 use crate::jev::client::{JevClient, TransportErrorKind};
 use crate::jev::codec::{Request, Response};
@@ -438,45 +438,41 @@ async fn rank_once(
         }
         SourceTarget::ClaudeTranscript(path) => {
             // Snapshot JSONL transcript
-            let invocation = ProcessInvocation::from_clock(*clock)
-                .map_err(|_| failure(6, "timeout", "Deadline exceeded creating runtime"))?;
-            let req_cx = invocation
-                .request_cx()
-                .map_err(|_| failure(6, "timeout", "Deadline exceeded creating context"))?;
-            let snapshot = snapshot_jsonl(
-                &invocation,
-                &req_cx,
-                path.as_path(),
-                None,
-                CursorKind::Ranking,
-            )
-            .map_err(|e| {
-                failure(
-                    7,
-                    "malformed-input",
-                    format!("Transcript snapshot failed: {e}"),
-                )
-            })?;
+            let snapshot =
+                snapshot_jsonl(invocation, cx, path.as_path(), None, CursorKind::Ranking).map_err(
+                    |e| {
+                        failure(
+                            7,
+                            "malformed-input",
+                            format!("Transcript snapshot failed: {e}"),
+                        )
+                    },
+                )?;
 
             let events = snapshot.events;
-            let current_req_text = events
-                .iter()
-                .rev()
-                .find(|e| e.role == crate::context::Role::User)
-                .map(|e| e.text.clone())
-                .unwrap_or_else(|| PrivateText::new(""));
+            // The current request is the latest user message. Keeping its
+            // native event identity lets rendering send it once, not again as
+            // history, and lets branch resolution find the active leaf.
+            let current = events.iter().rev().find(|e| {
+                e.role == crate::context::Role::User && e.kind == crate::context::EventKind::Message
+            });
+            let current_req_text = current.map_or_else(|| PrivateText::new(""), |e| e.text.clone());
+            let current_event_id = current.and_then(|e| e.event_id.clone());
 
             NormalizedContext {
                 schema_version: 1,
                 harness: HarnessId::new("claude_code").unwrap(),
                 producer_id: None,
                 workspace_root: PrivateText::new(args.workspace.to_string_lossy()),
-                session_id: Some(SessionId::new("session-0").unwrap()),
+                // This reader extracts no native session attribution, so the
+                // namespace stays invocation-local: no cached response or
+                // single-flight lease is shared with another transcript.
+                session_id: None,
                 agent_id: None,
                 branch_id: None,
                 context_epoch: None,
                 current_request: CurrentRequest {
-                    event_id: Some(EventId::new("req-0").unwrap()),
+                    event_id: current_event_id,
                     text: current_req_text,
                     attachments_omitted: false,
                     essential_attachment_missing: false,
