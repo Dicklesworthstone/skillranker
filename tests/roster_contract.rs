@@ -679,6 +679,25 @@ fn local_explicit_resolution() {
         Visibility::Unverified,
     ));
 
+    // An adapter-proven alternate invocation of the same physical skill.
+    // Read the existing bytes; an alias does not create a second skill file.
+    let roots = AuthorizedRoots::single(AuthorizedRoot::open_absolute(&test_dir).unwrap());
+    entries.push(
+        SkillEntry::from_read(
+            BindingSpec {
+                source: SourceId::new("source-alias").unwrap(),
+                logical_key: LogicalSkillKey::new("skills/skill_02.md").unwrap(),
+                invocation: InvocationName::new("second-skill").unwrap(),
+                priority: Some(10),
+                visibility: verified.clone(),
+                restrictions: allow,
+            },
+            roots
+                .read_bounded(0, Path::new("skills/skill_02.md"), SKILL_FILE_BYTES)
+                .unwrap(),
+        )
+        .unwrap(),
+    );
     let roster = ResolvedRoster::resolve(entries, false, &cx, &clock).unwrap();
 
     // -------------------------------------------------------------------------
@@ -848,7 +867,7 @@ fn local_explicit_resolution() {
     );
     let req_conflict_cross = ExplicitResolutionRequest {
         cli_required_skills: vec!["skill-02".into()],
-        context_excluded_skills: vec![skill02_id],
+        context_excluded_skills: vec![skill02_id.clone()],
         ..Default::default()
     };
     let res_conflict_cross =
@@ -861,6 +880,95 @@ fn local_explicit_resolution() {
         }
         other => panic!("expected Unavailable for cross conflict, got {other:?}"),
     }
+
+    // Both directions of name/ID resolution, including a different invocation
+    // binding for the same physical file, must honor the exclusion.
+    let alias_id = SkillId::from_source(
+        &SourceId::new("source-alias").unwrap(),
+        &LogicalSkillKey::new("skills/skill_02.md").unwrap(),
+    );
+    for (required, excluded) in [
+        (skill02_id.as_str(), "skill-02"),
+        (skill02_id.as_str(), "second-skill"),
+        ("second-skill", skill02_id.as_str()),
+        ("skill-02", alias_id.as_str()),
+    ] {
+        let request = ExplicitResolutionRequest {
+            cli_required_skills: vec![required.into()],
+            cli_excluded_skills: vec![excluded.into()],
+            ..Default::default()
+        };
+        let result = resolve_explicit_requirements(&request, &roster).unwrap();
+        let ExplicitResolutionResult::Unavailable { unresolved } = result else {
+            panic!("exclusion {excluded} did not veto {required}: {result:?}");
+        };
+        assert_eq!(unresolved.len(), 1);
+        assert_eq!(unresolved[0].reason, UnresolvedReason::ConflictingDirective);
+    }
+    // Exclusions alone return canonical, sorted, deduplicated identities, and
+    // leave a genuinely different requested skill usable.
+    let expected = {
+        let mut ids = vec![skill02_id.clone(), alias_id.clone()];
+        ids.sort();
+        ids
+    };
+    for names in [
+        vec!["skill-02", "second-skill", skill02_id.as_str()],
+        vec![skill02_id.as_str(), "second-skill", "skill-02"],
+    ] {
+        let mut request = ExplicitResolutionRequest {
+            cli_excluded_skills: names.into_iter().map(str::to_owned).collect(),
+            ..Default::default()
+        };
+        assert_eq!(
+            resolve_explicit_requirements(&request, &roster).unwrap(),
+            ExplicitResolutionResult::NoneSpecified {
+                excluded_skills: expected.clone()
+            }
+        );
+        request.cli_required_skills.push("skill-03".into());
+        let ExplicitResolutionResult::Resolved {
+            skills,
+            excluded_skills,
+        } = resolve_explicit_requirements(&request, &roster).unwrap()
+        else {
+            panic!("unrelated exclusion blocked a valid requirement");
+        };
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].invocation.as_str(), "skill-03");
+        assert_eq!(excluded_skills, expected);
+    }
+    // A negative name restricts every collision rather than borrowing the
+    // positive resolver's requirement for verified, unambiguous invocation.
+    let request = ExplicitResolutionRequest {
+        cli_excluded_skills: vec![
+            "ambig-tool".into(),
+            "unverified-tool".into(),
+            "absent-id".into(),
+        ],
+        ..Default::default()
+    };
+    let mut expected: Vec<_> = roster
+        .skills()
+        .iter()
+        .flat_map(|skill| skill.bindings())
+        .filter(|binding| {
+            matches!(
+                binding.invocation.as_str(),
+                "ambig-tool" | "unverified-tool"
+            )
+        })
+        .map(|binding| binding.id.clone())
+        .collect();
+    assert_eq!(expected.len(), 3);
+    expected.push(SkillId::new("absent-id").unwrap());
+    expected.sort();
+    assert_eq!(
+        resolve_explicit_requirements(&request, &roster).unwrap(),
+        ExplicitResolutionResult::NoneSpecified {
+            excluded_skills: expected
+        }
+    );
 
     // -------------------------------------------------------------------------
     // Sub-case 10: 32 References Succeed; 33 References Reject (Hard Limit)

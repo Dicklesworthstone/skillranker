@@ -14,7 +14,7 @@ use super::resolution::{ExactResolution, ResolvedRoster};
 use super::{InvocationKind, InvocationName};
 use crate::identity::SkillId;
 use crate::limits::{HOOK_STDIN_BYTES, MAX_EXPLICIT_REQUESTS};
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 
 /// Kind of directive parsed from a user prompt.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -427,14 +427,7 @@ pub fn resolve_explicit_requirements(
     }
 
     // 7. If no positive explicit requirements were specified, return NoneSpecified
-    let mut resolved_exclusions = Vec::new();
-    for target in &negative_targets {
-        if let Ok(id) = SkillId::new(target.clone()) {
-            resolved_exclusions.push(id);
-        } else if let ExactResolution::Resolved { id, .. } = roster.exact_name(target) {
-            resolved_exclusions.push(id.clone());
-        }
-    }
+    let resolved_exclusions = resolve_exclusions(&negative_targets, roster);
 
     if positive_targets.is_empty() {
         return Ok(ExplicitResolutionResult::NoneSpecified {
@@ -528,4 +521,35 @@ pub fn resolve_explicit_requirements(
             excluded_skills: resolved_exclusions,
         })
     }
+}
+
+/// Exclusion is a restriction, not an invocation grant. Match actual identities
+/// and invocation names even for ambiguous/unverified bindings, then exclude
+/// every binding of that physical skill so another alias cannot bypass it.
+/// ID syntax alone cannot distinguish an invocation name from an opaque ID.
+fn resolve_exclusions(targets: &HashSet<String>, roster: &ResolvedRoster) -> Vec<SkillId> {
+    let mut unmatched: HashSet<&str> = targets.iter().map(String::as_str).collect();
+    let mut excluded = BTreeSet::new();
+    for skill in roster.skills() {
+        let mut matches = false;
+        for binding in skill.bindings() {
+            for key in [binding.id.as_str(), binding.invocation.as_str()] {
+                if targets.contains(key) {
+                    unmatched.remove(key);
+                    matches = true;
+                }
+            }
+        }
+        if matches {
+            excluded.extend(skill.bindings().iter().map(|binding| binding.id.clone()));
+        }
+    }
+    // Preserve unknown explicit IDs for downstream policy comparisons, without
+    // inventing an additional identity for a successfully matched name.
+    excluded.extend(
+        unmatched
+            .into_iter()
+            .filter_map(|target| SkillId::new(target).ok()),
+    );
+    excluded.into_iter().collect()
 }
