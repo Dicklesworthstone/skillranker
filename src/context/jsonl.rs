@@ -456,19 +456,29 @@ fn event_from_value(value: &Value) -> Option<NormalizedEvent> {
 /// - an interrupt marker or local command output.
 ///
 /// These are unverified harness conventions, so records without such marks
-/// stay user messages.
+/// stay user messages, and the text markers apply only to records that carry
+/// no submission provenance.
 fn injected_user_record(object: &serde_json::Map<String, Value>, text: &str) -> bool {
     let flagged = |name: &str| object.get(name).and_then(Value::as_bool) == Some(true);
     let origin = object
         .get("origin")
         .and_then(|origin| origin.get("kind"))
         .and_then(Value::as_str);
-    let text = text.trim_start();
-    flagged("isMeta")
+    let source = object.get("promptSource").and_then(Value::as_str);
+    if flagged("isMeta")
         || flagged("isCompactSummary")
-        || object.get("promptSource").and_then(Value::as_str) == Some("system")
+        || source == Some("system")
         || origin.is_some_and(|kind| kind != "human")
-        || text.starts_with("[Request interrupted by user")
+    {
+        return true;
+    }
+    // Explicit submission provenance outranks the text heuristics: a typed
+    // prompt may itself quote an interrupt marker or command output.
+    if source.is_some() || origin.is_some() {
+        return false;
+    }
+    let text = text.trim_start();
+    text.starts_with("[Request interrupted by user")
         || text.starts_with("<local-command-stdout>")
         || text.starts_with("<local-command-stderr>")
 }
