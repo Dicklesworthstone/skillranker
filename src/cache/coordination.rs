@@ -397,8 +397,8 @@ impl LeaseCoordinator for MemoryCoordinator {
             .map(|r| r.fencing_generation)
             .unwrap_or_else(FencingGeneration::initial);
         let new_gen = cur_gen.next();
-        let new_token = OwnerToken::generate()
-            .map_err(|e| CoordinationError::StorageError(e.to_string()))?;
+        let new_token =
+            OwnerToken::generate().map_err(|e| CoordinationError::StorageError(e.to_string()))?;
         let expires_at = now_unix_ms.saturating_add(policy.lease_ttl_ms);
         let attempt_id = format!("att-inmem-{}", new_gen.as_u64());
 
@@ -526,26 +526,25 @@ fn validate_sqlite_path(path: &Path) -> Result<(), CoordinationError> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
-        if let Some(parent) = path.parent() {
-            if let Ok(meta) = std::fs::symlink_metadata(parent) {
-                if !meta.is_dir() {
-                    return Err(CoordinationError::StorageError(
-                        "coordination parent is not a directory".to_string(),
-                    ));
-                }
-                let uid = nix::unistd::geteuid().as_raw();
-                if meta.uid() != uid && meta.uid() != 0 {
-                    return Err(CoordinationError::StorageError(
-                        "coordination parent directory not owned by current user or root"
-                            .to_string(),
-                    ));
-                }
-                let mode = meta.mode();
-                if (mode & 0o022 != 0) && !(meta.uid() == 0 && (mode & 0o1000 != 0)) {
-                    return Err(CoordinationError::StorageError(
-                        "coordination parent directory has unsafe permissions".to_string(),
-                    ));
-                }
+        if let Some(parent) = path.parent()
+            && let Ok(meta) = std::fs::symlink_metadata(parent)
+        {
+            if !meta.is_dir() {
+                return Err(CoordinationError::StorageError(
+                    "coordination parent is not a directory".to_string(),
+                ));
+            }
+            let uid = nix::unistd::geteuid().as_raw();
+            if meta.uid() != uid && meta.uid() != 0 {
+                return Err(CoordinationError::StorageError(
+                    "coordination parent directory not owned by current user or root".to_string(),
+                ));
+            }
+            let mode = meta.mode();
+            if (mode & 0o022 != 0) && !(meta.uid() == 0 && (mode & 0o1000 != 0)) {
+                return Err(CoordinationError::StorageError(
+                    "coordination parent directory has unsafe permissions".to_string(),
+                ));
             }
         }
         if let Ok(meta) = std::fs::symlink_metadata(path) {
@@ -585,15 +584,30 @@ fn open_qualified_connection(path: &Path) -> Result<Connection, CoordinationErro
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.pragma_update(None, "synchronous", "NORMAL")?;
     conn.pragma_update(None, "temp_store", "MEMORY")?;
-    conn.set_limit(rusqlite::limits::Limit::SQLITE_LIMIT_LENGTH, 2 * 1024 * 1024)?;
+    conn.set_limit(
+        rusqlite::limits::Limit::SQLITE_LIMIT_LENGTH,
+        2 * 1024 * 1024,
+    )?;
     conn.set_limit(rusqlite::limits::Limit::SQLITE_LIMIT_SQL_LENGTH, 64 * 1024)?;
     conn.set_limit(rusqlite::limits::Limit::SQLITE_LIMIT_ATTACHED, 0)?;
     conn.set_limit(rusqlite::limits::Limit::SQLITE_LIMIT_WORKER_THREADS, 0)?;
     conn.set_db_config(rusqlite::config::DbConfig::SQLITE_DBCONFIG_DEFENSIVE, true)?;
-    conn.set_db_config(rusqlite::config::DbConfig::SQLITE_DBCONFIG_TRUSTED_SCHEMA, false)?;
-    conn.set_db_config(rusqlite::config::DbConfig::SQLITE_DBCONFIG_ENABLE_TRIGGER, false)?;
-    conn.set_db_config(rusqlite::config::DbConfig::SQLITE_DBCONFIG_ENABLE_VIEW, false)?;
-    conn.set_db_config(rusqlite::config::DbConfig::SQLITE_DBCONFIG_ENABLE_FKEY, true)?;
+    conn.set_db_config(
+        rusqlite::config::DbConfig::SQLITE_DBCONFIG_TRUSTED_SCHEMA,
+        false,
+    )?;
+    conn.set_db_config(
+        rusqlite::config::DbConfig::SQLITE_DBCONFIG_ENABLE_TRIGGER,
+        false,
+    )?;
+    conn.set_db_config(
+        rusqlite::config::DbConfig::SQLITE_DBCONFIG_ENABLE_VIEW,
+        false,
+    )?;
+    conn.set_db_config(
+        rusqlite::config::DbConfig::SQLITE_DBCONFIG_ENABLE_FKEY,
+        true,
+    )?;
 
     #[cfg(unix)]
     {
@@ -769,8 +783,8 @@ impl LeaseCoordinator for SqliteLeaseCoordinator {
             .map(|g| FencingGeneration(g as u64))
             .unwrap_or_else(FencingGeneration::initial);
         let new_gen = cur_gen.next();
-        let new_token = OwnerToken::generate()
-            .map_err(|e| CoordinationError::StorageError(e.to_string()))?;
+        let new_token =
+            OwnerToken::generate().map_err(|e| CoordinationError::StorageError(e.to_string()))?;
         let new_expires_at = now_unix_ms.saturating_add(policy.lease_ttl_ms);
         let new_attempt_id = format!("att-proc-{}", new_gen.as_u64());
 
@@ -1046,11 +1060,8 @@ impl ResponseCache for SqliteResponseCache {
             attempt_id: att_id,
         };
 
-        let freshness = entry.evaluate_freshness(
-            query.now_unix_ms,
-            query.active_model,
-            query.active_revision,
-        );
+        let freshness =
+            entry.evaluate_freshness(query.now_unix_ms, query.active_model, query.active_revision);
 
         match freshness {
             FreshnessStatus::Fresh {
@@ -1379,14 +1390,9 @@ impl SingleFlightCoordinator {
                     "cache disabled; cannot share response body".to_string(),
                 ))
             }
-            LeaseAcquisition::Leading(leader) => self.execute_as_leader(
-                query,
-                coord_key,
-                leader,
-                cache,
-                &now_fn,
-                execute_provider,
-            ),
+            LeaseAcquisition::Leading(leader) => {
+                self.execute_as_leader(query, coord_key, leader, cache, &now_fn, execute_provider)
+            }
             LeaseAcquisition::Following(_follower) => {
                 if !self.policy.cache_enabled {
                     // With cache disabled, cross-process response sharing is forbidden

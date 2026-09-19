@@ -9,6 +9,7 @@ pub mod capabilities;
 pub mod cli;
 pub mod config;
 pub mod context;
+pub mod demo;
 pub mod effects;
 pub mod eligibility;
 pub mod identity;

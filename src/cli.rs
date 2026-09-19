@@ -12,7 +12,7 @@ use std::ffi::OsString;
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
-const HELP: &str = "SkillRanker — powered by TypeSafe.ai Jev\n\nUsage: sr [rank] [--context FILE | --transcript FILE --harness NAME | --session PATH]\n                 [--roster FILE] [--require-skill ID] [--dry-run]\n                 [--offline | --allow-network] [--json | --table]\n                 [--top N] [--shortlist M] [--gate FLOAT] [--fits FLOAT]\n                 [--explain] [--why-not ID] [--no-tools] [--no-cache]\n       sr doctor [--json | --table] [--offline | --allow-network]\n       sr doctor --config [--json | --table] [--top N] [--shortlist N]\n       sr roster [--json] [--limit N] [--cursor TOKEN]\n       sr roster --snapshot FILE | --diff FILE\n       sr capabilities [--json]\n       sr --help | --version\n\nRank the next step of an agent session using TypeSafe Jev.\nRequires your own TypeSafe API key (TYPESAFE_API_KEY) and network consent (--allow-network).\n";
+const HELP: &str = "SkillRanker — powered by TypeSafe.ai Jev\n\nUsage: sr [rank] [--context FILE | --transcript FILE --harness NAME | --session PATH]\n                 [--roster FILE] [--require-skill ID] [--dry-run]\n                 [--offline | --allow-network] [--json | --table]\n                 [--top N] [--shortlist M] [--gate FLOAT] [--fits FLOAT]\n                 [--explain] [--why-not ID] [--no-tools] [--no-cache]\n       sr doctor [--json | --table] [--offline | --allow-network]\n       sr doctor --config [--json | --table] [--top N] [--shortlist N]\n       sr roster [--json] [--limit N] [--cursor TOKEN]\n       sr roster --snapshot FILE | --diff FILE\n       sr capabilities [--json]\n       sr demo --case <useful|none|explicit|unavailable> [--json | --table]\n       sr --help | --version\n\nRank the next step of an agent session using TypeSafe Jev.\nRequires your own TypeSafe API key (TYPESAFE_API_KEY) and network consent (--allow-network).\n";
 
 fn command() -> Command {
     let mut doctor = Command::new("doctor")
@@ -217,6 +217,29 @@ fn command() -> Command {
                         .conflicts_with_all(["limit", "cursor"]),
                 ),
         )
+        .subcommand(
+            Command::new("demo")
+                .disable_help_flag(true)
+                .arg(
+                    Arg::new("help")
+                        .long("help")
+                        .short('h')
+                        .action(ArgAction::SetTrue),
+                )
+                .arg(Arg::new("case").long("case").value_parser([
+                    "useful",
+                    "none",
+                    "explicit",
+                    "unavailable",
+                ]))
+                .arg(
+                    Arg::new("json")
+                        .long("json")
+                        .conflicts_with("table")
+                        .action(ArgAction::SetTrue),
+                )
+                .arg(Arg::new("table").long("table").action(ArgAction::SetTrue)),
+        )
 }
 
 /// Exit and streams are deliberately separate; diagnostics never echo clap/TOML input.
@@ -239,7 +262,7 @@ pub fn run(clock: EntryClock) -> u8 {
                         .iter()
                         .copied()
                         .find(|k| k.as_str() == kind)
-                        .unwrap_or_else(|| match code {
+                        .unwrap_or(match code {
                             2 => crate::output::ErrorKind::InvalidUsage,
                             3 => crate::output::ErrorKind::MissingSession,
                             4 => crate::output::ErrorKind::ProviderFailure,
@@ -342,8 +365,45 @@ fn execute(clock: &EntryClock, mut args: Vec<OsString>) -> Result<String, Failur
         // Always JSON: this is a machine-readable registry.
         return Ok(format!("{}\n", crate::capabilities::registry()));
     }
+    if let Some(("demo", demo_matches)) = matches.subcommand() {
+        if demo_matches.get_flag("help") {
+            return Ok(HELP.into());
+        }
+        return demo_command(clock, demo_matches);
+    }
     // Bare `sr` ranks once, as documented.
     rank_command(clock, None)
+}
+
+fn demo_command(clock: &EntryClock, demo_matches: &clap::ArgMatches) -> Result<String, Failure> {
+    timely(clock)?;
+    let case_str = demo_matches
+        .get_one::<String>("case")
+        .map(String::as_str)
+        .ok_or_else(|| {
+            (
+                2,
+                "invalid-usage",
+                "Missing required argument --case".into(),
+            )
+        })?;
+    let case = crate::demo::DemoCase::parse(case_str)
+        .ok_or_else(|| (2, "invalid-usage", format!("Unknown demo case: {case_str}")))?;
+
+    let doc =
+        crate::demo::generate_demo_doc(case).map_err(|e| (2, "output-error", e.to_string()))?;
+
+    let json_output = demo_matches.get_flag("json")
+        || (!demo_matches.get_flag("table") && !io::stdout().is_terminal());
+
+    if json_output {
+        let wire = doc
+            .to_json()
+            .map_err(|e| (2, "output-error", e.to_string()))?;
+        Ok(format!("{}\n", String::from_utf8_lossy(&wire)))
+    } else {
+        Ok(doc.render_table())
+    }
 }
 
 fn doctor_command(clock: &EntryClock, doctor: &clap::ArgMatches) -> Result<String, Failure> {
@@ -560,18 +620,18 @@ fn rank_command(
         .map(PathBuf::from);
 
     let mut require_skills = Vec::new();
-    if let Some(m) = rank_matches {
-        if let Some(reqs) = m.get_many::<String>("require-skill") {
-            for req in reqs {
-                let id = crate::identity::SkillId::new(req).map_err(|_| {
-                    (
-                        5u8,
-                        "unresolved-explicit",
-                        format!("Invalid skill ID: {req}"),
-                    )
-                })?;
-                require_skills.push(id);
-            }
+    if let Some(m) = rank_matches
+        && let Some(reqs) = m.get_many::<String>("require-skill")
+    {
+        for req in reqs {
+            let id = crate::identity::SkillId::new(req).map_err(|_| {
+                (
+                    5u8,
+                    "unresolved-explicit",
+                    format!("Invalid skill ID: {req}"),
+                )
+            })?;
+            require_skills.push(id);
         }
     }
 

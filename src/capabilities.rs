@@ -16,7 +16,7 @@ pub const CAPABILITIES_SCHEMA: &str = "sr.capabilities.v1";
 
 /// Commands this binary accepts and runs. Every other planned command is
 /// rejected as invalid usage.
-pub const IMPLEMENTED_COMMANDS: &[&str] = &["capabilities", "doctor", "rank", "roster"];
+pub const IMPLEMENTED_COMMANDS: &[&str] = &["capabilities", "demo", "doctor", "rank", "roster"];
 
 /// Accepted by the parser for conflict checking, but refused with
 /// `invalid-usage` until their phase ships.
