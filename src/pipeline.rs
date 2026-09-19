@@ -2383,6 +2383,10 @@ fn generate_trace(
     let query_bytes = context.current_request.text.as_str().as_bytes();
     let query_id = ContentHash::from_bytes(query_bytes);
     let total = entries.len() as u64;
+    // Explanation pages cannot invalidate an otherwise valid ranking. Keep the
+    // complete count so consumers can distinguish a first page from a full trace.
+    entries.truncate(crate::output::MAX_TRACE_PAGE_ITEMS);
+    let next_offset = ((entries.len() as u64) < total).then_some(entries.len() as u64);
 
     let trace_cursor = TraceCursor {
         schema_version: 1,
@@ -2394,7 +2398,7 @@ fn generate_trace(
     let stage_trace = StageTrace {
         cursor: trace_cursor,
         total,
-        next_offset: None,
+        next_offset,
         entries,
     };
 

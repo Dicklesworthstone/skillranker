@@ -797,3 +797,68 @@ fn usage_overflow_preserves_previous_exact_counts_and_marks_new_attempt_unknown(
         Err(AdmissionError::AttemptNotActive)
     );
 }
+
+/// Records whether each attempt carried a credential, and answers it.
+struct CredentialProbe {
+    origin: Option<CanonicalOrigin>,
+    carried: std::sync::Mutex<Vec<bool>>,
+}
+
+impl skillranker::jev::client::JevTransport for CredentialProbe {
+    fn send<'a>(
+        &'a self,
+        request: &'a Request,
+        credential: Option<&'a OriginScopedCredential>,
+        _consent: NetworkConsent,
+        _cx: &'a Cx,
+        _clock: &'a EntryClock,
+    ) -> skillranker::jev::client::TransportFuture<'a> {
+        self.carried.lock().unwrap().push(credential.is_some());
+        let answer = request
+            .decode_response(
+                br#"{"model":"jev-test","answers":{"fit":{"type":"noul","noul":0.5}},"usage":{"input_tokens":1,"output_tokens":1}}"#,
+            )
+            .map_err(|error| TransportError {
+                kind: TransportErrorKind::Response(error),
+                http_attempt_started: true,
+                retry_after: skillranker::jev::retry::RetryAfter::Absent,
+            });
+        Box::pin(async move { answer })
+    }
+
+    fn origin(&self) -> Option<&CanonicalOrigin> {
+        self.origin.as_ref()
+    }
+}
+
+#[test]
+fn an_origin_less_transport_never_receives_a_credential() {
+    let origin = EndpointConfig::production().origin().clone();
+    let key = credential(&origin);
+    // Twin: a transport bound to the credential's origin does receive it.
+    for (bound, carried) in [(None, false), (Some(origin.clone()), true)] {
+        let probe = CredentialProbe {
+            origin: bound,
+            carried: std::sync::Mutex::default(),
+        };
+        let run = Run::new(5_000);
+        let mut session = RetrySession::new(
+            &probe,
+            Some(&key),
+            run.clock,
+            AttemptBudget::default(),
+            "synthetic-invocation",
+        )
+        .unwrap();
+        let answer = run.invocation.runtime().block_on(session.send_stage(
+            RankingStage::Wide,
+            &request("jev-test"),
+            &run.cx,
+            || Ok(CONSENT),
+        ));
+        assert!(answer.is_ok());
+        assert_eq!(*probe.carried.lock().unwrap(), vec![carried]);
+        drop(session);
+        run.finish();
+    }
+}

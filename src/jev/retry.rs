@@ -207,7 +207,9 @@ impl<'a> RetrySession<'a> {
                 .origin()
                 .cloned()
                 .unwrap_or_else(CanonicalOrigin::production),
-            credential,
+            // A transport without a real origin never receives a credential,
+            // whatever the caller passed.
+            credential: client.origin().and(credential),
             clock,
             admission: AttemptAdmission::new(budget, clock, invocation_id)?,
             wide: None,
