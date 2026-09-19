@@ -51,10 +51,11 @@ inspect the negotiated TLS version and makes no such claim.
 
 ## Offline regression coverage
 
-The ordinary suite exercises six tests: lazy consent-before-credential lookup;
+The ordinary suite exercises seven tests: lazy consent-before-credential lookup;
 actual subprocess selection without consent or a key; missing-consent and
 missing-key provider admission; oversized request rejection; Choice option
-bounds; and offline admission. The live seventh test remains visibly ignored.
+bounds; offline admission; and large production-builder request shapes with
+independent-fixture byte equality. Both live tests remain visibly ignored.
 The subprocess regression requires failure with a static prerequisite diagnostic
 and checks that a synthetic credential canary is absent from both output streams.
 
@@ -146,3 +147,77 @@ scanner suppressions added. UBS's Cargo phases were disabled to enforce remote
 compilation; the actual check/Clippy/test results above are separate evidence.
 Repository-wide formatting encountered peers' in-progress changes; the edited
 smoke file and owned diff pass formatting/whitespace checks.
+
+## Full-candidate qualification attempt — September 19, 2026 UTC
+
+The larger qualification uses the actual wide/rerank builders over an authorized
+synthetic roster. Inputs contain 254 skills, 1,000-character descriptions,
+700-character bodies, and a 12,000-character synthetic request. The builders may
+trim excerpts to fit the 96 KiB request cap. Ordinary tests check six questions
+and 255 options in wide, and 33 questions/33 options in rerank. Both requests
+exceed 40 KiB and remain within the application cap. Building the same synthetic
+roster in different directories must produce identical provider request bytes.
+
+Live execution is separately ignored and requires
+`SKILLRANKER_CAPACITY_CONSENT=1` plus the exported key. It reserves at most two
+requests/attempts, shares a 30-second transport deadline with 500 ms cleanup,
+disables retries, and stops if wide fails. This is a qualification budget, not
+the product's three-second default. Fixture preparation is outside the transport
+measurement. The rerank shortlist is a fixed synthetic set, so this test is not
+an end-to-end recommendation or ranking-quality evaluation.
+
+```bash
+SKILLRANKER_CAPACITY_CONSENT=1 /absolute/path/to/jev_smoke-test-binary \
+  --ignored --exact budgeted_live_capacity_shapes --nocapture
+```
+
+**The live wide attempt failed:** `Response(InvalidDistribution)` from the strict
+production decoder. One HTTP attempt started; token usage is unknown because no
+validated response was returned. Rerank was not sent. There was no retry or
+relaxation of the probability-sum tolerance. This establishes a compatibility
+failure for the tested large request, not a measured provider capacity ceiling.
+The error does not identify which distribution failed or its values; raw response
+bodies were not captured. The smaller successful smoke result does not override
+this failure. Capacity qualification and P1 acceptance remain open.
+
+Executed source identity:
+
+- Base `fd8133e77d9a31d5993cb7e29f35e9d29f97adba`, only smoke test overlaid.
+- RCH overlay `d7ef247a55990a1014d8adb9fbea9d10f5e1e999f9362d92e9ca8ab2836c23be`.
+- Test source SHA-256 `8b026f190734dbaa74d31dfdf293eddd11de129f04a4d83ca4fd8d4cac2e0826`.
+- Binary SHA-256 `1a561fdf4399afcb058b6cf84c62c6fb37375e893b3330fd92fc8ba4c1cada1f`.
+- Toolchain `nightly-2026-08-31`, default features, unchanged lockfile above.
+- 25 focused tests passed remotely: seven rerank, seven smoke, eleven wide;
+  both live tests ignored. Seven ordinary smoke tests also passed locally.
+- Live selection: zero passed, one failed; eight other tests filtered out.
+- Logs: `/data/tmp/sr-capacity-final-tests.log`, `/data/tmp/sr-capacity-local.log`,
+  `/data/tmp/sr-capacity-live.log`.
+
+The subsequent test-only revision adds a pre-send request-identity receipt so a
+future failing attempt still records its request size/digest, plus the
+independent-directory determinism assertion. It has no additional live evidence.
+Strict Clippy on the frozen base failed before checking this test because of
+three existing library warnings in `src/cache/coordination.rs` and `src/cli.rs`;
+those peer-owned paths were not changed by this qualification.
+
+Final offline verification of that subsequent revision passed the same 25 tests
+with two live tests ignored (RCH overlay
+`d5a39dd0f09e8b342c0a01abd95ac0c07a52a4fbbc662b037451de6ffbbf67d8`
+on the same base). Log: `/data/tmp/sr-capacity-final-offline.log`.
+
+The [TypeSafe API reference](https://docs.typesafe.ai/api), rechecked on
+September 19, explicitly specifies that Choice probabilities sum to one. It does
+not supply a reason to relax this project's `1e-4` tolerance. The failed response
+needs bounded diagnostic evidence before attributing the discrepancy to provider
+rounding, question count, or another cause.
+
+The broader run reproduced the five roster fixture failures on the newer base.
+Creating the synthetic snapshot fixture ancestor atomically with mode 0700 fixed
+them without changing export policy or assertions. With that additional test-only
+change, the **full offline Cargo test suite passed**, as did all-target Cargo
+check, on base `fd8133e` plus overlay
+`7912753efb222ad947b07281a822473eedd54be9d92504fe48e3aa13438d1dad`.
+Logs: `/data/tmp/sr-capacity-roster-fixed-full.log` and
+`/data/tmp/sr-capacity-check.log`. Live/installed-service tests remain explicitly
+ignored in ordinary runs. This offline pass does not change the failed large
+live request or the strict-Clippy limitation above.

@@ -1,6 +1,6 @@
 //! Real binary checks of `sr roster --snapshot` and `--diff`.
 use serde_json::Value;
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::PathBuf;
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -23,7 +23,12 @@ impl Fixture {
                 .as_nanos(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
-        std::fs::create_dir(&root).unwrap();
+        // The export policy validates ancestors too. Create the fixture root
+        // private atomically rather than inheriting the worker's umask.
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&root)
+            .unwrap();
         std::fs::create_dir_all(root.join("workspace/.claude/skills")).unwrap();
         std::fs::create_dir_all(root.join("home/.claude/skills")).unwrap();
         // Snapshot targets must sit in a private directory, whatever the umask.

@@ -128,50 +128,61 @@ fn live_consent_precedes_credential_lookup() {
 
 #[test]
 fn explicitly_selected_live_test_cannot_pass_without_consent_or_key() {
-    for (consent, key, diagnostic) in [
+    for (name, consent_name) in [
+        ("budgeted_live_contract_smoke", "SKILLRANKER_LIVE_CONSENT"),
         (
-            None,
-            Some("synthetic-credential-canary"),
-            "explicit SKILLRANKER_LIVE_CONSENT=1 is required",
-        ),
-        (
-            Some("false"),
-            Some("synthetic-credential-canary"),
-            "explicit SKILLRANKER_LIVE_CONSENT=1 is required",
-        ),
-        (
-            Some("1"),
-            None,
-            "export TYPESAFE_API_KEY explicitly before the live test",
+            "budgeted_live_capacity_shapes",
+            "SKILLRANKER_CAPACITY_CONSENT",
         ),
     ] {
-        let mut child = Command::new(std::env::current_exe().unwrap());
-        child.env_clear().args([
-            "--ignored",
-            "--exact",
-            "budgeted_live_contract_smoke",
-            "--nocapture",
-        ]);
-        if let Some(consent) = consent {
-            child.env("SKILLRANKER_LIVE_CONSENT", consent);
+        for (consent, key, diagnostic) in [
+            (
+                None,
+                Some("synthetic-credential-canary"),
+                "explicit SKILLRANKER_LIVE_CONSENT=1 is required",
+            ),
+            (
+                Some("false"),
+                Some("synthetic-credential-canary"),
+                "explicit SKILLRANKER_LIVE_CONSENT=1 is required",
+            ),
+            (
+                Some("1"),
+                None,
+                "export TYPESAFE_API_KEY explicitly before the live test",
+            ),
+        ] {
+            let mut child = Command::new(std::env::current_exe().unwrap());
+            child
+                .env_clear()
+                .args(["--ignored", "--exact", name, "--nocapture"]);
+            if let Some(consent) = consent {
+                child.env(consent_name, consent);
+            }
+            if let Some(key) = key {
+                child.env("TYPESAFE_API_KEY", key);
+            }
+            let output = child
+                .output()
+                .expect("launch the actual smoke test executable");
+            assert!(
+                !output.status.success(),
+                "an unexecuted live probe must not pass"
+            );
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                stderr.contains(if name == "budgeted_live_capacity_shapes" {
+                    "capacity probe requires SKILLRANKER_CAPACITY_CONSENT=1"
+                } else {
+                    diagnostic
+                }),
+                "missing static prerequisite diagnostic"
+            );
+            assert!(!stderr.contains("synthetic-credential-canary"));
+            assert!(
+                !String::from_utf8_lossy(&output.stdout).contains("synthetic-credential-canary")
+            );
         }
-        if let Some(key) = key {
-            child.env("TYPESAFE_API_KEY", key);
-        }
-        let output = child
-            .output()
-            .expect("launch the actual smoke test executable");
-        assert!(
-            !output.status.success(),
-            "an unexecuted live probe must not pass"
-        );
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(
-            stderr.contains(diagnostic),
-            "missing static prerequisite diagnostic"
-        );
-        assert!(!stderr.contains("synthetic-credential-canary"));
-        assert!(!String::from_utf8_lossy(&output.stdout).contains("synthetic-credential-canary"));
     }
 }
 
@@ -458,5 +469,210 @@ fn unauthorized_attempt_refused_without_network() {
     );
     assert!(!err.http_attempt_started);
 
+    run.finish();
+}
+
+/// Production builders over an authorized synthetic roster, never local skills.
+fn capacity_requests() -> [Request; 2] {
+    use skillranker::authorized_read::{AuthorizedRoot, AuthorizedRoots};
+    use skillranker::context::RenderedContextPayload;
+    use skillranker::identity::{LogicalSkillKey, SourceId};
+    use skillranker::output::ContextQuality;
+    use skillranker::privacy::ContextProfile;
+    use skillranker::roster::resolution::{BindingSpec, ResolvedRoster, SkillEntry};
+    use skillranker::roster::{InvocationName, InvocationRestrictions, Visibility};
+    use std::os::unix::fs::DirBuilderExt;
+    use std::path::Path;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let root = std::env::temp_dir().join(format!(
+        "sr-capacity-{}-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::DirBuilder::new()
+        .mode(0o700)
+        .create(&root)
+        .unwrap();
+    let roots = AuthorizedRoots::single(AuthorizedRoot::open_absolute(&root).unwrap());
+    let run = TestContext::new(30_000, 500);
+    let entries = (0..254)
+        .map(|i| {
+            let name = format!("synthetic{i:03}");
+            let filename = format!("{name}.md");
+            let description: String =
+                format!("Synthetic parser technique {i}. Validate nested lists and round trips. ")
+                    .repeat(30)
+                    .chars()
+                    .take(1000)
+                    .collect();
+            let body: String =
+                "Synthetic procedure: inspect parsing boundaries and test malformed nested lists. "
+                    .repeat(20)
+                    .chars()
+                    .take(700)
+                    .collect();
+            std::fs::write(
+                root.join(&filename),
+                format!("---\nname: {name}\ndescription: {description}\n---\n{body}\n"),
+            )
+            .unwrap();
+            SkillEntry::from_read(
+                BindingSpec {
+                    source: SourceId::new("synthetic-capacity").unwrap(),
+                    logical_key: LogicalSkillKey::new(name.as_str()).unwrap(),
+                    invocation: InvocationName::new(name.as_str()).unwrap(),
+                    priority: Some(1),
+                    visibility: Visibility::Verified {
+                        contract_version: "synthetic-only-v1".into(),
+                    },
+                    restrictions: InvocationRestrictions {
+                        agent_invocable: true,
+                        user_invocable: true,
+                    },
+                },
+                roots
+                    .read_bounded(
+                        0,
+                        Path::new(&filename),
+                        skillranker::limits::SKILL_FILE_BYTES,
+                    )
+                    .unwrap(),
+            )
+            .unwrap()
+        })
+        .collect();
+    let roster = ResolvedRoster::resolve(entries, false, &run.cx, &run.clock).unwrap();
+    let ids: Vec<_> = roster.advisory().map(|s| s.binding.id.clone()).collect();
+    assert_eq!(ids.len(), 254);
+    let state = RenderedContextPayload {
+        schema_version: 1,
+        context_profile: ContextProfile::Standard,
+        harness: "synthetic".into(),
+        context_quality: ContextQuality::Complete,
+        project_signals: Default::default(),
+        session_state: Default::default(),
+        recent_messages: Vec::new(),
+        latest_user_request:
+            "Synthetic task: repair a parser for nested lists, preserving round trips. "
+                .repeat(200)
+                .chars()
+                .take(12_000)
+                .collect(),
+    };
+    let wide = skillranker::jev::wide::build(&roster, &ids, &state, DEFAULT_MODEL, true).unwrap();
+    let rerank =
+        skillranker::jev::rerank::build(&roster, &ids[..32], &state, DEFAULT_MODEL).unwrap();
+    let requests = [wide.request().clone(), rerank.request().clone()];
+    run.finish();
+    requests
+}
+
+#[test]
+fn capacity_shapes_use_production_builders_and_stay_bounded() {
+    let requests = capacity_requests();
+    let independently_located = capacity_requests();
+    for (a, b) in requests.iter().zip(&independently_located) {
+        assert_eq!(
+            a.to_json().unwrap(),
+            b.to_json().unwrap(),
+            "local fixture paths must not affect provider bytes"
+        );
+    }
+    for (request, questions, options) in [(&requests[0], 6, 255), (&requests[1], 33, 33)] {
+        assert_eq!(request.questions().len(), questions);
+        let bytes = request.to_json().unwrap();
+        assert!(bytes.len() <= MAX_REQUEST_BYTES);
+        assert!(
+            bytes.len() > 40_000,
+            "probe must exercise substantial request size"
+        );
+        let max_options = request
+            .questions()
+            .values()
+            .filter_map(|q| match q {
+                Question::Choice { criteria, .. } => Some(criteria.len()),
+                _ => None,
+            })
+            .max()
+            .unwrap();
+        assert_eq!(max_options, options);
+    }
+}
+
+#[test]
+#[ignore = "two live paid requests: explicit capacity consent and exported key required"]
+fn budgeted_live_capacity_shapes() {
+    let api_key = live_api_key(std::env::var_os("SKILLRANKER_CAPACITY_CONSENT"), || {
+        std::env::var_os("TYPESAFE_API_KEY")
+    }).unwrap_or_else(|_| panic!("capacity probe requires SKILLRANKER_CAPACITY_CONSENT=1 and an exported TYPESAFE_API_KEY"));
+    let requests = capacity_requests();
+    let endpoint = EndpointConfig::production();
+    let origin = endpoint.origin().clone();
+    let key = resolve_credential(&origin, &api_key);
+    let client = JevClient::new(endpoint).unwrap();
+    let run = TestContext::new(30_000, 500);
+    let mut admission = AttemptAdmission::new(
+        AttemptBudget::new(2, 2).unwrap(),
+        run.clock,
+        "synthetic-capacity",
+    )
+    .unwrap();
+    for (request, stage) in requests
+        .iter()
+        .zip([RankingStage::Wide, RankingStage::Rerank])
+    {
+        let bytes = request.to_json().unwrap();
+        eprintln!(
+            "{}",
+            json!({"kind":"synthetic-capacity-attempt", "stage":stage.as_str(), "request_bytes":bytes.len(), "request_blake3":blake3::hash(&bytes).to_hex().to_string(), "questions":request.questions().len(), "requested_model":DEFAULT_MODEL})
+        );
+        let permit = admission.admit(stage, &origin).unwrap();
+        let started = std::time::Instant::now();
+        let result = run.send(
+            &client,
+            request,
+            Some(&key),
+            NetworkConsent::Authorized(ConsentSource::AllowNetworkFlag),
+        );
+        let response = match result {
+            Ok(response) => {
+                let sent = permit.mark_sent().unwrap();
+                admission.record_sent(&sent).unwrap();
+                admission.record_response(&sent, response.usage).unwrap();
+                response
+            }
+            Err(error) => {
+                if error.http_attempt_started {
+                    let sent = permit.mark_sent().unwrap();
+                    admission.record_sent(&sent).unwrap();
+                    admission
+                        .record_terminal_failure(&sent, "capacity probe failed")
+                        .unwrap();
+                } else {
+                    admission
+                        .record_discard(&permit.discard_before_send("local refusal"))
+                        .unwrap();
+                }
+                run.finish();
+                panic!(
+                    "capacity stage {stage} failed: {:?}; http_attempt_started={}; usage_unknown={}",
+                    error.kind, error.http_attempt_started, error.http_attempt_started
+                );
+            }
+        };
+        assert_eq!(response.answers.len(), request.questions().len());
+        let bytes = request.to_json().unwrap();
+        eprintln!(
+            "{}",
+            json!({"kind":"synthetic-capacity-stage", "stage":stage.as_str(), "request_bytes":bytes.len(), "request_blake3":blake3::hash(&bytes).to_hex().to_string(), "questions":request.questions().len(), "returned_model_blake3":blake3::hash(response.returned_model.as_bytes()).to_hex().to_string(), "input_tokens":response.usage.input_tokens, "output_tokens":response.usage.output_tokens, "elapsed_ms":started.elapsed().as_millis()})
+        );
+    }
+    assert_eq!(admission.receipt().sent_attempts, 2);
     run.finish();
 }
