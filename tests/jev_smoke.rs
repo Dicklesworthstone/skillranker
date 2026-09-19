@@ -130,6 +130,7 @@ fn live_consent_precedes_credential_lookup() {
 fn explicitly_selected_live_test_cannot_pass_without_consent_or_key() {
     for (name, consent_name) in [
         ("budgeted_live_contract_smoke", "SKILLRANKER_LIVE_CONSENT"),
+        ("budgeted_live_rerank_shape", "SKILLRANKER_RERANK_CONSENT"),
         (
             "budgeted_live_capacity_shapes",
             "SKILLRANKER_CAPACITY_CONSENT",
@@ -177,6 +178,8 @@ fn explicitly_selected_live_test_cannot_pass_without_consent_or_key() {
             assert!(
                 stderr.contains(if name == "budgeted_live_capacity_shapes" {
                     "capacity probe requires SKILLRANKER_CAPACITY_CONSENT=1"
+                } else if name == "budgeted_live_rerank_shape" {
+                    "rerank probe requires SKILLRANKER_RERANK_CONSENT=1"
                 } else if name == "budgeted_live_distribution_diagnostic" {
                     "diagnostic probe requires SKILLRANKER_DIAGNOSTIC_CONSENT=1"
                 } else {
@@ -617,14 +620,81 @@ fn budgeted_live_capacity_shapes() {
     let api_key = live_api_key(std::env::var_os("SKILLRANKER_CAPACITY_CONSENT"), || {
         std::env::var_os("TYPESAFE_API_KEY")
     }).unwrap_or_else(|_| panic!("capacity probe requires SKILLRANKER_CAPACITY_CONSENT=1 and an exported TYPESAFE_API_KEY"));
+    run_capacity_shapes(api_key, true);
+}
+
+#[test]
+#[ignore = "one live paid rerank request: explicit rerank consent and exported key required"]
+fn budgeted_live_rerank_shape() {
+    let api_key = live_api_key(std::env::var_os("SKILLRANKER_RERANK_CONSENT"), || {
+        std::env::var_os("TYPESAFE_API_KEY")
+    })
+    .unwrap_or_else(|_| {
+        panic!(
+            "rerank probe requires SKILLRANKER_RERANK_CONSENT=1 and an exported TYPESAFE_API_KEY"
+        )
+    });
+    run_capacity_shapes(api_key, false);
+}
+
+// A standalone synthetic request is evaluation, not a production rerank whose
+// prerequisite wide response has somehow succeeded. Preserve that distinction.
+fn capacity_admission_stage(include_wide: bool, stage: RankingStage) -> RankingStage {
+    if include_wide {
+        stage
+    } else {
+        RankingStage::Evaluation
+    }
+}
+
+#[test]
+fn standalone_rerank_evaluation_preserves_production_ordering_and_one_attempt_cap() {
+    let run = TestContext::new(10_000, 500);
+    let origin = EndpointConfig::production().origin().clone();
+    let mut admission = AttemptAdmission::new(
+        AttemptBudget::new(1, 1).unwrap(),
+        run.clock,
+        "synthetic-rerank-admission",
+    )
+    .unwrap();
+    assert!(
+        admission
+            .admit(
+                capacity_admission_stage(true, RankingStage::Rerank),
+                &origin
+            )
+            .is_err()
+    );
+    assert_eq!(admission.receipt().admitted_attempts, 0);
+    let permit = admission
+        .admit(
+            capacity_admission_stage(false, RankingStage::Rerank),
+            &origin,
+        )
+        .unwrap();
+    let sent = permit.mark_sent().unwrap();
+    admission.record_sent(&sent).unwrap();
+    admission
+        .record_terminal_failure(&sent, "synthetic accounting check, no HTTP")
+        .unwrap();
+    assert!(!admission.is_wide_completed());
+    assert!(admission.admit(RankingStage::Evaluation, &origin).is_err());
+    assert_eq!(admission.receipt().sent_attempts, 1);
+    run.finish();
+}
+
+// The independent rerank uses the same fixed synthetic shortlist. It cannot
+// establish that production wide selected that shortlist or passed its gate.
+fn run_capacity_shapes(api_key: String, include_wide: bool) {
     let requests = capacity_requests();
+    let attempt_count = if include_wide { 2 } else { 1 };
     let endpoint = EndpointConfig::production();
     let origin = endpoint.origin().clone();
     let key = resolve_credential(&origin, &api_key);
     let client = JevClient::new(endpoint).unwrap();
     let run = TestContext::new(30_000, 500);
     let mut admission = AttemptAdmission::new(
-        AttemptBudget::new(2, 2).unwrap(),
+        AttemptBudget::new(attempt_count, attempt_count).unwrap(),
         run.clock,
         "synthetic-capacity",
     )
@@ -632,13 +702,15 @@ fn budgeted_live_capacity_shapes() {
     for (request, stage) in requests
         .iter()
         .zip([RankingStage::Wide, RankingStage::Rerank])
+        .skip(usize::from(!include_wide))
     {
         let bytes = request.to_json().unwrap();
         eprintln!(
             "{}",
             json!({"kind":"synthetic-capacity-attempt", "stage":stage.as_str(), "request_bytes":bytes.len(), "request_blake3":blake3::hash(&bytes).to_hex().to_string(), "questions":request.questions().len(), "requested_model":DEFAULT_MODEL})
         );
-        let permit = admission.admit(stage, &origin).unwrap();
+        let admission_stage = capacity_admission_stage(include_wide, stage);
+        let permit = admission.admit(admission_stage, &origin).unwrap();
         let started = std::time::Instant::now();
         let result = run.send(
             &client,
@@ -679,7 +751,7 @@ fn budgeted_live_capacity_shapes() {
             json!({"kind":"synthetic-capacity-stage", "stage":stage.as_str(), "request_bytes":bytes.len(), "request_blake3":blake3::hash(&bytes).to_hex().to_string(), "questions":request.questions().len(), "returned_model_blake3":blake3::hash(response.returned_model.as_bytes()).to_hex().to_string(), "input_tokens":response.usage.input_tokens, "output_tokens":response.usage.output_tokens, "elapsed_ms":started.elapsed().as_millis()})
         );
     }
-    assert_eq!(admission.receipt().sent_attempts, 2);
+    assert_eq!(admission.receipt().sent_attempts, attempt_count);
     run.finish();
 }
 

@@ -274,3 +274,66 @@ Executed identity and evidence:
   `/data/tmp/sr-distribution-local.log`, `/data/tmp/sr-distribution-live.log`.
 - Static UBS: zero critical findings; 206 warnings reviewed as test assertions,
   bounded fixtures/indexing, and test-generated JSON conversion. No suppressions.
+
+### Independent rerank qualification
+
+A subsequent production-client pair attempt on September 19 again stopped at
+wide with `Response(InvalidDistribution)`. Its request was 60,521 bytes with the
+same `6f9f4986…` digest as the successful diagnostic above. One attempt started;
+usage is unknown, and rerank was not sent. The selected test failed after 1.04
+seconds. This used the same previously verified `f5c742dd…` executable, not a
+new build or changed response validator. Log:
+`/data/tmp/sr-production-capacity-pair.log`.
+
+To avoid hiding rerank compatibility behind that failure,
+`budgeted_live_rerank_shape` independently sends the existing fixed synthetic
+32-candidate rerank request through the same production client and admission
+loop. It requires its own `SKILLRANKER_RERANK_CONSENT=1` plus the exported key,
+permits one request/attempt with no retry, and uses the existing 30-second
+qualification deadline. It does not claim wide selected the shortlist or that
+the combined ranking workflow passed. The actual-executable refusal test covers
+missing/false consent and missing credentials for this entry point too.
+
+```bash
+SKILLRANKER_RERANK_CONSENT=1 /absolute/path/to/jev_smoke-test-binary \
+  --ignored --exact budgeted_live_rerank_shape --nocapture
+```
+
+The first standalone test revision was refused locally with
+`StageOrderingViolation`: production `Rerank` admission requires a successful
+wide response. **No HTTP request was started by that refused invocation.**
+The corrected standalone probe uses the existing `Evaluation` admission stage;
+its log's `stage: rerank` identifies the request shape, not successful production
+stage progression. An ordinary regression exercises the real admission state:
+normal rerank is still refused before wide, the evaluation can receive one
+permit, it cannot mark wide complete, and it cannot acquire a second permit.
+No synthetic wide success or usage is inserted to bypass the ordering check.
+
+The corrected standalone rerank **passed strict production validation** on
+September 19. It sent one 90,388-byte request with 33 questions and 33 Choice
+options (32 skills plus none), request BLAKE3
+`8cabf7014cc3ed68d456394551ba8238d79450d1f02d36ce9c47e0c686ba0a0a`.
+The provider call took 830 ms and reported 19,239 input tokens plus 1,022 output
+tokens. Requested alias: `jev-latest`; returned model identifier BLAKE3:
+`852a1ee4113f64c6c68f982a6f528147eb6dcbd0cad8472774a34110c55ba5b5`.
+The selected test passed in 1.40 seconds including fixture preparation/shutdown.
+Across this follow-up there were two started HTTP attempts: the failed wide and
+the successful independent rerank. The locally refused setup attempt added no
+HTTP call. No retries or additional probes were sent.
+
+Executed source and checks:
+
+- Base `d68fc9ff32845b7513d65e51eb3226e65f27ff17`, only smoke test overlaid.
+- RCH overlay `863fe8075440a14b87177dced2240fb305c9a11e403310070566fc3c21bb96b7`.
+- Test SHA-256 `b476dfff2ad181f0201ff57367cfb673c277ae12feebc6fe587467e1196aa13f`.
+- Executable SHA-256 `f6b3694ce7e0a7505fcff4dd940354c0af9524f837c11cadc63edfda8efc1d01`, verified on worker and maintainer host.
+- Nine ordinary smoke tests passed remotely and locally, four live tests ignored;
+  the selected live rerank passed once with twelve tests filtered out.
+- Logs: `/data/tmp/sr-rerank-evaluation-build.log`,
+  `/data/tmp/sr-rerank-evaluation-local.log`, `/data/tmp/sr-rerank-evaluation-live.log`.
+- Formatting, diff checks and public-contract consistency passed. UBS reported
+  zero critical findings and 229 test-code warnings; no suppressions were added.
+
+The observed rerank success closes its missing request-shape evidence, not the
+combined wide/rerank workflow, ranking quality, a latency percentile, or P1.
+The repeated wide rejection remains an unresolved qualification blocker.
