@@ -318,6 +318,24 @@ pub fn run(clock: EntryClock) -> u8 {
 
 pub type Failure = (u8, &'static str, String);
 
+fn finish_invocation<T>(
+    invocation: crate::runtime::ProcessInvocation,
+    outcome: Result<T, Failure>,
+) -> Result<T, Failure> {
+    let clock = invocation.clock();
+    // Capture operation errors before consuming the runtime too: an early `?`
+    // here would bypass its bounded shutdown and fall back to Runtime::drop.
+    if invocation.shutdown() && clock.now() < clock.deadline().expires_at() {
+        outcome
+    } else {
+        Err((
+            6,
+            "timeout",
+            "Runtime cleanup did not finish within the invocation deadline".into(),
+        ))
+    }
+}
+
 fn invalid(message: impl Into<String>) -> Failure {
     (2, "invalid-configuration", message.into())
 }
@@ -737,15 +755,20 @@ fn rank_command(
     timely(clock)?;
     let invocation = crate::runtime::ProcessInvocation::from_clock(*clock)
         .map_err(|_| (6u8, "timeout", "Local runtime unavailable".into()))?;
-    let cx = invocation
+    let outcome = invocation
         .request_cx()
-        .map_err(|_| (6u8, "timeout", "Local runtime unavailable".into()))?;
-
-    let output_doc = invocation.runtime().block_on(async {
-        crate::pipeline::execute_pipeline(&invocation, &cx, args, None).await
-    })?;
-
-    timely(clock)?;
+        .map_err(|_| (6u8, "timeout", "Local runtime unavailable".into()))
+        .and_then(|cx| {
+            invocation.runtime().block_on(async {
+                crate::pipeline::execute_pipeline(&invocation, &cx, args, None).await
+            })
+        });
+    // Completion must precede the work cutoff, but teardown may use the
+    // reserved cleanup window. Do not reclassify timely work as late merely
+    // because its successful cleanup entered that window.
+    let completed_in_time = timely(clock);
+    let output_doc = finish_invocation(invocation, outcome)?;
+    completed_in_time?;
 
     // An unavailable decision, or a dry-run preview of one, exits with its
     // error category; the full document is still the JSON output.
@@ -1186,24 +1209,27 @@ fn resolve_workspace_roster(
     .map_err(|_| unusable("The documented skill roots could not be planned"))?;
     let invocation = crate::runtime::ProcessInvocation::from_clock(*clock)
         .map_err(|_| unusable("The local runtime is unavailable"))?;
-    let cx = invocation
+    let outcome = invocation
         .request_cx()
-        .map_err(|_| unusable("The local runtime is unavailable"))?;
-    crate::roster::resolution::resolve_claude_plan(
-        &plan,
-        &std::collections::BTreeMap::new(),
-        &cx,
-        clock,
-    )
-    .map_err(|error| match error {
-        crate::roster::resolution::ResolutionError::Deadline
-        | crate::roster::resolution::ResolutionError::Cancelled => (
-            6u8,
-            "timeout",
-            "Local inspection deadline exceeded".to_owned(),
-        ),
-        _ => unusable("The roster could not be resolved"),
-    })
+        .map_err(|_| unusable("The local runtime is unavailable"))
+        .and_then(|cx| {
+            crate::roster::resolution::resolve_claude_plan(
+                &plan,
+                &std::collections::BTreeMap::new(),
+                &cx,
+                clock,
+            )
+            .map_err(|error| match error {
+                crate::roster::resolution::ResolutionError::Deadline
+                | crate::roster::resolution::ResolutionError::Cancelled => (
+                    6u8,
+                    "timeout",
+                    "Local inspection deadline exceeded".to_owned(),
+                ),
+                _ => unusable("The roster could not be resolved"),
+            })
+        });
+    finish_invocation(invocation, outcome)
 }
 
 /// A snapshot in this workspace's namespace; paths enter only as digests.
@@ -1283,4 +1309,43 @@ fn export_snapshot(
         "storage-failure",
         "Snapshot export is not qualified on this platform".to_owned(),
     ))
+}
+
+#[cfg(test)]
+mod invocation_cleanup_tests {
+    use super::*;
+    use crate::runtime::ProcessInvocation;
+    use std::time::Duration;
+
+    #[test]
+    fn unfinished_runtime_cannot_publish_success() {
+        let clock = EntryClock::capture_with(
+            DurationMillis::new("test_total", 1_000, 3_000).unwrap(),
+            DurationMillis::new("test_cleanup", 200, 3_000).unwrap(),
+        )
+        .unwrap();
+        let invocation = ProcessInvocation::from_clock(clock).unwrap();
+        let retained = invocation.runtime().handle();
+        let holder = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(
+                clock.remaining_until_expiry().as_millis() + 200,
+            ));
+            drop(retained);
+        });
+        let outcome = finish_invocation(invocation, Ok("must not be emitted"));
+        holder.join().unwrap();
+        assert!(matches!(outcome, Err((6, "timeout", _))), "{outcome:?}");
+    }
+
+    #[test]
+    fn completed_runtime_preserves_success_and_failure() {
+        for outcome in [
+            Ok("result"),
+            Err((7, "malformed-input", "Invalid input".into())),
+        ] {
+            let invocation = ProcessInvocation::enter().unwrap();
+            let expected = outcome.clone();
+            assert_eq!(finish_invocation(invocation, outcome), expected);
+        }
+    }
 }

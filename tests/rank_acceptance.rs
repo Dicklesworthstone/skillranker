@@ -370,6 +370,7 @@ fn rank_args(provider: &Provider, args: RankArgs, total_ms: u64) -> Outcome {
     )
     .unwrap();
     let invocation = ProcessInvocation::from_clock(clock).unwrap();
+    let startup_ms = clock.now().as_millis();
     let cx = invocation.request_cx().unwrap();
     let client = provider.client();
     let result = invocation
@@ -379,13 +380,47 @@ fn rank_args(provider: &Provider, args: RankArgs, total_ms: u64) -> Outcome {
     // failure shows whether draining or a late return exhausted it.
     let returned_ms = clock.now().as_millis();
     let left_ms = clock.remaining_until_expiry().as_millis();
+    let shutdown_started = std::time::Instant::now();
+    let shutdown_ok = invocation.shutdown();
+    let shutdown_ms = shutdown_started.elapsed().as_millis();
+    eprintln!(
+        "runtime_timing startup_ms={startup_ms} returned_ms={returned_ms} total_ms={total_ms} remaining_ms={left_ms} shutdown_ms={shutdown_ms} shutdown_ok={shutdown_ok}"
+    );
+    if !shutdown_ok {
+        dump_shutdown_threads();
+    }
     assert!(
-        invocation.shutdown(),
-        "owned runtime must shut down: returned at {returned_ms} ms of {total_ms}, {left_ms} ms left"
+        shutdown_ok,
+        "owned runtime must shut down: startup {startup_ms} ms, returned at {returned_ms} ms of {total_ms}, {left_ms} ms left, shutdown took {shutdown_ms} ms"
     );
     result
         .map(|doc| doc.as_value().clone())
         .map_err(|(code, kind, _)| (code, kind))
+}
+
+/// Failure-only, bounded local diagnostics. Do not read command lines, process
+/// environments, requests, or fixture contents. This runs after measuring the
+/// failed shutdown and cannot turn it into a successful deadline assertion.
+fn dump_shutdown_threads() {
+    #[cfg(target_os = "linux")]
+    if let Ok(threads) = std::fs::read_dir("/proc/self/task") {
+        use std::io::Read;
+        for entry in threads.take(256).flatten() {
+            let mut fields = Vec::new();
+            for name in ["comm", "wchan", "schedstat"] {
+                let mut bytes = Vec::new();
+                if let Ok(file) = std::fs::File::open(entry.path().join(name))
+                    && file.take(1024).read_to_end(&mut bytes).is_ok()
+                {
+                    fields.push((name, String::from_utf8_lossy(&bytes).trim().to_owned()));
+                }
+            }
+            eprintln!(
+                "shutdown_thread tid={:?} fields={fields:?}",
+                entry.file_name()
+            );
+        }
+    }
 }
 
 fn stages(served: &[Value]) -> Vec<&str> {
@@ -958,6 +993,41 @@ fn a_late_rerank_answer_is_never_published() {
         elapsed < std::time::Duration::from_millis(3_500),
         "the deadline, not the provider, ends the run: {elapsed:?}"
     );
+}
+
+#[test]
+#[ignore = "manual bounded real-TLS shutdown contention diagnostic"]
+fn late_rerank_shutdown_contention_diagnostic() {
+    use std::sync::{Arc, Barrier};
+    for concurrency in [1, 8, 24] {
+        let barrier = Arc::new(Barrier::new(concurrency));
+        let threads: Vec<_> = (0..concurrency)
+            .map(|case| {
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    // Release the barrier even if provider setup panics.
+                    let setup = std::panic::catch_unwind(|| {
+                        let f = Fixture::new(CONSENT);
+                        let provider =
+                            Provider::start(&f, "late-rerank", &["".as_ref(), "4".as_ref()]);
+                        (f, provider)
+                    });
+                    barrier.wait();
+                    let (f, provider) = setup.expect("synthetic provider setup");
+                    eprintln!("shutdown_case concurrency={concurrency} case={case}");
+                    let outcome = rank(&f, &provider, TASK, 2_000);
+                    let served = provider.finish();
+                    assert_eq!(stages(&served), ["wide", "rerank"]);
+                    unavailable(outcome, 6, "timeout");
+                })
+            })
+            .collect();
+        let failed = threads.into_iter().filter_map(|t| t.join().err()).count();
+        assert_eq!(
+            failed, 0,
+            "concurrency={concurrency}: failed cases={failed}"
+        );
+    }
 }
 
 #[test]
