@@ -225,11 +225,18 @@ impl Provider {
         JevClient::with_additional_roots(endpoint, vec![root]).unwrap()
     }
     /// Ends the provider and returns the stages it actually served.
-    fn finish(mut self) -> Vec<Value> {
+    fn finish(self) -> Vec<Value> {
+        let (served, rejected) = self.finish_with_rejections();
+        assert_eq!(rejected, 0, "every handshake must succeed");
+        served
+    }
+    /// Ends the provider; returns served requests and rejected handshakes.
+    fn finish_with_rejections(mut self) -> (Vec<Value>, usize) {
         let mut done = std::net::TcpStream::connect(("127.0.0.1", self.port)).unwrap();
         done.write_all(b"DONE").unwrap();
         drop(done);
         let mut served = Vec::new();
+        let mut rejected = 0;
         loop {
             let mut line = String::new();
             assert!(
@@ -241,6 +248,10 @@ impl Provider {
                 assert_eq!(value["requests"].as_u64().unwrap() as usize, served.len());
                 break;
             }
+            if value["handshake_rejected"] == true {
+                rejected += 1;
+                continue;
+            }
             assert_eq!(
                 value["authorization"], true,
                 "the synthetic credential is bound to the fixture origin"
@@ -248,7 +259,7 @@ impl Provider {
             served.push(value);
         }
         assert!(self.child.wait().unwrap().success(), "provider must finish");
-        served
+        (served, rejected)
     }
 }
 
@@ -684,4 +695,115 @@ fn disabled_persistence_never_creates_a_store() {
             "{flags:?} must not create a store"
         );
     }
+}
+
+/// The real `sr` binary against the fixture provider. The fixture CA is
+/// trusted only through `SSL_CERT_FILE`, the standard trusted-environment
+/// root override; endpoint, key and consent come from the environment and
+/// trusted user configuration exactly as a user supplies them.
+fn run_sr(
+    f: &Fixture,
+    provider: &Provider,
+    trust_fixture: bool,
+    request: &str,
+) -> (Option<i32>, Value) {
+    let ca = f.root.join("fixture-ca.pem");
+    std::fs::write(&ca, include_bytes!("fixtures/jev-tls/ca.pem")).unwrap();
+    let mut command = Command::new(env!("CARGO_BIN_EXE_sr"));
+    command
+        .env_clear()
+        .env("HOME", f.root.join("home"))
+        .env("XDG_CONFIG_HOME", f.root.join("config"))
+        .env("XDG_CACHE_HOME", f.cache_dir())
+        .env("TYPESAFE_API_KEY", "synthetic-acceptance-canary")
+        .env(
+            "TYPESAFE_ENDPOINT",
+            format!("https://localhost:{}", provider.port),
+        )
+        .current_dir(f.workspace())
+        .args([
+            "rank",
+            "--context",
+            f.context_in("session-1", request).to_str().unwrap(),
+            "--json",
+        ]);
+    if trust_fixture {
+        command.env("SSL_CERT_FILE", &ca);
+    }
+    let output = command.output().unwrap();
+    let text = String::from_utf8_lossy(&output.stdout).into_owned()
+        + &String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !text.contains("synthetic-acceptance-canary"),
+        "the key never reaches output"
+    );
+    (
+        output.status.code(),
+        serde_json::from_slice(&output.stdout).unwrap(),
+    )
+}
+
+#[test]
+fn the_sr_binary_ranks_over_real_tls_and_serves_its_repeat_from_cache() {
+    let f = Fixture::new(CONSENT);
+    std::fs::create_dir_all(f.root.join("home")).unwrap();
+    let provider = Provider::start(&f, "useful", &[]);
+    let (code, first) = run_sr(&f, &provider, true, TASK);
+    let (repeat_code, repeat) = run_sr(&f, &provider, true, TASK);
+    let served = provider.finish();
+    assert_eq!(code, Some(0), "{first}");
+    assert_eq!(first["decision"], "ranked", "{first}");
+    assert_eq!(usage(&first), (2, 2, 220, 55));
+    assert_eq!(
+        stages(&served),
+        ["wide", "rerank"],
+        "the repeat sends nothing"
+    );
+    assert_eq!(repeat_code, Some(0), "{repeat}");
+    assert_eq!(repeat["skills"], first["skills"]);
+    assert_eq!(repeat["cache"]["hit"], true);
+    assert_eq!(usage(&repeat), (0, 0, 0, 0));
+    let store = f.cache_dir().join("sr").join("cache.sqlite3");
+    assert_eq!(
+        std::fs::metadata(store).unwrap().mode() & 0o7777,
+        0o600,
+        "the platform cache store is owner-only"
+    );
+}
+
+#[test]
+fn the_sr_binary_reports_a_provider_refusal_with_its_usage() {
+    let f = Fixture::new(CONSENT);
+    std::fs::create_dir_all(f.root.join("home")).unwrap();
+    let provider = Provider::start(&f, "unauthorized", &[]);
+    let (code, value) = run_sr(&f, &provider, true, TASK);
+    assert_eq!(stages(&provider.finish()), ["wide"]);
+    assert_eq!(code, Some(4), "{value}");
+    assert_eq!(value["decision"], "unavailable");
+    assert_eq!(value["error"]["kind"], "authentication");
+    assert!(
+        value["event_id"].is_string(),
+        "a full decision after admission"
+    );
+    assert_eq!(value["usage"]["requests"], 1);
+}
+
+#[test]
+fn the_sr_binary_never_trusts_the_fixture_without_the_trusted_root() {
+    let f = Fixture::new(CONSENT);
+    std::fs::create_dir_all(f.root.join("home")).unwrap();
+    let provider = Provider::start(&f, "useful", &[]);
+    let (code, value) = run_sr(&f, &provider, false, TASK);
+    let (served, rejected) = provider.finish_with_rejections();
+    assert!(
+        served.is_empty(),
+        "no request crosses an untrusted connection"
+    );
+    assert_eq!(
+        rejected, 1,
+        "one attempt; TLS verification is never retried"
+    );
+    assert_eq!(code, Some(4), "{value}");
+    assert_eq!(value["decision"], "unavailable");
+    assert_eq!(value["error"]["kind"], "network-failure");
 }

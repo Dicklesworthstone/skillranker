@@ -109,7 +109,13 @@ while True:
     if connection.recv(4, socket.MSG_PEEK) == b"DONE":
         connection.close()
         break
-    stream = context.wrap_socket(connection, server_side=True)
+    try:
+        stream = context.wrap_socket(connection, server_side=True)
+    except (ssl.SSLError, ConnectionResetError):
+        # A client that does not trust the fixture CA ends the handshake.
+        emit({"handshake_rejected": True})
+        connection.close()
+        continue
     fields, request, length = read_request(stream)
     questions = request["questions"]
     stage = "wide" if "which" in questions else "rerank" if "rerank" in questions else "other"
