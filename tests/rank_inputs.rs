@@ -290,3 +290,22 @@ fn offline_ranking_without_a_cached_result_is_a_cache_miss() {
     assert_eq!(output.status.code(), Some(8), "{value}");
     assert_eq!(value["error"]["kind"], "network-denied");
 }
+
+#[test]
+fn shared_ranking_flags_reach_the_rank_command() {
+    let f = Fixture::new();
+    f.context("context.json", &"error: ".repeat(400));
+    let base = ["rank", "--context", "context.json", "--dry-run", "--json"];
+    let standard = dry_run_request_bytes(&f.run(&base));
+    // The registry-driven CLI flag narrows disclosure like trusted config does.
+    let minimal =
+        dry_run_request_bytes(&f.run(&[&base[..], &["--context-profile", "minimal"]].concat()));
+    assert!(
+        minimal < standard,
+        "minimal {minimal} vs standard {standard}"
+    );
+    // Documented bounds hold at the CLI layer too.
+    let output = f.run(&[&base[..], &["--top", "0"]].concat());
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(output.status.code(), Some(2), "{value}");
+}
