@@ -12,6 +12,12 @@ SkillRanker captures and normalizes session history into an internal, privacy-pr
 - The latest user request appears **once and only once** in `latest_user_request`.
 - Older conversation turns and tool events appear in `recent_messages`.
 - If an event in `events` shares identity with `current_request.event_id`, it is strictly omitted from `recent_messages` to prevent duplicate representation of the active prompt.
+- For a native Claude transcript, the latest user request is the latest prompt the user submitted. Claude also writes `user` records the user never typed. The native parser marks these as system context: they stay in bounded history but never become the request. They are:
+  - records flagged `isMeta` or `isCompactSummary`;
+  - records whose `promptSource` is `system`, or whose `origin.kind` is not `human`;
+  - unflagged interrupt markers and `<local-command-stdout>`/`<local-command-stderr>` output.
+
+  These are unverified harness conventions. Records without such marks keep their user role.
 
 ### Invariant 2: Context Budget and Reservation Hierarchy
 - The overall context budget is capped at **12,000 Unicode scalar values** (`RENDERED_CONTEXT_SCALARS`) and at most **12 logical messages** (`RECENT_NORMALIZED_MESSAGES`).

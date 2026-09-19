@@ -4,6 +4,11 @@
 
 ### Fixed
 
+- `sr rank` on a Claude transcript ranks the latest prompt the user
+  submitted. Claude also writes `user` records nobody typed: injected meta
+  content, compaction summaries, task notifications, interrupt markers and
+  local command output. About one real session in six ended with one, and
+  rank took it as the request. Such records are now kept as context only.
 - A Claude transcript read only in part now says so. Reading just the
   bounded 2 MiB tail sets `quality.history_windowed`. An unfinished last
   record, unread backlog, oversized or duplicate-key records, or tool results

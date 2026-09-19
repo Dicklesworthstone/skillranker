@@ -399,3 +399,62 @@ fn descriptor_bound_snapshot_detects_path_traversal() {
     assert_eq!(err, JsonlError::UnsafePath);
     assert!(invocation.shutdown());
 }
+
+#[test]
+fn claude_records_the_user_did_not_submit_are_context_not_requests() {
+    use skillranker::context::{EventKind, Role};
+    let user = |extra: serde_json::Value, text: &str| {
+        let mut record = json!({"type": "user", "uuid": "u-1",
+                                "message": {"role": "user", "content": text}});
+        record
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        parse(record).unwrap()
+    };
+    for (extra, text) in [
+        (
+            json!({"isMeta": true}),
+            "Base directory for this skill: ...",
+        ),
+        (
+            json!({"isCompactSummary": true}),
+            "This session is being continued",
+        ),
+        (
+            json!({"promptSource": "system"}),
+            "A background task finished.",
+        ),
+        (
+            json!({"origin": {"kind": "task-notification"}}),
+            "Task done.",
+        ),
+        (
+            json!({"origin": {"kind": "auto-continuation"}}),
+            "Continue.",
+        ),
+        (json!({}), "[Request interrupted by user]"),
+        (
+            json!({}),
+            "<local-command-stdout>Login successful</local-command-stdout>",
+        ),
+    ] {
+        let event = user(extra.clone(), text);
+        assert_eq!(event.role, Role::System, "{extra} {text}");
+        assert_eq!(event.kind, EventKind::Message);
+        assert_eq!(event.text.as_str(), text, "the context is kept");
+    }
+    // Submitted prompts, and older records without marks, stay user messages.
+    for extra in [
+        json!({"promptSource": "typed", "origin": {"kind": "human"}}),
+        json!({"promptSource": "queued"}),
+        json!({"isMeta": false}),
+        json!({}),
+    ] {
+        assert_eq!(
+            user(extra.clone(), "Fix the test.").role,
+            Role::User,
+            "{extra}"
+        );
+    }
+}

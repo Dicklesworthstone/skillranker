@@ -424,18 +424,53 @@ fn event_from_value(value: &Value) -> Option<NormalizedEvent> {
     }
 
     let parsed = parse_native_content(object, default_role, default_kind)?;
+    // A user message the user did not submit is context, never the request.
+    let role = if parsed.role == Role::User
+        && parsed.kind == EventKind::Message
+        && injected_user_record(object, &parsed.text)
+    {
+        Role::System
+    } else {
+        parsed.role
+    };
     Some(NormalizedEvent {
         event_id,
         parent_id,
         turn_id,
         agent_id,
         branch_id,
-        role: parsed.role,
+        role,
         kind: parsed.kind,
         timestamp_unix_ms,
         text: PrivateText::new(parsed.text),
         tool: parsed.tool,
     })
+}
+
+/// A Claude `user` record that is not a prompt the user submitted:
+/// - injected meta content, such as skill bodies, scheduled prompts and
+///   caveats;
+/// - a compaction summary;
+/// - a message whose `promptSource` is `system`, or whose `origin.kind` is
+///   not `human` (task notifications, auto-continuations, peers);
+/// - an interrupt marker or local command output.
+///
+/// These are unverified harness conventions, so records without such marks
+/// stay user messages.
+fn injected_user_record(object: &serde_json::Map<String, Value>, text: &str) -> bool {
+    let flagged = |name: &str| object.get(name).and_then(Value::as_bool) == Some(true);
+    let origin = object
+        .get("origin")
+        .and_then(|origin| origin.get("kind"))
+        .and_then(Value::as_str);
+    let text = text.trim_start();
+    flagged("isMeta")
+        || flagged("isCompactSummary")
+        || object.get("promptSource").and_then(Value::as_str) == Some("system")
+        || origin.is_some_and(|kind| kind != "human")
+        || text.starts_with("[Request interrupted by user")
+        || text.starts_with("<local-command-stdout>")
+        || text.starts_with("<local-command-stderr>")
 }
 
 fn map_native_type(native_type: &str) -> (Role, EventKind) {
