@@ -672,6 +672,8 @@ fn bare_rank_needs_latest_to_choose_between_sessions() {
     assert_eq!(code, Some(0), "{value}");
     assert_eq!(value["warnings"][0]["kind"], "latest-session", "{value}");
     assert_eq!(value["warnings"][0]["count"], 2);
+    let message = value["warnings"][0]["message"].as_str().unwrap();
+    assert!(message.contains("by recorded time"), "{message}");
     // Only the --latest run sent anything, and it sent the newer session.
     assert_eq!(stages(&served), ["wide", "rerank"]);
     let body = served[0]["body"].as_str().unwrap();

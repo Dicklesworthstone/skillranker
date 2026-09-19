@@ -436,7 +436,7 @@ async fn rank_once(
         SelectionReason::LatestRequested => Some(json!({
             "kind": "latest-session",
             "count": source_selection.candidate_count(),
-            "message": "--latest chose the most recently modified of this workspace's Claude sessions; recency does not prove it is the live session",
+            "message": "--latest chose the most recently active of this workspace's Claude sessions by recorded time; recency does not prove it is the live session",
         })),
         SelectionReason::Explicit | SelectionReason::InteractiveChoice => None,
     };
