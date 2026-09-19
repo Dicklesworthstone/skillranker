@@ -171,7 +171,10 @@ impl ProcessInvocation {
     }
 
     pub fn from_clock(clock: EntryClock) -> Result<Self, RuntimeError> {
-        Self::from_clock_with_blocking_pool(clock, 1, 4)
+        // An invocation need not submit a blocking leaf. Keep the pool
+        // available, but let Asupersync start its first worker on submission
+        // instead of spending the entry budget starting an idle thread.
+        Self::from_clock_with_blocking_pool(clock, 0, 4)
     }
 
     pub fn from_clock_with_blocking_pool(
@@ -180,7 +183,7 @@ impl ProcessInvocation {
         max_threads: usize,
     ) -> Result<Self, RuntimeError> {
         let runtime = RuntimeBuilder::current_thread()
-            .blocking_threads(min_threads.max(1), max_threads.max(1))
+            .blocking_threads(min_threads, max_threads.max(1))
             .build()
             .map_err(|_| RuntimeError::RuntimeUnavailable)?;
         Ok(Self { clock, runtime })

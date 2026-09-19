@@ -114,6 +114,44 @@ fn current_thread_runtime_owns_request_cx() {
     assert!(invocation.shutdown());
 }
 
+#[test]
+fn default_blocking_pool_starts_on_demand_and_drains() {
+    use skillranker::blocking::{BlockingLeafKind, run_blocking_leaf};
+
+    let invocation = ProcessInvocation::enter().unwrap();
+    let pool = invocation.runtime().blocking_handle().unwrap();
+    assert_eq!(pool.active_threads(), 0, "idle invocation spawned a worker");
+    assert_eq!(pool.current_max_threads(), 4);
+    let cx = invocation.request_cx().unwrap();
+    let outcome = run_blocking_leaf(
+        &invocation,
+        &cx,
+        BlockingLeafKind::Filesystem,
+        false,
+        || 42_u8,
+    )
+    .unwrap();
+    assert_eq!(outcome.value, 42);
+    assert!(
+        pool.active_threads() >= 1,
+        "first leaf never started a worker"
+    );
+    assert!(invocation.shutdown());
+    assert_eq!(pool.active_threads(), 0, "shutdown left a worker alive");
+}
+
+#[test]
+fn explicit_blocking_pool_keeps_its_requested_eager_workers() {
+    let invocation =
+        ProcessInvocation::from_clock_with_blocking_pool(EntryClock::capture().unwrap(), 2, 3)
+            .unwrap();
+    let pool = invocation.runtime().blocking_handle().unwrap();
+    assert_eq!(pool.active_threads(), 2);
+    assert_eq!(pool.current_max_threads(), 3);
+    assert!(invocation.shutdown());
+    assert_eq!(pool.active_threads(), 0);
+}
+
 #[cfg(unix)]
 #[test]
 fn user_cancel_is_the_signal_path() {
