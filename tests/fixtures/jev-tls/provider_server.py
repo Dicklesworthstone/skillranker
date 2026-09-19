@@ -154,6 +154,7 @@ while True:
         stream.sendall((f"HTTP/1.1 {status}\r\nContent-Type: application/json\r\n{extra}"
                         f"Content-Length: {len(body)}\r\nConnection: close\r\n\r\n").encode()
                        + body)
+        stream.settimeout(0.05)
         stream.recv(1)
     except (ssl.SSLError, ConnectionResetError, BrokenPipeError, socket.timeout):
         pass  # A client past its deadline may already have closed the socket.
