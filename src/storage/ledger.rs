@@ -1430,9 +1430,14 @@ impl fmt::Display for FeedbackError {
                 }
             }
             Self::OriginalSkillNotFound(id) => {
-                write!(f, "original skill '{id}' not found in historical event context")
+                write!(
+                    f,
+                    "original skill '{id}' not found in historical event context"
+                )
             }
-            Self::IdenticalSkills => write!(f, "original and alternative skill IDs must be distinct"),
+            Self::IdenticalSkills => {
+                write!(f, "original and alternative skill IDs must be distinct")
+            }
             Self::InvalidSkillId(id) => write!(f, "invalid skill ID '{id}'"),
             Self::RevisionConflict { expected, actual } => {
                 write!(
@@ -3872,9 +3877,11 @@ impl LedgerStore {
                         mode_channel: row.get(5)?,
                         policy_version: row.get(6)?,
                         schema_version: s_ver as u32,
-                        decision: DecisionKind::parse_str(&d_str).unwrap_or(DecisionKind::Unavailable),
+                        decision: DecisionKind::parse_str(&d_str)
+                            .unwrap_or(DecisionKind::Unavailable),
                         reason: row.get(9)?,
-                        exposure_state: ExposureState::parse_str(&e_str).unwrap_or(ExposureState::Unknown),
+                        exposure_state: ExposureState::parse_str(&e_str)
+                            .unwrap_or(ExposureState::Unknown),
                         elapsed_ms: elapsed as u64,
                         created_at_unix_ms: created as u64,
                         input_tokens: in_tok.map(|t| t as u64),
@@ -4006,7 +4013,9 @@ impl LedgerStore {
             return Err(FeedbackError::InvalidSkillId(req.original_skill_id.clone()));
         }
         if !bounded_metadata(&req.alternative_skill_id, 256) {
-            return Err(FeedbackError::InvalidSkillId(req.alternative_skill_id.clone()));
+            return Err(FeedbackError::InvalidSkillId(
+                req.alternative_skill_id.clone(),
+            ));
         }
 
         let tx = self
@@ -4044,8 +4053,7 @@ impl LedgerStore {
             return Err(FeedbackError::MissingSnapshot);
         }
 
-        let members = Self::parse_snapshot_members(&snap)
-            .map_err(FeedbackError::Store)?;
+        let members = Self::parse_snapshot_members(&snap).map_err(FeedbackError::Store)?;
 
         // 3. Resolve original skill
         let orig_in_snap = members.iter().any(|m| m.skill_id == req.original_skill_id);
@@ -4061,10 +4069,14 @@ impl LedgerStore {
             true
         };
         if !orig_in_cands {
-            return Err(FeedbackError::OriginalSkillNotFound(req.original_skill_id.clone()));
+            return Err(FeedbackError::OriginalSkillNotFound(
+                req.original_skill_id.clone(),
+            ));
         }
 
-        let alt_member = members.iter().find(|m| m.skill_id == req.alternative_skill_id);
+        let alt_member = members
+            .iter()
+            .find(|m| m.skill_id == req.alternative_skill_id);
 
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -4166,9 +4178,9 @@ impl LedgerStore {
 
                 let orig_jdg_id = match orig_existing {
                     Some((id, ver)) => {
-                        let new_ver = ver.checked_add(1).ok_or(FeedbackError::Store(
-                            StoreError::GenerationExhausted,
-                        ))?;
+                        let new_ver = ver
+                            .checked_add(1)
+                            .ok_or(FeedbackError::Store(StoreError::GenerationExhausted))?;
                         tx.execute(
                             "UPDATE judgments SET label = ?1, label_version = ?2, provenance = ?3, created_at_unix_ms = ?4 WHERE judgment_id = ?5",
                             params![
@@ -4205,9 +4217,9 @@ impl LedgerStore {
 
                 let alt_jdg_id = match alt_existing {
                     Some((id, ver)) => {
-                        let new_ver = ver.checked_add(1).ok_or(FeedbackError::Store(
-                            StoreError::GenerationExhausted,
-                        ))?;
+                        let new_ver = ver
+                            .checked_add(1)
+                            .ok_or(FeedbackError::Store(StoreError::GenerationExhausted))?;
                         tx.execute(
                             "UPDATE judgments SET label = ?1, label_version = ?2, provenance = ?3, created_at_unix_ms = ?4 WHERE judgment_id = ?5",
                             params![
@@ -4345,9 +4357,9 @@ impl LedgerStore {
         let provenance = req.provenance.clone().unwrap_or_else(|| "user".to_string());
         let judgment_id = match existing {
             Some((id, ver)) => {
-                let new_ver = ver.checked_add(1).ok_or(FeedbackError::Store(
-                    StoreError::GenerationExhausted,
-                ))?;
+                let new_ver = ver
+                    .checked_add(1)
+                    .ok_or(FeedbackError::Store(StoreError::GenerationExhausted))?;
                 tx.execute(
                     "UPDATE judgments SET label = ?1, label_version = ?2, provenance = ?3, created_at_unix_ms = ?4 WHERE judgment_id = ?5",
                     params![
@@ -4459,7 +4471,8 @@ impl LedgerStore {
             return Ok((false, self.stamp));
         }
 
-        let current_state = ExposureState::parse_str(&current_state_str).unwrap_or(ExposureState::Unknown);
+        let current_state =
+            ExposureState::parse_str(&current_state_str).unwrap_or(ExposureState::Unknown);
         if current_state == ExposureState::Emitted || current_state == ExposureState::Acknowledged {
             return Ok((true, self.stamp));
         }
@@ -4579,21 +4592,20 @@ pub fn submit_feedback(
         BlockingLeafKind::Database,
         false,
         move || {
-            let mut store =
-                match open_blocking(clock, &child, LedgerAccess::ExistingOnly, location)
-                    .map_err(FeedbackError::Store)?
-                {
-                    LedgerOpen::Ready(store) => *store,
-                    LedgerOpen::Disabled => {
-                        return Err(FeedbackError::Store(StoreError::Permissions));
-                    }
-                    LedgerOpen::Missing => {
-                        return Err(FeedbackError::Store(StoreError::Missing));
-                    }
-                    LedgerOpen::ReadOnly(_) => {
-                        return Err(FeedbackError::Store(StoreError::Permissions));
-                    }
-                };
+            let mut store = match open_blocking(clock, &child, LedgerAccess::ExistingOnly, location)
+                .map_err(FeedbackError::Store)?
+            {
+                LedgerOpen::Ready(store) => *store,
+                LedgerOpen::Disabled => {
+                    return Err(FeedbackError::Store(StoreError::Permissions));
+                }
+                LedgerOpen::Missing => {
+                    return Err(FeedbackError::Store(StoreError::Missing));
+                }
+                LedgerOpen::ReadOnly(_) => {
+                    return Err(FeedbackError::Store(StoreError::Permissions));
+                }
+            };
             let stamp = store.stamp();
             let (outcome, _) = match req {
                 FeedbackRequest::Paired(paired) => {
@@ -4682,7 +4694,8 @@ pub fn record_emission(
                 }
             };
             let stamp = store.stamp();
-            let (recorded, _) = store.record_emission(clock, &child, &event_id, bytes_written, stamp)?;
+            let (recorded, _) =
+                store.record_emission(clock, &child, &event_id, bytes_written, stamp)?;
             Ok(recorded)
         },
     )

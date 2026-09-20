@@ -130,11 +130,12 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "sr-platform-path-{}-{nonce}",
-            std::process::id()
-        ));
-        std::fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
+        let root =
+            std::env::temp_dir().join(format!("sr-platform-path-{}-{nonce}", std::process::id()));
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&root)
+            .unwrap();
         let alias = root.join("user-alias");
         symlink("/private/tmp", &alias).unwrap();
         let expanded = storage_path(alias.clone());

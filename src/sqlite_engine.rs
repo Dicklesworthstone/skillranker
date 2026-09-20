@@ -108,7 +108,14 @@ mod tests {
 
     #[test]
     fn minimum_is_not_a_substitute_for_the_exact_numeric_version() {
-        for number in [0, 3_050_004, 3_051_002, MIN_SQLITE_VERSION, 3_053_001, 3_053_003] {
+        for number in [
+            0,
+            3_050_004,
+            3_051_002,
+            MIN_SQLITE_VERSION,
+            3_053_001,
+            3_053_003,
+        ] {
             assert!(matches!(
                 validate_engine(number, QUALIFIED_SQLITE_VERSION, QUALIFIED_SQLITE_SOURCE_ID),
                 Err(EngineQualificationError::Unqualified)
