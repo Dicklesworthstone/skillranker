@@ -217,9 +217,15 @@ class InstallerTests(unittest.TestCase):
         archive = self.archive()
         env = dict(self.env, COSIGN_PASSWORD="")
         key = self.root / "test-key"
+        sign_help = subprocess.run(["cosign", "sign-blob", "--help"], env=env,
+                                   capture_output=True, check=True, timeout=10).stdout
+        # Cosign 3 defaults to network-backed signing configuration. This test
+        # signs with its own local key and must stay offline on either version.
+        local_signing = (["--use-signing-config=false"]
+                         if b"--use-signing-config" in sign_help else [])
         for args in [
             ["cosign", "generate-key-pair", "--output-key-prefix", str(key)],
-            ["cosign", "sign-blob", "--key", str(key)+".key", "--tlog-upload=false",
+            ["cosign", "sign-blob", *local_signing, "--key", str(key)+".key", "--tlog-upload=false",
              "--bundle", str(archive)+".sigstore.json", str(archive)],
         ]:
             subprocess.run(args, env=env, capture_output=True, check=True, timeout=30)
