@@ -84,9 +84,14 @@ is no runtime dependency on the source projects.
   verbatim in [`LICENSE`](LICENSE).
 - **Local copies and adaptations** (local file: `src/evaluation/sampling.rs`):
   - Adapted `Pcg64Dxsm` 128-bit state generator with DXSM output permutation.
-  - Adapted Lemire / NumPy rejection sampling for unbiased bounded integer generation (`bounded_u64`).
-  - Adapted Floyd's algorithm without replacement for `choice_indices(pop_size, size, false)`.
+  - Uses rejection followed by modulo reduction for unbiased bounded integers
+    (`bounded_u64`), rather than NumPy's multiply-high bounded draws.
+  - Uses a custom 64-bit seed mapping, not NumPy's SeedSequence initialization;
+    high-level seeded samples do not claim NumPy bit parity.
+  - Adapted Floyd's subset selection followed by Fisher-Yates shuffling for
+    ordered draws without replacement (`choice_indices(pop_size, size, false)`).
+    `SAMPLING_VERSION` identifies this ordered stream as
+    `sr-evaluation-sampling-v2`; historical unshuffled draws differ.
   - Adapted Fisher-Yates shuffle for `shuffle_slice`.
   - **Removed** ndarray, rayon, and getrandom dependencies: pure deterministic safe Rust.
 - **Consumers:** the evaluation module (`src/evaluation/sampling.rs`).
-
