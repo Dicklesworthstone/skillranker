@@ -217,6 +217,7 @@ pub async fn run(
             .spawn()
             .map_err(|_| SubprocessError::Spawn)?;
         let mut owner = Owner {
+            clock: *clock,
             group: child.process_group_id().ok_or(SubprocessError::Cleanup)?,
             child,
             reaped: false,
@@ -322,6 +323,7 @@ fn check_work(cx: &Cx, clock: &EntryClock) -> Result<(), SubprocessError> {
 }
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 struct Owner {
+    clock: EntryClock,
     child: asupersync::process::Child,
     group: i32,
     reaped: bool,
@@ -333,15 +335,38 @@ impl Owner {
         if self.killed {
             return Ok(());
         }
-        match nix::sys::signal::killpg(
-            nix::unistd::Pid::from_raw(self.group),
-            nix::sys::signal::Signal::SIGKILL,
-        ) {
-            Ok(()) | Err(nix::errno::Errno::ESRCH) => {
-                self.killed = true;
-                Ok(())
+        let retry_until = std::time::Instant::now()
+            + Duration::from_millis(self.clock.remaining_until_expiry().as_millis().min(25));
+        loop {
+            match nix::sys::signal::killpg(
+                nix::unistd::Pid::from_raw(self.group),
+                nix::sys::signal::Signal::SIGKILL,
+            ) {
+                Ok(()) | Err(nix::errno::Errno::ESRCH) => {
+                    self.killed = true;
+                    return Ok(());
+                }
+                Err(nix::errno::Errno::EPERM) if !self.reaped => {
+                    // Darwin reports EPERM for a group containing only an exited,
+                    // unreaped child. Reap only an observed exit, then retry the
+                    // group signal; an actual permission failure stays an error.
+                    match self.child.try_wait() {
+                        Ok(Some(_)) => {
+                            self.reaped = true;
+                        }
+                        Ok(None) if std::time::Instant::now() < retry_until => {
+                            // An exiting Darwin process can briefly deny signals
+                            // before waitpid reports its status. Bound the retry by
+                            // both the cleanup deadline and a 25 ms local ceiling.
+                            std::thread::sleep(Duration::from_millis(1).min(
+                                retry_until.saturating_duration_since(std::time::Instant::now()),
+                            ));
+                        }
+                        _ => return Err(SubprocessError::Cleanup),
+                    }
+                }
+                Err(_) => return Err(SubprocessError::Cleanup),
             }
-            Err(_) => Err(SubprocessError::Cleanup),
         }
     }
     fn cleanup(&mut self) -> Result<(), SubprocessError> {
