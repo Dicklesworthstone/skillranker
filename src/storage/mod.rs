@@ -781,10 +781,9 @@ impl CacheStore {
                 let expires = fence
                     .as_ref()
                     .map(|(_, leader)| leader.lease_expires_at_unix_ms);
-                if fence
-                    .as_ref()
-                    .is_some_and(|(path, _)| path != &self.directory.database_path())
-                {
+                if fence.as_ref().is_some_and(|(path, _)| {
+                    platform::storage_path(path.clone()) != self.directory.database_path()
+                }) {
                     return Err(StoreError::LeaseUnavailable);
                 }
                 configure(&self.connection, clock, &child)?;
