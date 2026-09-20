@@ -385,6 +385,52 @@ and equality against the public synthetic fixture token; no suppressions or
 production credential comparisons were introduced. Other warnings covered
 assertions, fixture parsing and sockets whose closure the tests verify.
 
-Wide qualification remains blocked by the malformed provider response. The
-application continues to fail closed; no unsupported normalization, fallback
-ranking, smaller-capacity claim, or provider-internal diagnosis is asserted.
+Wide qualification was initially blocked by the measured 0.99 sum deficit.
+Following user direction, the application policy accepts and renormalizes
+Choice probability sums within a 0.1 tolerance while retaining raw values
+(commits `5ae2431` and `876b37b`).
+
+## Successful live maximum-shape qualification — September 19, 2026 UTC
+
+Under the authorized 0.1 distribution tolerance, a single authorized live
+re-check was executed by CopperWren on the maintainer host with explicit
+capacity consent (`SKILLRANKER_CAPACITY_CONSENT=1`). The maximum-shape
+pair passed strict production decoding at both stages.
+
+Exact provenance:
+- Source: `99de43e`, clean clone with no overlay, `--locked`,
+  `nightly-2026-08-31`, default Cargo features, x86_64-linux.
+- Built and run locally on the maintainer host so `TYPESAFE_API_KEY` never
+  left the machine.
+- Command: `SKILLRANKER_CAPACITY_CONSENT=1 <binary> --ignored --exact budgeted_live_capacity_shapes --nocapture`
+- Result: **1 passed; 0 failed; 12 filtered out; finished in 1.65s**.
+
+Per-stage receipt (no credentials or session data):
+
+| Stage | Questions | Request bytes | Request BLAKE3 | Model alias | Input tokens | Output tokens | Elapsed ms |
+|---|---|---|---|---|---|---|---|
+| wide | 6 | 60,521 | `6f9f49869467cc0dfdd0198cdc83a57dc2dbed5b17742c35dae932b11d30c84d` | `jev-latest` | 17,014 | 2,732 | 685 |
+| rerank | 33 | 90,388 | `8cabf7014cc3ed68d456394551ba8238d79450d1f02d36ce9c47e0c686ba0a0a` | `jev-latest` | 19,239 | 1,022 | 628 |
+
+Returned model BLAKE3: `852a1ee4113f64c6c68f982a6f528147eb6dcbd0cad8472774a34110c55ba5b5`
+for both stages (served by a single model instance).
+
+Both stages decoded strictly through `Request::decode_response` (the production
+codec), answers count matched questions count at both stages, and
+`AttemptAdmission` recorded exactly 2 sent attempts. At 90,388 bytes, the rerank
+request approaches the 96 KiB bound, qualifying the maximum-shape request/response
+pair.
+
+### Non-claims and boundaries
+
+1. **Synthetic data only**: Content was synthetic by construction ("An apple is a
+   fruit; a carrot is a vegetable. No real session data."); no real session
+   context was transmitted.
+2. **Capacity ceiling**: A single successful pair does not qualify provider
+   rate limits, SLA, or high-concurrency availability.
+3. **Shortlist selection**: The rerank shortlist was a fixed synthetic set for
+   codec verification, not an output of a production wide gate.
+4. **Diagnostic sums**: `budgeted_live_distribution_diagnostic` was omitted to
+   avoid exceeding the single authorized live test; exact float sums were not
+   logged beyond strict acceptance by the production decoder.
+

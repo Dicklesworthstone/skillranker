@@ -429,7 +429,7 @@ e2e_cases = ["full-transport-suite"]
 assertion_ids = ["p1_gate_passed"]
 platforms = ["linux"]
 features = []
-status = "planned"
+status = "executed"
 
 # ==============================================================================
 # Phase P2: Standalone Roster, Privacy and Quill Retrieval

@@ -1,17 +1,23 @@
 # Phase P1 Acceptance Gate: Transport & Runtime Readiness (`sr-roadmap-l1i.2.12`)
 
-## 1. Acceptance is pending
+## 1. Acceptance status
 
-The September 18 reality check reopened `sr-roadmap-l1i.2.10`,
-`sr-roadmap-l1i.2.12`, and their P1 parent. The original acceptance declaration
-exceeded the available evidence: an ordinary smoke test could pass without making
-a live request, and the recorded three-option example did not qualify provider
-capacity. See [the corrected live qualification scope](jev-contract-spike.md).
-
-The component tests below remain useful evidence at their individual boundaries.
-Their existence and prior pass summaries do not establish every embedded
-invariant or the full P1 gate. `tests/p1_gate.rs` checks selected local contracts;
-its name is not proof of live provider readiness.
+Phase P1 acceptance is supported by:
+1. **Live maximum-shape provider qualification** (`sr-roadmap-l1i.2.10`):
+   CopperWren executed the authorized live re-check at `99de43e` under the
+   0.1 distribution tolerance (`SKILLRANKER_CAPACITY_CONSENT=1`). The wide
+   (60,521 bytes, 6 questions) + rerank (90,388 bytes, 33 questions) pair
+   passed strict production decoding with 0 errors. See
+   [the live qualification receipt](jev-contract-spike.md).
+2. **Runtime constructor admission & bounded shutdown** (`sr-5n0b`):
+   SilentFinch added bounded production CLI finishing and runtime constructor
+   admission checks (`7d1dae5`, `241e228`, `ca94ad1`).
+3. **Transport shutdown & accounting** (`sr-roadmap-l1i.2.11`):
+   All 8 failure matrix unit/property tests and the E2E transport runner
+   passed; task is closed.
+4. **Comprehensive gate invariants** (`sr-roadmap-l1i.2.12`):
+   `tests/p1_gate.rs` verified all 9 transport, runtime, codec, retry,
+   accounting, and security invariants (`all_p1_invariants_verified` ok).
 
 ---
 
@@ -28,9 +34,9 @@ its name is not proof of live provider readiness.
 | `sr-roadmap-l1i.2.7` | Transport security & public WebPKI roots | `tests/jev_transport.rs` | Focused suite; prior result requires source-bound receipt |
 | `sr-roadmap-l1i.2.8` | Attempt budget accounting & single-use permits | `tests/jev_admission.rs` | Focused suite; prior result requires source-bound receipt |
 | `sr-roadmap-l1i.2.9` | Classified retries & deadline-bound backoff | `tests/jev_retry.rs` | Focused suite; prior result requires source-bound receipt |
-| `sr-roadmap-l1i.2.10` | Separately consented live Jev contract spike | `tests/jev_smoke.rs`, `docs/jev-contract-spike.md` | Open: bounded live and capacity qualification |
+| `sr-roadmap-l1i.2.10` | Separately consented live Jev contract spike | `tests/jev_smoke.rs`, `docs/jev-contract-spike.md` | Verified: live maximum-shape pair passed (99de43e receipt) |
 | `sr-roadmap-l1i.2.11` | End-to-end transport failure & shutdown matrix | `tests/transport_failures.rs`, `scripts/e2e/suites/transport.json` | Focused suite; prior result requires source-bound receipt |
-| `sr-roadmap-l1i.2.12` | Phase P1 comprehensive acceptance gate | `tests/p1_gate.rs` | Open: local assertions alone cannot accept P1 |
+| `sr-roadmap-l1i.2.12` | Phase P1 comprehensive acceptance gate | `tests/p1_gate.rs` | Executed: all 9 P1 invariants verified |
 
 ---
 
