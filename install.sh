@@ -206,7 +206,9 @@ PY
     if [[ -n "$COSIGN_KEY" ]]; then
         command -v cosign >/dev/null || die '--cosign-key requires cosign'
         [[ -f "$COSIGN_KEY" && -f "$archive.sigstore.json" ]] || die 'Trusted public key or required Sigstore bundle is missing'
-        probe cosign verify-blob --offline --key "$COSIGN_KEY" --bundle "$archive.sigstore.json" "$archive" >"$TEMP/signature.log" || die 'Sigstore verification failed'
+        # DSR uses an operator-trusted key; no Rekor service is required for
+        # this offline key-signature check. Do not claim transparency proof.
+        probe cosign verify-blob --offline --insecure-ignore-tlog=true --key "$COSIGN_KEY" --bundle "$archive.sigstore.json" "$archive" >"$TEMP/signature.log" || die 'Sigstore verification failed'
         ok 'DSR release signature verified with supplied trusted key'
     else
         warn 'Publisher signature not verified: no pinned release key is configured; use --cosign-key with a trusted DSR key.'
@@ -345,11 +347,11 @@ PY
         BACKUP="$DEST/sr.backup.$(date -u +%Y%m%dT%H%M%SZ).$$"
         cp -p "$DEST/sr" "$BACKUP"
         install -m 0755 "$BIN" "$TEMP/sr.ready"
-        mv -f "$TEMP/sr.ready" "$DEST/sr"
+        python3 -c 'import os,sys; os.replace(sys.argv[1], sys.argv[2])' "$TEMP/sr.ready" "$DEST/sr"
     fi
 else
     install -m 0755 "$BIN" "$TEMP/sr.ready"
-    mv "$TEMP/sr.ready" "$DEST/sr"
+    python3 -c 'import os,sys; os.replace(sys.argv[1], sys.argv[2])' "$TEMP/sr.ready" "$DEST/sr"
 fi
 ok "Installed $NEW_VERSION at $DEST/sr"
 
@@ -363,14 +365,17 @@ home = pathlib.Path.home()
 def report(text):
     if not quiet: print(text, file=sys.stderr)
 def write(path, text):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if path.is_symlink(): raise ValueError('Refusing symlink integration target')
-    if path.exists():
-        if path.read_text() == text: return 'already present'
-        return 'preserved existing file (configure manually)'
-    # Exclusive creation: never overwrite a raced-in user file.
-    with path.open('x') as f: f.write(text)
-    return 'created'
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.is_symlink(): return 'skipped symlink (configure manually)'
+        if path.exists():
+            if path.read_text() == text: return 'already present'
+            return 'preserved existing file (configure manually)'
+        # Exclusive creation: never overwrite a raced-in user file.
+        with path.open('x') as f: f.write(text)
+        return 'created'
+    except (OSError, UnicodeError):
+        return 'failed (binary installed; configure manually)'
 commands = [c['name'] for c in json.load(open(stage/'capabilities.json'))['commands']
             if c['status'] == 'implemented' and c['name'] not in ('help', 'version')]
 words = ' '.join(commands)
