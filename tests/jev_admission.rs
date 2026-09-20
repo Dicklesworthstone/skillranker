@@ -14,7 +14,8 @@
 //!   follower has no attempt of its own and cannot appear to have paid;
 //! - a discard before the wire is distinct from a failure on the wire.
 use skillranker::jev::{
-    AttemptAdmission, AttemptBudget, AttemptOutcome, CanonicalOrigin, RankingStage, Usage,
+    AttemptAdmission, AttemptBudget, AttemptFailure, AttemptOutcome, CanonicalOrigin, RankingStage,
+    Usage,
 };
 use skillranker::limits::DurationMillis;
 use skillranker::runtime::EntryClock;
@@ -84,7 +85,7 @@ fn a_sent_attempt_that_never_answered_keeps_unknown_cost() {
     let sent = permit.mark_sent().unwrap();
     admission.record_sent(&sent).unwrap();
     admission
-        .record_terminal_failure(&sent, "connection reset before any response")
+        .record_terminal_failure(&sent, AttemptFailure::Indeterminate("transient-io"))
         .unwrap();
 
     let attempts: Vec<_> = admission.attempts().collect();

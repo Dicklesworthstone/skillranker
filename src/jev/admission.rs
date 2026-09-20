@@ -22,6 +22,7 @@
 //!   `unavailable / request-budget` (exit code 4), distinct from relevance abstentions.
 
 use crate::jev::CanonicalOrigin;
+use crate::jev::client::{TransportError, TransportErrorKind};
 use crate::jev::codec::Usage;
 use crate::limits::{DEFAULT_HTTP_ATTEMPTS, DEFAULT_LOGICAL_REQUESTS, LimitError, MonotonicMillis};
 use crate::output::{CliExit, ErrorKind};
@@ -552,9 +553,9 @@ enum AttemptState {
     Finished,
 }
 
-/// What became of one admitted attempt. `Unknown` is deliberate: an attempt
-/// whose response never arrived is not a success and not a clean failure, and
-/// the ledger must not resolve that ambiguity on its behalf.
+/// What became of one admitted attempt. An attempt that was sent and never
+/// settled keeps `Sent`, which is not a success and not a clean failure; the
+/// ambiguity is carried in [`AttemptFailure`] rather than resolved here.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AttemptOutcome {
     Admitted,
@@ -577,6 +578,92 @@ impl AttemptOutcome {
     }
 }
 
+/// Why an attempt ended without a validated response, in the bounded terms a
+/// ledger row records. The distinction is not cosmetic: a determinate failure
+/// establishes that the attempt cost nothing beyond what is already counted,
+/// while an indeterminate one says bytes may have reached Jev and the cost is
+/// unknown. Every variant is a closed enum or a status integer, never a response
+/// body, endpoint, credential or library error string.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AttemptFailure {
+    /// Jev answered with a terminal HTTP status.
+    Http(u16),
+    /// A determinate local refusal or validation failure, named by a stable
+    /// kebab-case kind. No provider answer was needed to establish it.
+    Local(&'static str),
+    /// Sent, then no validated answer. The disposition and the cost are both
+    /// genuinely unknown, and a reader must not read this as "did not arrive".
+    Indeterminate(&'static str),
+}
+
+impl AttemptFailure {
+    /// The stable kind string recorded for this failure.
+    pub const fn kind(self) -> &'static str {
+        match self {
+            Self::Http(_) => "http-status",
+            Self::Local(kind) | Self::Indeterminate(kind) => kind,
+        }
+    }
+
+    /// The HTTP status, present only when the provider actually answered.
+    pub const fn http_status(self) -> Option<u16> {
+        match self {
+            Self::Http(status) => Some(status),
+            Self::Local(_) | Self::Indeterminate(_) => None,
+        }
+    }
+
+    /// Whether the outcome itself is established.
+    pub const fn is_determinate(self) -> bool {
+        !matches!(self, Self::Indeterminate(_))
+    }
+
+    /// Translate a transport failure into the terms an attempt row records.
+    ///
+    /// `http_attempt_started` is the only evidence available about whether bytes
+    /// may have reached Jev, so a failure that entered the HTTP client without
+    /// producing a status stays indeterminate: calling it a clean local failure
+    /// would assert zero provider cost that nothing here establishes.
+    pub const fn from_transport(error: &TransportError) -> Self {
+        match error.kind {
+            TransportErrorKind::HttpStatus(status) => Self::Http(status),
+            kind => {
+                let name = transport_failure_kind(kind);
+                if error.http_attempt_started {
+                    Self::Indeterminate(name)
+                } else {
+                    Self::Local(name)
+                }
+            }
+        }
+    }
+}
+
+/// Stable kebab-case identifiers for recorded transport failures. Closed set:
+/// nothing here is derived from provider text, a response body or a library message.
+const fn transport_failure_kind(kind: TransportErrorKind) -> &'static str {
+    match kind {
+        TransportErrorKind::InvalidConfiguration => "invalid-configuration",
+        TransportErrorKind::Admission(_) => "provider-admission-refused",
+        TransportErrorKind::CredentialOriginMismatch => "credential-origin-mismatch",
+        TransportErrorKind::Request(_) => "request-encode",
+        TransportErrorKind::Response(_) => "response-decode",
+        TransportErrorKind::Cancelled => "cancelled",
+        TransportErrorKind::Deadline => "deadline",
+        TransportErrorKind::Dns => "dns",
+        TransportErrorKind::Connect => "connect",
+        TransportErrorKind::TransientIo => "transient-io",
+        TransportErrorKind::Tls => "tls",
+        TransportErrorKind::Protocol => "protocol",
+        TransportErrorKind::BodyTooLarge => "body-too-large",
+        TransportErrorKind::UnsupportedEncoding => "unsupported-encoding",
+        TransportErrorKind::InvalidContentType => "invalid-content-type",
+        TransportErrorKind::Redirect => "redirect",
+        // Carried by `AttemptFailure::Http`, which keeps the status itself.
+        TransportErrorKind::HttpStatus(_) => "http-status",
+    }
+}
+
 /// One attempt's bounded provenance: who owned it, which stage it served, when
 /// it moved, and what it cost. Aggregate counters cannot answer "which attempt
 /// incurred this token spend", which is what recording attempt ownership needs.
@@ -595,6 +682,8 @@ pub struct AttemptProvenance {
     /// Present only for an attempt that returned usage. A sent attempt with no
     /// response keeps `None`: absent is not zero.
     pub usage: Option<Usage>,
+    /// Present only for an attempt that ended without a validated response.
+    pub failure: Option<AttemptFailure>,
 }
 
 #[derive(Clone, Debug)]
@@ -811,6 +900,7 @@ impl AttemptAdmission {
                     settled_at: None,
                     outcome: AttemptOutcome::Admitted,
                     usage: None,
+                    failure: None,
                 },
             },
         );
@@ -877,7 +967,7 @@ impl AttemptAdmission {
         if total.is_none() {
             // Keep the earlier exact known counts; this attempt remains unknown
             // rather than silently saturating and advertising an exact total.
-            self.record_terminal_failure(sent, "usage counter overflow")?;
+            self.record_terminal_failure(sent, AttemptFailure::Local("usage-counter-overflow"))?;
             return Err(AdmissionError::UsageOverflow);
         }
         self.receipt.record_success(usage);
@@ -901,10 +991,12 @@ impl AttemptAdmission {
     /// Record a terminal failure on an in-flight attempt that was already sent.
     ///
     /// Preserves all previously accumulated known tokens and adds an unknown-usage marker.
+    /// `failure` is kept on the attempt's provenance so a ledger row can state why
+    /// the attempt ended, and whether that ending is established or merely unknown.
     pub fn record_terminal_failure(
         &mut self,
         sent: &SentAttempt,
-        _reason: &str,
+        failure: AttemptFailure,
     ) -> Result<(), AdmissionError> {
         if !Arc::ptr_eq(&self.owner, &sent.owner)
             || self.attempt_state(sent.attempt_id.as_str()) != Some(AttemptState::Sent)
@@ -919,6 +1011,7 @@ impl AttemptAdmission {
             |provenance| {
                 provenance.settled_at = Some(now);
                 provenance.outcome = AttemptOutcome::Failed;
+                provenance.failure = Some(failure);
             },
         );
         Ok(())
@@ -938,6 +1031,10 @@ impl AttemptAdmission {
             |provenance| {
                 provenance.settled_at = Some(now);
                 provenance.outcome = AttemptOutcome::Discarded;
+                // The permit's own reason is free text from the call site; the
+                // recorded kind stays a fixed identifier. Nothing reached the
+                // wire, so this ending is established, not unknown.
+                provenance.failure = Some(AttemptFailure::Local("discarded-before-send"));
             },
         );
         Ok(())

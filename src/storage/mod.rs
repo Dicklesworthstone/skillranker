@@ -28,7 +28,8 @@ pub use ledger::{
     PruneReport, RetainedStats, SessionCursor, SingleFeedbackRequest, SnapshotMember,
     find_latest_preceding_emission, format_unix_ms, get_session_cursor, get_session_observations,
     init_ledger, ledger_status, open_ledger, parse_cutoff_to_unix_ms, record_acknowledgment,
-    record_emission, record_observations_with_cursor, record_ranking, submit_feedback,
+    record_emission, record_observations_with_cursor, record_ranking, record_ranking_with_attempts,
+    submit_feedback,
 };
 
 use crate::blocking::{BlockingLeafKind, remaining_busy_wait, run_blocking_leaf};

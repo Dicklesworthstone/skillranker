@@ -14,8 +14,8 @@ pub mod retry;
 pub mod wide;
 
 pub use admission::{
-    AdmissionError, AdmissionRefusal, AttemptAdmission, AttemptBudget, AttemptId, AttemptOutcome,
-    AttemptPermit, AttemptProvenance, CostReceipt, DEFAULT_GUARD_GENERATION,
+    AdmissionError, AdmissionRefusal, AttemptAdmission, AttemptBudget, AttemptFailure, AttemptId,
+    AttemptOutcome, AttemptPermit, AttemptProvenance, CostReceipt, DEFAULT_GUARD_GENERATION,
     DEFAULT_MIN_ATTEMPT_RESERVE_MS, DiscardedAttempt, RankingStage, SentAttempt,
 };
 pub use codec::{

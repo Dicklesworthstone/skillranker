@@ -11,8 +11,9 @@ use skillranker::jev::retry::{
     ModelPairStatus, RetryAfter, RetryErrorKind, RetrySession, RetryStop, retry_delay, retryable,
 };
 use skillranker::jev::{
-    AdmissionError, AdmissionRefusal, AttemptAdmission, AttemptBudget, CanonicalOrigin,
-    EndpointConfig, OriginScopedCredential, Question, RankingStage, Request, Usage,
+    AdmissionError, AdmissionRefusal, AttemptAdmission, AttemptBudget, AttemptFailure,
+    CanonicalOrigin, EndpointConfig, OriginScopedCredential, Question, RankingStage, Request,
+    Usage,
 };
 use skillranker::limits::DurationMillis;
 use skillranker::privacy::{ConsentSource, NetworkConsent};
@@ -705,7 +706,7 @@ fn accounting_rejects_duplicate_foreign_and_out_of_order_completion() {
         Err(AdmissionError::AttemptNotActive)
     );
     assert_eq!(
-        first.record_terminal_failure(&sent, "duplicate"),
+        first.record_terminal_failure(&sent, AttemptFailure::Local("duplicate")),
         Err(AdmissionError::AttemptNotActive)
     );
     first.record_cache_hit();
@@ -726,7 +727,7 @@ fn accounting_rejects_duplicate_foreign_and_out_of_order_completion() {
     );
     second.record_sent(&foreign).unwrap();
     second
-        .record_terminal_failure(&foreign, "synthetic")
+        .record_terminal_failure(&foreign, AttemptFailure::Indeterminate("transient-io"))
         .unwrap();
     assert_eq!(second.receipt().unknown_usage_attempts, 1);
 }
@@ -797,7 +798,7 @@ fn usage_overflow_preserves_previous_exact_counts_and_marks_new_attempt_unknown(
     assert_eq!(admission.receipt().total_tokens(), u64::MAX);
     assert_eq!(admission.receipt().unknown_usage_attempts, 1);
     assert_eq!(
-        admission.record_terminal_failure(&rerank, "again"),
+        admission.record_terminal_failure(&rerank, AttemptFailure::Local("again")),
         Err(AdmissionError::AttemptNotActive)
     );
 }

@@ -8,6 +8,8 @@
 
 use super::platform::{DirectoryIdentity, local_filesystem, storage_path};
 use crate::blocking::{BlockingLeafKind, remaining_busy_wait, run_blocking_leaf};
+use crate::jev::admission::{AttemptFailure, AttemptOutcome, AttemptProvenance, RankingStage};
+use crate::limits::MonotonicMillis;
 use crate::runtime::{EntryClock, ProcessInvocation};
 use crate::storage::{EngineIdentity, StoreError, check_work, linked_engine};
 use asupersync::Cx;
@@ -877,6 +879,36 @@ fn validated_snapshot(snapshot: &NewRosterSnapshot) -> Result<String, StoreError
     Ok(encoded)
 }
 
+/// Insert one attempt row inside a caller-owned transaction, so an attempt can be
+/// committed together with the ranking event that owns it.
+fn insert_provider_attempt(
+    tx: &rusqlite::Transaction<'_>,
+    attempt: &NewProviderAttempt,
+) -> Result<(), StoreError> {
+    tx.execute(
+        "INSERT INTO provider_attempts (
+            attempt_id, owner_event_id, stage, request_fingerprint,
+            admitted_at_unix_ms, sent_at_unix_ms, completed_at_unix_ms,
+            status, input_tokens, output_tokens, http_status, error_kind
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+        params![
+            attempt.attempt_id,
+            attempt.owner_event_id,
+            attempt.stage.as_str(),
+            attempt.request_fingerprint,
+            attempt.admitted_at_unix_ms as i64,
+            attempt.sent_at_unix_ms.map(|t| t as i64),
+            attempt.completed_at_unix_ms.map(|t| t as i64),
+            attempt.status.as_str(),
+            attempt.input_tokens.map(|t| t as i64),
+            attempt.output_tokens.map(|t| t as i64),
+            attempt.http_status.map(|s| s as i64),
+            attempt.error_kind,
+        ],
+    )?;
+    Ok(())
+}
+
 fn insert_snapshot(
     tx: &rusqlite::Transaction<'_>,
     snapshot: &NewRosterSnapshot,
@@ -1136,6 +1168,82 @@ pub struct NewProviderAttempt {
     pub output_tokens: Option<u64>,
     pub http_status: Option<u16>,
     pub error_kind: Option<String>,
+}
+
+impl NewProviderAttempt {
+    /// The row for one attempt this invocation owned.
+    ///
+    /// `entry_wall_clock_unix_ms` is the wall-clock reading that corresponds to
+    /// process entry, taken once by the caller. Attempt times are monotonic
+    /// milliseconds since entry, so converting them against a single reading keeps
+    /// one attempt's admitted, sent and settled times on the same timeline; a
+    /// separate wall-clock sample per transition would not.
+    ///
+    /// A follower that reuses an owner's cached response admits no attempt and so
+    /// has no row to write here: only the owner incurs a uniquely identified
+    /// attempt, and ledger absence cannot invent free historical service.
+    ///
+    /// Returns `None` for a breaker probe or an evaluation batch attempt. This
+    /// table's stage domain is the two ranking stages, and filing a probe as a
+    /// wide request would attribute its cost to a ranking the user never made.
+    /// Those attempts are accounted for in the invocation's cost receipt; giving
+    /// them a durable home is separate work.
+    pub fn from_provenance(
+        owner_event_id: impl Into<String>,
+        request_fingerprint: impl Into<String>,
+        entry_wall_clock_unix_ms: u64,
+        provenance: &AttemptProvenance,
+    ) -> Option<Self> {
+        let stage = match provenance.stage {
+            RankingStage::Wide => CandidateStage::Wide,
+            RankingStage::Rerank => CandidateStage::Rerank,
+            RankingStage::Probe | RankingStage::Evaluation => return None,
+        };
+        let wall = |at: MonotonicMillis| entry_wall_clock_unix_ms.saturating_add(at.as_millis());
+        let failure = provenance.failure;
+        let status = match provenance.outcome {
+            AttemptOutcome::Admitted => AttemptStatus::Admitted,
+            AttemptOutcome::Sent => AttemptStatus::Sent,
+            AttemptOutcome::Completed => AttemptStatus::Completed,
+            // A discard never reached the wire and a determinate transport failure
+            // is established, so both are failures. An indeterminate ending is not:
+            // recording it as failed would assert that the provider did no work on
+            // this request's behalf, which is exactly what is unknown.
+            AttemptOutcome::Failed | AttemptOutcome::Discarded => {
+                if failure.is_none_or(AttemptFailure::is_determinate) {
+                    AttemptStatus::Failed
+                } else {
+                    AttemptStatus::Unknown
+                }
+            }
+        };
+        let owner_event_id = owner_event_id.into();
+        Some(Self {
+            // The in-process attempt id is `<invocation id>-att-<n>`, and the
+            // invocation id is a fixed word for a given entry point, so it repeats
+            // on every run. Scoping the row key by its owner keeps a second
+            // invocation from colliding with the first and being dropped, which is
+            // how cost evidence would silently stop accumulating.
+            attempt_id: format!("{owner_event_id}:{}", provenance.attempt_id),
+            owner_event_id,
+            stage,
+            request_fingerprint: request_fingerprint.into(),
+            admitted_at_unix_ms: wall(provenance.admitted_at),
+            sent_at_unix_ms: provenance.sent_at.map(wall),
+            completed_at_unix_ms: provenance.settled_at.map(wall),
+            status,
+            // Absent usage stays absent. An attempt that returned no validated
+            // usage did not thereby cost zero tokens.
+            input_tokens: provenance.usage.map(|usage| usage.input_tokens),
+            output_tokens: provenance.usage.map(|usage| usage.output_tokens),
+            // The column admits 100..=599 only, so an out-of-range status keeps the
+            // kind and drops the number instead of failing the whole write.
+            http_status: failure
+                .and_then(AttemptFailure::http_status)
+                .filter(|status| (100..=599).contains(status)),
+            error_kind: failure.map(|failure| failure.kind().to_owned()),
+        })
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -3168,10 +3276,44 @@ impl LedgerStore {
         snapshot: Option<&NewRosterSnapshot>,
         expected_stamp: LedgerStamp,
     ) -> Result<(), StoreError> {
+        self.record_ranking_event_with_attempts(
+            clock,
+            cx,
+            event,
+            candidates,
+            snapshot,
+            &[],
+            expected_stamp,
+        )
+    }
+
+    /// Record a ranking event together with the provider attempts it owns.
+    ///
+    /// One transaction, because cost evidence and the event it is attributed to are
+    /// not independently meaningful: an attempt row without its owner would be cost
+    /// attributed to nothing, and an event whose attempts were dropped would look
+    /// like it was served for free.
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_ranking_event_with_attempts(
+        &mut self,
+        clock: EntryClock,
+        cx: &Cx,
+        event: &NewRankingEvent,
+        candidates: &[NewRankingCandidate],
+        snapshot: Option<&NewRosterSnapshot>,
+        attempts: &[NewProviderAttempt],
+        expected_stamp: LedgerStamp,
+    ) -> Result<(), StoreError> {
         if self.read_only {
             return Err(StoreError::Permissions);
         }
         check_work(clock, cx)?;
+        if attempts
+            .iter()
+            .any(|attempt| attempt.owner_event_id != event.event_id)
+        {
+            return Err(StoreError::InvalidRecord);
+        }
         if candidates
             .iter()
             .any(|candidate| candidate.event_id != event.event_id)
@@ -3254,6 +3396,9 @@ impl LedgerStore {
                     cand.exclusion_reason,
                 ],
             )?;
+        }
+        for attempt in attempts {
+            insert_provider_attempt(&tx, attempt)?;
         }
         check_work(clock, cx)?;
         self.directory.verify_database_file(&self.file, clock, cx)?;
@@ -3377,27 +3522,7 @@ impl LedgerStore {
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         check_stamp(&tx, expected_stamp)?;
 
-        tx.execute(
-            "INSERT INTO provider_attempts (
-                attempt_id, owner_event_id, stage, request_fingerprint,
-                admitted_at_unix_ms, sent_at_unix_ms, completed_at_unix_ms,
-                status, input_tokens, output_tokens, http_status, error_kind
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
-            params![
-                attempt.attempt_id,
-                attempt.owner_event_id,
-                attempt.stage.as_str(),
-                attempt.request_fingerprint,
-                attempt.admitted_at_unix_ms as i64,
-                attempt.sent_at_unix_ms.map(|t| t as i64),
-                attempt.completed_at_unix_ms.map(|t| t as i64),
-                attempt.status.as_str(),
-                attempt.input_tokens.map(|t| t as i64),
-                attempt.output_tokens.map(|t| t as i64),
-                attempt.http_status.map(|s| s as i64),
-                attempt.error_kind,
-            ],
-        )?;
+        insert_provider_attempt(&tx, attempt)?;
 
         self.directory.verify_database_file(&self.file, clock, cx)?;
         check_work(clock, cx)?;
@@ -4631,6 +4756,30 @@ pub fn record_ranking(
     candidates: &[NewRankingCandidate],
     snapshot: Option<&NewRosterSnapshot>,
 ) -> Result<bool, StoreError> {
+    record_ranking_with_attempts(
+        invocation,
+        cx,
+        access,
+        location,
+        event,
+        candidates,
+        snapshot,
+        &[],
+    )
+}
+
+/// Record a ranking event and the provider attempts it owns, in one transaction.
+#[allow(clippy::too_many_arguments)]
+pub fn record_ranking_with_attempts(
+    invocation: &ProcessInvocation,
+    cx: &Cx,
+    access: LedgerAccess,
+    location: LedgerLocation,
+    event: &NewRankingEvent,
+    candidates: &[NewRankingCandidate],
+    snapshot: Option<&NewRosterSnapshot>,
+    attempts: &[NewProviderAttempt],
+) -> Result<bool, StoreError> {
     if access == LedgerAccess::Disabled {
         return Ok(false);
     }
@@ -4639,6 +4788,7 @@ pub fn record_ranking(
     let event = event.clone();
     let candidates = candidates.to_vec();
     let snapshot = snapshot.cloned();
+    let attempts = attempts.to_vec();
     let res = run_blocking_leaf(
         invocation,
         cx,
@@ -4652,12 +4802,13 @@ pub fn record_ranking(
                 }
             };
             let stamp = store.stamp();
-            store.record_ranking_event(
+            store.record_ranking_event_with_attempts(
                 clock,
                 &child,
                 &event,
                 &candidates,
                 snapshot.as_ref(),
+                &attempts,
                 stamp,
             )?;
             Ok(true)

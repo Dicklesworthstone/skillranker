@@ -6,8 +6,8 @@
 use super::CanonicalOrigin;
 use super::OriginScopedCredential;
 use super::admission::{
-    AdmissionError, AdmissionRefusal, AttemptAdmission, AttemptBudget, AttemptPermit, CostReceipt,
-    RankingStage, SentAttempt,
+    AdmissionError, AdmissionRefusal, AttemptAdmission, AttemptBudget, AttemptFailure,
+    AttemptPermit, AttemptProvenance, CostReceipt, RankingStage, SentAttempt,
 };
 use super::client::{JevTransport, TransportError, TransportErrorKind};
 use super::codec::{Request, Response, Usage};
@@ -221,6 +221,13 @@ impl<'a> RetrySession<'a> {
         *self.admission.receipt()
     }
 
+    /// Every attempt this session admitted, with what became of it. The receipt's
+    /// invocation-wide counters cannot say which attempt incurred a given spend,
+    /// which is what attributing cost to a recorded event needs.
+    pub fn attempts(&self) -> impl Iterator<Item = &AttemptProvenance> {
+        self.admission.attempts()
+    }
+
     pub fn wide_model(&self) -> Option<&ModelObservation> {
         self.wide.as_ref()
     }
@@ -288,7 +295,10 @@ impl<'a> RetrySession<'a> {
                     )
                     .await
             };
-            let accounting = flight.finish(result.as_ref().ok().map(|response| response.usage));
+            let accounting = flight.finish(
+                result.as_ref().ok().map(|response| response.usage),
+                result.as_ref().err(),
+            );
             drop(flight);
             accounting.map_err(|_| self.error(RetryErrorKind::Accounting, last_transport))?;
             match result {
@@ -387,13 +397,17 @@ impl AttemptFlight<'_> {
         self.sent = Some(sent);
         Ok(())
     }
-    fn finish(&mut self, usage: Option<Usage>) -> Result<(), AdmissionError> {
+    fn finish(
+        &mut self,
+        usage: Option<Usage>,
+        error: Option<&TransportError>,
+    ) -> Result<(), AdmissionError> {
         if let Some(sent) = self.sent.take() {
             match usage {
                 Some(usage) => self.admission.record_response(&sent, usage),
                 None => self
                     .admission
-                    .record_terminal_failure(&sent, "attempt did not return validated usage"),
+                    .record_terminal_failure(&sent, attempt_failure(error)),
             }
         } else if let Some(permit) = self.permit.take() {
             self.admission
@@ -405,8 +419,17 @@ impl AttemptFlight<'_> {
 }
 impl Drop for AttemptFlight<'_> {
     fn drop(&mut self) {
-        let _ = self.finish(None);
+        let _ = self.finish(None, None);
     }
+}
+
+/// An attempt finalized without an observed outcome, as when cancellation unwinds
+/// through the drop guard, has a disposition that is simply unknown.
+fn attempt_failure(error: Option<&TransportError>) -> AttemptFailure {
+    error.map_or(
+        AttemptFailure::Indeterminate("settlement-unobserved"),
+        AttemptFailure::from_transport,
+    )
 }
 
 fn check_work(cx: &Cx, clock: &EntryClock) -> Result<(), TransportErrorKind> {

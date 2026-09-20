@@ -10,8 +10,8 @@
 //! - Exact cache hit zero-cost path.
 
 use skillranker::jev::{
-    AdmissionError, AdmissionRefusal, AttemptAdmission, AttemptBudget, AttemptId, CanonicalOrigin,
-    CostReceipt, DEFAULT_GUARD_GENERATION, RankingStage, Usage,
+    AdmissionError, AdmissionRefusal, AttemptAdmission, AttemptBudget, AttemptFailure, AttemptId,
+    CanonicalOrigin, CostReceipt, DEFAULT_GUARD_GENERATION, RankingStage, Usage,
 };
 use skillranker::limits::{DEFAULT_HTTP_ATTEMPTS, DEFAULT_LOGICAL_REQUESTS, DurationMillis};
 use skillranker::output::{CliExit, ErrorKind};
@@ -165,7 +165,7 @@ fn exhaust_attempts_before_rerank() {
         let sent = permit.mark_sent().expect("mark sent must succeed");
         coordinator.record_sent(&sent).unwrap();
         coordinator
-            .record_terminal_failure(&sent, "HTTP 503 Service Unavailable")
+            .record_terminal_failure(&sent, AttemptFailure::Http(503))
             .unwrap();
     }
 
@@ -228,7 +228,7 @@ fn cancel_before_send_vs_cancel_after_send() {
 
     // Timeout occurs while bytes are in flight -> terminal failure recorded
     coordinator
-        .record_terminal_failure(&sent_b, "timeout waiting for response")
+        .record_terminal_failure(&sent_b, AttemptFailure::Indeterminate("deadline"))
         .unwrap();
 
     // Now sent = 1, and unknown usage is recorded
@@ -353,7 +353,7 @@ fn preserve_partial_cost_on_every_terminal_error() {
     let sent_2 = permit_2.mark_sent().unwrap();
     coordinator.record_sent(&sent_2).unwrap();
     coordinator
-        .record_terminal_failure(&sent_2, "Connection reset by peer")
+        .record_terminal_failure(&sent_2, AttemptFailure::Indeterminate("transient-io"))
         .unwrap();
 
     let receipt = coordinator.receipt();

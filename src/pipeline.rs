@@ -1231,6 +1231,7 @@ async fn rank_once(
                 clock.now().as_millis(),
                 &progress.metrics,
                 &explicit_candidates,
+                None,
             );
             progress.evaluated.ledger_recorded = recorded;
             let mut doc = build_explicit_document(
@@ -1474,6 +1475,7 @@ async fn rank_once(
                     clock.now().as_millis(),
                     &progress.metrics,
                     &[],
+                    None,
                 );
                 progress.evaluated.ledger_recorded = recorded;
                 let mut doc = build_abstain_document(
@@ -1585,6 +1587,7 @@ async fn rank_once(
             clock.now().as_millis(),
             &progress.metrics,
             &[],
+            None,
         );
         progress.evaluated.ledger_recorded = recorded;
         let mut doc = build_abstain_document(
@@ -2279,6 +2282,7 @@ async fn rank_once(
                 clock.now().as_millis(),
                 &progress.metrics,
                 &[],
+                attempt_evidence(session.as_ref(), &wide_req_fp, None, clock).as_ref(),
             );
             progress.evaluated.ledger_recorded = recorded;
             let mut doc = build_abstain_document(
@@ -2401,6 +2405,9 @@ async fn rank_once(
         )
     })?;
 
+    // Held beyond the recording block below: an attempt row names the request its
+    // attempt served, and a rerank attempt exists only when the rerank was fresh.
+    let mut rerank_req_fp: Option<String> = None;
     if rerank_fresh {
         let rerank_fp = fingerprint(
             RequestStage::Rerank,
@@ -2408,6 +2415,7 @@ async fn rank_once(
             rerank_builder.bytes(),
             rerank::RERANK_POLICY_VERSION,
         );
+        rerank_req_fp = Some(rerank_fp.to_hex());
         if !persistent::record(
             &mut store,
             invocation,
@@ -2510,6 +2518,13 @@ async fn rank_once(
                     clock.now().as_millis(),
                     &progress.metrics,
                     &[],
+                    attempt_evidence(
+                        session.as_ref(),
+                        &wide_req_fp,
+                        rerank_req_fp.as_deref(),
+                        clock,
+                    )
+                    .as_ref(),
                 );
                 progress.evaluated.ledger_recorded = recorded;
                 let mut doc = build_abstain_document(
@@ -2570,6 +2585,13 @@ async fn rank_once(
                     clock.now().as_millis(),
                     &progress.metrics,
                     &[],
+                    attempt_evidence(
+                        session.as_ref(),
+                        &wide_req_fp,
+                        rerank_req_fp.as_deref(),
+                        clock,
+                    )
+                    .as_ref(),
                 );
                 progress.evaluated.ledger_recorded = recorded;
                 let doc = OutputDocument::failure_with_details(
@@ -2680,6 +2702,13 @@ async fn rank_once(
         clock.now().as_millis(),
         &progress.metrics,
         &ranking_candidates,
+        attempt_evidence(
+            session.as_ref(),
+            &wide_req_fp,
+            rerank_req_fp.as_deref(),
+            clock,
+        )
+        .as_ref(),
     );
     progress.evaluated.ledger_recorded = recorded;
 
@@ -3733,6 +3762,66 @@ pub(crate) fn derive_request_event_id(context: &NormalizedContext) -> String {
     format!("ev-{}", &hasher.finalize().to_hex()[..16])
 }
 
+/// What a recorded event needs in order to attribute the provider cost it caused:
+/// the attempts this invocation admitted, the request identity each stage actually
+/// sent, and the single wall-clock reading their monotonic times convert against.
+///
+/// A cache-served invocation admits no attempt and produces no evidence, so a
+/// follower reusing an owner's response cannot appear to have paid for it.
+struct AttemptEvidence<'a> {
+    attempts: Vec<&'a crate::jev::AttemptProvenance>,
+    wide_fingerprint: String,
+    rerank_fingerprint: Option<String>,
+    entry_wall_clock_unix_ms: u64,
+}
+
+impl AttemptEvidence<'_> {
+    fn rows(&self, owner_event_id: &str) -> Vec<crate::storage::NewProviderAttempt> {
+        self.attempts
+            .iter()
+            .filter_map(|attempt| {
+                let fingerprint = match attempt.stage {
+                    RankingStage::Wide => Some(self.wide_fingerprint.as_str()),
+                    RankingStage::Rerank => self.rerank_fingerprint.as_deref(),
+                    // A breaker probe or an evaluation batch is not one of this
+                    // event's ranking requests, so it has no fingerprint here to
+                    // claim and no row to occupy.
+                    RankingStage::Probe | RankingStage::Evaluation => None,
+                }?;
+                crate::storage::NewProviderAttempt::from_provenance(
+                    owner_event_id,
+                    fingerprint,
+                    self.entry_wall_clock_unix_ms,
+                    attempt,
+                )
+            })
+            .collect()
+    }
+}
+
+/// Collect the attempts a session admitted, if it admitted any.
+///
+/// The wall-clock base is derived from one reading minus the elapsed monotonic
+/// time, so every attempt time in this event shares a single conversion.
+fn attempt_evidence<'a>(
+    session: Option<&'a RetrySession<'_>>,
+    wide_fingerprint: &RequestFingerprint,
+    rerank_fingerprint: Option<&str>,
+    clock: &EntryClock,
+) -> Option<AttemptEvidence<'a>> {
+    let session = session?;
+    let attempts: Vec<_> = session.attempts().collect();
+    if attempts.is_empty() {
+        return None;
+    }
+    Some(AttemptEvidence {
+        attempts,
+        wide_fingerprint: wide_fingerprint.to_hex(),
+        rerank_fingerprint: rerank_fingerprint.map(str::to_owned),
+        entry_wall_clock_unix_ms: wall_clock_ms().saturating_sub(clock.now().as_millis()),
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 fn try_record_ledger(
     invocation: &ProcessInvocation,
@@ -3747,6 +3836,7 @@ fn try_record_ledger(
     elapsed_ms: u64,
     metrics: &ExecutionMetrics,
     candidates: &[crate::storage::NewRankingCandidate],
+    attempts: Option<&AttemptEvidence<'_>>,
 ) -> bool {
     if matches!(gate.ledger(), crate::privacy::StoreAccess::Disabled(_)) {
         return false;
@@ -3835,6 +3925,12 @@ fn try_record_ledger(
         .map(|e| e.as_str().to_string())
         .unwrap_or_else(|| derive_request_event_id(context));
 
+    // Built against the id this event is about to be written under, so cost cannot
+    // be attributed to an event that does not exist.
+    let attempt_rows = attempts
+        .map(|evidence| evidence.rows(&event_id))
+        .unwrap_or_default();
+
     let event = crate::storage::NewRankingEvent {
         event_id,
         verified_delivery_key: None,
@@ -3875,7 +3971,7 @@ fn try_record_ledger(
         None => crate::storage::LedgerLocation::Platform,
     };
 
-    crate::storage::record_ranking(
+    crate::storage::record_ranking_with_attempts(
         invocation,
         cx,
         crate::storage::LedgerAccess::ExistingOnly,
@@ -3883,6 +3979,7 @@ fn try_record_ledger(
         &event,
         candidates,
         Some(&snapshot),
+        &attempt_rows,
     )
     .unwrap_or(false)
 }

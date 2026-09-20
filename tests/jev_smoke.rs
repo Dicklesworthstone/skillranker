@@ -7,7 +7,7 @@
 use asupersync::Cx;
 use serde_json::json;
 use skillranker::config::{ConfigSources, ResolvedConfig};
-use skillranker::jev::admission::{AttemptAdmission, AttemptBudget, RankingStage};
+use skillranker::jev::admission::{AttemptAdmission, AttemptBudget, AttemptFailure, RankingStage};
 use skillranker::jev::client::{JevClient, TransportError, TransportErrorKind};
 use skillranker::jev::codec::{
     Answer, CodecError, MAX_CHOICE_OPTIONS, MAX_REQUEST_BYTES, Question, Request, Response,
@@ -278,7 +278,7 @@ fn budgeted_live_contract_smoke() {
                 let sent = permit.mark_sent().unwrap();
                 admission.record_sent(&sent).unwrap();
                 admission
-                    .record_terminal_failure(&sent, "live probe failed")
+                    .record_terminal_failure(&sent, AttemptFailure::from_transport(&err))
                     .unwrap();
             } else {
                 admission
@@ -675,7 +675,7 @@ fn standalone_rerank_evaluation_preserves_production_ordering_and_one_attempt_ca
     let sent = permit.mark_sent().unwrap();
     admission.record_sent(&sent).unwrap();
     admission
-        .record_terminal_failure(&sent, "synthetic accounting check, no HTTP")
+        .record_terminal_failure(&sent, AttemptFailure::Local("synthetic-accounting-check"))
         .unwrap();
     assert!(!admission.is_wide_completed());
     assert!(admission.admit(RankingStage::Evaluation, &origin).is_err());
@@ -730,7 +730,7 @@ fn run_capacity_shapes(api_key: String, include_wide: bool) {
                     let sent = permit.mark_sent().unwrap();
                     admission.record_sent(&sent).unwrap();
                     admission
-                        .record_terminal_failure(&sent, "capacity probe failed")
+                        .record_terminal_failure(&sent, AttemptFailure::from_transport(&error))
                         .unwrap();
                 } else {
                     admission
