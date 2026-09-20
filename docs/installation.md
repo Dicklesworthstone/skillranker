@@ -1,9 +1,11 @@
 # Installing SkillRanker
 
-Installation requires Linux. The storage implementation uses Linux filesystem
-safety boundaries; native macOS builds are not supported. On macOS, use a Linux
-host or VM. The installer rejects unsupported systems before downloads, builds,
-or destination writes.
+Installation supports Linux and macOS. On macOS, keep private runtime state on
+local APFS or HFS+ storage with Unix permissions; network filesystems, FUSE, and
+exFAT are not admitted for cache and ledger storage. The system `/tmp` and `/var`
+aliases are supported without permitting arbitrary symlink traversal. The
+installer rejects unsupported systems before downloads, builds, or destination
+writes.
 
 Use `bash install.sh --help` for the complete option list. The installer writes
 `sr` to `~/.local/bin` by default; `--dest DIR` selects another directory. It
@@ -22,7 +24,13 @@ that the tag or its assets have been published. At the initial installer
 verification, the repository had no public releases. The source and offline
 paths were exercised on Linux x86_64. Linux aarch64 selection
 is implemented, but that platform has not been executed in this
-installer verification. No signed multi-platform release is claimed.
+installer verification. Native Apple Silicon tests on macOS 26.5 (Darwin 25.5)
+exercise APFS storage and the installer, including installation and execution
+of an arm64 development binary. The Intel binary also builds and executes through
+Rosetta on that Mac: 103 core tests pass, with the subprocess suite run serially
+after three short-deadline failures in a concurrent run. Physical Intel hardware
+and HFS+ storage have not been exercised. No signed multi-platform release is
+claimed.
 
 ## Acquisition and verification
 

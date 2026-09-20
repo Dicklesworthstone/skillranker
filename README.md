@@ -179,9 +179,9 @@ or override the agent's governing instructions.
 
 ## Installation
 
-Install on **Linux**. Native macOS installation is not supported; use a Linux
-host or VM. Run `sr capabilities --json` after installation to check command
-and integration availability in your build.
+Install on **Linux or macOS**. Keep macOS state on a local APFS or HFS+ filesystem
+with Unix permissions. Run `sr capabilities --json` after installation to check
+command and integration availability in your build.
 
 ### Installer
 
@@ -195,7 +195,8 @@ curl -fsSL "https://raw.githubusercontent.com/Dicklesworthstone/skillranker/main
 
 It requires Bash, Python 3, `curl`, and `sha256sum` or `shasum`; source builds
 also require Git and Rust. If RCH is installed, compilation runs remotely and
-a remote failure does not trigger a local build. Existing binaries are backed
+a remote failure does not trigger a local build. macOS source builds need a
+macOS RCH worker. Existing binaries are backed
 up before replacement. `--easy-mode` also adds the install directory to your
 current shell's configuration, with a backup.
 
