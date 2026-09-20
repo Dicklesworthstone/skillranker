@@ -12,8 +12,8 @@
 use asupersync::Cx;
 use serde_json::json;
 use skillranker::cache::{
-    CachedResponseEntry, CoordinationKey, CoordinationPolicy, LeaseAcquisition, LeaseCoordinator,
-    RequestFingerprint, RequestStage, SqliteLeaseCoordinator,
+    CachedResponseEntry, CoordinationKey, LeaseAcquisition, PublishOutcome, RequestFingerprint,
+    RequestStage,
 };
 use skillranker::config::ConfigSources;
 use skillranker::context::source::SourceOptions;
@@ -580,7 +580,7 @@ fn all_p4_invariants_verified() {
     // =========================================================================
     // Invariant 6: Fenced Lease Coordination and Response Cache Isolation
     // =========================================================================
-    let cache_dir = std::env::temp_dir().join(format!(
+    let cache_dir = Path::new("/tmp").join(format!(
         "sr-p4-cache-gate-{}-{}",
         std::process::id(),
         SystemTime::now()
@@ -609,10 +609,8 @@ fn all_p4_invariants_verified() {
         _ => panic!("expected ready cache"),
     };
 
-    let leases_path = cache_dir.join("leases.sqlite3");
-    let coordinator = SqliteLeaseCoordinator::open(&leases_path).expect("coordinator open");
+    let leases_path = cache_dir.join(skillranker::storage::CACHE_FILE);
     let key = CoordinationKey::from_bytes([42; 32]);
-    let policy = CoordinationPolicy::default();
 
     let now_ms = u64::try_from(
         SystemTime::now()
@@ -623,10 +621,10 @@ fn all_p4_invariants_verified() {
     .unwrap();
 
     // Leader acquisition
-    let leader = match coordinator
-        .acquire(key, now_ms, &policy)
-        .expect("acquire lease")
-    {
+    let (store, acquisition) = store
+        .acquire_lease(&inv_cache, &cx_cache, key, false)
+        .expect("acquire lease");
+    let leader = match acquisition {
         LeaseAcquisition::Leading(leader) => leader,
         _ => panic!("expected leader"),
     };
@@ -658,19 +656,21 @@ fn all_p4_invariants_verified() {
         .expect("fenced cache record succeeds");
 
     // Complete lease
-    coordinator
-        .complete(key, leader.owner_token, leader.fencing_generation, now_ms)
+    let (store, completion) = store
+        .complete_lease(&inv_cache, &cx_cache, leader.clone())
         .expect("complete lease");
+    assert_eq!(completion, PublishOutcome::Published);
 
     // Successor re-acquires lease with higher generation
-    let successor = match coordinator
-        .force_reacquire(key, now_ms, &policy)
-        .expect("force reacquire")
-    {
+    let (store, acquisition) = store
+        .acquire_lease(&inv_cache, &cx_cache, key, true)
+        .expect("force reacquire");
+    let successor = match acquisition {
         LeaseAcquisition::Leading(succ) => succ,
         _ => panic!("expected successor"),
     };
     assert!(successor.fencing_generation > leader.fencing_generation);
+    assert!(!cache_dir.join("leases.sqlite3").exists());
 
     // Stale owner attempt to write must be rejected with LeaseSuperseded
     let stale_entry = CachedResponseEntry {

@@ -329,7 +329,12 @@ fn follower_nearing_deadline_while_leader_active_makes_zero_provider_attempts() 
     assert_eq!(out_follower.status.code(), Some(6));
     let val_f: Value = serde_json::from_slice(&out_follower.stdout).unwrap();
     assert_eq!(val_f["decision"], "unavailable");
-    assert_eq!(val_f["usage"]["http_attempts"], 0);
+    assert_eq!(
+        val_f["usage"]["http_attempts"],
+        0,
+        "follower envelope: {val_f}; stderr: {}",
+        String::from_utf8_lossy(&out_follower.stderr)
+    );
     assert_eq!(val_f["usage"]["requests"], 0);
 }
 
