@@ -42,7 +42,7 @@ use skillranker::storage::{
 };
 use std::fs;
 use std::os::unix::fs::DirBuilderExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn test_invocation() -> (ProcessInvocation, Cx) {
@@ -69,12 +69,12 @@ fn temp_private_dir(prefix: &str) -> PathBuf {
     dir
 }
 
-fn init_test_ledger(dir: &PathBuf) {
+fn init_test_ledger(dir: &Path) {
     let (inv, cx) = test_invocation();
     init_ledger(
         &inv,
         &cx,
-        LedgerLocation::Directory(dir.clone()),
+        LedgerLocation::Directory(dir.to_path_buf()),
     )
     .expect("init ledger");
 }
@@ -190,7 +190,7 @@ fn test_cas_cursor_generation_conflict_prevents_stale_overwrites() {
         &cx,
         LedgerAccess::ExistingOnly,
         LedgerLocation::Directory(dir.clone()),
-        &[obs_2.clone()],
+        std::slice::from_ref(&obs_2),
         &cursor_stale,
         Some(0),
     );

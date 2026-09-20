@@ -789,10 +789,10 @@ pub fn execute_replay(
                 "path": Value::Null,
                 "content_hash": candidate.content_hash,
             }));
-            if let Some(visibility) = candidate.visibility {
-                if let Some(entry) = ranked_skills.last_mut().and_then(Value::as_object_mut) {
-                    entry.insert("visibility".into(), Value::from(visibility));
-                }
+            if let Some(visibility) = candidate.visibility
+                && let Some(entry) = ranked_skills.last_mut().and_then(Value::as_object_mut)
+            {
+                entry.insert("visibility".into(), Value::from(visibility));
             }
         }
 

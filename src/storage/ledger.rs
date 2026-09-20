@@ -3675,6 +3675,7 @@ impl LedgerStore {
         Ok(out)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn find_latest_preceding_emission(
         &self,
         clock: EntryClock,
@@ -4141,21 +4142,21 @@ impl LedgerStore {
                     .map_err(|e| FeedbackError::Store(StoreError::from(e)))?;
 
                 if let Some(expected) = req.expected_version {
-                    if let Some((_, actual)) = &orig_existing {
-                        if *actual as u32 != expected {
-                            return Err(FeedbackError::RevisionConflict {
-                                expected,
-                                actual: *actual as u32,
-                            });
-                        }
+                    if let Some((_, actual)) = &orig_existing
+                        && *actual as u32 != expected
+                    {
+                        return Err(FeedbackError::RevisionConflict {
+                            expected,
+                            actual: *actual as u32,
+                        });
                     }
-                    if let Some((_, actual)) = &alt_existing {
-                        if *actual as u32 != expected {
-                            return Err(FeedbackError::RevisionConflict {
-                                expected,
-                                actual: *actual as u32,
-                            });
-                        }
+                    if let Some((_, actual)) = &alt_existing
+                        && *actual as u32 != expected
+                    {
+                        return Err(FeedbackError::RevisionConflict {
+                            expected,
+                            actual: *actual as u32,
+                        });
                     }
                 }
 
@@ -4326,15 +4327,14 @@ impl LedgerStore {
             .optional()
             .map_err(|e| FeedbackError::Store(StoreError::from(e)))?;
 
-        if let Some(expected) = req.expected_version {
-            if let Some((_, actual)) = &existing {
-                if *actual as u32 != expected {
-                    return Err(FeedbackError::RevisionConflict {
-                        expected,
-                        actual: *actual as u32,
-                    });
-                }
-            }
+        if let Some(expected) = req.expected_version
+            && let Some((_, actual)) = &existing
+            && *actual as u32 != expected
+        {
+            return Err(FeedbackError::RevisionConflict {
+                expected,
+                actual: *actual as u32,
+            });
         }
 
         let now_ms = std::time::SystemTime::now()
@@ -4779,6 +4779,7 @@ pub fn record_observations_with_cursor(
     res.value
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn get_session_cursor(
     invocation: &ProcessInvocation,
     cx: &Cx,
@@ -4865,6 +4866,7 @@ pub fn get_session_observations(
     res.value
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn find_latest_preceding_emission(
     invocation: &ProcessInvocation,
     cx: &Cx,

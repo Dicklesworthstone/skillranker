@@ -570,10 +570,10 @@ pub fn run(clock: EntryClock) -> u8 {
             let bytes_len = output.len();
             match io::stdout().lock().write_all(output.as_bytes()) {
                 Ok(()) => {
-                    if bytes_len > 0 {
-                        if let Some(event_id) = try_extract_event_id(&output) {
-                            let _ = try_record_cli_emission(&clock, location, &event_id, bytes_len);
-                        }
+                    if bytes_len > 0
+                        && let Some(event_id) = try_extract_event_id(&output)
+                    {
+                        let _ = try_record_cli_emission(&clock, location, &event_id, bytes_len);
                     }
                     0
                 }
@@ -631,10 +631,10 @@ fn try_extract_dir(args: &[OsString]) -> Option<PathBuf> {
             if let Some(next) = iter.next() {
                 return Some(PathBuf::from(next));
             }
-        } else if let Some(s) = arg.to_str() {
-            if let Some(stripped) = s.strip_prefix("--dir=") {
-                return Some(PathBuf::from(stripped));
-            }
+        } else if let Some(s) = arg.to_str()
+            && let Some(stripped) = s.strip_prefix("--dir=")
+        {
+            return Some(PathBuf::from(stripped));
         }
     }
     None
@@ -642,16 +642,18 @@ fn try_extract_dir(args: &[OsString]) -> Option<PathBuf> {
 
 fn try_extract_event_id(output: &str) -> Option<String> {
     let trimmed = output.trim();
-    if trimmed.starts_with('{') {
-        if let Ok(val) = serde_json::from_str::<serde_json::Value>(trimmed) {
-            if let Some(id) = val.get("event_id").and_then(|v| v.as_str()) {
-                return Some(id.to_string());
-            }
-            if let Some(local) = val.get("local_decision") {
-                if let Some(id) = local.get("event_id").and_then(|v| v.as_str()) {
-                    return Some(id.to_string());
-                }
-            }
+    if trimmed.starts_with('{')
+        && let Ok(val) = serde_json::from_str::<serde_json::Value>(trimmed)
+    {
+        if let Some(id) = val.get("event_id").and_then(|v| v.as_str()) {
+            return Some(id.to_string());
+        }
+        if let Some(id) = val
+            .get("local_decision")
+            .and_then(|local| local.get("event_id"))
+            .and_then(|v| v.as_str())
+        {
+            return Some(id.to_string());
         }
     }
     None
