@@ -42,7 +42,8 @@ pub(super) fn storage_path(path: PathBuf) -> PathBuf {
                 && let Ok(metadata) = std::fs::symlink_metadata(alias)
                 && metadata.file_type().is_symlink()
                 && metadata.uid() == 0
-                && std::fs::read_link(alias).is_ok_and(|p| p == Path::new(target))
+                && std::fs::read_link(alias)
+                    .is_ok_and(|p| p == Path::new(target) || p == Path::new(&target[1..]))
             {
                 return Path::new(target).join(rest);
             }
@@ -80,5 +81,30 @@ mod tests {
         for name in ["nfs", "smbfs", "osxfuse", "webdav", "", "APFS"] {
             assert!(!macos_filesystem(name));
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn system_aliases_expand_but_user_symlinks_do_not() {
+        use std::os::unix::fs::symlink;
+        assert_eq!(
+            storage_path(PathBuf::from("/tmp")),
+            PathBuf::from("/private/tmp")
+        );
+        assert_eq!(
+            storage_path(PathBuf::from("/var")),
+            PathBuf::from("/private/var")
+        );
+        let root = std::env::temp_dir().join(format!("sr-system-alias-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let alias = root.join("user-alias");
+        symlink("/private/tmp", &alias).unwrap();
+        let expanded = storage_path(alias);
+        assert!(
+            std::fs::symlink_metadata(expanded)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
     }
 }

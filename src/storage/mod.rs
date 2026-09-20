@@ -6,8 +6,8 @@
 
 pub mod export;
 mod filesystem;
-mod platform;
 pub mod ledger;
+mod platform;
 
 pub use export::{
     DEFAULT_MAX_CASE_BYTES, DEFAULT_MAX_SNAPSHOT_BYTES, ExportConfig, ExportError,
