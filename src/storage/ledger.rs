@@ -746,7 +746,7 @@ pub struct SessionCursor {
     pub updated_at_unix_ms: u64,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum MembershipCoverage {
     Complete,
     Unknown,
@@ -795,15 +795,15 @@ pub struct NewRosterSnapshot {
 pub const MAX_SNAPSHOT_METADATA_BYTES: usize = 2 * 1024 * 1024;
 pub const MAX_SNAPSHOT_MEMBERS: usize = 10_000;
 
-#[derive(serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
-struct SnapshotMember {
-    skill_id: String,
-    invocation_name: Option<String>,
-    content_hash: Option<String>,
-    source: String,
-    eligible: bool,
-    exclusion_reason: Option<String>,
+pub struct SnapshotMember {
+    pub skill_id: String,
+    pub invocation_name: Option<String>,
+    pub content_hash: Option<String>,
+    pub source: String,
+    pub eligible: bool,
+    pub exclusion_reason: Option<String>,
 }
 
 fn bounded_metadata(value: &str, max: usize) -> bool {
@@ -942,7 +942,7 @@ fn read_snapshot(
         .optional()?)
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum DecisionKind {
     Ranked,
     Explicit,
@@ -978,7 +978,7 @@ impl std::str::FromStr for DecisionKind {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum ExposureState {
     Generated,
     Prepared,
@@ -1017,7 +1017,7 @@ impl std::str::FromStr for ExposureState {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct NewRankingEvent {
     pub event_id: String,
     pub verified_delivery_key: Option<String>,
@@ -1037,7 +1037,7 @@ pub struct NewRankingEvent {
     pub snapshot_id: Option<String>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum CandidateStage {
     Wide,
     Rerank,
@@ -1184,7 +1184,8 @@ pub struct NewObservation {
     pub observed_at_unix_ms: u64,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum JudgmentLabel {
     Useful,
     Harmful,
@@ -1217,7 +1218,7 @@ impl std::str::FromStr for JudgmentLabel {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct NewJudgment {
     pub judgment_id: String,
     pub attributed_event_id: String,
@@ -1228,7 +1229,7 @@ pub struct NewJudgment {
     pub created_at_unix_ms: u64,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum ProposalStatus {
     Unresolved,
     HistoricallyAbsent,
@@ -1264,7 +1265,7 @@ impl std::str::FromStr for ProposalStatus {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct NewFeedbackProposal {
     pub proposal_id: String,
     pub workspace_root: String,
@@ -1326,6 +1327,155 @@ pub struct NewCalibration {
     pub coefficients_json: String,
     pub evaluation_report_id: String,
     pub created_at_unix_ms: u64,
+}
+
+// -----------------------------------------------------------------------------
+// Feedback & Paired Correction Models
+// -----------------------------------------------------------------------------
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct PairedCorrectionRequest {
+    pub event_id: String,
+    pub original_skill_id: String,
+    pub alternative_skill_id: String,
+    pub reason_code: Option<String>,
+    pub provenance: Option<String>,
+    pub expected_version: Option<u32>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct SingleFeedbackRequest {
+    pub event_id: String,
+    pub skill_id: String,
+    pub verdict: JudgmentLabel,
+    pub reason_code: Option<String>,
+    pub provenance: Option<String>,
+    pub expected_version: Option<u32>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum FeedbackRequest {
+    Paired(PairedCorrectionRequest),
+    Single(SingleFeedbackRequest),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "status", rename_all = "kebab-case")]
+pub enum FeedbackOutcome {
+    PairedCorrection {
+        event_id: String,
+        original_skill_id: String,
+        alternative_skill_id: String,
+        group_id: String,
+        original_judgment_id: String,
+        alternative_judgment_id: String,
+        data_generation: u64,
+    },
+    ProspectiveProposal {
+        event_id: String,
+        original_skill_id: String,
+        alternative_skill_id: String,
+        proposal_id: String,
+        reason: String,
+    },
+    SingleJudgment {
+        event_id: String,
+        skill_id: String,
+        verdict: JudgmentLabel,
+        judgment_id: String,
+        data_generation: u64,
+    },
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub enum FeedbackError {
+    Store(StoreError),
+    EventNotFound(String),
+    MissingSnapshot,
+    IneligibleAlternative {
+        skill_id: String,
+        reason: Option<String>,
+    },
+    OriginalSkillNotFound(String),
+    IdenticalSkills,
+    InvalidSkillId(String),
+    RevisionConflict {
+        expected: u32,
+        actual: u32,
+    },
+    StaleStamp,
+}
+
+impl fmt::Display for FeedbackError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Store(err) => write!(f, "store error: {err}"),
+            Self::EventNotFound(id) => write!(f, "ranking event '{id}' not found in ledger"),
+            Self::MissingSnapshot => write!(
+                f,
+                "historical roster snapshot is missing or incomplete; cannot verify historical alternative eligibility"
+            ),
+            Self::IneligibleAlternative { skill_id, reason } => {
+                if let Some(r) = reason {
+                    write!(
+                        f,
+                        "alternative skill '{skill_id}' was historically ineligible ({r})"
+                    )
+                } else {
+                    write!(
+                        f,
+                        "alternative skill '{skill_id}' was historically ineligible"
+                    )
+                }
+            }
+            Self::OriginalSkillNotFound(id) => {
+                write!(f, "original skill '{id}' not found in historical event context")
+            }
+            Self::IdenticalSkills => write!(f, "original and alternative skill IDs must be distinct"),
+            Self::InvalidSkillId(id) => write!(f, "invalid skill ID '{id}'"),
+            Self::RevisionConflict { expected, actual } => {
+                write!(
+                    f,
+                    "judgment revision conflict: expected version {expected}, found {actual}"
+                )
+            }
+            Self::StaleStamp => write!(
+                f,
+                "ledger store stamp generation is stale; concurrent modification detected"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for FeedbackError {}
+
+impl From<StoreError> for FeedbackError {
+    fn from(err: StoreError) -> Self {
+        Self::Store(err)
+    }
+}
+
+fn generate_random_hex(byte_count: usize) -> String {
+    use std::io::Read;
+    let mut bytes = vec![0u8; byte_count];
+    if let Ok(mut f) = std::fs::File::open("/dev/urandom") {
+        let _ = f.read_exact(&mut bytes);
+    } else {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let pid = std::process::id();
+        let hash = blake3::hash(format!("{nanos}:{pid}").as_bytes());
+        bytes.copy_from_slice(&hash.as_bytes()[..byte_count.min(32)]);
+    }
+    let mut s = String::with_capacity(byte_count * 2);
+    for b in bytes {
+        use std::fmt::Write;
+        let _ = write!(s, "{b:02x}");
+    }
+    s
 }
 
 // -----------------------------------------------------------------------------
@@ -3470,4 +3620,673 @@ impl LedgerStore {
         tx.commit()?;
         Ok(())
     }
+
+    pub fn get_ranking_event(
+        &self,
+        clock: EntryClock,
+        cx: &Cx,
+        event_id: &str,
+    ) -> Result<Option<NewRankingEvent>, StoreError> {
+        check_work(clock, cx)?;
+        self.directory.verify_database_file(&self.file, clock, cx)?;
+        refresh_busy_limit(&self.connection, clock, cx)?;
+
+        let event = self
+            .connection
+            .query_row(
+                "SELECT event_id, verified_delivery_key, workspace_root, session_id,
+                        agent_branch, mode_channel, policy_version, schema_version,
+                        decision, reason, exposure_state, elapsed_ms, created_at_unix_ms,
+                        input_tokens, output_tokens, snapshot_id
+                 FROM ranking_events WHERE event_id = ?1",
+                [event_id],
+                |row| {
+                    let d_str: String = row.get(8)?;
+                    let e_str: String = row.get(10)?;
+                    let s_ver: i64 = row.get(7)?;
+                    let elapsed: i64 = row.get(11)?;
+                    let created: i64 = row.get(12)?;
+                    let in_tok: Option<i64> = row.get(13)?;
+                    let out_tok: Option<i64> = row.get(14)?;
+                    Ok(NewRankingEvent {
+                        event_id: row.get(0)?,
+                        verified_delivery_key: row.get(1)?,
+                        workspace_root: row.get(2)?,
+                        session_id: row.get(3)?,
+                        agent_branch: row.get(4)?,
+                        mode_channel: row.get(5)?,
+                        policy_version: row.get(6)?,
+                        schema_version: s_ver as u32,
+                        decision: DecisionKind::parse_str(&d_str).unwrap_or(DecisionKind::Unavailable),
+                        reason: row.get(9)?,
+                        exposure_state: ExposureState::parse_str(&e_str).unwrap_or(ExposureState::Unknown),
+                        elapsed_ms: elapsed as u64,
+                        created_at_unix_ms: created as u64,
+                        input_tokens: in_tok.map(|t| t as u64),
+                        output_tokens: out_tok.map(|t| t as u64),
+                        snapshot_id: row.get(15)?,
+                    })
+                },
+            )
+            .optional()?;
+
+        self.directory.verify_database_file(&self.file, clock, cx)?;
+        check_work(clock, cx)?;
+        Ok(event)
+    }
+
+    pub fn get_roster_snapshot(
+        &self,
+        clock: EntryClock,
+        cx: &Cx,
+        snapshot_id: &str,
+    ) -> Result<Option<NewRosterSnapshot>, StoreError> {
+        check_work(clock, cx)?;
+        self.directory.verify_database_file(&self.file, clock, cx)?;
+        refresh_busy_limit(&self.connection, clock, cx)?;
+
+        let snapshot = self
+            .connection
+            .query_row(
+                "SELECT workspace_root, adapter, total_candidates, eligible_candidates,
+                        membership_coverage, members_json, created_at_unix_ms
+                 FROM roster_snapshots WHERE snapshot_id = ?1",
+                [snapshot_id],
+                |row| {
+                    let total: i64 = row.get(2)?;
+                    let eligible: i64 = row.get(3)?;
+                    let cov_str: String = row.get(4)?;
+                    let created: i64 = row.get(6)?;
+                    Ok(NewRosterSnapshot {
+                        snapshot_id: snapshot_id.to_string(),
+                        workspace_root: row.get(0)?,
+                        adapter: row.get(1)?,
+                        total_candidates: total as u64,
+                        eligible_candidates: eligible as u64,
+                        membership_coverage: MembershipCoverage::parse_str(&cov_str)
+                            .unwrap_or(MembershipCoverage::Unknown),
+                        members_json: row.get(5)?,
+                        created_at_unix_ms: created as u64,
+                    })
+                },
+            )
+            .optional()?;
+
+        self.directory.verify_database_file(&self.file, clock, cx)?;
+        check_work(clock, cx)?;
+        Ok(snapshot)
+    }
+
+    pub fn parse_snapshot_members(
+        snapshot: &NewRosterSnapshot,
+    ) -> Result<Vec<SnapshotMember>, StoreError> {
+        let value = crate::adapter::decode_json(
+            snapshot.members_json.as_bytes(),
+            MAX_SNAPSHOT_METADATA_BYTES,
+        )
+        .map_err(|_| StoreError::InvalidRecord)?;
+        serde_json::from_value(value).map_err(|_| StoreError::InvalidRecord)
+    }
+
+    pub fn get_judgment(
+        &self,
+        clock: EntryClock,
+        cx: &Cx,
+        attributed_event_id: &str,
+        skill_id: &str,
+    ) -> Result<Option<NewJudgment>, StoreError> {
+        check_work(clock, cx)?;
+        self.directory.verify_database_file(&self.file, clock, cx)?;
+        refresh_busy_limit(&self.connection, clock, cx)?;
+
+        let jdg = self
+            .connection
+            .query_row(
+                "SELECT judgment_id, attributed_event_id, skill_id, label, label_version, provenance, created_at_unix_ms
+                 FROM judgments WHERE attributed_event_id = ?1 AND skill_id = ?2",
+                [attributed_event_id, skill_id],
+                |row| {
+                    let l_str: String = row.get(3)?;
+                    let ver: i64 = row.get(4)?;
+                    let created: i64 = row.get(6)?;
+                    Ok(NewJudgment {
+                        judgment_id: row.get(0)?,
+                        attributed_event_id: row.get(1)?,
+                        skill_id: row.get(2)?,
+                        label: JudgmentLabel::parse_str(&l_str).unwrap_or(JudgmentLabel::Neutral),
+                        label_version: ver as u32,
+                        provenance: row.get(5)?,
+                        created_at_unix_ms: created as u64,
+                    })
+                },
+            )
+            .optional()?;
+
+        self.directory.verify_database_file(&self.file, clock, cx)?;
+        check_work(clock, cx)?;
+        Ok(jdg)
+    }
+
+    pub fn record_paired_correction(
+        &mut self,
+        clock: EntryClock,
+        cx: &Cx,
+        req: &PairedCorrectionRequest,
+        expected_stamp: LedgerStamp,
+    ) -> Result<(FeedbackOutcome, LedgerStamp), FeedbackError> {
+        if self.read_only {
+            return Err(FeedbackError::Store(StoreError::Permissions));
+        }
+        check_work(clock, cx).map_err(FeedbackError::Store)?;
+        self.directory
+            .verify_database_file(&self.file, clock, cx)
+            .map_err(FeedbackError::Store)?;
+        self.directory.admit_space().map_err(FeedbackError::Store)?;
+        refresh_busy_limit(&self.connection, clock, cx).map_err(FeedbackError::Store)?;
+
+        if req.original_skill_id == req.alternative_skill_id {
+            return Err(FeedbackError::IdenticalSkills);
+        }
+        if !bounded_metadata(&req.original_skill_id, 256) {
+            return Err(FeedbackError::InvalidSkillId(req.original_skill_id.clone()));
+        }
+        if !bounded_metadata(&req.alternative_skill_id, 256) {
+            return Err(FeedbackError::InvalidSkillId(req.alternative_skill_id.clone()));
+        }
+
+        let tx = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|e| FeedbackError::Store(StoreError::from(e)))?;
+        check_stamp(&tx, expected_stamp).map_err(|_| FeedbackError::StaleStamp)?;
+
+        // 1. Fetch ranking_event
+        let event_row: Option<(String, String, Option<String>)> = tx
+            .query_row(
+                "SELECT workspace_root, session_id, snapshot_id FROM ranking_events WHERE event_id = ?1",
+                [&req.event_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()
+            .map_err(|e| FeedbackError::Store(StoreError::from(e)))?;
+
+        let (workspace_root, session_id, snapshot_id_opt) = match event_row {
+            Some(row) => row,
+            None => return Err(FeedbackError::EventNotFound(req.event_id.clone())),
+        };
+
+        let snapshot_id = match snapshot_id_opt {
+            Some(id) if !id.is_empty() => id,
+            _ => return Err(FeedbackError::MissingSnapshot),
+        };
+
+        // 2. Fetch snapshot
+        let snap = read_snapshot(&tx, &snapshot_id)
+            .map_err(FeedbackError::Store)?
+            .ok_or(FeedbackError::MissingSnapshot)?;
+
+        if snap.membership_coverage != MembershipCoverage::Complete {
+            return Err(FeedbackError::MissingSnapshot);
+        }
+
+        let members = Self::parse_snapshot_members(&snap)
+            .map_err(FeedbackError::Store)?;
+
+        // 3. Resolve original skill
+        let orig_in_snap = members.iter().any(|m| m.skill_id == req.original_skill_id);
+        let orig_in_cands: bool = if !orig_in_snap {
+            tx.query_row(
+                "SELECT count(*) FROM ranking_candidates WHERE event_id = ?1 AND skill_id = ?2",
+                [&req.event_id, &req.original_skill_id],
+                |r| r.get::<_, i64>(0),
+            )
+            .map(|c| c > 0)
+            .unwrap_or(false)
+        } else {
+            true
+        };
+        if !orig_in_cands {
+            return Err(FeedbackError::OriginalSkillNotFound(req.original_skill_id.clone()));
+        }
+
+        let alt_member = members.iter().find(|m| m.skill_id == req.alternative_skill_id);
+
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+
+        match alt_member {
+            None => {
+                // Alternative is historically absent: record prospective proposal, ZERO judgments committed!
+                let proposal_id = format!("prop-{}", generate_random_hex(12));
+                let notes = req
+                    .reason_code
+                    .clone()
+                    .unwrap_or_else(|| "historically absent alternative".to_string());
+                tx.execute(
+                    "INSERT INTO feedback_proposals (
+                        proposal_id, workspace_root, session_id, suggested_skill_reference, status, notes, created_at_unix_ms
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                    params![
+                        proposal_id,
+                        workspace_root,
+                        session_id,
+                        req.alternative_skill_id,
+                        ProposalStatus::HistoricallyAbsent.as_str(),
+                        notes,
+                        now_ms as i64,
+                    ],
+                )
+                .map_err(|e| FeedbackError::Store(StoreError::from(e)))?;
+
+                self.directory
+                    .verify_database_file(&self.file, clock, cx)
+                    .map_err(FeedbackError::Store)?;
+                check_work(clock, cx).map_err(FeedbackError::Store)?;
+                tx.commit()
+                    .map_err(|e| FeedbackError::Store(StoreError::from(e)))?;
+
+                Ok((
+                    FeedbackOutcome::ProspectiveProposal {
+                        event_id: req.event_id.clone(),
+                        original_skill_id: req.original_skill_id.clone(),
+                        alternative_skill_id: req.alternative_skill_id.clone(),
+                        proposal_id,
+                        reason: "alternative skill was not present in the historical roster snapshot; recorded as prospective proposal".to_string(),
+                    },
+                    self.stamp,
+                ))
+            }
+            Some(alt) => {
+                // Alternative was present: must be eligible!
+                if !alt.eligible || alt.exclusion_reason.is_some() {
+                    return Err(FeedbackError::IneligibleAlternative {
+                        skill_id: alt.skill_id.clone(),
+                        reason: alt.exclusion_reason.clone(),
+                    });
+                }
+
+                // Check expected_version if specified
+                let orig_existing: Option<(String, i64)> = tx
+                    .query_row(
+                        "SELECT judgment_id, label_version FROM judgments WHERE attributed_event_id = ?1 AND skill_id = ?2",
+                        [&req.event_id, &req.original_skill_id],
+                        |r| Ok((r.get(0)?, r.get(1)?)),
+                    )
+                    .optional()
+                    .map_err(|e| FeedbackError::Store(StoreError::from(e)))?;
+
+                let alt_existing: Option<(String, i64)> = tx
+                    .query_row(
+                        "SELECT judgment_id, label_version FROM judgments WHERE attributed_event_id = ?1 AND skill_id = ?2",
+                        [&req.event_id, &req.alternative_skill_id],
+                        |r| Ok((r.get(0)?, r.get(1)?)),
+                    )
+                    .optional()
+                    .map_err(|e| FeedbackError::Store(StoreError::from(e)))?;
+
+                if let Some(expected) = req.expected_version {
+                    if let Some((_, actual)) = &orig_existing {
+                        if *actual as u32 != expected {
+                            return Err(FeedbackError::RevisionConflict {
+                                expected,
+                                actual: *actual as u32,
+                            });
+                        }
+                    }
+                    if let Some((_, actual)) = &alt_existing {
+                        if *actual as u32 != expected {
+                            return Err(FeedbackError::RevisionConflict {
+                                expected,
+                                actual: *actual as u32,
+                            });
+                        }
+                    }
+                }
+
+                let group_id = format!("grp-{}", generate_random_hex(12));
+                let user_prov = req.provenance.as_deref().unwrap_or("user");
+                let provenance = format!("paired:{group_id}:{user_prov}");
+
+                let orig_jdg_id = match orig_existing {
+                    Some((id, ver)) => {
+                        let new_ver = ver.checked_add(1).ok_or(FeedbackError::Store(
+                            StoreError::GenerationExhausted,
+                        ))?;
+                        tx.execute(
+                            "UPDATE judgments SET label = ?1, label_version = ?2, provenance = ?3, created_at_unix_ms = ?4 WHERE judgment_id = ?5",
+                            params![
+                                JudgmentLabel::Harmful.as_str(),
+                                new_ver,
+                                provenance,
+                                now_ms as i64,
+                                id,
+                            ],
+                        )
+                        .map_err(|e| FeedbackError::Store(StoreError::from(e)))?;
+                        id
+                    }
+                    None => {
+                        let id = format!("jdg-{}", generate_random_hex(12));
+                        tx.execute(
+                            "INSERT INTO judgments (
+                                judgment_id, attributed_event_id, skill_id, label, label_version, provenance, created_at_unix_ms
+                            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                            params![
+                                id,
+                                req.event_id,
+                                req.original_skill_id,
+                                JudgmentLabel::Harmful.as_str(),
+                                1,
+                                provenance,
+                                now_ms as i64,
+                            ],
+                        )
+                        .map_err(|e| FeedbackError::Store(StoreError::from(e)))?;
+                        id
+                    }
+                };
+
+                let alt_jdg_id = match alt_existing {
+                    Some((id, ver)) => {
+                        let new_ver = ver.checked_add(1).ok_or(FeedbackError::Store(
+                            StoreError::GenerationExhausted,
+                        ))?;
+                        tx.execute(
+                            "UPDATE judgments SET label = ?1, label_version = ?2, provenance = ?3, created_at_unix_ms = ?4 WHERE judgment_id = ?5",
+                            params![
+                                JudgmentLabel::Useful.as_str(),
+                                new_ver,
+                                provenance,
+                                now_ms as i64,
+                                id,
+                            ],
+                        )
+                        .map_err(|e| FeedbackError::Store(StoreError::from(e)))?;
+                        id
+                    }
+                    None => {
+                        let id = format!("jdg-{}", generate_random_hex(12));
+                        tx.execute(
+                            "INSERT INTO judgments (
+                                judgment_id, attributed_event_id, skill_id, label, label_version, provenance, created_at_unix_ms
+                            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                            params![
+                                id,
+                                req.event_id,
+                                req.alternative_skill_id,
+                                JudgmentLabel::Useful.as_str(),
+                                1,
+                                provenance,
+                                now_ms as i64,
+                            ],
+                        )
+                        .map_err(|e| FeedbackError::Store(StoreError::from(e)))?;
+                        id
+                    }
+                };
+
+                let new_data_gen = expected_stamp
+                    .data_generation
+                    .checked_add(1)
+                    .ok_or(FeedbackError::Store(StoreError::GenerationExhausted))?;
+
+                tx.execute(
+                    "UPDATE store_meta SET data_generation = ?1 WHERE singleton = 1",
+                    [new_data_gen as i64],
+                )
+                .map_err(|e| FeedbackError::Store(StoreError::from(e)))?;
+
+                self.directory
+                    .verify_database_file(&self.file, clock, cx)
+                    .map_err(FeedbackError::Store)?;
+                check_work(clock, cx).map_err(FeedbackError::Store)?;
+                tx.commit()
+                    .map_err(|e| FeedbackError::Store(StoreError::from(e)))?;
+
+                self.stamp.data_generation = new_data_gen;
+
+                Ok((
+                    FeedbackOutcome::PairedCorrection {
+                        event_id: req.event_id.clone(),
+                        original_skill_id: req.original_skill_id.clone(),
+                        alternative_skill_id: req.alternative_skill_id.clone(),
+                        group_id,
+                        original_judgment_id: orig_jdg_id,
+                        alternative_judgment_id: alt_jdg_id,
+                        data_generation: new_data_gen,
+                    },
+                    self.stamp,
+                ))
+            }
+        }
+    }
+
+    pub fn record_single_feedback(
+        &mut self,
+        clock: EntryClock,
+        cx: &Cx,
+        req: &SingleFeedbackRequest,
+        expected_stamp: LedgerStamp,
+    ) -> Result<(FeedbackOutcome, LedgerStamp), FeedbackError> {
+        if self.read_only {
+            return Err(FeedbackError::Store(StoreError::Permissions));
+        }
+        check_work(clock, cx).map_err(FeedbackError::Store)?;
+        self.directory
+            .verify_database_file(&self.file, clock, cx)
+            .map_err(FeedbackError::Store)?;
+        self.directory.admit_space().map_err(FeedbackError::Store)?;
+        refresh_busy_limit(&self.connection, clock, cx).map_err(FeedbackError::Store)?;
+
+        if !bounded_metadata(&req.skill_id, 256) {
+            return Err(FeedbackError::InvalidSkillId(req.skill_id.clone()));
+        }
+
+        let tx = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|e| FeedbackError::Store(StoreError::from(e)))?;
+        check_stamp(&tx, expected_stamp).map_err(|_| FeedbackError::StaleStamp)?;
+
+        let event_row: Option<(String, String, Option<String>)> = tx
+            .query_row(
+                "SELECT workspace_root, session_id, snapshot_id FROM ranking_events WHERE event_id = ?1",
+                [&req.event_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()
+            .map_err(|e| FeedbackError::Store(StoreError::from(e)))?;
+
+        if event_row.is_none() {
+            return Err(FeedbackError::EventNotFound(req.event_id.clone()));
+        }
+
+        let existing: Option<(String, i64)> = tx
+            .query_row(
+                "SELECT judgment_id, label_version FROM judgments WHERE attributed_event_id = ?1 AND skill_id = ?2",
+                [&req.event_id, &req.skill_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()
+            .map_err(|e| FeedbackError::Store(StoreError::from(e)))?;
+
+        if let Some(expected) = req.expected_version {
+            if let Some((_, actual)) = &existing {
+                if *actual as u32 != expected {
+                    return Err(FeedbackError::RevisionConflict {
+                        expected,
+                        actual: *actual as u32,
+                    });
+                }
+            }
+        }
+
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+
+        let provenance = req.provenance.clone().unwrap_or_else(|| "user".to_string());
+        let judgment_id = match existing {
+            Some((id, ver)) => {
+                let new_ver = ver.checked_add(1).ok_or(FeedbackError::Store(
+                    StoreError::GenerationExhausted,
+                ))?;
+                tx.execute(
+                    "UPDATE judgments SET label = ?1, label_version = ?2, provenance = ?3, created_at_unix_ms = ?4 WHERE judgment_id = ?5",
+                    params![
+                        req.verdict.as_str(),
+                        new_ver,
+                        provenance,
+                        now_ms as i64,
+                        id,
+                    ],
+                )
+                .map_err(|e| FeedbackError::Store(StoreError::from(e)))?;
+                id
+            }
+            None => {
+                let new_id = format!("jdg-{}", generate_random_hex(12));
+                tx.execute(
+                    "INSERT INTO judgments (
+                        judgment_id, attributed_event_id, skill_id, label, label_version, provenance, created_at_unix_ms
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                    params![
+                        new_id,
+                        req.event_id,
+                        req.skill_id,
+                        req.verdict.as_str(),
+                        1,
+                        provenance,
+                        now_ms as i64,
+                    ],
+                )
+                .map_err(|e| FeedbackError::Store(StoreError::from(e)))?;
+                new_id
+            }
+        };
+
+        let new_data_gen = expected_stamp
+            .data_generation
+            .checked_add(1)
+            .ok_or(FeedbackError::Store(StoreError::GenerationExhausted))?;
+
+        tx.execute(
+            "UPDATE store_meta SET data_generation = ?1 WHERE singleton = 1",
+            [new_data_gen as i64],
+        )
+        .map_err(|e| FeedbackError::Store(StoreError::from(e)))?;
+
+        self.directory
+            .verify_database_file(&self.file, clock, cx)
+            .map_err(FeedbackError::Store)?;
+        check_work(clock, cx).map_err(FeedbackError::Store)?;
+        tx.commit()
+            .map_err(|e| FeedbackError::Store(StoreError::from(e)))?;
+
+        self.stamp.data_generation = new_data_gen;
+
+        Ok((
+            FeedbackOutcome::SingleJudgment {
+                event_id: req.event_id.clone(),
+                skill_id: req.skill_id.clone(),
+                verdict: req.verdict,
+                judgment_id,
+                data_generation: new_data_gen,
+            },
+            self.stamp,
+        ))
+    }
+}
+
+pub fn submit_feedback(
+    invocation: &ProcessInvocation,
+    cx: &Cx,
+    location: LedgerLocation,
+    req: FeedbackRequest,
+) -> Result<FeedbackOutcome, FeedbackError> {
+    let clock = invocation.clock();
+    let child = cx.clone();
+    let res = run_blocking_leaf(
+        invocation,
+        cx,
+        BlockingLeafKind::Database,
+        false,
+        move || {
+            let mut store =
+                match open_blocking(clock, &child, LedgerAccess::ExistingOnly, location)
+                    .map_err(FeedbackError::Store)?
+                {
+                    LedgerOpen::Ready(store) => *store,
+                    LedgerOpen::Disabled => {
+                        return Err(FeedbackError::Store(StoreError::Permissions));
+                    }
+                    LedgerOpen::Missing => {
+                        return Err(FeedbackError::Store(StoreError::Missing));
+                    }
+                    LedgerOpen::ReadOnly(_) => {
+                        return Err(FeedbackError::Store(StoreError::Permissions));
+                    }
+                };
+            let stamp = store.stamp();
+            let (outcome, _) = match req {
+                FeedbackRequest::Paired(paired) => {
+                    store.record_paired_correction(clock, &child, &paired, stamp)?
+                }
+                FeedbackRequest::Single(single) => {
+                    store.record_single_feedback(clock, &child, &single, stamp)?
+                }
+            };
+            Ok(outcome)
+        },
+    )
+    .map_err(|e| FeedbackError::Store(StoreError::Runtime(e)))?;
+    res.value
+}
+
+pub fn record_ranking(
+    invocation: &ProcessInvocation,
+    cx: &Cx,
+    access: LedgerAccess,
+    location: LedgerLocation,
+    event: &NewRankingEvent,
+    candidates: &[NewRankingCandidate],
+    snapshot: Option<&NewRosterSnapshot>,
+) -> Result<bool, StoreError> {
+    if access == LedgerAccess::Disabled {
+        return Ok(false);
+    }
+    let clock = invocation.clock();
+    let child = cx.clone();
+    let event = event.clone();
+    let candidates = candidates.to_vec();
+    let snapshot = snapshot.cloned();
+    let res = run_blocking_leaf(
+        invocation,
+        cx,
+        BlockingLeafKind::Database,
+        false,
+        move || {
+            let mut store = match open_blocking(clock, &child, access, location)? {
+                LedgerOpen::Ready(store) => *store,
+                LedgerOpen::Disabled | LedgerOpen::Missing | LedgerOpen::ReadOnly(_) => {
+                    return Ok(false);
+                }
+            };
+            let stamp = store.stamp();
+            store.record_ranking_event(
+                clock,
+                &child,
+                &event,
+                &candidates,
+                snapshot.as_ref(),
+                stamp,
+            )?;
+            Ok(true)
+        },
+    )
+    .map_err(StoreError::Runtime)?;
+    res.value
 }

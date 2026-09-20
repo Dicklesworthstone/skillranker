@@ -1030,6 +1030,47 @@ async fn rank_once(
                 ));
             }
             roster_source.validate(&dependencies, cx, clock)?;
+            let event_id_str = normalized_context
+                .current_request
+                .event_id
+                .as_ref()
+                .map(|e| e.as_str().to_string())
+                .unwrap_or_else(|| "event-0".to_string());
+            let explicit_candidates: Vec<crate::storage::NewRankingCandidate> = skills
+                .iter()
+                .enumerate()
+                .map(|(i, s)| crate::storage::NewRankingCandidate {
+                    event_id: event_id_str.clone(),
+                    stage: crate::storage::CandidateStage::Wide,
+                    skill_id: s.id.as_str().to_string(),
+                    skill_version: roster
+                        .skills()
+                        .iter()
+                        .find(|sk| sk.record().id == s.id)
+                        .map(|sk| sk.record().source_content.as_str().to_string())
+                        .unwrap_or_default(),
+                    raw_probability: None,
+                    normalized_probability: None,
+                    fit_score: None,
+                    rank_score: None,
+                    rank_position: Some((i + 1) as u32),
+                    excluded: false,
+                    exclusion_reason: None,
+                })
+                .collect();
+            let recorded = try_record_ledger(
+                invocation,
+                cx,
+                &gate,
+                &roster,
+                &normalized_context,
+                crate::storage::DecisionKind::Explicit,
+                "explicit-match",
+                clock.now().as_millis(),
+                &progress.metrics,
+                &explicit_candidates,
+            );
+            progress.evaluated.ledger_recorded = recorded;
             let mut doc = build_explicit_document(
                 &skills,
                 &normalized_context,
@@ -1244,6 +1285,19 @@ async fn rank_once(
     if let Some(verdict) = admission.verdict {
         match verdict {
             Verdict::Abstain(reason) => {
+                let recorded = try_record_ledger(
+                    invocation,
+                    cx,
+                    &gate,
+                    &roster,
+                    &normalized_context,
+                    crate::storage::DecisionKind::Abstain,
+                    reason.as_str(),
+                    clock.now().as_millis(),
+                    &progress.metrics,
+                    &[],
+                );
+                progress.evaluated.ledger_recorded = recorded;
                 let mut doc = build_abstain_document(
                     reason.as_str(),
                     &normalized_context,
@@ -1340,6 +1394,19 @@ async fn rank_once(
     };
 
     if candidate_skills.is_empty() {
+        let recorded = try_record_ledger(
+            invocation,
+            cx,
+            &gate,
+            &roster,
+            &normalized_context,
+            crate::storage::DecisionKind::Abstain,
+            "no-shortlist-match",
+            clock.now().as_millis(),
+            &progress.metrics,
+            &[],
+        );
+        progress.evaluated.ledger_recorded = recorded;
         let mut doc = build_abstain_document(
             "no-shortlist-match",
             &normalized_context,
@@ -2017,6 +2084,19 @@ async fn rank_once(
 
     let shortlisted = match &wide_outcome.decision {
         WideDecision::LowNeed => {
+            let recorded = try_record_ledger(
+                invocation,
+                cx,
+                &gate,
+                &roster,
+                &normalized_context,
+                crate::storage::DecisionKind::Abstain,
+                "low-need",
+                clock.now().as_millis(),
+                &progress.metrics,
+                &[],
+            );
+            progress.evaluated.ledger_recorded = recorded;
             let mut doc = build_abstain_document(
                 "low-need",
                 &normalized_context,
@@ -2232,6 +2312,19 @@ async fn rank_once(
     if let Some(verdict) = evaluation.verdict {
         match verdict {
             Verdict::Abstain(reason) => {
+                let recorded = try_record_ledger(
+                    invocation,
+                    cx,
+                    &gate,
+                    &roster,
+                    &normalized_context,
+                    crate::storage::DecisionKind::Abstain,
+                    reason.as_str(),
+                    clock.now().as_millis(),
+                    &progress.metrics,
+                    &[],
+                );
+                progress.evaluated.ledger_recorded = recorded;
                 let mut doc = build_abstain_document(
                     reason.as_str(),
                     &normalized_context,
@@ -2277,6 +2370,19 @@ async fn rank_once(
                 return Ok(doc);
             }
             Verdict::Unavailable(reason) => {
+                let recorded = try_record_ledger(
+                    invocation,
+                    cx,
+                    &gate,
+                    &roster,
+                    &normalized_context,
+                    crate::storage::DecisionKind::Unavailable,
+                    reason.as_str(),
+                    clock.now().as_millis(),
+                    &progress.metrics,
+                    &[],
+                );
+                progress.evaluated.ledger_recorded = recorded;
                 let doc = OutputDocument::failure_with_details(
                     reason.kind(),
                     &format!("Candidate unavailable after rerank: {}", reason.as_str()),
@@ -2312,6 +2418,80 @@ async fn rank_once(
     })?;
 
     // 16. Build Ranked OutputDocument
+    let event_id_str = normalized_context
+        .current_request
+        .event_id
+        .as_ref()
+        .map(|e| e.as_str().to_string())
+        .unwrap_or_else(|| "event-0".to_string());
+
+    let mut ranking_candidates = Vec::new();
+    for s in &shortlisted {
+        ranking_candidates.push(crate::storage::NewRankingCandidate {
+            event_id: event_id_str.clone(),
+            stage: crate::storage::CandidateStage::Wide,
+            skill_id: s.skill.binding.id.as_str().to_string(),
+            skill_version: s.skill.record.source_content.as_str().to_string(),
+            raw_probability: Some(s.wide_probability),
+            normalized_probability: Some(s.wide_probability),
+            fit_score: None,
+            rank_score: None,
+            rank_position: None,
+            excluded: false,
+            exclusion_reason: None,
+        });
+    }
+    for (i, scored) in scored_ranking.returned.iter().enumerate() {
+        let el = &evaluation.eligible[scored.index];
+        ranking_candidates.push(crate::storage::NewRankingCandidate {
+            event_id: event_id_str.clone(),
+            stage: crate::storage::CandidateStage::Rerank,
+            skill_id: el.skill.binding.id.as_str().to_string(),
+            skill_version: el.skill.record.source_content.as_str().to_string(),
+            raw_probability: Some(el.rerank),
+            normalized_probability: Some(el.rerank),
+            fit_score: Some(el.fit),
+            rank_score: Some(scored.rank_score),
+            rank_position: Some((i + 1) as u32),
+            excluded: false,
+            exclusion_reason: None,
+        });
+    }
+    for (id, reason) in &evaluation.removed {
+        let version = shortlisted
+            .iter()
+            .find(|s| s.skill.binding.id == *id)
+            .map(|s| s.skill.record.source_content.as_str().to_string())
+            .unwrap_or_default();
+        ranking_candidates.push(crate::storage::NewRankingCandidate {
+            event_id: event_id_str.clone(),
+            stage: crate::storage::CandidateStage::Rerank,
+            skill_id: id.as_str().to_string(),
+            skill_version: version,
+            raw_probability: None,
+            normalized_probability: None,
+            fit_score: None,
+            rank_score: None,
+            rank_position: None,
+            excluded: true,
+            exclusion_reason: Some(reason.as_str().to_string()),
+        });
+    }
+
+    let recorded = try_record_ledger(
+        invocation,
+        cx,
+        &gate,
+        &roster,
+        &normalized_context,
+        crate::storage::DecisionKind::Ranked,
+        "eligible-candidates",
+        clock.now().as_millis(),
+        &progress.metrics,
+        &ranking_candidates,
+    );
+    progress.evaluated.ledger_recorded = recorded;
+
     let mut doc = build_ranked_document(
         &evaluation.eligible,
         &scored_ranking,
@@ -3221,6 +3401,8 @@ struct Evaluated {
     /// An effect flag turned the response cache off, so nothing persisted by
     /// choice rather than by failure.
     store_disabled: bool,
+    /// A qualified persistent ledger recorded this run's event and snapshot.
+    ledger_recorded: bool,
     metrics: ExecutionMetrics,
     eligible: usize,
     wide: usize,
@@ -3247,7 +3429,7 @@ impl Evaluated {
     fn persistence(&self) -> &'static str {
         if self.ledger_disabled || self.store_disabled {
             "disabled"
-        } else if self.store_backed {
+        } else if self.store_backed || self.ledger_recorded {
             "recorded"
         } else {
             "unavailable"
@@ -3318,6 +3500,151 @@ fn dominant_phase(phase: &BTreeMap<String, f64>) -> Option<&str> {
         .iter()
         .max_by(|a, b| a.1.total_cmp(b.1))
         .map(|(p, _)| p.as_str())
+}
+
+fn try_record_ledger(
+    invocation: &ProcessInvocation,
+    cx: &Cx,
+    gate: &EffectGate,
+    roster: &ResolvedRoster,
+    context: &NormalizedContext,
+    decision: crate::storage::DecisionKind,
+    reason: &str,
+    elapsed_ms: u64,
+    metrics: &ExecutionMetrics,
+    candidates: &[crate::storage::NewRankingCandidate],
+) -> bool {
+    if matches!(gate.ledger(), crate::privacy::StoreAccess::Disabled(_)) {
+        return false;
+    }
+    let snapshot_members: Vec<crate::storage::SnapshotMember> = roster
+        .skills()
+        .iter()
+        .map(|skill| {
+            let rec = skill.record();
+            let eligible_binding = skill.bindings().iter().find(|b| {
+                matches!(b.visibility, crate::roster::Visibility::Verified { .. })
+                    && b.restrictions.agent_invocable
+            });
+            let (eligible, invocation_name, exclusion_reason) = match eligible_binding {
+                Some(b) => (true, Some(b.invocation.as_str().to_string()), None),
+                None => {
+                    let first_b = skill.bindings().first();
+                    let reason = first_b.map(|b| {
+                        if !b.restrictions.agent_invocable {
+                            "not-agent-invocable".to_string()
+                        } else {
+                            match &b.visibility {
+                                crate::roster::Visibility::Shadowed { .. } => {
+                                    "shadowed".to_string()
+                                }
+                                crate::roster::Visibility::Ambiguous => {
+                                    "ambiguous".to_string()
+                                }
+                                crate::roster::Visibility::Unverified => {
+                                    "unverified".to_string()
+                                }
+                                _ => "ineligible".to_string(),
+                            }
+                        }
+                    });
+                    let inv_name = first_b.map(|b| b.invocation.as_str().to_string());
+                    (false, inv_name, reason)
+                }
+            };
+            crate::storage::SnapshotMember {
+                skill_id: rec.id.as_str().to_string(),
+                invocation_name: if eligible {
+                    invocation_name
+                } else {
+                    invocation_name.or_else(|| Some(rec.display_name.as_str().to_string()))
+                },
+                content_hash: Some(rec.source_content.as_str().to_string()),
+                source: rec.source.as_str().to_string(),
+                eligible,
+                exclusion_reason,
+            }
+        })
+        .collect();
+
+    let members_json = match serde_json::to_string(&snapshot_members) {
+        Ok(j) => j,
+        Err(_) => return false,
+    };
+
+    let snapshot_id = crate::roster::evidence::snapshot_id(roster)
+        .as_str()
+        .to_string();
+    let total_candidates = snapshot_members.len() as u64;
+    let eligible_candidates = snapshot_members.iter().filter(|m| m.eligible).count() as u64;
+
+    let snapshot = crate::storage::NewRosterSnapshot {
+        snapshot_id: snapshot_id.clone(),
+        workspace_root: context.workspace_root.as_str().to_string(),
+        adapter: context.harness.as_str().to_string(),
+        total_candidates,
+        eligible_candidates,
+        membership_coverage: if roster.is_partial() {
+            crate::storage::MembershipCoverage::Partial
+        } else {
+            crate::storage::MembershipCoverage::Complete
+        },
+        members_json,
+        created_at_unix_ms: invocation.clock().now().as_millis() as u64,
+    };
+
+    let event_id = context
+        .current_request
+        .event_id
+        .as_ref()
+        .map(|e| e.as_str().to_string())
+        .unwrap_or_else(|| "event-0".to_string());
+
+    let event = crate::storage::NewRankingEvent {
+        event_id,
+        verified_delivery_key: None,
+        workspace_root: context.workspace_root.as_str().to_string(),
+        session_id: context
+            .session_id
+            .as_ref()
+            .map(|s| s.as_str().to_string())
+            .unwrap_or_else(|| "session-0".to_string()),
+        agent_branch: context
+            .branch_id
+            .as_ref()
+            .map(|b| b.as_str().to_string())
+            .unwrap_or_else(|| "main".to_string()),
+        mode_channel: context.harness.as_str().to_string(),
+        policy_version: "ranking-v1".to_string(),
+        schema_version: SCHEMA_VERSION as u32,
+        decision,
+        reason: reason.to_string(),
+        exposure_state: crate::storage::ExposureState::Generated,
+        elapsed_ms,
+        created_at_unix_ms: invocation.clock().now().as_millis() as u64,
+        input_tokens: if metrics.input_tokens > 0 {
+            Some(metrics.input_tokens)
+        } else {
+            None
+        },
+        output_tokens: if metrics.output_tokens > 0 {
+            Some(metrics.output_tokens)
+        } else {
+            None
+        },
+        snapshot_id: Some(snapshot_id),
+    };
+
+    crate::storage::record_ranking(
+        invocation,
+        cx,
+        crate::storage::LedgerAccess::ExistingOnly,
+        crate::storage::LedgerLocation::Platform,
+        &event,
+        candidates,
+        Some(&snapshot),
+    )
+    .unwrap_or(false)
 }
 
 fn build_abstain_document(

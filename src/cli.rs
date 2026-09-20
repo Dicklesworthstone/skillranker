@@ -12,7 +12,9 @@ use std::ffi::OsString;
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
-const HELP: &str = "SkillRanker — powered by TypeSafe.ai Jev\n\nUsage: sr [rank] [--context FILE | --transcript FILE --harness NAME | --session PATH | --latest]\n                 [--roster FILE] [--require-skill ID] [--dry-run [--shortlist-ids ID,...]]\n                 [--offline | --allow-network] [--json | --table]\n                 [--top N] [--shortlist M] [--gate FLOAT] [--fits FLOAT]\n                 [--explain] [--why-not ID] [--cursor TOKEN] [--no-tools] [--no-cache]\n                 [--save-case FILE]\n       sr doctor [--json | --table] [--offline | --allow-network]\n       sr doctor --config [--json | --table] [--top N] [--shortlist N]\n       sr roster [--json] [--limit N] [--cursor TOKEN]\n       sr roster --snapshot FILE | --diff FILE\n       sr capabilities [--json]\n       sr demo --case <useful|none|explicit|unavailable> [--json | --table]\n       sr replay FILE [--policy FILE] [--compare-policy FILE] [--json | --table]\n       sr ledger <init|migrate|status|prune|clear> [--before TIME] [--apply] [--json]\n       sr --help | --version\n\nRank the next step of an agent session using TypeSafe Jev.\nRequires your own TypeSafe API key (TYPESAFE_API_KEY) and network consent (--allow-network).\n";
+const HELP: &str = "SkillRanker — powered by TypeSafe.ai Jev\n\nUsage: sr [rank] [--context FILE | --transcript FILE --harness NAME | --session PATH | --latest]\n                 [--roster FILE] [--require-skill ID] [--dry-run [--shortlist-ids ID,...]]\n                 [--offline | --allow-network] [--json | --table]\n                 [--top N] [--shortlist M] [--gate FLOAT] [--fits FLOAT]\n                 [--explain] [--why-not ID] [--cursor TOKEN] [--no-tools] [--no-cache]\n                 [--save-case FILE]\n       sr doctor [--json | --table] [--offline | --allow-network]\n       sr doctor --config [--json | --table] [--top N] [--shortlist N]\n       sr roster [--json] [--limit N] [--cursor TOKEN]\n       sr roster --snapshot FILE | --diff FILE\n       sr capabilities [--json]\n       sr demo --case <useful|none|explicit|unavailable> [--json | --table]\n       sr replay FILE [--policy FILE] [--compare-policy FILE] [--json | --table]\n       sr feedback <EVENT_ID> --skill ID [--instead ID] [--verdict <useful|harmful>] [--reason CODE] [--provenance TEXT] [--expected-version GEN] [--dir DIR] [--json]\n       sr ledger <init|migrate|status|prune|clear> [--before TIME] [--apply] [--json]\n       sr --help | --version\n\nRank the next step of an agent session using TypeSafe Jev.\nRequires your own TypeSafe API key (TYPESAFE_API_KEY) and network consent (--allow-network).\n";
+
+const FEEDBACK_HELP: &str = "sr feedback <EVENT_ID> --skill ID [--instead ID] [--verdict <useful|harmful>] [--reason CODE] [--provenance TEXT] [--expected-version GEN] [--dir DIR] [--json]\n\nRecord explicit feedback or paired corrective labels for a historical ranking event.\n";
 
 fn command() -> Command {
     let mut doctor = Command::new("doctor")
@@ -419,6 +421,71 @@ fn command() -> Command {
                         ),
                 ),
         )
+        .subcommand(
+            Command::new("feedback")
+                .disable_help_flag(true)
+                .arg(
+                    Arg::new("help")
+                        .long("help")
+                        .short('h')
+                        .action(ArgAction::SetTrue),
+                )
+                .arg(
+                    Arg::new("event_id")
+                        .help("Attributed ranking event ID")
+                        .index(1)
+                        .action(ArgAction::Set),
+                )
+                .arg(
+                    Arg::new("event")
+                        .long("event")
+                        .help("Attributed ranking event ID")
+                        .action(ArgAction::Set),
+                )
+                .arg(
+                    Arg::new("skill")
+                        .long("skill")
+                        .help("Original target skill ID")
+                        .action(ArgAction::Set),
+                )
+                .arg(
+                    Arg::new("instead")
+                        .long("instead")
+                        .help("Better alternative skill ID for paired correction")
+                        .action(ArgAction::Set),
+                )
+                .arg(
+                    Arg::new("verdict")
+                        .long("verdict")
+                        .help("Single skill judgment verdict (useful or harmful)")
+                        .action(ArgAction::Set),
+                )
+                .arg(
+                    Arg::new("reason")
+                        .long("reason")
+                        .help("Optional bounded reason code")
+                        .action(ArgAction::Set),
+                )
+                .arg(
+                    Arg::new("provenance")
+                        .long("provenance")
+                        .help("Optional user provenance or tag")
+                        .action(ArgAction::Set),
+                )
+                .arg(
+                    Arg::new("expected-version")
+                        .long("expected-version")
+                        .help("Expected schema/data generation for revision fencing")
+                        .action(ArgAction::Set),
+                )
+                .arg(
+                    Arg::new("dir")
+                        .long("dir")
+                        .help("Custom ledger directory")
+                        .action(ArgAction::Set),
+                )
+                .arg(Arg::new("json").long("json").action(ArgAction::SetTrue)),
+        )
 }
 
 /// Exit and streams are deliberately separate; diagnostics never echo clap/TOML input.
@@ -595,8 +662,169 @@ fn execute(clock: &EntryClock, mut args: Vec<OsString>) -> Result<String, Failur
         }
         return ledger_command(clock, ledger_matches);
     }
+    if let Some(("feedback", feedback_matches)) = matches.subcommand() {
+        if feedback_matches.get_flag("help") {
+            return Ok(FEEDBACK_HELP.into());
+        }
+        return feedback_command(clock, feedback_matches);
+    }
     // Bare `sr` ranks once, as documented.
     rank_command(clock, None)
+}
+
+fn feedback_command(
+    clock: &EntryClock,
+    feedback_matches: &clap::ArgMatches,
+) -> Result<String, Failure> {
+    timely(clock)?;
+    let invocation = crate::runtime::ProcessInvocation::from_clock(*clock)
+        .map_err(|_| (6u8, "timeout", "Local runtime unavailable".into()))?;
+    let cx = invocation
+        .request_cx()
+        .map_err(|_| (6u8, "timeout", "Runtime context unavailable".into()))?;
+
+    let event_id = feedback_matches
+        .get_one::<String>("event_id")
+        .or_else(|| feedback_matches.get_one::<String>("event"))
+        .ok_or_else(|| (2u8, "invalid-arguments", "Missing event ID for feedback".into()))?;
+
+    let skill_id = feedback_matches
+        .get_one::<String>("skill")
+        .ok_or_else(|| (2u8, "invalid-arguments", "Missing original skill ID (--skill)".into()))?;
+
+    let instead = feedback_matches.get_one::<String>("instead");
+    let verdict = feedback_matches.get_one::<String>("verdict");
+
+    if instead.is_none() && verdict.is_none() {
+        return Err((
+            2u8,
+            "invalid-arguments",
+            "Must specify either --instead for paired correction or --verdict for single feedback".into(),
+        ));
+    }
+    if instead.is_some() && verdict.is_some() {
+        return Err((
+            2u8,
+            "invalid-arguments",
+            "Cannot specify both --instead and --verdict".into(),
+        ));
+    }
+
+    let reason = feedback_matches.get_one::<String>("reason").map(|s| s.to_string());
+    let provenance = feedback_matches.get_one::<String>("provenance").map(|s| s.to_string());
+    let expected_version = feedback_matches
+        .get_one::<String>("expected-version")
+        .map(|s| {
+            s.parse::<u32>()
+                .map_err(|_| (2u8, "invalid-arguments", "Invalid expected version number".into()))
+        })
+        .transpose()?;
+
+    let location = if let Some(dir) = feedback_matches.get_one::<String>("dir") {
+        crate::storage::LedgerLocation::Directory(PathBuf::from(dir))
+    } else {
+        crate::storage::LedgerLocation::Platform
+    };
+
+    let req = if let Some(alt_id) = instead {
+        crate::storage::FeedbackRequest::Paired(crate::storage::PairedCorrectionRequest {
+            event_id: event_id.to_string(),
+            original_skill_id: skill_id.to_string(),
+            alternative_skill_id: alt_id.to_string(),
+            reason_code: reason,
+            provenance,
+            expected_version,
+        })
+    } else {
+        let label_str = verdict.unwrap();
+        let label = match label_str.to_ascii_lowercase().as_str() {
+            "useful" => crate::storage::JudgmentLabel::Useful,
+            "harmful" => crate::storage::JudgmentLabel::Harmful,
+            _ => {
+                return Err((
+                    2u8,
+                    "invalid-arguments",
+                    format!("Invalid verdict '{label_str}'; expected 'useful' or 'harmful'"),
+                ));
+            }
+        };
+        crate::storage::FeedbackRequest::Single(crate::storage::SingleFeedbackRequest {
+            event_id: event_id.to_string(),
+            skill_id: skill_id.to_string(),
+            verdict: label,
+            reason_code: reason,
+            provenance,
+            expected_version,
+        })
+    };
+
+    let outcome = crate::storage::submit_feedback(&invocation, &cx, location, req)
+        .map_err(|err| match err {
+            crate::storage::FeedbackError::MissingSnapshot => {
+                (10u8, "missing-snapshot", "Roster snapshot missing or incomplete for event".into())
+            }
+            crate::storage::FeedbackError::IneligibleAlternative { skill_id, reason } => {
+                let r = reason.as_deref().unwrap_or("ineligible");
+                (2u8, "ineligible-alternative", format!("Alternative skill '{skill_id}' is ineligible: {r}"))
+            }
+            crate::storage::FeedbackError::RevisionConflict { expected, actual } => {
+                (11u8, "revision-conflict", format!("Ledger revision conflict: expected {expected}, actual {actual}"))
+            }
+            crate::storage::FeedbackError::IdenticalSkills => {
+                (2u8, "invalid-arguments", "Original and alternative skill IDs must be distinct".into())
+            }
+            crate::storage::FeedbackError::InvalidSkillId(msg) => {
+                (2u8, "invalid-arguments", format!("Invalid skill ID: {msg}"))
+            }
+            crate::storage::FeedbackError::OriginalSkillNotFound(id) => {
+                (2u8, "skill-not-found", format!("Original skill '{id}' not found in event or roster snapshot"))
+            }
+            crate::storage::FeedbackError::EventNotFound(id) => {
+                (2u8, "event-not-found", format!("Ranking event '{id}' not found in ledger"))
+            }
+            crate::storage::FeedbackError::StaleStamp => {
+                (11u8, "revision-conflict", "Ledger stamp is stale".into())
+            }
+            crate::storage::FeedbackError::Store(err) => {
+                (9u8, "storage-failure", format!("Ledger storage error: {err}"))
+            }
+        })?;
+
+    let wants_json = feedback_matches.get_flag("json");
+    if wants_json {
+        let json_val = serde_json::to_string_pretty(&outcome)
+            .map_err(|_| (9u8, "serialization-failure", "Failed to serialize outcome".into()))?;
+        Ok(format!("{json_val}\n"))
+    } else {
+        match outcome {
+            crate::storage::FeedbackOutcome::PairedCorrection {
+                group_id,
+                data_generation,
+                original_judgment_id,
+                alternative_judgment_id,
+                alternative_skill_id,
+                ..
+            } => Ok(format!(
+                "Recorded paired correction (group: {group_id}, data generation: {data_generation})\n  Original '{skill_id}' judged harmful ({original_judgment_id})\n  Alternative '{alternative_skill_id}' judged useful ({alternative_judgment_id})\n"
+            )),
+            crate::storage::FeedbackOutcome::ProspectiveProposal {
+                proposal_id,
+                alternative_skill_id,
+                reason,
+                ..
+            } => Ok(format!(
+                "Alternative '{alternative_skill_id}' was historically absent from roster snapshot ({reason}).\nRecorded prospective library proposal: {proposal_id}\nNo historical usefulness judgments committed.\n"
+            )),
+            crate::storage::FeedbackOutcome::SingleJudgment {
+                judgment_id,
+                verdict,
+                data_generation,
+                ..
+            } => Ok(format!(
+                "Recorded feedback for '{skill_id}': {verdict:?} ({judgment_id}, data generation: {data_generation})\n"
+            )),
+        }
+    }
 }
 
 fn ledger_command(

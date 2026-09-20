@@ -85,6 +85,18 @@ pub enum Exclusion {
     NotAboveNone,
 }
 
+impl Exclusion {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Restricted => "restricted",
+            Self::Excluded => "excluded",
+            Self::AlreadyLoaded => "already-loaded",
+            Self::LowFit => "low-fit",
+            Self::NotAboveNone => "not-above-none",
+        }
+    }
+}
+
 /// Explicit resolution is decided before any advisory stage.
 #[derive(Debug)]
 pub enum Route<'a> {
