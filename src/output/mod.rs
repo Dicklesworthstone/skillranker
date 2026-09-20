@@ -13,9 +13,13 @@ use std::collections::BTreeSet;
 use std::fmt;
 use std::io::{self, Write};
 
+pub mod hook;
 pub mod table;
 pub mod trace;
 
+pub use hook::{
+    ClaudeHookEnvelope, ClaudeHookSpecificOutput, HookRenderError, render_claude_hook_advice,
+};
 pub use trace::{
     StageTrace, TraceEntry, TraceQueryScope, TraceStage, TraceStatus, compute_entries_hash,
 };
@@ -264,6 +268,14 @@ impl OutputDocument {
     /// Renders the document into an aligned, sanitized terminal table view.
     pub fn render_table(&self) -> String {
         table::render_table(self)
+    }
+
+    /// Renders the document into a safe, bounded Claude hook advice envelope.
+    pub fn render_claude_hook(
+        &self,
+        abstention_message_enabled: bool,
+    ) -> Result<Option<ClaudeHookEnvelope>, HookRenderError> {
+        hook::render_claude_hook_advice(self, abstention_message_enabled)
     }
 
     /// Construct a minimal failure with fixed diagnostics, not raw provider text.

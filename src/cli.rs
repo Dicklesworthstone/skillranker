@@ -2531,6 +2531,11 @@ fn hook_claude_command(clock: &EntryClock, m: &clap::ArgMatches) -> Result<Strin
             sources.environment.push((name, value));
         }
     }
+    if m.get_flag("shadow") {
+        sources
+            .cli
+            .push(("hook.mode".into(), RawValue::String("shadow".into())));
+    }
 
     let workspace = if let Some(w) = m.get_one::<String>("workspace") {
         PathBuf::from(w)
@@ -2548,7 +2553,7 @@ fn hook_claude_command(clock: &EntryClock, m: &clap::ArgMatches) -> Result<Strin
         claude_hook: true,
         context: None,
         transcript: None,
-        harness: Some(crate::identity::HarnessId::new("claude_code").unwrap()),
+        harness: None,
         cass_session: None,
         latest: false,
     };
@@ -2590,6 +2595,11 @@ fn hook_claude_command(clock: &EntryClock, m: &clap::ArgMatches) -> Result<Strin
     timely(clock)?;
     let invocation = crate::runtime::ProcessInvocation::from_clock(*clock)
         .map_err(|_| (6u8, "timeout", "Local runtime unavailable".into()))?;
+    let (reval_workspace, reval_user_root, reval_sources) = (
+        args.workspace.clone(),
+        args.user_config_root.clone(),
+        args.sources.clone(),
+    );
     let outcome = invocation
         .request_cx()
         .map_err(|_| (6u8, "timeout", "Local runtime unavailable".into()))
@@ -2599,10 +2609,79 @@ fn hook_claude_command(clock: &EntryClock, m: &clap::ArgMatches) -> Result<Strin
             })
         });
     let completed_in_time = timely(clock);
-    let _output_doc = finish_invocation(invocation, outcome)?;
+    let output_doc = finish_invocation(invocation, outcome)?;
     completed_in_time?;
 
-    // In shadow mode (the default in P6), the hook emits zero stdout and returns 0.
+    // Policy revalidation seam before writing the first byte:
+    // Check effective hook mode and configuration validity.
+    let config_files = ConfigFiles::new(reval_workspace, reval_user_root);
+    let refreshed_config = match config_files.load(clock, reval_sources) {
+        Ok(c) => c,
+        Err(_) => {
+            let _ = writeln!(
+                io::stderr().lock(),
+                "sr: configuration became invalid before hook publication"
+            );
+            return Ok(String::new());
+        }
+    };
+    let effective = refreshed_config.effective();
+    let effective_mode = effective.hook_mode();
+
+    // In shadow mode (the default in P6 or forced via --shadow), the hook emits zero stdout and returns 0.
+    if m.get_flag("shadow") || effective_mode == crate::config::HookMode::Shadow {
+        return Ok(String::new());
+    }
+
+    // In advisory mode, render one safe suggestion or explicit list
+    let abstention_enabled = false;
+    match output_doc.render_claude_hook(abstention_enabled) {
+        Ok(Some(envelope)) => match envelope.to_json() {
+            Ok(wire) => {
+                let mut stdout = io::stdout().lock();
+                match stdout
+                    .write_all(wire.as_bytes())
+                    .and_then(|()| stdout.write_all(b"\n"))
+                    .and_then(|()| stdout.flush())
+                {
+                    Ok(()) => {
+                        let total_written = wire.len() + 1;
+                        if let Some(event_id) = output_doc
+                            .as_value()
+                            .get("event_id")
+                            .and_then(|v| v.as_str())
+                        {
+                            let location = if let Some(dir) = m.get_one::<String>("dir") {
+                                crate::storage::LedgerLocation::Directory(PathBuf::from(dir))
+                            } else {
+                                crate::storage::LedgerLocation::Platform
+                            };
+                            let _ =
+                                try_record_cli_emission(clock, location, event_id, total_written);
+                        }
+                    }
+                    Err(e) => {
+                        // Short write, broken pipe: delivery remains unknown!
+                        let _ = writeln!(io::stderr().lock(), "sr: stdout write failed: {e}");
+                    }
+                }
+            }
+            Err(e) => {
+                let _ = writeln!(
+                    io::stderr().lock(),
+                    "sr: hook envelope serialization failed: {e}"
+                );
+            }
+        },
+        Ok(None) => {
+            // Ordinary abstention or unavailable: zero stdout, exit 0
+        }
+        Err(e) => {
+            // Output limit or unsafe text: quiet fallback with diagnostic to stderr
+            let _ = writeln!(io::stderr().lock(), "sr: {e}");
+        }
+    }
+
     Ok(String::new())
 }
 
