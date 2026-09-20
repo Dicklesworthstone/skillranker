@@ -303,6 +303,7 @@ impl Workspace {
             output_json: true,
             output_table: false,
             dry_run: false,
+            save_case: None,
         };
         let clock = EntryClock::capture_with(
             DurationMillis::new("identity-total", 10_000, 30_000).unwrap(),

@@ -47,12 +47,17 @@ use crate::privacy::redaction::Redactor;
 use crate::privacy::{
     NetworkConsent, ProviderAdmissionRefusal, StoreAccess, admit_provider_attempt,
 };
+use crate::replay::{
+    CandidateFitItem, CapturedCandidate, CapturedLoadedReference, CapturedLocalEvidence,
+    CapturedRequest, CapturedScoringProfile, ChoiceDistributionItem, RecordedRerankChoice,
+    RecordedResponses, RecordedWideChoice, ReplayCase, ReplayManifest,
+};
 use crate::roster::evidence::{PolicyView, RetrievalView};
 use crate::roster::explicit::{
     ExplicitResolutionRequest, ExplicitResolutionResult, ResolvedExplicitSkill,
     resolve_explicit_requirements,
 };
-use crate::roster::resolution::{AdvisorySkill, ExactResolution, ResolvedRoster};
+use crate::roster::resolution::{AdvisorySkill, ExactResolution, ResolvedOption, ResolvedRoster};
 use crate::roster::retrieval::{
     QueryInput, RetrievalBudget, RetrievalError, RetrievalMethod, retrieve,
 };
@@ -119,6 +124,7 @@ pub struct RankArgs {
     pub output_json: bool,
     pub output_table: bool,
     pub dry_run: bool,
+    pub save_case: Option<PathBuf>,
 }
 
 /// Pipeline execution state tracking provider attempts, requests, tokens and cache hits.
@@ -173,6 +179,14 @@ fn read_input_file(
         })
 }
 
+#[derive(Default)]
+struct CaseCapture {
+    manifest: Option<ReplayManifest>,
+    captured_request: Option<CapturedRequest>,
+    recorded_responses: RecordedResponses,
+    local_evidence: Option<CapturedLocalEvidence>,
+}
+
 /// What an invocation has established so far. Once input is admitted, a
 /// failure is published from this record as a full unavailable decision, so
 /// evaluated stages and incurred usage are never dropped.
@@ -184,6 +198,7 @@ struct Progress {
     cache_recording_failures: u64,
     /// A single-flight lease this invocation leads; completed on every path.
     lease: Option<(PathBuf, LeaderContext)>,
+    capture: Option<CaseCapture>,
 }
 
 /// The admitted session and roster a full decision describes.
@@ -228,6 +243,14 @@ pub async fn execute_pipeline(
             "Shortlist IDs are stage-2 evidence for --dry-run only",
         ));
     }
+    if args.source_options.claude_hook && args.save_case.is_some() {
+        return Err(failure(
+            2,
+            "invalid-usage",
+            "--save-case is not permitted in hook mode",
+        ));
+    }
+    let save_case = args.save_case.clone();
     let effects = args.gate.receipt();
     let mut progress = Progress::default();
     let result = rank_once(invocation, clock, cx, args, transport, &mut progress).await;
@@ -282,6 +305,66 @@ pub async fn execute_pipeline(
             })?;
         }
         doc.record_elapsed(clock.now().as_millis());
+        if let Some(save_path) = &save_case
+            && let Some(capture) = progress.capture.take()
+        {
+            let manifest = capture.manifest.unwrap_or_else(|| ReplayManifest {
+                evidence_origin: "recorded".to_string(),
+                adapter: progress
+                    .admitted
+                    .as_ref()
+                    .map(|a| a.harness.clone())
+                    .unwrap_or_else(|| "unknown".to_string()),
+                model: None,
+                stages_recorded: Vec::new(),
+                prompt_summary: None,
+            });
+            let captured_request = capture.captured_request.unwrap_or_else(|| CapturedRequest {
+                context_text: None,
+                current_constraints: Vec::new(),
+                candidate_options: Vec::new(),
+            });
+            let local_evidence = capture
+                .local_evidence
+                .unwrap_or_else(|| CapturedLocalEvidence {
+                    as_of_unix_ms: clock.now().as_millis(),
+                    active_snoozes: Vec::new(),
+                    loaded_references: Vec::new(),
+                    scoring_profile: CapturedScoringProfile {
+                        gate_threshold: 0.30,
+                        fit_threshold: 0.30,
+                        w_fit: 1.0,
+                        w_prior: 0.0,
+                        w_phase: 0.0,
+                        top_k: 5,
+                    },
+                });
+            let case_id = progress
+                .admitted
+                .as_ref()
+                .map(|a| format!("case-{}", a.event_id))
+                .unwrap_or_else(|| format!("case-{}", clock.now().as_millis()));
+            let case = ReplayCase {
+                schema_version: SCHEMA_VERSION,
+                case_id,
+                created_at_unix_ms: clock.now().as_millis(),
+                manifest,
+                captured_request,
+                recorded_responses: capture.recorded_responses,
+                local_evidence,
+                historical_decision: doc.as_value().clone(),
+            };
+            case.validate().map_err(|err| {
+                failure(
+                    err.exit_code() as u8,
+                    err.kind().as_str(),
+                    format!("Replay case validation failed: {err}"),
+                )
+            })?;
+            case.save_to_file(save_path).map_err(|err| {
+                failure(err.exit_code() as u8, err.kind().as_str(), err.to_string())
+            })?;
+        }
         Ok(doc)
     });
     // A dry run never publishes an actionable decision: a local result that
@@ -476,6 +559,9 @@ async fn rank_once(
     let gate = args.gate;
     let dry_run = gate.policy().flags().dry_run;
     progress.evaluated.ledger_disabled = matches!(gate.ledger(), StoreAccess::Disabled(_));
+    if args.save_case.is_some() {
+        progress.capture = Some(CaseCapture::default());
+    }
 
     // 1. Initial configuration loading and policy receipt capture
     let config_files = ConfigFiles::new(args.workspace.clone(), args.user_config_root.clone());
@@ -950,6 +1036,75 @@ async fn rank_once(
                     )
                 })?;
             }
+            if let Some(capture) = &mut progress.capture {
+                let mut candidate_options = Vec::with_capacity(skills.len());
+                for s in &skills {
+                    let sk = roster.skills().iter().find(|sk| sk.record().id == s.id);
+                    let (content_hash, source, usage_kind, desc) = if let Some(sk) = sk {
+                        let rec = sk.record();
+                        (
+                            rec.source_content.as_str().to_string(),
+                            rec.source.as_str().to_string(),
+                            rec.usage_kind.as_str().to_string(),
+                            Some(rec.description_full.as_str().to_string()),
+                        )
+                    } else {
+                        (
+                            "0".repeat(64),
+                            "workspace".to_string(),
+                            "workflow".to_string(),
+                            None,
+                        )
+                    };
+                    candidate_options.push(CapturedCandidate {
+                        skill_id: s.id.as_str().to_string(),
+                        invocation_name: s.invocation.as_str().to_string(),
+                        content_hash,
+                        source,
+                        usage_kind,
+                        description: desc,
+                        excerpt: None,
+                    });
+                }
+                capture.manifest = Some(ReplayManifest {
+                    evidence_origin: "recorded".to_string(),
+                    adapter: normalized_context.harness.as_str().to_string(),
+                    model: Some(effective.model().as_str().to_string()),
+                    stages_recorded: Vec::new(),
+                    prompt_summary: Some(
+                        normalized_context
+                            .current_request
+                            .text
+                            .as_str()
+                            .lines()
+                            .next()
+                            .unwrap_or("")
+                            .chars()
+                            .take(120)
+                            .collect(),
+                    ),
+                });
+                capture.captured_request = Some(CapturedRequest {
+                    context_text: Some(
+                        normalized_context.current_request.text.as_str().to_string(),
+                    ),
+                    current_constraints: Vec::new(),
+                    candidate_options,
+                });
+                capture.local_evidence = Some(CapturedLocalEvidence {
+                    as_of_unix_ms: clock.now().as_millis(),
+                    active_snoozes: Vec::new(),
+                    loaded_references: Vec::new(),
+                    scoring_profile: CapturedScoringProfile {
+                        gate_threshold: effective.gate(),
+                        fit_threshold: effective.fits(),
+                        w_fit: effective.w_fit(),
+                        w_prior: effective.w_prior(),
+                        w_phase: effective.w_phase(),
+                        top_k: effective.top() as usize,
+                    },
+                });
+            }
             return Ok(doc);
         }
         ExplicitResolutionResult::Unavailable { unresolved } => {
@@ -1358,6 +1513,66 @@ async fn rank_once(
         })
         .collect();
 
+    if let Some(capture) = &mut progress.capture {
+        let mut candidate_options = Vec::with_capacity(candidate_skills.len());
+        for s in &candidate_skills {
+            candidate_options.push(CapturedCandidate {
+                skill_id: s.binding.id.as_str().to_string(),
+                invocation_name: s.binding.invocation.as_str().to_string(),
+                content_hash: s.record.source_content.as_str().to_string(),
+                source: s.record.source.as_str().to_string(),
+                usage_kind: s.record.usage_kind.as_str().to_string(),
+                description: Some(s.record.description_full.as_str().to_string()),
+                excerpt: None,
+            });
+        }
+        capture.manifest = Some(ReplayManifest {
+            evidence_origin: "recorded".to_string(),
+            adapter: normalized_context.harness.as_str().to_string(),
+            model: Some(effective.model().as_str().to_string()),
+            stages_recorded: Vec::new(),
+            prompt_summary: Some(
+                rendered_context
+                    .latest_user_request
+                    .lines()
+                    .next()
+                    .unwrap_or("")
+                    .chars()
+                    .take(120)
+                    .collect(),
+            ),
+        });
+        capture.captured_request = Some(CapturedRequest {
+            context_text: Some(rendered_context.latest_user_request.clone()),
+            current_constraints: Vec::new(),
+            candidate_options,
+        });
+        capture.local_evidence = Some(CapturedLocalEvidence {
+            as_of_unix_ms: clock.now().as_millis(),
+            active_snoozes: Vec::new(),
+            loaded_references: loaded_records
+                .iter()
+                .map(|r| CapturedLoadedReference {
+                    skill_id: r.skill_id.as_str().to_string(),
+                    content_hash: r
+                        .source_content
+                        .as_ref()
+                        .map(|h| h.as_str().to_string())
+                        .unwrap_or_else(|| "0".repeat(64)),
+                    availability: "available".to_string(),
+                })
+                .collect(),
+            scoring_profile: CapturedScoringProfile {
+                gate_threshold: effective.gate(),
+                fit_threshold: effective.fits(),
+                w_fit: effective.w_fit(),
+                w_prior: effective.w_prior(),
+                w_phase: effective.w_phase(),
+                top_k: effective.top() as usize,
+            },
+        });
+    }
+
     // One transport, credential binding and attempt allowance per invocation:
     // at most two logical requests and four HTTP attempts, with classified
     // retries inside the entry deadline. Opened only when a send is due, so
@@ -1711,6 +1926,48 @@ async fn rank_once(
     progress.evaluated.needs_skill = Some(wide_outcome.needs_skill);
     progress.evaluated.phase = dominant_phase(&wide_outcome.phase).map(str::to_owned);
 
+    if let Some(capture) = &mut progress.capture {
+        if let Some(manifest) = &mut capture.manifest {
+            manifest.stages_recorded.push("wide".to_string());
+        }
+        if let Some(crate::jev::codec::Answer::Choice(which)) =
+            wide_response.answers.get(wide::WHICH)
+        {
+            let choice_str = if which.choice() == wide::NONE_OPTION {
+                "__none__".to_string()
+            } else if let Ok(ResolvedOption::Skill(skill)) =
+                wide_builder.options().resolve(which.choice())
+            {
+                skill.binding.id.as_str().to_string()
+            } else {
+                which.choice().to_string()
+            };
+            let mut distribution = Vec::new();
+            for (opt_id, prob) in which.normalized_probabilities() {
+                let mapped_id = if opt_id == wide::NONE_OPTION {
+                    "__none__".to_string()
+                } else if let Ok(ResolvedOption::Skill(skill)) =
+                    wide_builder.options().resolve(&opt_id)
+                {
+                    skill.binding.id.as_str().to_string()
+                } else {
+                    continue;
+                };
+                distribution.push(ChoiceDistributionItem {
+                    option_id: mapped_id,
+                    probability: prob,
+                });
+            }
+            distribution.sort_by(|a, b| a.option_id.cmp(&b.option_id));
+            capture.recorded_responses.wide = Some(RecordedWideChoice {
+                choice: choice_str,
+                choices_probability: which.normalized_probability(which.choice()).unwrap_or(0.0),
+                gate_score: Some(wide_outcome.needs_skill),
+                distribution,
+            });
+        }
+    }
+
     let shortlisted = match &wide_outcome.decision {
         WideDecision::LowNeed => {
             let mut doc = build_abstain_document(
@@ -1859,6 +2116,58 @@ async fn rank_once(
     progress.evaluated.rerank_returned = Some(rerank_response.returned_model.clone());
     progress.evaluated.choice_confidence = Some(rerank_outcome.choice_confidence);
     progress.evaluated.none_probability = Some(rerank_outcome.none_probability);
+
+    if let Some(capture) = &mut progress.capture {
+        if let Some(manifest) = &mut capture.manifest {
+            manifest.stages_recorded.push("rerank".to_string());
+        }
+        if let Some(crate::jev::codec::Answer::Choice(choice)) =
+            rerank_response.answers.get(rerank::RERANK)
+        {
+            let choice_str = if choice.choice() == wide::NONE_OPTION {
+                "__none__".to_string()
+            } else if let Ok(ResolvedOption::Skill(skill)) =
+                rerank_builder.options().resolve(choice.choice())
+            {
+                skill.binding.id.as_str().to_string()
+            } else {
+                choice.choice().to_string()
+            };
+            let mut distribution = Vec::new();
+            for (opt_id, prob) in choice.normalized_probabilities() {
+                let mapped_id = if opt_id == wide::NONE_OPTION {
+                    "__none__".to_string()
+                } else if let Ok(ResolvedOption::Skill(skill)) =
+                    rerank_builder.options().resolve(&opt_id)
+                {
+                    skill.binding.id.as_str().to_string()
+                } else {
+                    continue;
+                };
+                distribution.push(ChoiceDistributionItem {
+                    option_id: mapped_id,
+                    probability: prob,
+                });
+            }
+            distribution.sort_by(|a, b| a.option_id.cmp(&b.option_id));
+            let fits = rerank_outcome
+                .candidates
+                .iter()
+                .map(|(skill, estimate)| CandidateFitItem {
+                    skill_id: skill.binding.id.as_str().to_string(),
+                    fit: estimate.fit,
+                })
+                .collect();
+            capture.recorded_responses.rerank = Some(RecordedRerankChoice {
+                choice: choice_str,
+                choices_probability: choice
+                    .normalized_probability(choice.choice())
+                    .unwrap_or(0.0),
+                fits,
+                distribution,
+            });
+        }
+    }
 
     // 13. Local Eligibility & Fit Filtering after Rerank
     let shortlisted_advisory: Vec<AdvisorySkill> = shortlisted.iter().map(|s| s.skill).collect();

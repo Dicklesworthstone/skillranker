@@ -37,7 +37,7 @@ pub enum ReplayError {
 }
 
 impl ReplayError {
-    pub const fn kind(&self) -> ErrorKind {
+    pub fn kind(&self) -> ErrorKind {
         match self {
             Self::OversizedCase { .. } | Self::OversizedPolicy { .. } => ErrorKind::OversizedInput,
             Self::ExcessiveDepth
@@ -48,11 +48,15 @@ impl ReplayError {
             | Self::OptionMapMismatch(_) => ErrorKind::MalformedInput,
             Self::IncompatiblePolicy(_) | Self::NotReplayable(_) => ErrorKind::InvalidConfiguration,
             Self::Export(err) => err.kind(),
-            Self::Io(_) => ErrorKind::StorageFailure,
+            Self::Io(err) => match err.kind() {
+                std::io::ErrorKind::NotFound => ErrorKind::InvalidUsage,
+                std::io::ErrorKind::PermissionDenied => ErrorKind::MalformedInput,
+                _ => ErrorKind::StorageFailure,
+            },
         }
     }
 
-    pub const fn exit_code(&self) -> CliExit {
+    pub fn exit_code(&self) -> CliExit {
         self.kind().exit_code()
     }
 }
@@ -219,9 +223,9 @@ pub struct CapturedScoringProfile {
 /// Optional local policy overrides for replay comparison.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ReplayPolicy {
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(alias = "gate", skip_serializing_if = "Option::is_none")]
     pub gate_threshold: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(alias = "fits", alias = "fit", skip_serializing_if = "Option::is_none")]
     pub fit_threshold: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub w_fit: Option<f64>,
@@ -229,7 +233,7 @@ pub struct ReplayPolicy {
     pub w_prior: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub w_phase: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(alias = "top", skip_serializing_if = "Option::is_none")]
     pub top_k: Option<usize>,
 }
 
@@ -425,6 +429,85 @@ impl ReplayPolicy {
             )));
         }
         Ok(())
+    }
+
+    /// Load and validate a replay policy override document from an owner-only file path.
+    pub fn load_from_file(path: &Path) -> Result<Self, ReplayError> {
+        let metadata = std::fs::symlink_metadata(path)?;
+        if !metadata.is_file() {
+            return Err(ReplayError::InvalidField(
+                "replay policy path must be a regular file".into(),
+            ));
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let mode = metadata.mode();
+            let uid = nix::unistd::geteuid().as_raw();
+            if metadata.uid() != uid || (mode & 0o7777 != 0o600 && mode & 0o7777 != 0o400) {
+                return Err(ReplayError::InvalidField(
+                    "replay policy file permissions must be owner-only (0600 or 0400)".into(),
+                ));
+            }
+        }
+        let bytes = std::fs::read(path)?;
+        if bytes.len() > REPLAY_POLICY_BYTES.max() {
+            return Err(ReplayError::OversizedPolicy {
+                len: bytes.len(),
+                max: REPLAY_POLICY_BYTES.max(),
+            });
+        }
+        if let Ok(policy) = Self::from_json_bytes(&bytes) {
+            return Ok(policy);
+        }
+        if let Ok(text) = std::str::from_utf8(&bytes)
+            && let Ok(table) = toml::from_str::<Self>(text)
+        {
+            table.validate()?;
+            return Ok(table);
+        }
+        Self::from_json_bytes(&bytes)
+    }
+}
+
+/// Execute replay evaluation with an optional baseline policy and an optional comparison policy.
+pub fn execute_replay_comparison(
+    case: &ReplayCase,
+    policy: Option<&ReplayPolicy>,
+    compare_policy: Option<&ReplayPolicy>,
+) -> Result<ReplayOutcome, ReplayError> {
+    if let Some(comp_pol) = compare_policy {
+        let base_outcome = execute_replay(case, policy)?;
+        let comp_outcome = execute_replay(case, Some(comp_pol))?;
+        let mut envelope = base_outcome
+            .document
+            .as_value()
+            .as_object()
+            .ok_or_else(|| ReplayError::InvalidField("envelope must be an object".into()))?
+            .clone();
+        if let Some(comp_rec) = comp_outcome.document.as_value().get("recomputed") {
+            envelope.insert("comparison".into(), comp_rec.clone());
+        }
+        let doc_bytes = serde_json::to_vec(&Value::Object(envelope))
+            .map_err(|e| ReplayError::InvalidJson(e.to_string()))?;
+        let document = OutputDocument::from_json(&doc_bytes)
+            .map_err(|e| ReplayError::InvalidField(format!("output validation failed: {e}")))?;
+        Ok(ReplayOutcome {
+            document,
+            run_status: if base_outcome.run_status == RunStatus::Complete
+                && comp_outcome.run_status == RunStatus::Complete
+            {
+                RunStatus::Complete
+            } else {
+                RunStatus::Partial
+            },
+            gate_status: base_outcome.gate_status,
+            historical_decision: base_outcome.historical_decision,
+            recomputed_decision: base_outcome.recomputed_decision,
+            explanation: base_outcome.explanation,
+        })
+    } else {
+        execute_replay(case, policy)
     }
 }
 

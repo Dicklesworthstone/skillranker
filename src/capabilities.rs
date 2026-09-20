@@ -14,13 +14,12 @@ use serde_json::{Value, json};
 
 pub const CAPABILITIES_SCHEMA: &str = "sr.capabilities.v1";
 
-/// Commands this binary accepts and runs. Every other planned command is
-/// rejected as invalid usage.
-pub const IMPLEMENTED_COMMANDS: &[&str] = &["capabilities", "demo", "doctor", "rank", "roster"];
+pub const IMPLEMENTED_COMMANDS: &[&str] =
+    &["capabilities", "demo", "doctor", "rank", "replay", "roster"];
 
 /// Accepted by the parser for conflict checking, but refused with
 /// `invalid-usage` until their phase ships.
-pub const PLANNED_RANK_FLAGS: &[(&str, PhaseGate)] = &[("save-case", PhaseGate::P5)];
+pub const PLANNED_RANK_FLAGS: &[(&str, PhaseGate)] = &[];
 
 const fn unit_name(unit: LimitUnit) -> &'static str {
     match unit {

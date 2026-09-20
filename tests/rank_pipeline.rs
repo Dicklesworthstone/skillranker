@@ -191,6 +191,7 @@ fn test_explicit_directive_bypasses_inference() {
         output_json: true,
         output_table: false,
         dry_run: false,
+        save_case: None,
     };
 
     let doc = invocation
@@ -369,6 +370,7 @@ fn test_ranked_flow_with_mock_jev() {
         output_json: true,
         output_table: false,
         dry_run: false,
+        save_case: None,
     };
 
     let doc = invocation
@@ -501,6 +503,7 @@ fn test_low_need_abstention() {
         output_json: true,
         output_table: false,
         dry_run: false,
+        save_case: None,
     };
 
     let doc = invocation
@@ -571,6 +574,7 @@ fn test_dry_run_preview_without_network() {
         output_json: true,
         output_table: false,
         dry_run: true,
+        save_case: None,
     };
 
     let doc = invocation
@@ -797,6 +801,7 @@ fn test_low_fit_abstention() {
         output_json: true,
         output_table: false,
         dry_run: false,
+        save_case: None,
     };
 
     let doc = invocation
@@ -962,6 +967,7 @@ fn test_none_winner_abstention() {
         output_json: true,
         output_table: false,
         dry_run: false,
+        save_case: None,
     };
 
     let doc = invocation

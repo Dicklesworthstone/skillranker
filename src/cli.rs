@@ -12,7 +12,7 @@ use std::ffi::OsString;
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
-const HELP: &str = "SkillRanker — powered by TypeSafe.ai Jev\n\nUsage: sr [rank] [--context FILE | --transcript FILE --harness NAME | --session PATH | --latest]\n                 [--roster FILE] [--require-skill ID] [--dry-run [--shortlist-ids ID,...]]\n                 [--offline | --allow-network] [--json | --table]\n                 [--top N] [--shortlist M] [--gate FLOAT] [--fits FLOAT]\n                 [--explain] [--why-not ID] [--cursor TOKEN] [--no-tools] [--no-cache]\n       sr doctor [--json | --table] [--offline | --allow-network]\n       sr doctor --config [--json | --table] [--top N] [--shortlist N]\n       sr roster [--json] [--limit N] [--cursor TOKEN]\n       sr roster --snapshot FILE | --diff FILE\n       sr capabilities [--json]\n       sr demo --case <useful|none|explicit|unavailable> [--json | --table]\n       sr --help | --version\n\nRank the next step of an agent session using TypeSafe Jev.\nRequires your own TypeSafe API key (TYPESAFE_API_KEY) and network consent (--allow-network).\n";
+const HELP: &str = "SkillRanker — powered by TypeSafe.ai Jev\n\nUsage: sr [rank] [--context FILE | --transcript FILE --harness NAME | --session PATH | --latest]\n                 [--roster FILE] [--require-skill ID] [--dry-run [--shortlist-ids ID,...]]\n                 [--offline | --allow-network] [--json | --table]\n                 [--top N] [--shortlist M] [--gate FLOAT] [--fits FLOAT]\n                 [--explain] [--why-not ID] [--cursor TOKEN] [--no-tools] [--no-cache]\n                 [--save-case FILE]\n       sr doctor [--json | --table] [--offline | --allow-network]\n       sr doctor --config [--json | --table] [--top N] [--shortlist N]\n       sr roster [--json] [--limit N] [--cursor TOKEN]\n       sr roster --snapshot FILE | --diff FILE\n       sr capabilities [--json]\n       sr demo --case <useful|none|explicit|unavailable> [--json | --table]\n       sr replay FILE [--policy FILE] [--compare-policy FILE] [--json | --table]\n       sr --help | --version\n\nRank the next step of an agent session using TypeSafe Jev.\nRequires your own TypeSafe API key (TYPESAFE_API_KEY) and network consent (--allow-network).\n";
 
 fn command() -> Command {
     let mut doctor = Command::new("doctor")
@@ -169,6 +169,8 @@ fn command() -> Command {
         .arg(
             Arg::new("save-case")
                 .long("save-case")
+                .value_name("FILE")
+                .help("Save a recorded case file atomically to the given path")
                 .conflicts_with_all(["dry-run", "no-persist"])
                 .action(ArgAction::Set),
         );
@@ -253,6 +255,42 @@ fn command() -> Command {
                     "explicit",
                     "unavailable",
                 ]))
+                .arg(
+                    Arg::new("json")
+                        .long("json")
+                        .conflicts_with("table")
+                        .action(ArgAction::SetTrue),
+                )
+                .arg(Arg::new("table").long("table").action(ArgAction::SetTrue)),
+        )
+        .subcommand(
+            Command::new("replay")
+                .disable_help_flag(true)
+                .arg(
+                    Arg::new("help")
+                        .long("help")
+                        .short('h')
+                        .action(ArgAction::SetTrue),
+                )
+                .arg(
+                    Arg::new("file")
+                        .help("Path to the recorded or synthetic case file")
+                        .action(ArgAction::Set),
+                )
+                .arg(
+                    Arg::new("policy")
+                        .long("policy")
+                        .value_name("FILE")
+                        .help("Path to a local policy override file")
+                        .action(ArgAction::Set),
+                )
+                .arg(
+                    Arg::new("compare-policy")
+                        .long("compare-policy")
+                        .value_name("FILE")
+                        .help("Path to a comparison policy file")
+                        .action(ArgAction::Set),
+                )
                 .arg(
                     Arg::new("json")
                         .long("json")
@@ -410,8 +448,70 @@ fn execute(clock: &EntryClock, mut args: Vec<OsString>) -> Result<String, Failur
         }
         return demo_command(clock, demo_matches);
     }
+    if let Some(("replay", replay_matches)) = matches.subcommand() {
+        if replay_matches.get_flag("help") {
+            return Ok(HELP.into());
+        }
+        return replay_command(clock, replay_matches);
+    }
     // Bare `sr` ranks once, as documented.
     rank_command(clock, None)
+}
+
+fn replay_command(
+    clock: &EntryClock,
+    replay_matches: &clap::ArgMatches,
+) -> Result<String, Failure> {
+    timely(clock)?;
+    let file_str = replay_matches
+        .get_one::<String>("file")
+        .ok_or_else(|| (2, "invalid-usage", "Missing required case file".into()))?;
+    let case_path = Path::new(file_str);
+
+    let case = crate::replay::ReplayCase::load_from_file(case_path).map_err(|err| {
+        let kind = err.kind();
+        (kind.exit_code() as u8, kind.as_str(), err.to_string())
+    })?;
+
+    let policy = if let Some(p) = replay_matches.get_one::<String>("policy") {
+        let pol = crate::replay::ReplayPolicy::load_from_file(Path::new(p)).map_err(|err| {
+            let kind = err.kind();
+            (kind.exit_code() as u8, kind.as_str(), err.to_string())
+        })?;
+        Some(pol)
+    } else {
+        None
+    };
+
+    let compare_policy = if let Some(p) = replay_matches.get_one::<String>("compare-policy") {
+        let pol = crate::replay::ReplayPolicy::load_from_file(Path::new(p)).map_err(|err| {
+            let kind = err.kind();
+            (kind.exit_code() as u8, kind.as_str(), err.to_string())
+        })?;
+        Some(pol)
+    } else {
+        None
+    };
+
+    let outcome =
+        crate::replay::execute_replay_comparison(&case, policy.as_ref(), compare_policy.as_ref())
+            .map_err(|err| {
+            let kind = err.kind();
+            (kind.exit_code() as u8, kind.as_str(), err.to_string())
+        })?;
+
+    let json_output = replay_matches.get_flag("json")
+        || (!replay_matches.get_flag("table") && !io::stdout().is_terminal());
+
+    if json_output {
+        let wire = outcome
+            .document
+            .to_json()
+            .map_err(|e| (2, "output-error", e.to_string()))?;
+        Ok(format!("{}\n", String::from_utf8_lossy(&wire)))
+    } else {
+        Ok(outcome.document.render_table())
+    }
 }
 
 fn demo_command(clock: &EntryClock, demo_matches: &clap::ArgMatches) -> Result<String, Failure> {
@@ -550,8 +650,10 @@ fn rank_command(
     let no_cache = rank_matches.is_some_and(|m| m.get_flag("no-cache"));
     let no_ledger = rank_matches.is_some_and(|m| m.get_flag("no-ledger"));
     let no_persist = rank_matches.is_some_and(|m| m.get_flag("no-persist"));
-    let save_case = rank_matches
-        .is_some_and(|m| m.contains_id("save-case") && m.get_one::<String>("save-case").is_some());
+    let save_case_path = rank_matches
+        .and_then(|m| m.get_one::<String>("save-case"))
+        .map(PathBuf::from);
+    let save_case = save_case_path.is_some();
 
     let flags = crate::privacy::EffectFlags {
         offline,
@@ -570,15 +672,6 @@ fn rank_command(
             (2u8, "invalid-usage", first.to_string())
         },
     )?;
-    // Flag conflicts are reported above; the capture itself ships in P5.
-    if save_case {
-        return Err((
-            2,
-            "invalid-usage",
-            "--save-case (case capture) is planned for P5 and is not available in this build"
-                .into(),
-        ));
-    }
 
     let mut sources = ConfigSources::default();
     if let Some(m) = rank_matches {
@@ -737,6 +830,7 @@ fn rank_command(
         output_json: json_output,
         output_table: !json_output,
         dry_run,
+        save_case: save_case_path,
     };
 
     // The whole-invocation deadline is configurable (--timeout-ms,

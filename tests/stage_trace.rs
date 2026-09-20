@@ -328,6 +328,7 @@ fn test_paired_runs_identical_evaluation_with_and_without_explain() {
         output_json: true,
         output_table: false,
         dry_run: false,
+        save_case: None,
     };
     let doc_a = inv_a
         .runtime()
@@ -356,6 +357,7 @@ fn test_paired_runs_identical_evaluation_with_and_without_explain() {
         output_json: true,
         output_table: false,
         dry_run: false,
+        save_case: None,
     };
     let doc_b = inv_b
         .runtime()
@@ -384,6 +386,7 @@ fn test_paired_runs_identical_evaluation_with_and_without_explain() {
         output_json: true,
         output_table: false,
         dry_run: false,
+        save_case: None,
     };
     let doc_c = inv_c
         .runtime()
@@ -482,6 +485,7 @@ fn test_unknown_skill_id_produces_not_in_snapshot_without_broadening_discovery()
         output_json: true,
         output_table: false,
         dry_run: false,
+        save_case: None,
     };
 
     let doc = inv
@@ -589,6 +593,7 @@ fn test_early_exclusion_marks_subsequent_stages_not_evaluated() {
         output_json: true,
         output_table: false,
         dry_run: false,
+        save_case: None,
     };
 
     let doc = inv
@@ -683,6 +688,7 @@ fn test_every_exclusion_reason_with_success_twin() {
         output_json: true,
         output_table: false,
         dry_run: false,
+        save_case: None,
     };
     let doc_ex = inv_ex
         .runtime()
@@ -722,6 +728,7 @@ fn test_every_exclusion_reason_with_success_twin() {
         output_json: true,
         output_table: false,
         dry_run: false,
+        save_case: None,
     };
     let doc_el = inv_el
         .runtime()
@@ -790,6 +797,7 @@ fn test_stage_trace_contract_and_round_trip() {
         output_json: true,
         output_table: false,
         dry_run: false,
+        save_case: None,
     };
 
     let doc = inv
@@ -868,6 +876,7 @@ fn test_table_view_trace_rendering_and_recovery_hints() {
         output_json: false,
         output_table: true,
         dry_run: false,
+        save_case: None,
     };
 
     let doc = inv

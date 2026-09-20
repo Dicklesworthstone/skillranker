@@ -128,6 +128,16 @@ pub enum UsageKind {
     Unknown,
 }
 
+impl UsageKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Reference => "reference",
+            Self::Workflow => "workflow",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum Visibility {

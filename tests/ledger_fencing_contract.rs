@@ -17,7 +17,7 @@ use skillranker::storage::StoreError;
 use skillranker::storage::ledger::*;
 use std::fs;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn temp_ledger_dir(test_name: &str) -> PathBuf {
@@ -101,13 +101,20 @@ fn candidate_fixture(event_id: &str) -> NewRankingCandidate {
     }
 }
 
-fn open_ready(inv: &ProcessInvocation, cx: &Cx, dir: &PathBuf, init: bool) -> LedgerStore {
+fn open_ready(inv: &ProcessInvocation, cx: &Cx, dir: &Path, init: bool) -> LedgerStore {
     let access = if init {
         LedgerAccess::Initialize
     } else {
         LedgerAccess::ExistingOnly
     };
-    match open_ledger(inv, cx, access, LedgerLocation::Directory(dir.clone())).unwrap() {
+    match open_ledger(
+        inv,
+        cx,
+        access,
+        LedgerLocation::Directory(dir.to_path_buf()),
+    )
+    .unwrap()
+    {
         LedgerOpen::Ready(store) => *store,
         LedgerOpen::Disabled => panic!("expected Ready store"),
     }
@@ -149,9 +156,7 @@ fn two_process_clear_fences_stale_rank_writer_and_prevents_history_resurrection(
     let db_path = store_a.database_path();
     let direct_conn = Connection::open(&db_path).unwrap();
     let event_count: i64 = direct_conn
-        .query_row("SELECT count(*) FROM ranking_events", [], |row| {
-            row.get(0)
-        })
+        .query_row("SELECT count(*) FROM ranking_events", [], |row| row.get(0))
         .unwrap();
     assert_eq!(event_count, 1);
 
@@ -169,14 +174,20 @@ fn two_process_clear_fences_stale_rank_writer_and_prevents_history_resurrection(
 
     // Verify DB file was not unlinked or replaced (same inode and device)
     let meta_after = fs::metadata(&db_path).unwrap();
-    assert_eq!(meta_after.ino(), ino_before, "database inode must be unchanged");
-    assert_eq!(meta_after.dev(), dev_before, "database device must be unchanged");
+    assert_eq!(
+        meta_after.ino(),
+        ino_before,
+        "database inode must be unchanged"
+    );
+    assert_eq!(
+        meta_after.dev(),
+        dev_before,
+        "database device must be unchanged"
+    );
 
     // Verify all data tables were purged by clear()
     let event_count_cleared: i64 = direct_conn
-        .query_row("SELECT count(*) FROM ranking_events", [], |row| {
-            row.get(0)
-        })
+        .query_row("SELECT count(*) FROM ranking_events", [], |row| row.get(0))
         .unwrap();
     assert_eq!(event_count_cleared, 0, "clear must purge ranking events");
     let snap_count_cleared: i64 = direct_conn
@@ -208,8 +219,7 @@ fn two_process_clear_fences_stale_rank_writer_and_prevents_history_resurrection(
     );
 
     // 3b. Stale roster snapshot
-    let res_snap =
-        store_a.record_roster_snapshot(inv_a.clock(), &cx_a, &snap_stale, stamp_a);
+    let res_snap = store_a.record_roster_snapshot(inv_a.clock(), &cx_a, &snap_stale, stamp_a);
     assert_eq!(
         res_snap.unwrap_err(),
         StoreError::StaleGeneration,
@@ -328,9 +338,7 @@ fn two_process_clear_fences_stale_rank_writer_and_prevents_history_resurrection(
 
     // Verify that NO records were resurrected in the database!
     let final_event_count: i64 = direct_conn
-        .query_row("SELECT count(*) FROM ranking_events", [], |row| {
-            row.get(0)
-        })
+        .query_row("SELECT count(*) FROM ranking_events", [], |row| row.get(0))
         .unwrap();
     assert_eq!(final_event_count, 0, "no ranking events resurrected");
     let final_snap_count: i64 = direct_conn
@@ -340,9 +348,7 @@ fn two_process_clear_fences_stale_rank_writer_and_prevents_history_resurrection(
         .unwrap();
     assert_eq!(final_snap_count, 0, "no snapshots resurrected");
     let final_obs_count: i64 = direct_conn
-        .query_row("SELECT count(*) FROM observations", [], |row| {
-            row.get(0)
-        })
+        .query_row("SELECT count(*) FROM observations", [], |row| row.get(0))
         .unwrap();
     assert_eq!(final_obs_count, 0, "no observations resurrected");
     let final_prop_count: i64 = direct_conn
@@ -374,9 +380,7 @@ fn two_process_clear_fences_stale_rank_writer_and_prevents_history_resurrection(
         .expect("generation 2 ranking event write succeeds");
 
     let gen2_event_count: i64 = direct_conn
-        .query_row("SELECT count(*) FROM ranking_events", [], |row| {
-            row.get(0)
-        })
+        .query_row("SELECT count(*) FROM ranking_events", [], |row| row.get(0))
         .unwrap();
     assert_eq!(gen2_event_count, 1, "generation 2 write persisted");
 
@@ -395,9 +399,12 @@ fn two_process_schema_generation_fencing_refuses_mutations() {
     assert_eq!(initial_stamp.schema_generation, 1);
 
     // Simulate another process performing a schema migration (schema_generation -> 2)
-    let direct_conn = Connection::open(&store.database_path()).unwrap();
+    let direct_conn = Connection::open(store.database_path()).unwrap();
     direct_conn
-        .execute("UPDATE store_meta SET schema_generation = 2 WHERE singleton = 1", [])
+        .execute(
+            "UPDATE store_meta SET schema_generation = 2 WHERE singleton = 1",
+            [],
+        )
         .unwrap();
 
     // Store holding expected schema_generation=1 attempts mutation
@@ -421,7 +428,7 @@ fn two_process_store_incarnation_fencing_refuses_mutations() {
     let initial_stamp = store.stamp();
 
     // Simulate store replacement / new incarnation by another process
-    let direct_conn = Connection::open(&store.database_path()).unwrap();
+    let direct_conn = Connection::open(store.database_path()).unwrap();
     direct_conn
         .execute(
             "UPDATE store_meta SET incarnation = randomblob(16) WHERE singleton = 1",

@@ -83,7 +83,9 @@ fn the_binary_prints_the_registry_and_runs_exactly_the_implemented_commands() {
         .filter(|(_, status)| status == "planned")
         .map(|(name, _)| name.as_str())
         .collect();
-    assert!(planned.contains(&"hook") && planned.contains(&"tui") && planned.contains(&"replay"));
+    assert!(planned.contains(&"hook") && planned.contains(&"tui"));
+    assert!(!planned.contains(&"replay"));
+    assert!(implemented.contains(&"replay"));
     for name in &planned {
         let refused = run(&root, &[name, "--json"]);
         assert_eq!(refused.status.code(), Some(2), "{name}");
@@ -113,39 +115,28 @@ fn help_names_implemented_commands_and_no_planned_ones() {
             );
         }
     }
-    // A flag whose feature ships later is not advertised either.
-    assert!(!help.contains("--save-case"));
+    // Implemented flag is advertised in help.
+    assert!(help.contains("--save-case"));
+    for flag in registry()["planned_flags"].as_array().unwrap() {
+        let flag_str = flag["flag"].as_str().unwrap();
+        assert!(
+            !help.contains(flag_str),
+            "help advertises planned flag {flag_str}"
+        );
+    }
 }
 
 #[test]
-fn a_planned_flag_is_refused_without_side_effects() {
+fn planned_flags_contract() {
     let root = home();
-    let target = root.join("workspace/case.json");
-    let output = run(
-        &root,
-        &[
-            "rank",
-            "--context",
-            "context.json",
-            "--save-case",
-            "case.json",
-            "--json",
-        ],
-    );
-    assert_eq!(output.status.code(), Some(2));
-    let error: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(error["error"]["kind"], "invalid-usage");
-    assert!(error["error"]["message"].as_str().unwrap().contains("P5"));
-    assert!(!target.exists());
+    let planned_flags = registry()["planned_flags"].as_array().unwrap().clone();
+    assert_eq!(planned_flags.len(), 0);
     // Conflicts are still reported as conflicts.
     let conflict = run(
         &root,
         &["rank", "--dry-run", "--save-case", "case.json", "--json"],
     );
     assert_eq!(conflict.status.code(), Some(2));
-    let planned = &registry()["planned_flags"][0];
-    assert_eq!(planned["flag"], "--save-case");
-    assert_eq!(planned["earliest_phase"], "p5");
 }
 
 #[test]

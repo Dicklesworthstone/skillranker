@@ -237,6 +237,7 @@ fn check_capacity(count: usize) {
             output_json: true,
             output_table: false,
             dry_run: false,
+            save_case: None,
         };
         let doc = invocation
             .runtime()

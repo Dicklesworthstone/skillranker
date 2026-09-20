@@ -179,6 +179,7 @@ fn gate_rank_args(
         output_json: true,
         output_table: false,
         dry_run,
+        save_case: None,
     }
 }
 
