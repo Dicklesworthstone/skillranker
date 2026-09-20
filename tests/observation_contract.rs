@@ -25,8 +25,7 @@ use skillranker::context::branch::{
 };
 use skillranker::context::tool::{SimpleSkillResolver, SkillMatch, extract_load_observations};
 use skillranker::context::{
-    EventKind, LoadState, NormalizedEvent, PrivateText, Role, ToolEvent,
-    ToolStatus,
+    EventKind, LoadState, NormalizedEvent, PrivateText, Role, ToolEvent, ToolStatus,
 };
 use skillranker::identity::{
     BranchId, ContentHash, ContextEpoch, EventId, HarnessId, SessionId, SessionIdentity, SkillId,
@@ -71,12 +70,7 @@ fn temp_private_dir(prefix: &str) -> PathBuf {
 
 fn init_test_ledger(dir: &Path) {
     let (inv, cx) = test_invocation();
-    init_ledger(
-        &inv,
-        &cx,
-        LedgerLocation::Directory(dir.to_path_buf()),
-    )
-    .expect("init ledger");
+    init_ledger(&inv, &cx, LedgerLocation::Directory(dir.to_path_buf())).expect("init ledger");
 }
 
 fn make_test_ranking_event(
@@ -390,7 +384,11 @@ fn test_deduplication_of_source_event_key() {
         "session-dedup",
     )
     .expect("get observations");
-    assert_eq!(all_obs.len(), 1, "duplicate key was not duplicated in table");
+    assert_eq!(
+        all_obs.len(),
+        1,
+        "duplicate key was not duplicated in table"
+    );
     assert_eq!(all_obs[0].observation_id, "obs-orig");
 }
 
@@ -524,7 +522,10 @@ fn test_attribution_to_latest_preceding_emission_within_30_min() {
     )
     .expect("get observations");
     assert_eq!(all_obs_2.len(), 2);
-    let late_obs = all_obs_2.iter().find(|o| o.observation_id == "obs-late").unwrap();
+    let late_obs = all_obs_2
+        .iter()
+        .find(|o| o.observation_id == "obs-late")
+        .unwrap();
     assert_eq!(
         late_obs.attributed_event_id, None,
         "observation outside 30-min window must have None attribution"
@@ -580,12 +581,7 @@ fn test_failed_or_attempted_tools_become_attempted() {
         }),
     };
 
-    let obs_failed = extract_load_observations(
-        &[failed_event],
-        &session_ident,
-        &resolver,
-        None,
-    );
+    let obs_failed = extract_load_observations(&[failed_event], &session_ident, &resolver, None);
     assert_eq!(obs_failed.len(), 1);
     assert_eq!(obs_failed[0].state, LoadState::Attempted);
 
@@ -609,12 +605,8 @@ fn test_failed_or_attempted_tools_become_attempted() {
         }),
     };
 
-    let obs_err_line = extract_load_observations(
-        &[error_line_event],
-        &session_ident,
-        &resolver,
-        None,
-    );
+    let obs_err_line =
+        extract_load_observations(&[error_line_event], &session_ident, &resolver, None);
     assert_eq!(obs_err_line.len(), 1);
     assert_eq!(obs_err_line[0].state, LoadState::Attempted);
 
@@ -638,12 +630,7 @@ fn test_failed_or_attempted_tools_become_attempted() {
         }),
     };
 
-    let obs_succ = extract_load_observations(
-        &[success_event],
-        &session_ident,
-        &resolver,
-        None,
-    );
+    let obs_succ = extract_load_observations(&[success_event], &session_ident, &resolver, None);
     assert_eq!(obs_succ.len(), 1);
     assert_eq!(obs_succ[0].state, LoadState::ObservedLoaded);
 }
@@ -711,13 +698,13 @@ fn test_prose_mentions_and_arbitrary_paths_never_count_as_loads() {
         }),
     };
 
-    let obs = extract_load_observations(
-        &[user_msg, unrelated_tool],
-        &session_ident,
-        &resolver,
-        None,
+    let obs =
+        extract_load_observations(&[user_msg, unrelated_tool], &session_ident, &resolver, None);
+    assert_eq!(
+        obs.len(),
+        0,
+        "prose mentions and unrelated tool calls never produce observations"
     );
-    assert_eq!(obs.len(), 0, "prose mentions and unrelated tool calls never produce observations");
 }
 
 #[test]
@@ -1105,8 +1092,8 @@ fn test_observe_cli_e2e_with_context() {
         String::from_utf8_lossy(&out.stderr)
     );
     let stdout_str = String::from_utf8_lossy(&out.stdout);
-    let out_json: serde_json::Value = serde_json::from_str(stdout_str.trim())
-        .expect("output must be valid JSON");
+    let out_json: serde_json::Value =
+        serde_json::from_str(stdout_str.trim()).expect("output must be valid JSON");
     assert_eq!(out_json.get("status").and_then(|v| v.as_str()), Some("ok"));
     assert_eq!(
         out_json.get("session_id").and_then(|v| v.as_str()),
@@ -1145,8 +1132,8 @@ fn test_observe_cli_e2e_with_context() {
 
     assert_eq!(out_2.status.code(), Some(0));
     let stdout_2 = String::from_utf8_lossy(&out_2.stdout);
-    let out_json_2: serde_json::Value = serde_json::from_str(stdout_2.trim())
-        .expect("output 2 must be valid JSON");
+    let out_json_2: serde_json::Value =
+        serde_json::from_str(stdout_2.trim()).expect("output 2 must be valid JSON");
     assert_eq!(
         out_json_2.get("cursor_generation").and_then(|v| v.as_u64()),
         Some(2),
@@ -1260,7 +1247,9 @@ fn test_observe_cli_native_final_turn_success_and_idempotency() {
         Some("native-sess-1")
     );
     assert_eq!(
-        out_json.get("observations_recorded").and_then(|v| v.as_u64()),
+        out_json
+            .get("observations_recorded")
+            .and_then(|v| v.as_u64()),
         Some(1)
     );
     assert_eq!(
@@ -1325,7 +1314,10 @@ fn test_observe_cli_native_final_turn_success_and_idempotency() {
             |r| r.get(0),
         )
         .expect("query count");
-    assert_eq!(obs_count, 1, "observation row must not be duplicated on repeated run");
+    assert_eq!(
+        obs_count, 1,
+        "observation row must not be duplicated on repeated run"
+    );
 }
 
 #[test]
@@ -1405,7 +1397,10 @@ fn test_observe_cli_cass_and_normalized_same_ids_cannot_move_native_cursor() {
             |r| r.get(0),
         )
         .expect("query native cursor");
-    assert_eq!(cur_gen_native_after_cass, 1, "cass must not move native cursor");
+    assert_eq!(
+        cur_gen_native_after_cass, 1,
+        "cass must not move native cursor"
+    );
 
     // 3. Normalized context with the SAME session ID ("shared-session")
     let ctx_path = ws_dir.join("context.json");
@@ -1476,8 +1471,7 @@ fn test_observe_cli_cass_and_normalized_same_ids_cannot_move_native_cursor() {
         )
         .expect("query native cursor");
     assert_eq!(
-        cur_gen_native_after_norm,
-        1,
+        cur_gen_native_after_norm, 1,
         "normalized context with same session ID must not move native cursor"
     );
 }
