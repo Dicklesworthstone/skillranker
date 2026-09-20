@@ -22,7 +22,7 @@ use nix::sys::stat::{Mode, SFlag, fstatat};
 use std::collections::VecDeque;
 use std::ffi::{OsStr, OsString};
 use std::fmt;
-use std::os::fd::{AsFd, OwnedFd};
+use std::os::fd::AsFd;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
@@ -419,13 +419,31 @@ impl Discovery {
             self.note(Diagnostic::RootUnreadable(planned.spec.source.clone()));
             return;
         };
-        let Ok(base) = root.as_fd().try_clone_to_owned() else {
-            self.note(Diagnostic::RootUnreadable(planned.spec.source.clone()));
-            return;
-        };
-        let mut queue: VecDeque<(OwnedFd, PathBuf, usize)> =
-            VecDeque::from([(base, PathBuf::new(), 0usize)]);
-        while let Some((directory, relative, depth)) = queue.pop_front() {
+        // Queue names, not open sibling directories: macOS commonly permits
+        // only 256 descriptors. Reopen each component from the pinned root
+        // with NOFOLLOW so a queued directory replaced by a symlink is refused.
+        let mut queue = VecDeque::from([(PathBuf::new(), 0usize)]);
+        while let Some((relative, depth)) = queue.pop_front() {
+            let flags = OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC;
+            let mut directory = root.as_fd().try_clone_to_owned().map_err(|_| Errno::EBADF);
+            for component in relative.components() {
+                directory = directory.and_then(|parent| {
+                    openat(&parent, component.as_os_str(), flags, Mode::empty())
+                });
+            }
+            let directory = match directory {
+                Ok(directory) => directory,
+                Err(Errno::ELOOP | Errno::ENOTDIR) => {
+                    self.note(Diagnostic::SymlinkedDirectorySkipped(
+                        planned.spec.source.clone(),
+                    ));
+                    continue;
+                }
+                Err(_) => {
+                    self.note(Diagnostic::DirectoryUnreadable(planned.spec.source.clone()));
+                    continue;
+                }
+            };
             // Dir owns the descriptor it lists, so hand it a duplicate and
             // keep ours for opening children.
             let listing = directory
@@ -468,18 +486,7 @@ impl Discovery {
                             self.note(Diagnostic::DepthLimitReached(planned.spec.source.clone()));
                             continue;
                         }
-                        let flags = OFlag::O_RDONLY
-                            | OFlag::O_DIRECTORY
-                            | OFlag::O_NOFOLLOW
-                            | OFlag::O_CLOEXEC;
-                        match openat(&directory, name, flags, Mode::empty()) {
-                            Ok(child) => queue.push_back((child, relative.join(name), depth + 1)),
-                            Err(Errno::ELOOP | Errno::ENOTDIR) => self.note(
-                                Diagnostic::SymlinkedDirectorySkipped(planned.spec.source.clone()),
-                            ),
-                            Err(_) => self
-                                .note(Diagnostic::DirectoryUnreadable(planned.spec.source.clone())),
-                        }
+                        queue.push_back((relative.join(name), depth + 1));
                     }
                     Type::Symlink => {
                         // A link may name a directory or a skill file; only the

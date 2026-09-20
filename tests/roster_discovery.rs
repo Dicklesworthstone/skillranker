@@ -9,6 +9,37 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 static SEQUENCE: AtomicU32 = AtomicU32::new(0);
 
+#[cfg(unix)]
+#[test]
+fn broad_discovery_fits_a_small_descriptor_limit() {
+    const CHILD: &str = "SR_DISCOVERY_LOW_FD_TEST";
+    if std::env::var_os(CHILD).is_none() {
+        // Change only a child process's limit, never the parallel test runner.
+        let output = std::process::Command::new("/bin/sh")
+            .args(["-c", "ulimit -n 64 || exit 90; exec \"$1\" --exact broad_discovery_fits_a_small_descriptor_limit --nocapture", "discovery-test"])
+            .arg(std::env::current_exe().unwrap())
+            .env_clear()
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{} {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    let tree = temp_tree("low-fd");
+    for index in 0..300 {
+        write(&tree.join(format!("skill-{index:03}/SKILL.md")), "skill");
+    }
+    let plan = plan_with(vec![(spec("low-fd", SourceKind::Project, 1), tree)]);
+    let discovery = plan.discover();
+    assert_eq!(discovery.candidates().len(), 300);
+    assert!(!discovery.is_partial(), "{:?}", discovery.diagnostics());
+}
+
 /// Trees are retained for inspection, like the other suites here.
 fn temp_tree(name: &str) -> PathBuf {
     let nanos = SystemTime::now()

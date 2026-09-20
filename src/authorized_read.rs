@@ -545,7 +545,15 @@ impl<'a> Walk<'a> {
         if self.hops > MAX_SYMLINK_HOPS {
             return Err(ReadError::SymlinkLoop);
         }
-        let target = readlinkat(self.top()?, name).map_err(map_errno)?;
+        let target = readlinkat(self.top()?, name).map_err(|error| {
+            // The confirmed link can become a regular file before readlinkat.
+            // EINVAL here is a filesystem race, not an invalid caller path.
+            if error == Errno::EINVAL {
+                ReadError::Io
+            } else {
+                map_errno(error)
+            }
+        })?;
         if target.as_encoded_bytes().len() > MAX_LINK_TARGET_BYTES {
             return Err(ReadError::LinkTargetTooLong);
         }

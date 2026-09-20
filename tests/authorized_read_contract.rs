@@ -407,16 +407,33 @@ fn native_path_bytes_survive_and_diagnostics_stay_private() {
     let tree = temp_tree("bytes");
     let name = OsStr::from_bytes(b"caf\xff.md");
     let path = tree.join(name);
-    fs::write(&path, "non-utf8 name").expect("write fixture");
     let roots = AuthorizedRoots::single(root_of(&tree));
-
-    let found = roots
-        .read_bounded(0, Path::new(name), SKILL_FILE_BYTES)
-        .expect("non-UTF-8 name is readable");
-    assert_eq!(found.bytes(), b"non-utf8 name");
-    assert_eq!(found.path().as_path(), path);
-    assert!(found.path().as_path().to_str().is_none(), "bytes preserved");
-    assert_eq!(format!("{:?}", found.path()), "LocalPath(<private>)");
+    match fs::write(&path, "non-utf8 name") {
+        Ok(()) => {
+            let found = roots
+                .read_bounded(0, Path::new(name), SKILL_FILE_BYTES)
+                .expect("non-UTF-8 name is readable");
+            assert_eq!(found.bytes(), b"non-utf8 name");
+            assert_eq!(found.path().as_path(), path);
+            assert!(found.path().as_path().to_str().is_none(), "bytes preserved");
+            assert_eq!(format!("{:?}", found.path()), "LocalPath(<private>)");
+        }
+        Err(error) => {
+            // APFS rejects invalid UTF-8 filenames at creation. Preserve the
+            // byte-path success test wherever the filesystem can represent it.
+            #[cfg(not(target_os = "macos"))]
+            panic!("write fixture: {error}");
+            #[cfg(target_os = "macos")]
+            {
+                assert_eq!(error.raw_os_error(), Some(nix::libc::EILSEQ));
+                assert!(
+                    roots
+                        .read_bounded(0, Path::new(name), SKILL_FILE_BYTES)
+                        .is_err()
+                );
+            }
+        }
+    }
 
     // No error text names a path, a link target or file content.
     let outside = temp_tree("bytes-outside");
