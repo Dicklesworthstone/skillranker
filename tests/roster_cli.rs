@@ -52,6 +52,7 @@ impl Fixture {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_sr"));
         cmd.env_clear()
             .env("HOME", self.root.join("home"))
+            .env("XDG_CONFIG_HOME", self.root.join("home/.config"))
             .current_dir(self.root.join("workspace"))
             .args(args);
         for (name, value) in environment {

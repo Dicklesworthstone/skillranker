@@ -110,6 +110,9 @@ fn warning_kinds(value: &Value) -> Vec<String> {
 }
 
 fn cache_dir(home: &Path) -> PathBuf {
+    #[cfg(target_os = "macos")]
+    return home.join("Library/Caches/sr");
+    #[cfg(not(target_os = "macos"))]
     home.join(".cache/sr")
 }
 

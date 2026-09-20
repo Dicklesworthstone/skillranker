@@ -89,7 +89,7 @@ try:
     unexpected, _ = listener.accept()
     unexpected.close()
     extra_connections = 1
-except TimeoutError:
+except (TimeoutError, socket.timeout):
     extra_connections = 0
 listener.close()
 emit({"requests": len(times), "received_ns": times, "closed": closed,

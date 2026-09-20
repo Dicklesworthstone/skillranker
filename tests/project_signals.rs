@@ -141,7 +141,20 @@ fn actual_git_omits_non_utf8_paths_without_lossy_identity() {
     let dir = temp();
     git(&dir, &["init", "-q"]);
     let name = std::ffi::OsString::from_vec(b"bad\xff".to_vec());
-    std::fs::write(dir.join(name), "fixture").unwrap();
+    if let Err(error) = std::fs::write(dir.join(name), "fixture") {
+        // APFS cannot create the invalid UTF-8 path; the byte-parser test
+        // separately exercises omission without lossy decoding on every OS.
+        #[cfg(not(target_os = "macos"))]
+        panic!("write fixture: {error}");
+        #[cfg(target_os = "macos")]
+        {
+            assert_eq!(error.raw_os_error(), Some(nix::libc::EILSEQ));
+            let result = collect_at(&dir, &[git_path().parent().unwrap().to_path_buf()]);
+            assert_eq!(result.git_omission, None);
+            assert!(result.dirty_paths.unwrap().paths.is_empty());
+            return;
+        }
+    }
     git(&dir, &["add", "--all"]);
     let result = collect_at(&dir, &[git_path().parent().unwrap().to_path_buf()]);
     assert_eq!(result.git_omission, None);
