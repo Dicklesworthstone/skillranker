@@ -368,6 +368,11 @@ fn refuses_malformed_settings_without_overwriting() {
 
 #[test]
 fn reports_enterprise_read_only_restrictions() {
+    if nix::unistd::geteuid().is_root() {
+        eprintln!("skipping read-only restriction test when running as root");
+        return;
+    }
+
     let fixture = InstallerFixture::new();
 
     let settings = json!({"read_only": true});
