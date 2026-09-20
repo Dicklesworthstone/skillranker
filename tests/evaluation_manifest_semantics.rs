@@ -6,7 +6,7 @@ fn frame() -> Vec<EvaluationCaseRecord> {
     (0..4)
         .map(|i| EvaluationCaseRecord {
             schema_version: 1,
-            key: CaseKey::new("frame", &format!("family-{i}"), "case", 0, "policy"),
+            key: CaseKey::new("frame", format!("family-{i}"), "case", 0, "policy"),
             split: EvaluationSplit::Holdout,
             prompt_summary: Some("bounded synthetic request".into()),
             roster_skills: vec!["skill".into()],
