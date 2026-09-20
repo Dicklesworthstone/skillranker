@@ -24,6 +24,7 @@ pub mod replay;
 pub mod roster;
 pub mod runtime;
 pub mod scoring;
+pub mod sqlite_engine;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub mod storage;
 pub mod subprocess;
