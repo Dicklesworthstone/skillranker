@@ -17,7 +17,9 @@
 //! 6. Multi-endpoint alpha allocation preserving family-wise error budgets.
 
 use crate::evaluation::CaseKey;
-use crate::evaluation::stratified::{FrozenSampleManifest, StratumAllocation};
+use crate::evaluation::stratified::{
+    DesignStatus, FrozenSampleManifest, RandomizationProvenance, StratumAllocation,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt;
@@ -25,6 +27,11 @@ use std::fmt;
 /// Mathematical or domain errors in design-weighted estimation.
 #[derive(Clone, Debug, PartialEq)]
 pub enum DesignWeightedError {
+    UnsupportedDesign,
+    InvalidInclusionProbability {
+        stratum: String,
+        probability: Option<f64>,
+    },
     InvalidAlpha(f64),
     AlphaBudgetExceeded {
         allocated: f64,
@@ -68,6 +75,16 @@ pub enum DesignWeightedError {
 impl fmt::Display for DesignWeightedError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::UnsupportedDesign => {
+                f.write_str("design-based inference requires a probability sample or census")
+            }
+            Self::InvalidInclusionProbability {
+                stratum,
+                probability,
+            } => write!(
+                f,
+                "stratum '{stratum}' requires a finite positive inclusion probability matching its sampling design, got {probability:?}"
+            ),
             Self::InvalidAlpha(a) => {
                 write!(f, "error budget alpha must be in (0, 1), got {a}")
             }
@@ -389,6 +406,10 @@ fn validate_alpha(alpha: f64) -> Result<(), DesignWeightedError> {
 /// 1. Unbiased point estimate: $E[\hat{R}] = \mu$ for fully observed samples under the uniform design.
 /// 2. Bounded coverage: $P(\mu \le U) \ge 1 - \alpha$ under the frozen uniform-within-stratum design.
 /// 3. Fully enumerated census strata contribute zero sampling variance ($U_h = \bar{y}_h$).
+///
+/// The caller must establish the sampling design before using this mathematical
+/// primitive. Matching numeric probabilities alone do not prove random selection.
+/// Missing non-census probabilities are refused, not inferred from sample sizes.
 pub fn compute_design_weighted_loss(
     strata_allocations: &BTreeMap<String, StratumAllocation>,
     case_losses: &[StratumCaseLoss],
@@ -420,6 +441,22 @@ pub fn compute_design_weighted_loss(
                 stratum: key.clone(),
                 sample: alloc.sample_size,
                 population: alloc.population_size,
+            });
+        }
+        let expected_pi = alloc.sample_size as f64 / alloc.population_size as f64;
+        let valid_pi = match alloc.inclusion_probability {
+            Some(pi) => {
+                pi.is_finite()
+                    && pi > 0.0
+                    && pi <= 1.0
+                    && (pi - expected_pi).abs() <= expected_pi * 1e-12
+            }
+            None => alloc.sample_size == alloc.population_size,
+        };
+        if !valid_pi {
+            return Err(DesignWeightedError::InvalidInclusionProbability {
+                stratum: key.clone(),
+                probability: alloc.inclusion_probability,
             });
         }
         if !alloc.weight.is_finite() || alloc.weight < 0.0 {
@@ -485,13 +522,11 @@ pub fn compute_design_weighted_loss(
         let is_census = n_h == alloc.population_size;
 
         // Track inclusion probabilities
-        let pi_h = alloc.inclusion_probability.or_else(|| {
-            if is_census {
-                Some(1.0)
-            } else {
-                Some(n_h_f / alloc.population_size as f64)
-            }
-        });
+        // Only complete enumeration justifies filling an absent probability.
+        // Non-census absence was rejected before computing any inference.
+        let pi_h = alloc
+            .inclusion_probability
+            .or(if is_census { Some(1.0) } else { None });
 
         if let Some(pi) = pi_h {
             min_pi = Some(min_pi.map_or(pi, |m| m.min(pi)));
@@ -597,11 +632,34 @@ pub fn compute_design_weighted_loss(
 
 /// Convenience helper to compute design-weighted loss directly from a frozen manifest
 /// and a map of case keys to their evaluated losses.
+/// The caller must first verify the manifest against its source frame; this
+/// adapter does not authenticate provenance or establish frame membership.
 pub fn compute_design_weighted_loss_from_manifest(
     manifest: &FrozenSampleManifest,
     losses_by_case: &BTreeMap<CaseKey, SampledCaseLoss>,
     alpha: f64,
 ) -> Result<DesignWeightedLossReport, DesignWeightedError> {
+    match manifest.design_status {
+        DesignStatus::DiagnosticFixed => return Err(DesignWeightedError::UnsupportedDesign),
+        DesignStatus::StratifiedProbabilitySample => {
+            if !matches!(
+                manifest.randomization_provenance,
+                RandomizationProvenance::OsRandom { .. }
+            ) {
+                return Err(DesignWeightedError::UnsupportedDesign);
+            }
+        }
+        DesignStatus::FullCensus => {
+            if manifest.total_sampled_families != manifest.total_frame_families
+                || manifest
+                    .strata
+                    .values()
+                    .any(|s| s.sample_size != s.population_size)
+            {
+                return Err(DesignWeightedError::UnsupportedDesign);
+            }
+        }
+    }
     let mut case_losses = Vec::with_capacity(manifest.selected_cases.len());
     for entry in &manifest.selected_cases {
         let loss = losses_by_case
