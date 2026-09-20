@@ -97,6 +97,9 @@ Thumbs.db
 *~
 
 # Release staging and fuzz run products; keep fuzz seeds and fixtures.
+# Installer state when --dest points inside this checkout.
+.sr-install.*
+sr.backup.*
 /dist/
 /.dsr/cache/
 /.dsr/logs/
