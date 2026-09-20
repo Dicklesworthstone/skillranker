@@ -101,7 +101,13 @@ fn candidate_fixture(event_id: &str, skill_id: &str) -> NewRankingCandidate {
     }
 }
 
-fn judgment_fixture(id: &str, event_id: &str, skill_id: &str, label: JudgmentLabel, created_at_unix_ms: u64) -> NewJudgment {
+fn judgment_fixture(
+    id: &str,
+    event_id: &str,
+    skill_id: &str,
+    label: JudgmentLabel,
+    created_at_unix_ms: u64,
+) -> NewJudgment {
     NewJudgment {
         judgment_id: id.into(),
         attributed_event_id: event_id.into(),
@@ -113,7 +119,13 @@ fn judgment_fixture(id: &str, event_id: &str, skill_id: &str, label: JudgmentLab
     }
 }
 
-fn observation_fixture(id: &str, key: &str, event_id: Option<&str>, skill_id: &str, observed_at_unix_ms: u64) -> NewObservation {
+fn observation_fixture(
+    id: &str,
+    key: &str,
+    event_id: Option<&str>,
+    skill_id: &str,
+    observed_at_unix_ms: u64,
+) -> NewObservation {
     NewObservation {
         observation_id: id.into(),
         source_event_key: key.into(),
@@ -127,7 +139,11 @@ fn observation_fixture(id: &str, key: &str, event_id: Option<&str>, skill_id: &s
     }
 }
 
-fn provider_attempt_fixture(attempt_id: &str, event_id: &str, admitted_at_unix_ms: u64) -> NewProviderAttempt {
+fn provider_attempt_fixture(
+    attempt_id: &str,
+    event_id: &str,
+    admitted_at_unix_ms: u64,
+) -> NewProviderAttempt {
     NewProviderAttempt {
         attempt_id: attempt_id.into(),
         owner_event_id: event_id.into(),
@@ -152,7 +168,13 @@ fn boundary_dates_and_clock_policy_filters_expired_events() {
     let init = init_ledger(&invocation, &cx, LedgerLocation::Directory(dir.clone())).unwrap();
     assert_eq!(init.status, InitStatus::Created);
 
-    let open_res = open_ledger(&invocation, &cx, LedgerAccess::ExistingOnly, LedgerLocation::Directory(dir.clone())).unwrap();
+    let open_res = open_ledger(
+        &invocation,
+        &cx,
+        LedgerAccess::ExistingOnly,
+        LedgerLocation::Directory(dir.clone()),
+    )
+    .unwrap();
     let mut store = match open_res {
         LedgerOpen::Ready(s) => s,
         _ => panic!("expected ready ledger"),
@@ -166,24 +188,52 @@ fn boundary_dates_and_clock_policy_filters_expired_events() {
     // Event 1: T - 35 days (older than 30-day retention cutoff)
     let t_old = (t_now - 35 * day_ms) as u64;
     let snap_old = snapshot_fixture("snap-old", t_old);
-    store.record_roster_snapshot(invocation.clock(), &cx, &snap_old, stamp).unwrap();
+    store
+        .record_roster_snapshot(invocation.clock(), &cx, &snap_old, stamp)
+        .unwrap();
     let ev_old = event_fixture("ev-old", "snap-old", t_old);
-    store.record_ranking_event(invocation.clock(), &cx, &ev_old, &[], None, stamp).unwrap();
+    store
+        .record_ranking_event(invocation.clock(), &cx, &ev_old, &[], None, stamp)
+        .unwrap();
     let j_old = judgment_fixture("j-old", "ev-old", "review", JudgmentLabel::Useful, t_old);
-    store.record_judgment(invocation.clock(), &cx, &j_old, stamp).unwrap();
+    store
+        .record_judgment(invocation.clock(), &cx, &j_old, stamp)
+        .unwrap();
     let o_old = observation_fixture("obs-old", "key-old", Some("ev-old"), "review", t_old);
-    store.record_observation(invocation.clock(), &cx, &o_old, stamp).unwrap();
+    store
+        .record_observation(invocation.clock(), &cx, &o_old, stamp)
+        .unwrap();
 
     // Event 2: T - 15 days (within 30-day retention cutoff)
     let t_active = (t_now - 15 * day_ms) as u64;
     let snap_active = snapshot_fixture("snap-active", t_active);
-    store.record_roster_snapshot(invocation.clock(), &cx, &snap_active, stamp).unwrap();
+    store
+        .record_roster_snapshot(invocation.clock(), &cx, &snap_active, stamp)
+        .unwrap();
     let ev_active = event_fixture("ev-active", "snap-active", t_active);
-    store.record_ranking_event(invocation.clock(), &cx, &ev_active, &[], None, stamp).unwrap();
-    let j_active = judgment_fixture("j-active", "ev-active", "review", JudgmentLabel::Useful, t_active);
-    store.record_judgment(invocation.clock(), &cx, &j_active, stamp).unwrap();
-    let o_active = observation_fixture("obs-active", "key-active", Some("ev-active"), "review", t_active);
-    store.record_observation(invocation.clock(), &cx, &o_active, stamp).unwrap();
+    store
+        .record_ranking_event(invocation.clock(), &cx, &ev_active, &[], None, stamp)
+        .unwrap();
+    let j_active = judgment_fixture(
+        "j-active",
+        "ev-active",
+        "review",
+        JudgmentLabel::Useful,
+        t_active,
+    );
+    store
+        .record_judgment(invocation.clock(), &cx, &j_active, stamp)
+        .unwrap();
+    let o_active = observation_fixture(
+        "obs-active",
+        "key-active",
+        Some("ev-active"),
+        "review",
+        t_active,
+    );
+    store
+        .record_observation(invocation.clock(), &cx, &o_active, stamp)
+        .unwrap();
 
     // Query retained stats as of T_now
     let stats = store.query_retained_stats(t_now).unwrap();
@@ -215,7 +265,13 @@ fn shared_referenced_snapshots_are_preserved_when_older_events_pruned() {
     let (invocation, cx) = test_invocation();
 
     init_ledger(&invocation, &cx, LedgerLocation::Directory(dir.clone())).unwrap();
-    let open_res = open_ledger(&invocation, &cx, LedgerAccess::ExistingOnly, LedgerLocation::Directory(dir.clone())).unwrap();
+    let open_res = open_ledger(
+        &invocation,
+        &cx,
+        LedgerAccess::ExistingOnly,
+        LedgerLocation::Directory(dir.clone()),
+    )
+    .unwrap();
     let mut store = match open_res {
         LedgerOpen::Ready(s) => s,
         _ => panic!("expected ready ledger"),
@@ -229,23 +285,33 @@ fn shared_referenced_snapshots_are_preserved_when_older_events_pruned() {
 
     // Snapshot 1: shared between old and new events
     let snap_shared = snapshot_fixture("snap-shared", t_old);
-    store.record_roster_snapshot(invocation.clock(), &cx, &snap_shared, stamp).unwrap();
+    store
+        .record_roster_snapshot(invocation.clock(), &cx, &snap_shared, stamp)
+        .unwrap();
 
     // Snapshot 2: referenced ONLY by old event
     let snap_exclusive = snapshot_fixture("snap-exclusive", t_old);
-    store.record_roster_snapshot(invocation.clock(), &cx, &snap_exclusive, stamp).unwrap();
+    store
+        .record_roster_snapshot(invocation.clock(), &cx, &snap_exclusive, stamp)
+        .unwrap();
 
     // Event 1: old, references snap-shared
     let ev1 = event_fixture("ev-old-1", "snap-shared", t_old);
-    store.record_ranking_event(invocation.clock(), &cx, &ev1, &[], None, stamp).unwrap();
+    store
+        .record_ranking_event(invocation.clock(), &cx, &ev1, &[], None, stamp)
+        .unwrap();
 
     // Event 2: new, references snap-shared (SHARED!)
     let ev2 = event_fixture("ev-new-2", "snap-shared", t_new);
-    store.record_ranking_event(invocation.clock(), &cx, &ev2, &[], None, stamp).unwrap();
+    store
+        .record_ranking_event(invocation.clock(), &cx, &ev2, &[], None, stamp)
+        .unwrap();
 
     // Event 3: old, references snap-exclusive
     let ev3 = event_fixture("ev-old-3", "snap-exclusive", t_old);
-    store.record_ranking_event(invocation.clock(), &cx, &ev3, &[], None, stamp).unwrap();
+    store
+        .record_ranking_event(invocation.clock(), &cx, &ev3, &[], None, stamp)
+        .unwrap();
 
     // Cutoff: T - 30 days
     let cutoff = t_now - 30 * day_ms;
@@ -257,35 +323,62 @@ fn shared_referenced_snapshots_are_preserved_when_older_events_pruned() {
     assert_eq!(preview.shared_snapshots_preserved, 1); // snap-shared preserved
 
     // Now execute prune_apply
-    let report = store.prune_apply(cutoff, invocation.clock(), &cx, stamp).unwrap();
+    let report = store
+        .prune_apply(cutoff, invocation.clock(), &cx, stamp)
+        .unwrap();
     assert_eq!(report.events_pruned, 2);
     assert_eq!(report.snapshots_pruned, 1);
     assert_eq!(report.shared_snapshots_preserved, 1);
-    assert_eq!(report.stamp_after.data_generation, stamp.data_generation + 1);
+    assert_eq!(
+        report.stamp_after.data_generation,
+        stamp.data_generation + 1
+    );
 
     // Verify database contents
     let conn = Connection::open(dir.join(LEDGER_FILE)).unwrap();
-    let remaining_events: i64 = conn.query_row("SELECT count(*) FROM ranking_events", [], |r| r.get(0)).unwrap();
+    let remaining_events: i64 = conn
+        .query_row("SELECT count(*) FROM ranking_events", [], |r| r.get(0))
+        .unwrap();
     assert_eq!(remaining_events, 1);
 
-    let remaining_event_id: String = conn.query_row("SELECT event_id FROM ranking_events", [], |r| r.get(0)).unwrap();
+    let remaining_event_id: String = conn
+        .query_row("SELECT event_id FROM ranking_events", [], |r| r.get(0))
+        .unwrap();
     assert_eq!(remaining_event_id, "ev-new-2");
 
     // Verify snap-shared still exists and is referenced by ev-new-2
-    let shared_exists: i64 = conn.query_row("SELECT count(*) FROM roster_snapshots WHERE snapshot_id = 'snap-shared'", [], |r| r.get(0)).unwrap();
+    let shared_exists: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM roster_snapshots WHERE snapshot_id = 'snap-shared'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
     assert_eq!(shared_exists, 1);
 
     // Verify snap-exclusive was pruned
-    let exclusive_exists: i64 = conn.query_row("SELECT count(*) FROM roster_snapshots WHERE snapshot_id = 'snap-exclusive'", [], |r| r.get(0)).unwrap();
+    let exclusive_exists: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM roster_snapshots WHERE snapshot_id = 'snap-exclusive'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
     assert_eq!(exclusive_exists, 0);
 
     // Check foreign keys
-    let fk_violations: Vec<String> = conn.prepare("PRAGMA foreign_key_check").unwrap()
+    let fk_violations: Vec<String> = conn
+        .prepare("PRAGMA foreign_key_check")
+        .unwrap()
         .query_map([], |row| Ok(format!("{:?}", row.get::<_, String>(0))))
         .unwrap()
         .map(|r| r.unwrap())
         .collect();
-    assert!(fk_violations.is_empty(), "foreign key violations after prune: {:?}", fk_violations);
+    assert!(
+        fk_violations.is_empty(),
+        "foreign key violations after prune: {:?}",
+        fk_violations
+    );
 }
 
 #[test]
@@ -294,7 +387,13 @@ fn prune_dependency_graph_without_dangling_labels() {
     let (invocation, cx) = test_invocation();
 
     init_ledger(&invocation, &cx, LedgerLocation::Directory(dir.clone())).unwrap();
-    let open_res = open_ledger(&invocation, &cx, LedgerAccess::ExistingOnly, LedgerLocation::Directory(dir.clone())).unwrap();
+    let open_res = open_ledger(
+        &invocation,
+        &cx,
+        LedgerAccess::ExistingOnly,
+        LedgerLocation::Directory(dir.clone()),
+    )
+    .unwrap();
     let mut store = match open_res {
         LedgerOpen::Ready(s) => s,
         _ => panic!("expected ready ledger"),
@@ -303,31 +402,63 @@ fn prune_dependency_graph_without_dangling_labels() {
 
     let t_old = 1_000_000_000u64;
     let snap = snapshot_fixture("snap-1", t_old);
-    store.record_roster_snapshot(invocation.clock(), &cx, &snap, stamp).unwrap();
+    store
+        .record_roster_snapshot(invocation.clock(), &cx, &snap, stamp)
+        .unwrap();
 
     let ev = event_fixture("ev-dep", "snap-1", t_old);
     let cand = candidate_fixture("ev-dep", "review");
-    store.record_ranking_event(invocation.clock(), &cx, &ev, &[cand], None, stamp).unwrap();
+    store
+        .record_ranking_event(invocation.clock(), &cx, &ev, &[cand], None, stamp)
+        .unwrap();
 
     let prov = provider_attempt_fixture("att-1", "ev-dep", t_old);
-    store.record_provider_attempt(invocation.clock(), &cx, &prov, stamp).unwrap();
+    store
+        .record_provider_attempt(invocation.clock(), &cx, &prov, stamp)
+        .unwrap();
 
     let obs = observation_fixture("obs-1", "key-dep", Some("ev-dep"), "review", t_old);
-    store.record_observation(invocation.clock(), &cx, &obs, stamp).unwrap();
+    store
+        .record_observation(invocation.clock(), &cx, &obs, stamp)
+        .unwrap();
 
     let j = judgment_fixture("j-1", "ev-dep", "review", JudgmentLabel::Useful, t_old);
-    store.record_judgment(invocation.clock(), &cx, &j, stamp).unwrap();
+    store
+        .record_judgment(invocation.clock(), &cx, &j, stamp)
+        .unwrap();
 
     // Verify all records present
     let conn = Connection::open(dir.join(LEDGER_FILE)).unwrap();
-    assert_eq!(conn.query_row::<i64, _, _>("SELECT count(*) FROM judgments", [], |r| r.get(0)).unwrap(), 1);
-    assert_eq!(conn.query_row::<i64, _, _>("SELECT count(*) FROM observations", [], |r| r.get(0)).unwrap(), 1);
-    assert_eq!(conn.query_row::<i64, _, _>("SELECT count(*) FROM provider_attempts", [], |r| r.get(0)).unwrap(), 1);
-    assert_eq!(conn.query_row::<i64, _, _>("SELECT count(*) FROM ranking_candidates", [], |r| r.get(0)).unwrap(), 1);
-    assert_eq!(conn.query_row::<i64, _, _>("SELECT count(*) FROM ranking_events", [], |r| r.get(0)).unwrap(), 1);
+    assert_eq!(
+        conn.query_row::<i64, _, _>("SELECT count(*) FROM judgments", [], |r| r.get(0))
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        conn.query_row::<i64, _, _>("SELECT count(*) FROM observations", [], |r| r.get(0))
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        conn.query_row::<i64, _, _>("SELECT count(*) FROM provider_attempts", [], |r| r.get(0))
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        conn.query_row::<i64, _, _>("SELECT count(*) FROM ranking_candidates", [], |r| r.get(0))
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        conn.query_row::<i64, _, _>("SELECT count(*) FROM ranking_events", [], |r| r.get(0))
+            .unwrap(),
+        1
+    );
 
     // Prune before t_old + 1000
-    let report = store.prune_apply((t_old + 1000) as i64, invocation.clock(), &cx, stamp).unwrap();
+    let report = store
+        .prune_apply((t_old + 1000) as i64, invocation.clock(), &cx, stamp)
+        .unwrap();
     assert_eq!(report.events_pruned, 1);
     assert_eq!(report.candidates_pruned, 1);
     assert_eq!(report.observations_pruned, 1);
@@ -337,14 +468,40 @@ fn prune_dependency_graph_without_dangling_labels() {
 
     // Verify all tables are empty - no dangling labels or snapshots!
     let conn = Connection::open(dir.join(LEDGER_FILE)).unwrap();
-    assert_eq!(conn.query_row::<i64, _, _>("SELECT count(*) FROM judgments", [], |r| r.get(0)).unwrap(), 0);
-    assert_eq!(conn.query_row::<i64, _, _>("SELECT count(*) FROM observations", [], |r| r.get(0)).unwrap(), 0);
-    assert_eq!(conn.query_row::<i64, _, _>("SELECT count(*) FROM provider_attempts", [], |r| r.get(0)).unwrap(), 0);
-    assert_eq!(conn.query_row::<i64, _, _>("SELECT count(*) FROM ranking_candidates", [], |r| r.get(0)).unwrap(), 0);
-    assert_eq!(conn.query_row::<i64, _, _>("SELECT count(*) FROM ranking_events", [], |r| r.get(0)).unwrap(), 0);
-    assert_eq!(conn.query_row::<i64, _, _>("SELECT count(*) FROM roster_snapshots", [], |r| r.get(0)).unwrap(), 0);
+    assert_eq!(
+        conn.query_row::<i64, _, _>("SELECT count(*) FROM judgments", [], |r| r.get(0))
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        conn.query_row::<i64, _, _>("SELECT count(*) FROM observations", [], |r| r.get(0))
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        conn.query_row::<i64, _, _>("SELECT count(*) FROM provider_attempts", [], |r| r.get(0))
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        conn.query_row::<i64, _, _>("SELECT count(*) FROM ranking_candidates", [], |r| r.get(0))
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        conn.query_row::<i64, _, _>("SELECT count(*) FROM ranking_events", [], |r| r.get(0))
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        conn.query_row::<i64, _, _>("SELECT count(*) FROM roster_snapshots", [], |r| r.get(0))
+            .unwrap(),
+        0
+    );
 
-    let fk_check: i64 = conn.query_row("PRAGMA foreign_key_check", [], |r| r.get(0)).unwrap_or(0);
+    let fk_check: i64 = conn
+        .query_row("PRAGMA foreign_key_check", [], |r| r.get(0))
+        .unwrap_or(0);
     assert_eq!(fk_check, 0);
 }
 
@@ -354,7 +511,13 @@ fn revised_and_removed_labels_advance_generation_and_fence_stale_writers() {
     let (invocation, cx) = test_invocation();
 
     init_ledger(&invocation, &cx, LedgerLocation::Directory(dir.clone())).unwrap();
-    let open_res = open_ledger(&invocation, &cx, LedgerAccess::ExistingOnly, LedgerLocation::Directory(dir.clone())).unwrap();
+    let open_res = open_ledger(
+        &invocation,
+        &cx,
+        LedgerAccess::ExistingOnly,
+        LedgerLocation::Directory(dir.clone()),
+    )
+    .unwrap();
     let mut store = match open_res {
         LedgerOpen::Ready(s) => s,
         _ => panic!("expected ready ledger"),
@@ -363,64 +526,95 @@ fn revised_and_removed_labels_advance_generation_and_fence_stale_writers() {
 
     let t = 1_000_000_000u64;
     let snap = snapshot_fixture("snap-label", t);
-    store.record_roster_snapshot(invocation.clock(), &cx, &snap, initial_stamp).unwrap();
+    store
+        .record_roster_snapshot(invocation.clock(), &cx, &snap, initial_stamp)
+        .unwrap();
     let ev = event_fixture("ev-label", "snap-label", t);
-    store.record_ranking_event(invocation.clock(), &cx, &ev, &[], None, initial_stamp).unwrap();
+    store
+        .record_ranking_event(invocation.clock(), &cx, &ev, &[], None, initial_stamp)
+        .unwrap();
 
     // 1. Record initial judgment (version 1)
     let j = judgment_fixture("j-rev", "ev-label", "review", JudgmentLabel::Useful, t);
-    store.record_judgment(invocation.clock(), &cx, &j, initial_stamp).unwrap();
+    store
+        .record_judgment(invocation.clock(), &cx, &j, initial_stamp)
+        .unwrap();
 
     let conn = Connection::open(dir.join(LEDGER_FILE)).unwrap();
-    let (label, ver): (String, i64) = conn.query_row(
-        "SELECT label, label_version FROM judgments WHERE judgment_id = 'j-rev'",
-        [],
-        |r| Ok((r.get(0)?, r.get(1)?)),
-    ).unwrap();
+    let (label, ver): (String, i64) = conn
+        .query_row(
+            "SELECT label, label_version FROM judgments WHERE judgment_id = 'j-rev'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
     assert_eq!(label, "useful");
     assert_eq!(ver, 1);
 
     // 2. Revise judgment: label changed to Harmful
-    let updated_stamp = store.revise_judgment(
-        invocation.clock(),
-        &cx,
-        "j-rev",
-        JudgmentLabel::Harmful,
-        "revised-by-human",
-        t + 5000,
-        initial_stamp,
-    ).unwrap();
+    let updated_stamp = store
+        .revise_judgment(
+            invocation.clock(),
+            &cx,
+            "j-rev",
+            JudgmentLabel::Harmful,
+            "revised-by-human",
+            t + 5000,
+            initial_stamp,
+        )
+        .unwrap();
 
     // Data generation MUST have advanced to invalidate derived priors
-    assert_eq!(updated_stamp.data_generation, initial_stamp.data_generation + 1);
+    assert_eq!(
+        updated_stamp.data_generation,
+        initial_stamp.data_generation + 1
+    );
 
-    let (rev_label, rev_ver): (String, i64) = conn.query_row(
-        "SELECT label, label_version FROM judgments WHERE judgment_id = 'j-rev'",
-        [],
-        |r| Ok((r.get(0)?, r.get(1)?)),
-    ).unwrap();
+    let (rev_label, rev_ver): (String, i64) = conn
+        .query_row(
+            "SELECT label, label_version FROM judgments WHERE judgment_id = 'j-rev'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
     assert_eq!(rev_label, "harmful");
     assert_eq!(rev_ver, 2);
 
     // 3. Stale writer using initial_stamp must be fenced!
-    let j_stale = judgment_fixture("j-stale", "ev-label", "review", JudgmentLabel::Neutral, t + 6000);
-    let stale_err = store.record_judgment(invocation.clock(), &cx, &j_stale, initial_stamp).unwrap_err();
+    let j_stale = judgment_fixture(
+        "j-stale",
+        "ev-label",
+        "review",
+        JudgmentLabel::Neutral,
+        t + 6000,
+    );
+    let stale_err = store
+        .record_judgment(invocation.clock(), &cx, &j_stale, initial_stamp)
+        .unwrap_err();
     assert_eq!(stale_err, StoreError::StaleGeneration);
 
     // 4. Remove judgment: advances data generation again
-    let removed_stamp = store.remove_judgment(
-        invocation.clock(),
-        &cx,
-        "j-rev",
-        updated_stamp,
-    ).unwrap();
-    assert_eq!(removed_stamp.data_generation, updated_stamp.data_generation + 1);
+    let removed_stamp = store
+        .remove_judgment(invocation.clock(), &cx, "j-rev", updated_stamp)
+        .unwrap();
+    assert_eq!(
+        removed_stamp.data_generation,
+        updated_stamp.data_generation + 1
+    );
 
-    let count: i64 = conn.query_row("SELECT count(*) FROM judgments WHERE judgment_id = 'j-rev'", [], |r| r.get(0)).unwrap();
+    let count: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM judgments WHERE judgment_id = 'j-rev'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
     assert_eq!(count, 0);
 
     // Writer using updated_stamp is now fenced!
-    let stale_err2 = store.record_judgment(invocation.clock(), &cx, &j_stale, updated_stamp).unwrap_err();
+    let stale_err2 = store
+        .record_judgment(invocation.clock(), &cx, &j_stale, updated_stamp)
+        .unwrap_err();
     assert_eq!(stale_err2, StoreError::StaleGeneration);
 }
 
@@ -430,7 +624,13 @@ fn prune_and_clear_preview_does_not_mutate_and_apply_mutates_and_fences() {
     let (invocation, cx) = test_invocation();
 
     init_ledger(&invocation, &cx, LedgerLocation::Directory(dir.clone())).unwrap();
-    let open_res = open_ledger(&invocation, &cx, LedgerAccess::ExistingOnly, LedgerLocation::Directory(dir.clone())).unwrap();
+    let open_res = open_ledger(
+        &invocation,
+        &cx,
+        LedgerAccess::ExistingOnly,
+        LedgerLocation::Directory(dir.clone()),
+    )
+    .unwrap();
     let mut store = match open_res {
         LedgerOpen::Ready(s) => s,
         _ => panic!("expected ready ledger"),
@@ -439,11 +639,17 @@ fn prune_and_clear_preview_does_not_mutate_and_apply_mutates_and_fences() {
 
     let t = 1_000_000_000u64;
     let snap = snapshot_fixture("snap-prev", t);
-    store.record_roster_snapshot(invocation.clock(), &cx, &snap, stamp).unwrap();
+    store
+        .record_roster_snapshot(invocation.clock(), &cx, &snap, stamp)
+        .unwrap();
     let ev = event_fixture("ev-prev", "snap-prev", t);
-    store.record_ranking_event(invocation.clock(), &cx, &ev, &[], None, stamp).unwrap();
+    store
+        .record_ranking_event(invocation.clock(), &cx, &ev, &[], None, stamp)
+        .unwrap();
     let j = judgment_fixture("j-prev", "ev-prev", "review", JudgmentLabel::Useful, t);
-    store.record_judgment(invocation.clock(), &cx, &j, stamp).unwrap();
+    store
+        .record_judgment(invocation.clock(), &cx, &j, stamp)
+        .unwrap();
 
     // 1. Prune preview does NOT mutate storage or advance stamp
     let prune_prev = store.prune_preview((t + 1000) as i64).unwrap();
@@ -453,7 +659,11 @@ fn prune_and_clear_preview_does_not_mutate_and_apply_mutates_and_fences() {
     assert!(prune_prev.requires_apply);
 
     let conn = Connection::open(dir.join(LEDGER_FILE)).unwrap();
-    assert_eq!(conn.query_row::<i64, _, _>("SELECT count(*) FROM ranking_events", [], |r| r.get(0)).unwrap(), 1);
+    assert_eq!(
+        conn.query_row::<i64, _, _>("SELECT count(*) FROM ranking_events", [], |r| r.get(0))
+            .unwrap(),
+        1
+    );
     assert_eq!(store.stamp().data_generation, stamp.data_generation);
 
     // 2. Clear preview does NOT mutate storage or advance stamp
@@ -464,20 +674,41 @@ fn prune_and_clear_preview_does_not_mutate_and_apply_mutates_and_fences() {
     assert_eq!(clear_prev.total_records, 3);
     assert!(clear_prev.requires_apply);
 
-    assert_eq!(conn.query_row::<i64, _, _>("SELECT count(*) FROM ranking_events", [], |r| r.get(0)).unwrap(), 1);
+    assert_eq!(
+        conn.query_row::<i64, _, _>("SELECT count(*) FROM ranking_events", [], |r| r.get(0))
+            .unwrap(),
+        1
+    );
     assert_eq!(store.stamp().data_generation, stamp.data_generation);
 
     // 3. Clear apply MUTATES and advances stamp
     let clear_rep = store.clear_apply(invocation.clock(), &cx, stamp).unwrap();
     assert_eq!(clear_rep.records_cleared, 3);
-    assert_eq!(clear_rep.stamp_after.data_generation, stamp.data_generation + 1);
+    assert_eq!(
+        clear_rep.stamp_after.data_generation,
+        stamp.data_generation + 1
+    );
 
-    assert_eq!(conn.query_row::<i64, _, _>("SELECT count(*) FROM ranking_events", [], |r| r.get(0)).unwrap(), 0);
-    assert_eq!(conn.query_row::<i64, _, _>("SELECT count(*) FROM judgments", [], |r| r.get(0)).unwrap(), 0);
-    assert_eq!(conn.query_row::<i64, _, _>("SELECT count(*) FROM roster_snapshots", [], |r| r.get(0)).unwrap(), 0);
+    assert_eq!(
+        conn.query_row::<i64, _, _>("SELECT count(*) FROM ranking_events", [], |r| r.get(0))
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        conn.query_row::<i64, _, _>("SELECT count(*) FROM judgments", [], |r| r.get(0))
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        conn.query_row::<i64, _, _>("SELECT count(*) FROM roster_snapshots", [], |r| r.get(0))
+            .unwrap(),
+        0
+    );
 
     // Stale write with original stamp is fenced
-    let stale_err = store.record_roster_snapshot(invocation.clock(), &cx, &snap, stamp).unwrap_err();
+    let stale_err = store
+        .record_roster_snapshot(invocation.clock(), &cx, &snap, stamp)
+        .unwrap_err();
     assert_eq!(stale_err, StoreError::StaleGeneration);
 }
 
@@ -487,25 +718,43 @@ fn insufficient_reserve_preflight_fails_before_mutation() {
     let (invocation, cx) = test_invocation();
 
     init_ledger(&invocation, &cx, LedgerLocation::Directory(dir.clone())).unwrap();
-    let open_res = open_ledger(&invocation, &cx, LedgerAccess::ExistingOnly, LedgerLocation::Directory(dir.clone())).unwrap();
+    let open_res = open_ledger(
+        &invocation,
+        &cx,
+        LedgerAccess::ExistingOnly,
+        LedgerLocation::Directory(dir.clone()),
+    )
+    .unwrap();
     let store = match open_res {
         LedgerOpen::Ready(s) => s,
         _ => panic!("expected ready ledger"),
     };
 
     // Preflighting with an excessively large byte requirement exceeding 256 MiB quota fails before mutation
-    let err = store.preflight_maintenance_with_bytes(MaintenanceKind::Prune, 300 * 1024 * 1024).unwrap_err();
+    let err = store
+        .preflight_maintenance_with_bytes(MaintenanceKind::Prune, 300 * 1024 * 1024)
+        .unwrap_err();
     match err {
-        MaintenanceError::QuotaExceeded { quota_bytes, recovery_step, .. } => {
+        MaintenanceError::QuotaExceeded {
+            quota_bytes,
+            recovery_step,
+            ..
+        } => {
             assert_eq!(quota_bytes, LEDGER_QUOTA_BYTES);
             assert!(recovery_step.contains("prune operation exceeds remaining quota headroom"));
         }
         other => panic!("expected QuotaExceeded, got: {:?}", other),
     }
 
-    let err_clear = store.preflight_maintenance_with_bytes(MaintenanceKind::Clear, 300 * 1024 * 1024).unwrap_err();
+    let err_clear = store
+        .preflight_maintenance_with_bytes(MaintenanceKind::Clear, 300 * 1024 * 1024)
+        .unwrap_err();
     match err_clear {
-        MaintenanceError::QuotaExceeded { quota_bytes, recovery_step, .. } => {
+        MaintenanceError::QuotaExceeded {
+            quota_bytes,
+            recovery_step,
+            ..
+        } => {
             assert_eq!(quota_bytes, LEDGER_QUOTA_BYTES);
             assert!(recovery_step.contains("clear operation exceeds remaining quota headroom"));
         }
@@ -519,7 +768,13 @@ fn doctor_reports_cleanup_debt_when_ledger_has_expired_records() {
     let (invocation, cx) = test_invocation();
 
     init_ledger(&invocation, &cx, LedgerLocation::Directory(dir.clone())).unwrap();
-    let open_res = open_ledger(&invocation, &cx, LedgerAccess::ExistingOnly, LedgerLocation::Directory(dir.clone())).unwrap();
+    let open_res = open_ledger(
+        &invocation,
+        &cx,
+        LedgerAccess::ExistingOnly,
+        LedgerLocation::Directory(dir.clone()),
+    )
+    .unwrap();
     let mut store = match open_res {
         LedgerOpen::Ready(s) => s,
         _ => panic!("expected ready ledger"),
@@ -533,9 +788,13 @@ fn doctor_reports_cleanup_debt_when_ledger_has_expired_records() {
         .as_millis() as i64;
     let old_t = (now_ms - 40 * 86_400_000) as u64;
     let snap = snapshot_fixture("snap-debt", old_t);
-    store.record_roster_snapshot(invocation.clock(), &cx, &snap, stamp).unwrap();
+    store
+        .record_roster_snapshot(invocation.clock(), &cx, &snap, stamp)
+        .unwrap();
     let ev = event_fixture("ev-debt", "snap-debt", old_t);
-    store.record_ranking_event(invocation.clock(), &cx, &ev, &[], None, stamp).unwrap();
+    store
+        .record_ranking_event(invocation.clock(), &cx, &ev, &[], None, stamp)
+        .unwrap();
 
     // Verify cleanup debt
     let debt = store.cleanup_debt(now_ms).unwrap();
@@ -543,23 +802,31 @@ fn doctor_reports_cleanup_debt_when_ledger_has_expired_records() {
     assert_eq!(debt.expired_events, 1);
 
     // Inspect via ledger_status (before migration: status is needs_migration, cleanup debt reported)
-    let status_pre = ledger_status(&invocation, &cx, LedgerLocation::Directory(dir.clone())).unwrap();
+    let status_pre =
+        ledger_status(&invocation, &cx, LedgerLocation::Directory(dir.clone())).unwrap();
     assert_eq!(status_pre.status, "needs_migration");
-    let reported_debt = status_pre.cleanup_debt.expect("expected cleanup debt in status");
+    let reported_debt = status_pre
+        .cleanup_debt
+        .expect("expected cleanup debt in status");
     assert!(reported_debt.has_debt);
     assert_eq!(reported_debt.expired_events, 1);
 
     // After migration: status is ready, cleanup debt still reported
     store.migrate_apply(invocation.clock(), &cx).unwrap();
-    let status_post = ledger_status(&invocation, &cx, LedgerLocation::Directory(dir.clone())).unwrap();
+    let status_post =
+        ledger_status(&invocation, &cx, LedgerLocation::Directory(dir.clone())).unwrap();
     assert_eq!(status_post.status, "ready");
-    let reported_debt_post = status_post.cleanup_debt.expect("expected cleanup debt in status");
+    let reported_debt_post = status_post
+        .cleanup_debt
+        .expect("expected cleanup debt in status");
     assert!(reported_debt_post.has_debt);
     assert_eq!(reported_debt_post.expired_events, 1);
 
     // Prune expired events
     let cutoff = now_ms - 30 * 86_400_000;
-    let report = store.prune_apply(cutoff, invocation.clock(), &cx, store.stamp()).unwrap();
+    let report = store
+        .prune_apply(cutoff, invocation.clock(), &cx, store.stamp())
+        .unwrap();
     assert_eq!(report.events_pruned, 1);
 
     // Post-prune debt should now be cleared
@@ -582,7 +849,13 @@ fn cli_ledger_prune_and_clear_e2e() {
 
     // Populate with 1 event via storage API
     let (invocation, cx) = test_invocation();
-    let open_res = open_ledger(&invocation, &cx, LedgerAccess::ExistingOnly, LedgerLocation::Directory(dir.clone())).unwrap();
+    let open_res = open_ledger(
+        &invocation,
+        &cx,
+        LedgerAccess::ExistingOnly,
+        LedgerLocation::Directory(dir.clone()),
+    )
+    .unwrap();
     let mut store = match open_res {
         LedgerOpen::Ready(s) => s,
         _ => panic!("expected ready ledger"),
@@ -590,14 +863,26 @@ fn cli_ledger_prune_and_clear_e2e() {
     let stamp = store.stamp();
     let t = 1_000_000_000u64;
     let snap = snapshot_fixture("snap-cli", t);
-    store.record_roster_snapshot(invocation.clock(), &cx, &snap, stamp).unwrap();
+    store
+        .record_roster_snapshot(invocation.clock(), &cx, &snap, stamp)
+        .unwrap();
     let ev = event_fixture("ev-cli", "snap-cli", t);
-    store.record_ranking_event(invocation.clock(), &cx, &ev, &[], None, stamp).unwrap();
+    store
+        .record_ranking_event(invocation.clock(), &cx, &ev, &[], None, stamp)
+        .unwrap();
     drop(store);
 
     // 2. Run CLI prune preview with --before
     let prev_out = Command::new(bin)
-        .args(["ledger", "prune", "--dir", dir.to_str().unwrap(), "--before", "2026-09-01", "--json"])
+        .args([
+            "ledger",
+            "prune",
+            "--dir",
+            dir.to_str().unwrap(),
+            "--before",
+            "2026-09-01",
+            "--json",
+        ])
         .output()
         .expect("prune preview");
     assert!(prev_out.status.success());
@@ -617,7 +902,16 @@ fn cli_ledger_prune_and_clear_e2e() {
 
     // 4. Run CLI prune --apply
     let apply_out = Command::new(bin)
-        .args(["ledger", "prune", "--dir", dir.to_str().unwrap(), "--before", "2026-09-01", "--apply", "--json"])
+        .args([
+            "ledger",
+            "prune",
+            "--dir",
+            dir.to_str().unwrap(),
+            "--before",
+            "2026-09-01",
+            "--apply",
+            "--json",
+        ])
         .output()
         .expect("prune apply");
     assert!(apply_out.status.success());
@@ -626,10 +920,18 @@ fn cli_ledger_prune_and_clear_e2e() {
 
     // 5. Run CLI clear --apply
     let clear_apply_out = Command::new(bin)
-        .args(["ledger", "clear", "--dir", dir.to_str().unwrap(), "--apply", "--json"])
+        .args([
+            "ledger",
+            "clear",
+            "--dir",
+            dir.to_str().unwrap(),
+            "--apply",
+            "--json",
+        ])
         .output()
         .expect("clear apply");
     assert!(clear_apply_out.status.success());
-    let clear_rep_json: serde_json::Value = serde_json::from_slice(&clear_apply_out.stdout).unwrap();
+    let clear_rep_json: serde_json::Value =
+        serde_json::from_slice(&clear_apply_out.stdout).unwrap();
     assert_eq!(clear_rep_json["records_cleared"], 0);
 }
