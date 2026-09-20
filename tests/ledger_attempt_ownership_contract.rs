@@ -215,7 +215,10 @@ fn missing_usage_stays_missing_and_known_usage_survives_a_later_update() {
             stamp,
         )
         .expect("outcome recorded");
-    assert_eq!(f.tokens("att-2"), (Some(1_200), Some(350), "completed".into()));
+    assert_eq!(
+        f.tokens("att-2"),
+        (Some(1_200), Some(350), "completed".into())
+    );
 
     // A later update that carries no tokens must not zero what is known. An
     // unknown-usage outcome arriving after a known one would otherwise erase
@@ -230,7 +233,7 @@ fn missing_usage_stays_missing_and_known_usage_survives_a_later_update() {
                 status: AttemptStatus::Unknown,
                 tokens: None,
                 http_status: None,
-                error_kind: Some("deadline".into()),
+                error_kind: Some("deadline"),
                 completed_at_unix_ms: 1_700_000_030,
             },
             stamp,
