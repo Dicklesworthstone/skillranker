@@ -32,7 +32,7 @@ fn macos_filesystem(name: &str) -> bool {
 
 /// macOS supplies root-owned /tmp and /var aliases. Expand only those exact
 /// system aliases; arbitrary symlinks still fail the no-follow descriptor walk.
-pub(super) fn storage_path(path: PathBuf) -> PathBuf {
+pub(crate) fn storage_path(path: PathBuf) -> PathBuf {
     #[cfg(target_os = "macos")]
     {
         use std::os::unix::fs::MetadataExt;

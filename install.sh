@@ -38,7 +38,7 @@ Usage: bash install.sh [options]
 Requires Bash, Python 3, install, and sha256sum or shasum. Online acquisition
 also needs curl; source builds need Git, Rust and the pinned toolchain.
 RCH is used when installed; remote failure never falls back to a local build.
-Installation requires Linux; macOS storage support is not implemented.
+Installation supports Linux and macOS (Apple Silicon and Intel).
 Linux release targets use musl.
 No releases available? The online installer builds main from source.
 
@@ -153,11 +153,13 @@ PY
 
 draw_box 'SkillRanker installer' 'Session-specific skill advice powered by TypeSafe.ai Jev'
 OS=$(uname -s); ARCH=$(uname -m); TARGET=''
-[[ "$OS" == Linux ]] || die 'SkillRanker currently requires Linux; macOS and other platforms need a qualified storage port. Use a Linux host or VM. No files installed.'
+[[ "$OS" == Linux || "$OS" == Darwin ]] || die 'SkillRanker requires Linux or macOS. No files installed.'
 case "$ARCH" in amd64) ARCH=x86_64 ;; arm64) ARCH=aarch64 ;; esac
 case "$OS/$ARCH" in
     Linux/x86_64|Linux/aarch64) TARGET="$ARCH-unknown-linux-musl" ;;
-    *) [[ -z "$OFFLINE" ]] || die 'Offline archives support Linux x86_64/aarch64'; FROM_SOURCE=1 ;;
+    Darwin/x86_64|Darwin/aarch64) TARGET="$ARCH-apple-darwin" ;;
+    Darwin/*) die 'macOS requires Apple Silicon or Intel x86_64. No files installed.' ;;
+    *) [[ -z "$OFFLINE" ]] || die 'Offline archives support Linux/macOS x86_64/aarch64'; FROM_SOURCE=1 ;;
 esac
 if [[ "$OS" == Linux && -r /proc/version ]] && grep -qi microsoft /proc/version; then
     warn 'WSL detected; install into the Linux home and use the Linux agent environment.'

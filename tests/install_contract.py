@@ -139,7 +139,7 @@ class InstallerTests(unittest.TestCase):
 
     def test_unsupported_platform_stops_before_acquisition_or_writes(self):
         uname = self.root / "tools/uname"
-        for platform in ("Darwin", "FreeBSD"):
+        for platform in ("FreeBSD", "OpenBSD"):
             uname.write_text(f"#!/bin/sh\ncase \"$1\" in -s) echo {platform};; -m) echo arm64;; esac\n")
             uname.chmod(0o755)
             for mode in ([], ["--from-source"], ["--offline", str(self.archive())]):
@@ -162,6 +162,43 @@ class InstallerTests(unittest.TestCase):
         version = subprocess.run([str(self.dest / "sr"), "--version"],
                                  capture_output=True, check=True, timeout=10)
         self.assertEqual(version.stdout.strip(), b"sr 0.1.0")
+
+    def test_macos_offline_and_source_target_routing(self):
+        # These fixtures prove installer routing; native execution is separate.
+        uname = self.root / "tools/uname"
+        source = self.root / "mac source with spaces"
+        source.mkdir()
+        (source / "Cargo.lock").write_text("version = 4\n")
+        (source / "rust-toolchain.toml").write_text('[toolchain]\nchannel="stable"\n')
+        event = self.root / "build-arguments.json"
+        rch = self.root / "tools/rch"
+        rch.write_text(
+            "#!/usr/bin/env python3\nimport json, os, pathlib, sys\n"
+            "assert os.environ['RCH_REQUIRE_REMOTE'] == '1'\n"
+            "assert 'TYPESAFE_API_KEY' not in os.environ\n"
+            "args = sys.argv[1:]\n"
+            f"pathlib.Path({str(event)!r}).write_text(json.dumps(args))\n"
+            "target = args[args.index('--target') + 1]\n"
+            "root = pathlib.Path(args[args.index('--target-dir') + 1])\n"
+            "binary = root / target / 'release' / 'sr'\n"
+            "binary.parent.mkdir(parents=True)\n"
+            f"binary.write_bytes({executable()!r})\n"
+            "binary.chmod(0o755)\n"
+        )
+        for arch, target in (("arm64", "aarch64-apple-darwin"),
+                             ("x86_64", "x86_64-apple-darwin")):
+            uname.write_text(f'#!/bin/sh\ncase "$1" in -s) echo Darwin;; -m) echo {arch};; esac\n')
+            uname.chmod(0o755)
+            self.run_install(self.archive(), "--no-configure", "--verify")
+            p = subprocess.run(
+                ["bash", str(INSTALLER), "--source", str(source), "--dest", str(self.dest),
+                 "--keep-temp", "--no-configure", "--quiet"],
+                env=dict(self.env, TYPESAFE_API_KEY="fixture-secret"),
+                capture_output=True, timeout=30,
+            )
+            self.assertEqual(p.returncode, 0, p.stderr.decode())
+            args = json.loads(event.read_text())
+            self.assertEqual(args[args.index('--target') + 1], target)
 
     def test_oversized_archive_and_ambiguous_checksum_are_rejected(self):
         archive = self.root / "oversized.tar.gz"
