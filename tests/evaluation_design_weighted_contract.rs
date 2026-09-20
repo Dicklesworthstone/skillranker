@@ -193,10 +193,16 @@ fn test_extreme_weights_and_no_clipping() {
 
     let mut cases = Vec::new();
     for _ in 0..100 {
-        cases.push(StratumCaseLoss::new("large", SampledCaseLoss::Observed(0.01)));
+        cases.push(StratumCaseLoss::new(
+            "large",
+            SampledCaseLoss::Observed(0.01),
+        ));
     }
     for _ in 0..5 {
-        cases.push(StratumCaseLoss::new("tiny", SampledCaseLoss::Observed(0.80)));
+        cases.push(StratumCaseLoss::new(
+            "tiny",
+            SampledCaseLoss::Observed(0.80),
+        ));
     }
 
     let report = compute_design_weighted_loss(&strata, &cases, 0.01).unwrap();
@@ -403,6 +409,25 @@ fn test_manifest_integration_and_replay() {
         4,
         &AllocationMethod::Proportional { min_floor: 1 },
         RandomizationProvenance::SuppliedManual { seed: 999 },
+        "policy",
+        1,
+    )
+    .unwrap();
+
+    // A reproducible manual draw is diagnostic, not a probability design.
+    assert!(matches!(
+        compute_design_weighted_loss_from_manifest(&manifest, &BTreeMap::new(), 0.05),
+        Err(DesignWeightedError::UnsupportedDesign)
+    ));
+    let manifest = draw_stratified_sample(
+        &frame,
+        EvaluationSplit::Holdout,
+        4,
+        &AllocationMethod::Proportional { min_floor: 1 },
+        RandomizationProvenance::OsRandom {
+            seed: draw_os_seed().unwrap(),
+            entropy_source: "/dev/urandom".into(),
+        },
         "policy",
         1,
     )
