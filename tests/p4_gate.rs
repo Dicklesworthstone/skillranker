@@ -167,6 +167,7 @@ fn gate_rank_args(
         user_config_root: None,
         home: None,
         cache_dir: None,
+        ledger_dir: None,
         sources: ConfigSources::default(),
         gate,
         source_options,

@@ -285,6 +285,7 @@ impl Workspace {
             user_config_root: Some(self.root.join("config")),
             home: None,
             cache_dir: Some(self.cache()),
+            ledger_dir: None,
             sources: ConfigSources {
                 environment: vec![(
                     std::ffi::OsString::from("TYPESAFE_API_KEY"),

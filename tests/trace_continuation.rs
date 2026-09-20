@@ -381,6 +381,7 @@ fn test_trace_continuation_full_pagination() {
             output_table: false,
             dry_run: false,
             save_case: None,
+            ledger_dir: None,
         };
         invocation
             .runtime()
@@ -511,6 +512,7 @@ fn test_trace_continuation_rejects_changed_snapshot() {
         output_table: false,
         dry_run: false,
         save_case: None,
+        ledger_dir: None,
     };
     let doc = invocation
         .runtime()
@@ -554,6 +556,7 @@ fn test_trace_continuation_rejects_changed_snapshot() {
         output_table: false,
         dry_run: false,
         save_case: None,
+        ledger_dir: None,
     };
     let doc = invocation2
         .runtime()
@@ -645,6 +648,7 @@ fn test_trace_continuation_rejects_changed_query() {
         output_table: false,
         dry_run: false,
         save_case: None,
+        ledger_dir: None,
     };
     let doc = invocation
         .runtime()
@@ -682,6 +686,7 @@ fn test_trace_continuation_rejects_changed_query() {
         output_table: false,
         dry_run: false,
         save_case: None,
+        ledger_dir: None,
     };
     let doc = invocation2
         .runtime()
@@ -775,6 +780,7 @@ fn test_trace_continuation_rejects_out_of_bounds_offset() {
         output_table: false,
         dry_run: false,
         save_case: None,
+        ledger_dir: None,
     };
     let doc = invocation
         .runtime()
@@ -811,6 +817,7 @@ fn test_trace_continuation_rejects_out_of_bounds_offset() {
         output_table: false,
         dry_run: false,
         save_case: None,
+        ledger_dir: None,
     };
     let doc = invocation2
         .runtime()
@@ -903,6 +910,7 @@ fn test_trace_continuation_rejects_changed_history() {
         output_table: false,
         dry_run: false,
         save_case: None,
+        ledger_dir: None,
     };
     let doc = invocation
         .runtime()
@@ -954,6 +962,7 @@ fn test_trace_continuation_rejects_changed_history() {
         output_table: false,
         dry_run: false,
         save_case: None,
+        ledger_dir: None,
     };
     let doc = invocation2
         .runtime()
@@ -1041,6 +1050,7 @@ fn test_trace_continuation_rejects_changed_provider_answer() {
         output_table: false,
         dry_run: false,
         save_case: None,
+        ledger_dir: None,
     };
     let doc = invocation
         .runtime()
@@ -1095,6 +1105,7 @@ fn test_trace_continuation_rejects_changed_provider_answer() {
         output_table: false,
         dry_run: false,
         save_case: None,
+        ledger_dir: None,
     };
     let doc = invocation2
         .runtime()
@@ -1194,6 +1205,7 @@ fn test_trace_continuation_rejects_changed_model_or_policy() {
         output_table: false,
         dry_run: false,
         save_case: None,
+        ledger_dir: None,
     };
     let doc = invocation
         .runtime()
@@ -1236,6 +1248,7 @@ fn test_trace_continuation_rejects_changed_model_or_policy() {
         output_table: false,
         dry_run: false,
         save_case: None,
+        ledger_dir: None,
     };
     let doc = invocation2
         .runtime()
@@ -1323,6 +1336,7 @@ fn test_trace_continuation_refuses_when_no_cache() {
         output_table: false,
         dry_run: false,
         save_case: None,
+        ledger_dir: None,
     };
     let doc = invocation
         .runtime()
@@ -1359,6 +1373,7 @@ fn test_trace_continuation_refuses_when_no_cache() {
         output_table: false,
         dry_run: false,
         save_case: None,
+        ledger_dir: None,
     };
     let doc = invocation2
         .runtime()
@@ -1437,6 +1452,7 @@ fn test_trace_continuation_explicit_local_success() {
         output_table: false,
         dry_run: false,
         save_case: None,
+        ledger_dir: None,
     };
     let doc = invocation
         .runtime()
@@ -1485,6 +1501,7 @@ fn test_trace_continuation_explicit_local_success() {
         output_table: false,
         dry_run: false,
         save_case: None,
+        ledger_dir: None,
     };
     let doc2 = invocation2
         .runtime()

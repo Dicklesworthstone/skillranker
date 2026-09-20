@@ -519,3 +519,166 @@ fn cli_errors_retain_exit_code() {
     );
     assert!(!out.stderr.is_empty() || !out.stdout.is_empty());
 }
+
+#[test]
+fn shadow_hook_unique_events_across_turns_and_unix_timestamps() {
+    let fixture = HookFixture::new();
+
+    // 1. Initialize ledger so shadow hook can record to it
+    let init_out = fixture.run_cli(&[
+        "ledger",
+        "init",
+        "--dir",
+        fixture.ledger_dir().to_str().unwrap(),
+    ]);
+    assert_eq!(init_out.status.code(), Some(0), "ledger init must succeed");
+
+    // Turn 1 payload: Claude UserPromptSubmit without prompt_id
+    let payload_turn1 = json!({
+        "hook_event_name": "UserPromptSubmit",
+        "prompt": "Please use skill test-repair to fix cargo test failures.",
+        "session_id": fixture.session_id,
+        "transcript_path": fixture.transcript_path(),
+        "cwd": fixture.workspace(),
+    });
+
+    let out1 = fixture.run_hook(
+        &serde_json::to_vec(&payload_turn1).unwrap(),
+        &["--shadow"],
+    );
+    let stderr1 = String::from_utf8_lossy(&out1.stderr);
+    assert_eq!(out1.status.code(), Some(0));
+    assert!(out1.stdout.is_empty());
+
+    let db_path = fixture.ledger_dir().join(skillranker::storage::LEDGER_FILE);
+    let conn = rusqlite::Connection::open(&db_path).expect("open ledger db");
+
+    let count: i64 = conn
+        .query_row("SELECT count(*) FROM ranking_events", [], |r| r.get(0))
+        .unwrap_or_else(|e| panic!("count events error: {e}, stderr was: {stderr1}"));
+    assert_eq!(count, 1, "exactly 1 event after turn 1, stderr was: {stderr1}");
+
+    let (ev1_id, ev1_created_at): (String, i64) = conn
+        .query_row(
+            "SELECT event_id, created_at_unix_ms FROM ranking_events",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .expect("query turn 1 event");
+
+    assert!(
+        ev1_id.starts_with("ev-"),
+        "derived event_id should start with ev-, got {ev1_id}"
+    );
+    assert_ne!(ev1_id, "event-0", "event_id must not fall back to event-0");
+
+    // Wall-clock timestamp must be after 2024-01-01 (1_700_000_000_000 ms), not monotonic offset ~41 ms
+    assert!(
+        ev1_created_at > 1_700_000_000_000,
+        "created_at_unix_ms must be a real unix timestamp, got {ev1_created_at}"
+    );
+
+    let snapshot_created_at: i64 = conn
+        .query_row(
+            "SELECT created_at_unix_ms FROM roster_snapshots",
+            [],
+            |r| r.get(0),
+        )
+        .expect("query snapshot created_at");
+    assert!(
+        snapshot_created_at > 1_700_000_000_000,
+        "roster snapshot created_at_unix_ms must be a real unix timestamp, got {snapshot_created_at}"
+    );
+
+    // 2. Retry / duplicate delivery of Turn 1
+    let out1_retry = fixture.run_hook(
+        &serde_json::to_vec(&payload_turn1).unwrap(),
+        &["--shadow"],
+    );
+    assert_eq!(out1_retry.status.code(), Some(0));
+    assert!(out1_retry.stdout.is_empty());
+
+    let count_retry: i64 = conn
+        .query_row("SELECT count(*) FROM ranking_events", [], |r| r.get(0))
+        .expect("count after retry");
+    assert_eq!(count_retry, 1, "retry must deduplicate turn 1");
+
+    // 3. Turn 2: transcript now contains Turn 1, prompt is identical
+    fixture.write_transcript(&[
+        user_event(
+            "uuid-turn-1",
+            None,
+            &fixture.session_id,
+            "Please use skill test-repair to fix cargo test failures.",
+        ),
+        json!({
+            "type": "assistant",
+            "uuid": "uuid-asst-1",
+            "parentUuid": "uuid-turn-1",
+            "sessionId": fixture.session_id,
+            "message": { "role": "assistant", "content": "I am looking into the failures." }
+        }),
+    ]);
+
+    let payload_turn2 = json!({
+        "hook_event_name": "UserPromptSubmit",
+        "prompt": "Please use skill test-repair to fix cargo test failures.",
+        "session_id": fixture.session_id,
+        "transcript_path": fixture.transcript_path(),
+        "cwd": fixture.workspace(),
+    });
+
+    let out2 = fixture.run_hook(
+        &serde_json::to_vec(&payload_turn2).unwrap(),
+        &["--shadow"],
+    );
+    assert_eq!(out2.status.code(), Some(0));
+    assert!(out2.stdout.is_empty());
+
+    let count_after_turn2: i64 = conn
+        .query_row("SELECT count(*) FROM ranking_events", [], |r| r.get(0))
+        .expect("count after turn 2");
+    assert_eq!(count_after_turn2, 2, "turn 2 must record a second event");
+
+    let mut stmt = conn
+        .prepare("SELECT event_id FROM ranking_events ORDER BY created_at_unix_ms ASC")
+        .unwrap();
+    let event_ids: Vec<String> = stmt
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+
+    assert_eq!(event_ids.len(), 2);
+    assert_ne!(
+        event_ids[0], event_ids[1],
+        "distinct turns with identical prompt text must produce distinct event IDs"
+    );
+
+    // 4. Verify prune behavior: prune --before <1 hour ago> should NOT delete fresh records
+    let one_hour_ago_secs = (std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        .saturating_sub(3600))
+    .to_string();
+
+    let prune_out = fixture.run_cli(&[
+        "ledger",
+        "prune",
+        "--dir",
+        fixture.ledger_dir().to_str().unwrap(),
+        "--before",
+        &one_hour_ago_secs,
+        "--json",
+    ]);
+    assert_eq!(prune_out.status.code(), Some(0));
+
+    let count_after_prune: i64 = conn
+        .query_row("SELECT count(*) FROM ranking_events", [], |r| r.get(0))
+        .expect("count after prune");
+    assert_eq!(
+        count_after_prune, 2,
+        "fresh events must not be pruned as ancient"
+    );
+}

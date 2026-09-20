@@ -9,6 +9,7 @@ use asupersync::Cx;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::blocking::{BlockingLeafKind, run_blocking_leaf};
 use crate::cache::{
@@ -28,7 +29,9 @@ use crate::context::source::{
     SelectionOutcome, SelectionReason, SourceError, SourceOptions, SourceTarget,
 };
 use crate::context::tool::{SimpleSkillResolver, SkillMatch, extract_loaded_skill_records};
-use crate::context::{CurrentRequest, NormalizedContext, PrivateText, parse_normalized_context};
+use crate::context::{
+    CurrentRequest, NormalizedContext, NormalizedEvent, PrivateText, parse_normalized_context,
+};
 use crate::effects::EffectGate;
 use crate::eligibility::{Eligible, Evaluation, LoadedState, Verdict, admit, after_rerank};
 use crate::identity::{ContentHash, HarnessId, SkillId, WorkspaceId};
@@ -111,6 +114,8 @@ pub struct RankArgs {
     /// Trusted host directory for the persistent response cache. `None`
     /// keeps every response in this invocation only.
     pub cache_dir: Option<PathBuf>,
+    /// Explicit directory for the SQLite ledger. When `None`, platform default is used.
+    pub ledger_dir: Option<PathBuf>,
     pub sources: ConfigSources,
     pub gate: EffectGate,
     pub source_options: SourceOptions,
@@ -349,7 +354,10 @@ pub async fn execute_pipeline(
             let case = ReplayCase {
                 schema_version: SCHEMA_VERSION,
                 case_id,
-                created_at_unix_ms: clock.now().as_millis(),
+                created_at_unix_ms: SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64,
                 manifest,
                 captured_request,
                 recorded_responses: capture.recorded_responses,
@@ -735,7 +743,7 @@ async fn rank_once(
     // whose invocations the read window does not explain has source gaps.
     let mut transcript_windowed = false;
     let mut transcript_gaps = false;
-    let normalized_context = match source_selection.target() {
+    let mut normalized_context = match source_selection.target() {
         SourceTarget::NormalizedFile(path) => {
             let bytes = read_input_file(
                 &args.workspace,
@@ -966,6 +974,20 @@ async fn rank_once(
         }
     };
 
+    if normalized_context.current_request.event_id.is_none() {
+        let derived = derive_request_event_id(&normalized_context);
+        if let Ok(id) = crate::identity::EventId::new(&derived) {
+            if let Some(last_ev) = normalized_context.events.last_mut() {
+                if last_ev.event_id.is_none()
+                    && last_ev.text == normalized_context.current_request.text
+                {
+                    last_ev.event_id = Some(id.clone());
+                }
+            }
+            normalized_context.current_request.event_id = Some(id);
+        }
+    }
+
     // 3. Resolve active branch & task anchor
     let branch_target = crate::context::branch::BranchResolutionTarget {
         target_event_id: normalized_context.current_request.event_id.clone(),
@@ -1100,7 +1122,8 @@ async fn rank_once(
             .current_request
             .event_id
             .as_ref()
-            .map_or_else(|| "event-0".to_owned(), |e| e.as_str().to_owned()),
+            .map(|e| e.as_str().to_owned())
+            .unwrap_or_else(|| derive_request_event_id(&normalized_context)),
         harness: normalized_context.harness.as_str().to_owned(),
         total: roster.skills().len(),
         partial: roster.is_partial(),
@@ -1173,7 +1196,7 @@ async fn rank_once(
                 .event_id
                 .as_ref()
                 .map(|e| e.as_str().to_string())
-                .unwrap_or_else(|| "event-0".to_string());
+                .unwrap_or_else(|| derive_request_event_id(&normalized_context));
             let explicit_candidates: Vec<crate::storage::NewRankingCandidate> = skills
                 .iter()
                 .enumerate()
@@ -1200,6 +1223,7 @@ async fn rank_once(
                 invocation,
                 cx,
                 &gate,
+                args.ledger_dir.as_deref(),
                 &roster,
                 &normalized_context,
                 crate::storage::DecisionKind::Explicit,
@@ -1442,6 +1466,7 @@ async fn rank_once(
                     invocation,
                     cx,
                     &gate,
+                    args.ledger_dir.as_deref(),
                     &roster,
                     &normalized_context,
                     crate::storage::DecisionKind::Abstain,
@@ -1552,6 +1577,7 @@ async fn rank_once(
             invocation,
             cx,
             &gate,
+            args.ledger_dir.as_deref(),
             &roster,
             &normalized_context,
             crate::storage::DecisionKind::Abstain,
@@ -2245,6 +2271,7 @@ async fn rank_once(
                 invocation,
                 cx,
                 &gate,
+                args.ledger_dir.as_deref(),
                 &roster,
                 &normalized_context,
                 crate::storage::DecisionKind::Abstain,
@@ -2475,6 +2502,7 @@ async fn rank_once(
                     invocation,
                     cx,
                     &gate,
+                    args.ledger_dir.as_deref(),
                     &roster,
                     &normalized_context,
                     crate::storage::DecisionKind::Abstain,
@@ -2534,6 +2562,7 @@ async fn rank_once(
                     invocation,
                     cx,
                     &gate,
+                    args.ledger_dir.as_deref(),
                     &roster,
                     &normalized_context,
                     crate::storage::DecisionKind::Unavailable,
@@ -2584,7 +2613,7 @@ async fn rank_once(
         .event_id
         .as_ref()
         .map(|e| e.as_str().to_string())
-        .unwrap_or_else(|| "event-0".to_string());
+        .unwrap_or_else(|| derive_request_event_id(&normalized_context));
 
     let mut ranking_candidates = Vec::new();
     for s in &shortlisted {
@@ -2643,6 +2672,7 @@ async fn rank_once(
         invocation,
         cx,
         &gate,
+        args.ledger_dir.as_deref(),
         &roster,
         &normalized_context,
         crate::storage::DecisionKind::Ranked,
@@ -3439,12 +3469,14 @@ fn build_explicit_document(
         })
         .collect();
 
-    let event_id = context
-        .current_request
-        .event_id
-        .as_ref()
-        .map(|e| e.as_str())
-        .unwrap_or("event-0");
+    let derived_event_id;
+    let event_id = match context.current_request.event_id.as_ref() {
+        Some(e) => e.as_str(),
+        None => {
+            derived_event_id = derive_request_event_id(context);
+            derived_event_id.as_str()
+        }
+    };
 
     let val = json!({
         "schema_version": SCHEMA_VERSION,
@@ -3664,11 +3696,53 @@ fn dominant_phase(phase: &BTreeMap<String, f64>) -> Option<&str> {
         .map(|(p, _)| p.as_str())
 }
 
+pub(crate) fn derive_request_event_id(context: &NormalizedContext) -> String {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"skillranker.ranking-event-id.v1\n");
+    if let Some(session) = &context.session_id {
+        hasher.update(session.as_str().as_bytes());
+    }
+    hasher.update(b"\n");
+
+    let prior_events: &[NormalizedEvent] = match context.events.last() {
+        Some(last) if context.current_request.event_id.is_none() && last.event_id.is_none() => {
+            &context.events[..context.events.len().saturating_sub(1)]
+        }
+        Some(last)
+            if context.current_request.event_id.is_some()
+                && last.event_id == context.current_request.event_id =>
+        {
+            &context.events[..context.events.len().saturating_sub(1)]
+        }
+        _ => &context.events[..],
+    };
+
+    let last_event_id = prior_events
+        .iter()
+        .rev()
+        .find_map(|e| e.event_id.as_ref().map(|id| id.as_str()));
+    if let Some(last_id) = last_event_id {
+        hasher.update(last_id.as_bytes());
+    }
+    hasher.update(b"\n");
+
+    let prior_count = prior_events
+        .iter()
+        .filter(|e| e.event_id.is_some())
+        .count();
+    hasher.update(&prior_count.to_le_bytes());
+    hasher.update(b"\n");
+    hasher.update(context.current_request.text.as_str().as_bytes());
+
+    format!("ev-{}", &hasher.finalize().to_hex()[..16])
+}
+
 #[allow(clippy::too_many_arguments)]
 fn try_record_ledger(
     invocation: &ProcessInvocation,
     cx: &Cx,
     gate: &EffectGate,
+    ledger_dir: Option<&Path>,
     roster: &ResolvedRoster,
     context: &NormalizedContext,
     decision: crate::storage::DecisionKind,
@@ -3732,6 +3806,11 @@ fn try_record_ledger(
         Err(_) => return false,
     };
 
+    let now_unix_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+
     let snapshot_id = crate::roster::evidence::snapshot_id(roster)
         .as_str()
         .to_string();
@@ -3750,7 +3829,7 @@ fn try_record_ledger(
             crate::storage::MembershipCoverage::Complete
         },
         members_json,
-        created_at_unix_ms: invocation.clock().now().as_millis(),
+        created_at_unix_ms: now_unix_ms,
     };
 
     let event_id = context
@@ -3758,7 +3837,7 @@ fn try_record_ledger(
         .event_id
         .as_ref()
         .map(|e| e.as_str().to_string())
-        .unwrap_or_else(|| "event-0".to_string());
+        .unwrap_or_else(|| derive_request_event_id(context));
 
     let event = crate::storage::NewRankingEvent {
         event_id,
@@ -3781,7 +3860,7 @@ fn try_record_ledger(
         reason: reason.to_string(),
         exposure_state: crate::storage::ExposureState::Prepared,
         elapsed_ms,
-        created_at_unix_ms: invocation.clock().now().as_millis(),
+        created_at_unix_ms: now_unix_ms,
         input_tokens: if metrics.input_tokens > 0 {
             Some(metrics.input_tokens)
         } else {
@@ -3795,11 +3874,16 @@ fn try_record_ledger(
         snapshot_id: Some(snapshot_id),
     };
 
+    let location = match ledger_dir {
+        Some(dir) => crate::storage::LedgerLocation::Directory(dir.to_path_buf()),
+        None => crate::storage::LedgerLocation::Platform,
+    };
+
     crate::storage::record_ranking(
         invocation,
         cx,
         crate::storage::LedgerAccess::ExistingOnly,
-        crate::storage::LedgerLocation::Platform,
+        location,
         &event,
         candidates,
         Some(&snapshot),
@@ -3817,12 +3901,14 @@ fn build_abstain_document(
 ) -> OutputDocument {
     let quality = &evaluated.quality;
     let (warnings, warnings_omitted) = roster_warnings(roster, evaluated.source_warning.as_ref());
-    let event_id = context
-        .current_request
-        .event_id
-        .as_ref()
-        .map(|e| e.as_str())
-        .unwrap_or("event-0");
+    let derived_event_id;
+    let event_id = match context.current_request.event_id.as_ref() {
+        Some(e) => e.as_str(),
+        None => {
+            derived_event_id = derive_request_event_id(context);
+            derived_event_id.as_str()
+        }
+    };
 
     let mut val = json!({
         "schema_version": SCHEMA_VERSION,
@@ -3912,12 +3998,14 @@ fn build_ranked_document(
         }));
     }
 
-    let event_id = context
-        .current_request
-        .event_id
-        .as_ref()
-        .map(|e| e.as_str())
-        .unwrap_or("event-0");
+    let derived_event_id;
+    let event_id = match context.current_request.event_id.as_ref() {
+        Some(e) => e.as_str(),
+        None => {
+            derived_event_id = derive_request_event_id(context);
+            derived_event_id.as_str()
+        }
+    };
 
     let val = json!({
         "schema_version": SCHEMA_VERSION,

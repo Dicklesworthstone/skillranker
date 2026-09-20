@@ -510,6 +510,7 @@ fn make_pipeline_args(root: &Path, save_case: Option<PathBuf>) -> RankArgs {
         user_config_root: Some(root.join("config")),
         home: Some(root.join("home")),
         cache_dir: None,
+        ledger_dir: None,
         sources: ConfigSources {
             environment: vec![(
                 OsString::from("TYPESAFE_API_KEY"),

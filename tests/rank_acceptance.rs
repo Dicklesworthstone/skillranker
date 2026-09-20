@@ -232,6 +232,7 @@ impl Fixture {
             user_config_root: Some(self.root.join("config")),
             home: None,
             cache_dir,
+            ledger_dir: None,
             sources: ConfigSources {
                 environment: vec![(
                     OsString::from("TYPESAFE_API_KEY"),

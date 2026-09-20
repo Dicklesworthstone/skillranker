@@ -238,6 +238,7 @@ fn check_capacity(count: usize) {
             output_table: false,
             dry_run: false,
             save_case: None,
+            ledger_dir: None,
         };
         let doc = invocation
             .runtime()
