@@ -2002,6 +2002,61 @@ fn bounded_request_rendering() {
     assert!(payload_many.total_message_scalars() <= 12_000);
 
     // -------------------------------------------------------------------------
+    // Sub-case 9b: Tool message head/tail truncation strictly respects total scalar budget
+    // -------------------------------------------------------------------------
+    let tool_budget_events = vec![NormalizedEvent {
+        event_id: Some(EventId::new("ev-tool-budget").unwrap()),
+        parent_id: None,
+        turn_id: None,
+        agent_id: None,
+        branch_id: None,
+        role: Role::Tool,
+        kind: EventKind::ToolInvocation,
+        timestamp_unix_ms: Some(100),
+        text: PrivateText::new(""),
+        tool: Some(ToolEvent {
+            call_id: Some(ToolCallId::new("call-long-arg").unwrap()),
+            name: PrivateText::new("execute_custom_test_runner"),
+            status: ToolStatus::Attempted,
+            arguments: Some(PrivateText::new(
+                "{\"target\": \"//crates/kernel:all\", \"args\": \"--verbose --all-targets --release --features all\"}",
+            )),
+            result: None,
+        }),
+    }];
+    let tool_budget_context = NormalizedContext {
+        schema_version: 1,
+        harness: HarnessId::new("claude_code").unwrap(),
+        producer_id: None,
+        workspace_root: PrivateText::new("/workspaces/my-project"),
+        session_id: Some(SessionId::new("session-tool-budget").unwrap()),
+        agent_id: None,
+        branch_id: None,
+        context_epoch: None,
+        current_request: CurrentRequest {
+            event_id: Some(EventId::new("req-tool-budget").unwrap()),
+            text: PrivateText::new("A".repeat(40)),
+            attachments_omitted: false,
+            essential_attachment_missing: false,
+        },
+        events: tool_budget_events,
+        explicit_skill_references: vec![],
+        supplied_loads: vec![],
+    };
+    let tight_options = RenderContextOptions {
+        max_total_scalars: 100,
+        ..RenderContextOptions::default()
+    };
+    let payload_tight =
+        render_context(&tool_budget_context, &tight_options).expect("tight render should succeed");
+    assert!(
+        payload_tight.total_message_scalars() <= 100,
+        "total message scalars ({}) must not exceed max_total_scalars (100)",
+        payload_tight.total_message_scalars()
+    );
+    assert_eq!(payload_tight.context_quality, ContextQuality::Partial);
+
+    // -------------------------------------------------------------------------
     // Sub-case 10: Project signals and language detection
     // -------------------------------------------------------------------------
     let dirty = DirtyPaths {

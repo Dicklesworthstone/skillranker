@@ -570,20 +570,22 @@ pub fn render_context_and_receipt(
         if msg_len <= budget_left {
             budget_left -= msg_len;
             selected_messages.push(msg);
-        } else if budget_left >= 30 {
-            // Can fit a head/tail excerpt
-            let mut truncated_msg = msg;
-            if let Some(txt) = truncated_msg.text.take() {
-                truncated_msg.text = Some(head_tail_truncate(&txt, budget_left));
-                history_truncations += 1;
-            } else if let Some(sum) = truncated_msg.summary.take() {
-                truncated_msg.summary = Some(head_tail_truncate(&sum, budget_left));
-                tool_truncations += 1;
-            }
-            selected_messages.push(truncated_msg);
-            history_truncated = true;
-            break;
         } else {
+            let overhead = msg.tool.as_deref().unwrap_or("").chars().count()
+                + msg.status.as_deref().unwrap_or("").chars().count();
+            if budget_left >= overhead + 30 {
+                let avail = budget_left - overhead;
+                let mut truncated_msg = msg;
+                if let Some(txt) = truncated_msg.text.take() {
+                    truncated_msg.text = Some(head_tail_truncate(&txt, avail));
+                    history_truncations += 1;
+                    selected_messages.push(truncated_msg);
+                } else if let Some(sum) = truncated_msg.summary.take() {
+                    truncated_msg.summary = Some(head_tail_truncate(&sum, avail));
+                    tool_truncations += 1;
+                    selected_messages.push(truncated_msg);
+                }
+            }
             history_truncated = true;
             break;
         }

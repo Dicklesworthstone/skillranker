@@ -21,10 +21,11 @@ use std::collections::{BTreeMap, BTreeSet};
 
 /// Rule for selecting a single representative case per task family,
 /// strictly independent of evaluated outcomes, decisions, or labels.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum FamilyRepresentativeRule {
     /// Select the case with lexicographically smallest `(case_id, replicate)`.
+    #[default]
     FirstByCaseIdReplicate,
     /// Select the case with lowest replicate number, breaking ties by case_id.
     LowestReplicateFirst,
@@ -183,47 +184,45 @@ pub fn select_family_representatives(
 
 /// Compute a canonical BLAKE3 frame digest over evaluation cases.
 ///
-/// Any change in case keys, splits, or observable metadata yields a changed digest,
+/// Any change in case keys, splits, or observable stratum classification yields a changed digest,
 /// preventing silent replay against modified evaluation frames.
 #[must_use]
 pub fn compute_frame_digest(cases: &[EvaluationCaseRecord]) -> String {
     let mut hasher = blake3::Hasher::new();
-    hasher.update(b"skillranker:evaluation:frame:v1\n");
+    hasher.update(b"skillranker:evaluation:frame:v2\n");
 
-    let mut sorted_keys: Vec<(&CaseKey, EvaluationSplit, usize, bool, bool)> = cases
-        .iter()
-        .map(|c| {
-            (
-                &c.key,
-                c.split,
-                c.roster_skills.len(),
-                c.prompt_summary.is_some(),
-                c.operational_failure,
-            )
-        })
-        .collect();
-    sorted_keys.sort_by(|a, b| a.0.cmp(b.0));
+    let mut sorted_cases: Vec<&EvaluationCaseRecord> = cases.iter().collect();
+    sorted_cases.sort_by(|a, b| a.key.cmp(&b.key));
 
-    hasher.update(&(sorted_keys.len() as u64).to_le_bytes());
-    for (key, split, roster_len, has_prompt, op_fail) in sorted_keys {
+    hasher.update(&(sorted_cases.len() as u64).to_le_bytes());
+    for c in sorted_cases {
+        let stratum = ObservableStratum::classify(c);
+        let key = &c.key;
+        hasher.update(&(key.frame_id.len() as u64).to_le_bytes());
         hasher.update(key.frame_id.as_bytes());
-        hasher.update(b":");
+
+        hasher.update(&(key.family_id.len() as u64).to_le_bytes());
         hasher.update(key.family_id.as_bytes());
-        hasher.update(b":");
+
+        hasher.update(&(key.case_id.len() as u64).to_le_bytes());
         hasher.update(key.case_id.as_bytes());
-        hasher.update(b":");
+
         hasher.update(&key.replicate.to_le_bytes());
-        hasher.update(b":");
+
+        hasher.update(&(key.policy_id.len() as u64).to_le_bytes());
         hasher.update(key.policy_id.as_bytes());
-        hasher.update(b":");
-        hasher.update(split.to_string().as_bytes());
-        hasher.update(b":");
-        hasher.update(&(roster_len as u64).to_le_bytes());
-        hasher.update(b":");
-        hasher.update(&[if has_prompt { 1 } else { 0 }]);
-        hasher.update(b":");
-        hasher.update(&[if op_fail { 1 } else { 0 }]);
-        hasher.update(b"\n");
+
+        let split_str = c.split.to_string();
+        hasher.update(&(split_str.len() as u64).to_le_bytes());
+        hasher.update(split_str.as_bytes());
+
+        hasher.update(&(c.roster_skills.len() as u64).to_le_bytes());
+
+        let stratum_key = stratum.key();
+        hasher.update(&(stratum_key.len() as u64).to_le_bytes());
+        hasher.update(stratum_key.as_bytes());
+
+        hasher.update(&[if c.operational_failure { 1 } else { 0 }]);
     }
     hasher.finalize().to_hex().to_string()
 }
@@ -471,6 +470,8 @@ pub struct FrozenSampleManifest {
     pub randomization_provenance: RandomizationProvenance,
     pub sampling_algorithm_version: String,
     pub estimand_weighting: EstimandWeighting,
+    #[serde(default)]
+    pub representative_rule: FamilyRepresentativeRule,
     pub total_frame_families: usize,
     pub total_sampled_families: usize,
     pub strata: BTreeMap<String, StratumAllocation>,
@@ -484,26 +485,121 @@ impl FrozenSampleManifest {
     #[must_use]
     pub fn compute_manifest_digest(&self) -> String {
         let mut hasher = blake3::Hasher::new();
-        hasher.update(b"skillranker:sample_manifest:v1\n");
+        hasher.update(b"skillranker:sample_manifest:v2\n");
+        hasher.update(&self.schema_version.to_le_bytes());
+
+        hasher.update(&(self.frame_digest.len() as u64).to_le_bytes());
         hasher.update(self.frame_digest.as_bytes());
-        hasher.update(b":");
-        hasher.update(self.split.to_string().as_bytes());
-        hasher.update(b":");
-        hasher.update(&(self.total_frame_families as u64).to_le_bytes());
-        hasher.update(b":");
-        hasher.update(&(self.total_sampled_families as u64).to_le_bytes());
-        hasher.update(b":");
-        hasher.update(self.policy_id.as_bytes());
-        for entry in &self.selected_cases {
-            hasher.update(entry.case_key.family_id.as_bytes());
-            hasher.update(b":");
-            hasher.update(entry.case_key.case_id.as_bytes());
-            hasher.update(b":");
-            hasher.update(&entry.case_key.replicate.to_le_bytes());
-            hasher.update(b":");
-            hasher.update(entry.stratum_key.as_bytes());
-            hasher.update(b"\n");
+
+        let split_str = self.split.to_string();
+        hasher.update(&(split_str.len() as u64).to_le_bytes());
+        hasher.update(split_str.as_bytes());
+
+        let status_tag = match self.design_status {
+            DesignStatus::StratifiedProbabilitySample => "stratified-probability-sample",
+            DesignStatus::DiagnosticFixed => "diagnostic-fixed",
+            DesignStatus::FullCensus => "full-census",
+        };
+        hasher.update(&(status_tag.len() as u64).to_le_bytes());
+        hasher.update(status_tag.as_bytes());
+
+        match &self.randomization_provenance {
+            RandomizationProvenance::OsRandom {
+                entropy_source,
+                seed,
+            } => {
+                hasher.update(b"os-random\0");
+                hasher.update(&(entropy_source.len() as u64).to_le_bytes());
+                hasher.update(entropy_source.as_bytes());
+                hasher.update(&seed.to_le_bytes());
+            }
+            RandomizationProvenance::SuppliedManual { seed } => {
+                hasher.update(b"supplied-manual\0");
+                hasher.update(&seed.to_le_bytes());
+            }
+            RandomizationProvenance::SuppliedImported {
+                seed,
+                manifest_digest,
+            } => {
+                hasher.update(b"supplied-imported\0");
+                hasher.update(&seed.to_le_bytes());
+                hasher.update(&(manifest_digest.len() as u64).to_le_bytes());
+                hasher.update(manifest_digest.as_bytes());
+            }
+            RandomizationProvenance::Census => {
+                hasher.update(b"census\0");
+            }
         }
+
+        hasher.update(&(self.sampling_algorithm_version.len() as u64).to_le_bytes());
+        hasher.update(self.sampling_algorithm_version.as_bytes());
+
+        let weight_tag = match self.estimand_weighting {
+            EstimandWeighting::FamilyWeighted => "family-weighted",
+            EstimandWeighting::TrafficWeighted => "traffic-weighted",
+        };
+        hasher.update(&(weight_tag.len() as u64).to_le_bytes());
+        hasher.update(weight_tag.as_bytes());
+
+        let rule_tag = match self.representative_rule {
+            FamilyRepresentativeRule::FirstByCaseIdReplicate => "first-by-case-id-replicate",
+            FamilyRepresentativeRule::LowestReplicateFirst => "lowest-replicate-first",
+        };
+        hasher.update(&(rule_tag.len() as u64).to_le_bytes());
+        hasher.update(rule_tag.as_bytes());
+
+        hasher.update(&(self.total_frame_families as u64).to_le_bytes());
+        hasher.update(&(self.total_sampled_families as u64).to_le_bytes());
+
+        hasher.update(&(self.policy_id.len() as u64).to_le_bytes());
+        hasher.update(self.policy_id.as_bytes());
+
+        hasher.update(&(self.strata.len() as u64).to_le_bytes());
+        for (stratum_key, alloc) in &self.strata {
+            hasher.update(&(stratum_key.len() as u64).to_le_bytes());
+            hasher.update(stratum_key.as_bytes());
+            hasher.update(&(alloc.population_size as u64).to_le_bytes());
+            hasher.update(&(alloc.sample_size as u64).to_le_bytes());
+            hasher.update(&alloc.weight.to_bits().to_le_bytes());
+            match alloc.inclusion_probability {
+                Some(p) => {
+                    hasher.update(&[1]);
+                    hasher.update(&p.to_bits().to_le_bytes());
+                }
+                None => {
+                    hasher.update(&[0]);
+                }
+            }
+        }
+
+        hasher.update(&(self.selected_cases.len() as u64).to_le_bytes());
+        for entry in &self.selected_cases {
+            let key = &entry.case_key;
+            hasher.update(&(key.frame_id.len() as u64).to_le_bytes());
+            hasher.update(key.frame_id.as_bytes());
+            hasher.update(&(key.family_id.len() as u64).to_le_bytes());
+            hasher.update(key.family_id.as_bytes());
+            hasher.update(&(key.case_id.len() as u64).to_le_bytes());
+            hasher.update(key.case_id.as_bytes());
+            hasher.update(&key.replicate.to_le_bytes());
+            hasher.update(&(key.policy_id.len() as u64).to_le_bytes());
+            hasher.update(key.policy_id.as_bytes());
+
+            hasher.update(&(entry.stratum_key.len() as u64).to_le_bytes());
+            hasher.update(entry.stratum_key.as_bytes());
+
+            match entry.inclusion_probability {
+                Some(p) => {
+                    hasher.update(&[1]);
+                    hasher.update(&p.to_bits().to_le_bytes());
+                }
+                None => {
+                    hasher.update(&[0]);
+                }
+            }
+            hasher.update(&(entry.sample_order as u64).to_le_bytes());
+        }
+
         hasher.finalize().to_hex().to_string()
     }
 }
@@ -531,6 +627,30 @@ pub fn draw_stratified_sample(
     policy_id: &str,
     created_at_unix_ms: u64,
 ) -> Result<FrozenSampleManifest, EvaluationError> {
+    draw_stratified_sample_with_rule(
+        representatives,
+        split,
+        total_sample_size,
+        allocation_method,
+        provenance,
+        FamilyRepresentativeRule::FirstByCaseIdReplicate,
+        policy_id,
+        created_at_unix_ms,
+    )
+}
+
+/// Draw a stratified sample with an explicit family representative rule.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_stratified_sample_with_rule(
+    representatives: &[EvaluationCaseRecord],
+    split: EvaluationSplit,
+    total_sample_size: usize,
+    allocation_method: &AllocationMethod,
+    provenance: RandomizationProvenance,
+    representative_rule: FamilyRepresentativeRule,
+    policy_id: &str,
+    created_at_unix_ms: u64,
+) -> Result<FrozenSampleManifest, EvaluationError> {
     if representatives.is_empty() {
         return Err(EvaluationError::SamplingFailure(
             "cannot sample from an empty representative set".into(),
@@ -552,6 +672,12 @@ pub fn draw_stratified_sample(
         .iter()
         .all(|(k, &alloc)| alloc == strata_sizes[k]);
 
+    if matches!(provenance, RandomizationProvenance::Census) && !is_full_census {
+        return Err(EvaluationError::SamplingFailure(
+            "census provenance requires full census allocation across all strata".into(),
+        ));
+    }
+
     let design_status = if is_full_census {
         DesignStatus::FullCensus
     } else {
@@ -559,7 +685,7 @@ pub fn draw_stratified_sample(
             RandomizationProvenance::OsRandom { .. } => DesignStatus::StratifiedProbabilitySample,
             RandomizationProvenance::SuppliedManual { .. } => DesignStatus::DiagnosticFixed,
             RandomizationProvenance::SuppliedImported { .. } => DesignStatus::DiagnosticFixed,
-            RandomizationProvenance::Census => DesignStatus::FullCensus,
+            RandomizationProvenance::Census => unreachable!("checked above"),
         }
     };
 
@@ -638,6 +764,7 @@ pub fn draw_stratified_sample(
         randomization_provenance: provenance,
         sampling_algorithm_version: SAMPLING_VERSION.to_string(),
         estimand_weighting: EstimandWeighting::FamilyWeighted,
+        representative_rule,
         total_frame_families,
         total_sampled_families,
         strata: manifest_strata,
@@ -654,20 +781,36 @@ pub fn draw_stratified_sample(
 /// Verify an existing frozen sample manifest against an evaluation frame.
 ///
 /// Invariants verified:
-/// 1. Frame digest matches exactly.
-/// 2. Split matches exactly.
-/// 3. Every selected case exists in the frame and classifies into the declared stratum.
-/// 4. No duplicate family IDs among selected cases.
-/// 5. Stratum sample sizes match declared counts.
+/// 1. Sampling algorithm version matches SAMPLING_VERSION.
+/// 2. Manifest digest and manifest_id match computed digest.
+/// 3. Frame digest matches exactly.
+/// 4. Split matches exactly.
+/// 5. Every selected case exists in the frame and classifies into the declared stratum.
+/// 6. Full CaseKey (frame_id, family_id, case_id, replicate, policy_id) matches frame representative.
+/// 7. No duplicate family IDs among selected cases.
+/// 8. Stratum populations and sample sizes match declared counts.
+/// 9. Stratum and entry inclusion probabilities match design status and mathematical definitions.
 pub fn verify_manifest_against_frame(
     manifest: &FrozenSampleManifest,
     cases: &[EvaluationCaseRecord],
 ) -> Result<(), EvaluationError> {
-    let reps = select_family_representatives(
-        cases,
-        manifest.split,
-        FamilyRepresentativeRule::FirstByCaseIdReplicate,
-    )?;
+    if manifest.sampling_algorithm_version != SAMPLING_VERSION {
+        return Err(EvaluationError::ManifestVerificationFailure(format!(
+            "manifest sampling algorithm version '{}' does not match engine version '{}'",
+            manifest.sampling_algorithm_version, SAMPLING_VERSION
+        )));
+    }
+
+    let expected_digest = manifest.compute_manifest_digest();
+    let expected_manifest_id = format!("man-{}", &expected_digest[..16]);
+    if manifest.manifest_id != expected_manifest_id {
+        return Err(EvaluationError::ManifestVerificationFailure(format!(
+            "manifest ID mismatch: expected '{expected_manifest_id}', found '{}'",
+            manifest.manifest_id
+        )));
+    }
+
+    let reps = select_family_representatives(cases, manifest.split, manifest.representative_rule)?;
 
     let actual_frame_digest = compute_frame_digest(&reps);
     if actual_frame_digest != manifest.frame_digest {
@@ -693,10 +836,61 @@ pub fn verify_manifest_against_frame(
         )));
     }
 
-    let rep_lookup: BTreeMap<(&str, &str), &EvaluationCaseRecord> = reps
-        .iter()
-        .map(|c| ((c.key.family_id.as_str(), c.key.case_id.as_str()), c))
-        .collect();
+    let actual_strata_cases = partition_strata(&reps);
+    if manifest.strata.len() != actual_strata_cases.len() {
+        return Err(EvaluationError::ManifestVerificationFailure(format!(
+            "manifest strata count ({}) does not match frame strata count ({})",
+            manifest.strata.len(),
+            actual_strata_cases.len()
+        )));
+    }
+
+    for (stratum_key, alloc) in &manifest.strata {
+        let Some(actual_cases) = actual_strata_cases.get(stratum_key) else {
+            return Err(EvaluationError::ManifestVerificationFailure(format!(
+                "stratum '{stratum_key}' declared in manifest not present in frame"
+            )));
+        };
+        if alloc.population_size != actual_cases.len() {
+            return Err(EvaluationError::ManifestVerificationFailure(format!(
+                "stratum '{stratum_key}' population size mismatch: declared {}, actual {}",
+                alloc.population_size,
+                actual_cases.len()
+            )));
+        }
+        if alloc.sample_size > alloc.population_size {
+            return Err(EvaluationError::ManifestVerificationFailure(format!(
+                "stratum '{stratum_key}' sample size ({}) exceeds population ({})",
+                alloc.sample_size, alloc.population_size
+            )));
+        }
+
+        match manifest.design_status {
+            DesignStatus::DiagnosticFixed => {
+                if alloc.inclusion_probability.is_some() {
+                    return Err(EvaluationError::ManifestVerificationFailure(format!(
+                        "stratum '{stratum_key}' asserts inclusion probability for diagnostic fixed design"
+                    )));
+                }
+            }
+            DesignStatus::StratifiedProbabilitySample | DesignStatus::FullCensus => {
+                let Some(prob) = alloc.inclusion_probability else {
+                    return Err(EvaluationError::ManifestVerificationFailure(format!(
+                        "stratum '{stratum_key}' missing inclusion probability for probability sample"
+                    )));
+                };
+                let expected_prob = (alloc.sample_size as f64) / (alloc.population_size as f64);
+                if (prob - expected_prob).abs() > 1e-12 {
+                    return Err(EvaluationError::ManifestVerificationFailure(format!(
+                        "stratum '{stratum_key}' inclusion probability mismatch: declared {prob}, expected {expected_prob}"
+                    )));
+                }
+            }
+        }
+    }
+
+    let rep_by_family: BTreeMap<&str, &EvaluationCaseRecord> =
+        reps.iter().map(|c| (c.key.family_id.as_str(), c)).collect();
 
     let mut seen_families: BTreeSet<&str> = BTreeSet::new();
     let mut observed_strata_counts: BTreeMap<&str, usize> = BTreeMap::new();
@@ -709,12 +903,18 @@ pub fn verify_manifest_against_frame(
             )));
         }
 
-        let Some(case) = rep_lookup.get(&(fam, entry.case_key.case_id.as_str())) else {
+        let Some(case) = rep_by_family.get(fam) else {
             return Err(EvaluationError::ManifestVerificationFailure(format!(
-                "selected case '{}:{}' not found in frame representatives",
-                fam, entry.case_key.case_id
+                "selected family '{fam}' not found in frame representatives"
             )));
         };
+
+        if entry.case_key != case.key {
+            return Err(EvaluationError::ManifestVerificationFailure(format!(
+                "selected case key mismatch for family '{fam}': manifest has {:?}, frame has {:?}",
+                entry.case_key, case.key
+            )));
+        }
 
         let classified_stratum = ObservableStratum::classify(case).key();
         if classified_stratum != entry.stratum_key {
@@ -722,6 +922,38 @@ pub fn verify_manifest_against_frame(
                 "selected case '{}:{}' stratum mismatch: declared '{}', classified '{}'",
                 fam, entry.case_key.case_id, entry.stratum_key, classified_stratum
             )));
+        }
+
+        let stratum_alloc = manifest.strata.get(&entry.stratum_key).ok_or_else(|| {
+            EvaluationError::ManifestVerificationFailure(format!(
+                "selected case refers to unknown stratum '{}'",
+                entry.stratum_key
+            ))
+        })?;
+
+        match manifest.design_status {
+            DesignStatus::DiagnosticFixed => {
+                if entry.inclusion_probability.is_some() {
+                    return Err(EvaluationError::ManifestVerificationFailure(format!(
+                        "entry '{}:{}' has inclusion probability for diagnostic design",
+                        fam, entry.case_key.case_id
+                    )));
+                }
+            }
+            DesignStatus::StratifiedProbabilitySample | DesignStatus::FullCensus => {
+                let Some(entry_prob) = entry.inclusion_probability else {
+                    return Err(EvaluationError::ManifestVerificationFailure(format!(
+                        "entry '{}:{}' missing inclusion probability for probability sample",
+                        fam, entry.case_key.case_id
+                    )));
+                };
+                if Some(entry_prob) != stratum_alloc.inclusion_probability {
+                    return Err(EvaluationError::ManifestVerificationFailure(format!(
+                        "entry '{}:{}' inclusion probability ({entry_prob}) does not match stratum ({:?})",
+                        fam, entry.case_key.case_id, stratum_alloc.inclusion_probability
+                    )));
+                }
+            }
         }
 
         *observed_strata_counts
@@ -742,6 +974,25 @@ pub fn verify_manifest_against_frame(
         }
     }
 
+    if manifest.design_status == DesignStatus::FullCensus
+        && manifest.total_sampled_families != manifest.total_frame_families
+    {
+        return Err(EvaluationError::ManifestVerificationFailure(format!(
+            "full census status requires total sampled ({}) == total frame ({})",
+            manifest.total_sampled_families, manifest.total_frame_families
+        )));
+    }
+
+    if matches!(
+        manifest.randomization_provenance,
+        RandomizationProvenance::Census
+    ) && manifest.design_status != DesignStatus::FullCensus
+    {
+        return Err(EvaluationError::ManifestVerificationFailure(
+            "census provenance requires full census design status".into(),
+        ));
+    }
+
     Ok(())
 }
 
@@ -755,26 +1006,19 @@ pub fn replay_manifest_sample(
 ) -> Result<Vec<EvaluationCaseRecord>, EvaluationError> {
     verify_manifest_against_frame(manifest, cases)?;
 
-    let reps = select_family_representatives(
-        cases,
-        manifest.split,
-        FamilyRepresentativeRule::FirstByCaseIdReplicate,
-    )?;
+    let reps = select_family_representatives(cases, manifest.split, manifest.representative_rule)?;
 
-    let rep_lookup: BTreeMap<(&str, &str), &EvaluationCaseRecord> = reps
-        .iter()
-        .map(|c| ((c.key.family_id.as_str(), c.key.case_id.as_str()), c))
-        .collect();
+    let rep_lookup: BTreeMap<&CaseKey, &EvaluationCaseRecord> =
+        reps.iter().map(|c| (&c.key, c)).collect();
 
     let mut sampled_records = Vec::with_capacity(manifest.selected_cases.len());
     for entry in &manifest.selected_cases {
-        let fam = entry.case_key.family_id.as_str();
-        let cid = entry.case_key.case_id.as_str();
-        if let Some(&case) = rep_lookup.get(&(fam, cid)) {
+        if let Some(&case) = rep_lookup.get(&entry.case_key) {
             sampled_records.push(case.clone());
         } else {
             return Err(EvaluationError::ManifestVerificationFailure(format!(
-                "failed to retrieve case '{fam}:{cid}' during replay"
+                "failed to retrieve case '{:?}' during replay",
+                entry.case_key
             )));
         }
     }

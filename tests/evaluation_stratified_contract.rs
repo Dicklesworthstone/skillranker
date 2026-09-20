@@ -3,9 +3,9 @@
 use skillranker::evaluation::stratified::{
     AllocationMethod, DesignStatus, EstimandWeighting, FamilyRepresentativeRule,
     FrozenSampleManifest, InputQuality, ObservableStratum, RandomizationProvenance,
-    RetrievalProfile, allocate_sample_sizes, draw_os_seed, draw_stratified_sample,
-    partition_strata, replay_manifest_sample, select_family_representatives,
-    verify_manifest_against_frame,
+    RetrievalProfile, allocate_sample_sizes, compute_frame_digest, draw_os_seed,
+    draw_stratified_sample, draw_stratified_sample_with_rule, partition_strata,
+    replay_manifest_sample, select_family_representatives, verify_manifest_against_frame,
 };
 use skillranker::evaluation::{CaseKey, EvaluationCaseRecord, EvaluationError, EvaluationSplit};
 use std::collections::BTreeMap;
@@ -679,4 +679,328 @@ fn test_json_roundtrip_and_schema_fidelity() {
     let deserialized_census: FrozenSampleManifest =
         serde_json::from_str(&json_census).expect("deserialize census");
     assert_eq!(manifest_census, deserialized_census);
+}
+
+#[test]
+fn test_census_provenance_requires_full_census_allocation() {
+    let reps = vec![
+        make_test_case(
+            "fam-1",
+            "c1",
+            1,
+            EvaluationSplit::Holdout,
+            100,
+            Some("p1"),
+            "ranked",
+            false,
+            false,
+        ),
+        make_test_case(
+            "fam-2",
+            "c2",
+            1,
+            EvaluationSplit::Holdout,
+            100,
+            Some("p2"),
+            "ranked",
+            false,
+            false,
+        ),
+        make_test_case(
+            "fam-3",
+            "c3",
+            1,
+            EvaluationSplit::Holdout,
+            100,
+            Some("p3"),
+            "ranked",
+            false,
+            false,
+        ),
+    ];
+
+    // Attempting Census provenance with partial sample size (2 out of 3) must fail
+    let err = draw_stratified_sample(
+        &reps,
+        EvaluationSplit::Holdout,
+        2,
+        &AllocationMethod::Proportional { min_floor: 1 },
+        RandomizationProvenance::Census,
+        "policy-test",
+        1_700_000_000_000,
+    )
+    .unwrap_err();
+
+    assert!(
+        matches!(err, EvaluationError::SamplingFailure(ref msg) if msg.contains("census provenance requires full census allocation")),
+        "census with partial budget must be rejected: {err:?}"
+    );
+
+    // With full budget (3 out of 3), Census provenance succeeds and yields FullCensus
+    let ok = draw_stratified_sample(
+        &reps,
+        EvaluationSplit::Holdout,
+        3,
+        &AllocationMethod::Proportional { min_floor: 1 },
+        RandomizationProvenance::Census,
+        "policy-test",
+        1_700_000_000_000,
+    )
+    .expect("full census should succeed");
+
+    assert_eq!(ok.design_status, DesignStatus::FullCensus);
+    assert_eq!(ok.total_sampled_families, 3);
+}
+
+#[test]
+fn test_manifest_tampering_and_verification_integrity() {
+    let reps = vec![
+        make_test_case(
+            "fam-1",
+            "c1",
+            1,
+            EvaluationSplit::Holdout,
+            50,
+            Some("p1"),
+            "ranked",
+            false,
+            false,
+        ),
+        make_test_case(
+            "fam-2",
+            "c2",
+            1,
+            EvaluationSplit::Holdout,
+            50,
+            Some("p2"),
+            "ranked",
+            false,
+            false,
+        ),
+    ];
+
+    let manifest = draw_stratified_sample(
+        &reps,
+        EvaluationSplit::Holdout,
+        2,
+        &AllocationMethod::Proportional { min_floor: 1 },
+        RandomizationProvenance::OsRandom {
+            entropy_source: "/dev/urandom".into(),
+            seed: 42,
+        },
+        "policy-test",
+        1_700_000_000_000,
+    )
+    .expect("draw should succeed");
+
+    assert!(verify_manifest_against_frame(&manifest, &reps).is_ok());
+
+    // 1. Tampering with manifest_id causes verification failure
+    let mut tampered_id = manifest.clone();
+    tampered_id.manifest_id = "man-0000000000000000".to_string();
+    let err_id = verify_manifest_against_frame(&tampered_id, &reps).unwrap_err();
+    assert!(
+        matches!(err_id, EvaluationError::ManifestVerificationFailure(ref msg) if msg.contains("manifest ID mismatch")),
+        "tampered manifest ID must be rejected: {err_id:?}"
+    );
+
+    // 2. Tampering with sampling algorithm version causes verification failure
+    let mut tampered_ver = manifest.clone();
+    tampered_ver.sampling_algorithm_version = "v999.0".to_string();
+    tampered_ver.manifest_id = format!("man-{}", &tampered_ver.compute_manifest_digest()[..16]);
+    let err_ver = verify_manifest_against_frame(&tampered_ver, &reps).unwrap_err();
+    assert!(
+        matches!(err_ver, EvaluationError::ManifestVerificationFailure(ref msg) if msg.contains("algorithm version")),
+        "unmatched sampling algorithm version must be rejected: {err_ver:?}"
+    );
+
+    // 3. Tampering with selected case replicate causes verification failure
+    let mut tampered_rep = manifest.clone();
+    tampered_rep.selected_cases[0].case_key.replicate = 999;
+    tampered_rep.manifest_id = format!("man-{}", &tampered_rep.compute_manifest_digest()[..16]);
+    let err_rep = verify_manifest_against_frame(&tampered_rep, &reps).unwrap_err();
+    assert!(
+        matches!(err_rep, EvaluationError::ManifestVerificationFailure(ref msg) if msg.contains("selected case key mismatch")),
+        "tampered case replicate must be rejected: {err_rep:?}"
+    );
+
+    // 4. Tampering with inclusion probability on an entry causes verification failure
+    let mut tampered_prob = manifest.clone();
+    tampered_prob.selected_cases[0].inclusion_probability = Some(0.123);
+    tampered_prob.manifest_id = format!("man-{}", &tampered_prob.compute_manifest_digest()[..16]);
+    let err_prob = verify_manifest_against_frame(&tampered_prob, &reps).unwrap_err();
+    assert!(
+        matches!(err_prob, EvaluationError::ManifestVerificationFailure(ref msg) if msg.contains("inclusion probability")),
+        "tampered entry inclusion probability must be rejected: {err_prob:?}"
+    );
+
+    // 5. DiagnosticFixed design asserting inclusion probability causes verification failure
+    let manual_manifest = draw_stratified_sample(
+        &reps,
+        EvaluationSplit::Holdout,
+        1,
+        &AllocationMethod::Proportional { min_floor: 1 },
+        RandomizationProvenance::SuppliedManual { seed: 99 },
+        "policy-test",
+        1_700_000_000_000,
+    )
+    .expect("manual draw should succeed");
+    assert_eq!(manual_manifest.design_status, DesignStatus::DiagnosticFixed);
+
+    let mut tampered_diag = manual_manifest.clone();
+    tampered_diag.selected_cases[0].inclusion_probability = Some(1.0);
+    tampered_diag.manifest_id = format!("man-{}", &tampered_diag.compute_manifest_digest()[..16]);
+    let err_diag = verify_manifest_against_frame(&tampered_diag, &reps).unwrap_err();
+    assert!(
+        matches!(err_diag, EvaluationError::ManifestVerificationFailure(ref msg) if msg.contains("diagnostic")),
+        "diagnostic fixed design asserting inclusion probability must be rejected: {err_diag:?}"
+    );
+}
+
+#[test]
+fn test_frame_digest_sensitivity_to_stratum_and_delimiters() {
+    // Case with non-empty prompt summary: stratum is normal:complete
+    let case_complete = make_test_case(
+        "fam-1",
+        "c1",
+        1,
+        EvaluationSplit::Holdout,
+        50,
+        Some("valid prompt text"),
+        "ranked",
+        false,
+        false,
+    );
+
+    // Case with empty prompt summary: stratum is normal:degraded
+    let case_degraded = make_test_case(
+        "fam-1",
+        "c1",
+        1,
+        EvaluationSplit::Holdout,
+        50,
+        Some(""),
+        "ranked",
+        false,
+        false,
+    );
+
+    // Both have prompt_summary.is_some() == true, but belong to different strata!
+    assert_eq!(
+        ObservableStratum::classify(&case_complete).key(),
+        "normal:complete"
+    );
+    assert_eq!(
+        ObservableStratum::classify(&case_degraded).key(),
+        "normal:degraded"
+    );
+
+    let digest_complete = compute_frame_digest(&[case_complete]);
+    let digest_degraded = compute_frame_digest(&[case_degraded]);
+
+    assert_ne!(
+        digest_complete, digest_degraded,
+        "frame digest must be sensitive to stratum classification, not just Option::is_some"
+    );
+
+    // Delimiter collision test:
+    // Case A: frame_id = "frame:part1", family_id = "part2"
+    // Case B: frame_id = "frame", family_id = "part1:part2"
+    let mut case_a = make_test_case(
+        "part2",
+        "c1",
+        1,
+        EvaluationSplit::Holdout,
+        50,
+        Some("p"),
+        "ranked",
+        false,
+        false,
+    );
+    case_a.key.frame_id = "frame:part1".to_string();
+
+    let mut case_b = make_test_case(
+        "part1:part2",
+        "c1",
+        1,
+        EvaluationSplit::Holdout,
+        50,
+        Some("p"),
+        "ranked",
+        false,
+        false,
+    );
+    case_b.key.frame_id = "frame".to_string();
+
+    let digest_a = compute_frame_digest(&[case_a]);
+    let digest_b = compute_frame_digest(&[case_b]);
+
+    assert_ne!(
+        digest_a, digest_b,
+        "length-prefixed frame digest must prevent delimiter collisions"
+    );
+}
+
+#[test]
+fn test_manifest_preserves_and_verifies_representative_rule() {
+    let cases = vec![
+        make_test_case(
+            "fam-1",
+            "case-b",
+            1,
+            EvaluationSplit::Holdout,
+            50,
+            Some("p"),
+            "ranked",
+            false,
+            false,
+        ),
+        make_test_case(
+            "fam-1",
+            "case-a",
+            2,
+            EvaluationSplit::Holdout,
+            50,
+            Some("p"),
+            "ranked",
+            false,
+            false,
+        ),
+    ];
+
+    // Under LowestReplicateFirst, case-b (replicate 1) is selected over case-a (replicate 2)
+    let reps_lowest = select_family_representatives(
+        &cases,
+        EvaluationSplit::Holdout,
+        FamilyRepresentativeRule::LowestReplicateFirst,
+    )
+    .expect("select reps");
+    assert_eq!(reps_lowest[0].key.case_id, "case-b");
+
+    let manifest_lowest = draw_stratified_sample_with_rule(
+        &reps_lowest,
+        EvaluationSplit::Holdout,
+        1,
+        &AllocationMethod::Proportional { min_floor: 1 },
+        RandomizationProvenance::SuppliedManual { seed: 123 },
+        FamilyRepresentativeRule::LowestReplicateFirst,
+        "policy-rule-test",
+        1_700_000_000_000,
+    )
+    .expect("draw with LowestReplicateFirst");
+
+    assert_eq!(
+        manifest_lowest.representative_rule,
+        FamilyRepresentativeRule::LowestReplicateFirst
+    );
+
+    // Verifying against the raw cases should succeed because verify uses manifest.representative_rule
+    verify_manifest_against_frame(&manifest_lowest, &cases)
+        .expect("verification with recorded rule must succeed");
+
+    let replayed = replay_manifest_sample(&manifest_lowest, &cases)
+        .expect("replay with recorded rule must succeed");
+    assert_eq!(replayed.len(), 1);
+    assert_eq!(replayed[0].key.case_id, "case-b");
+    assert_eq!(replayed[0].key.replicate, 1);
 }
