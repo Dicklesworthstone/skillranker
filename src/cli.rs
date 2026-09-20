@@ -541,12 +541,27 @@ fn execute(clock: &EntryClock, mut args: Vec<OsString>) -> Result<String, Failur
     {
         args.insert(1, OsString::from("rank"));
     }
-    let matches = command().try_get_matches_from(args).map_err(|_| {
-        (
+    // A command this build plans but does not implement has no subcommand, so
+    // the parser would refuse it as unrecognized arguments. Name the phase it
+    // waits on instead, from the same inventory `sr capabilities` publishes.
+    let planned = args
+        .get(1)
+        .and_then(|first| first.to_str())
+        .and_then(crate::capabilities::planned_command_phase);
+    let matches = command().try_get_matches_from(args).map_err(|_| match planned {
+        Some(phase) => (
+            2,
+            "invalid-usage",
+            format!(
+                "This build does not implement that command; it is planned for phase {}. Run sr capabilities for command status.",
+                phase.to_uppercase()
+            ),
+        ),
+        None => (
             2,
             "invalid-usage",
             "Unsupported or conflicting arguments; use --help".into(),
-        )
+        ),
     })?;
     if matches.get_flag("help") && matches.subcommand().is_none() {
         return Ok(HELP.into());

@@ -7,7 +7,9 @@
 //! prints. It claims nothing about phase acceptance, provider availability or
 //! an installed harness version.
 
-use crate::adapter::{CapabilitiesDocument, PhaseGate, foundation_capabilities};
+use crate::adapter::{
+    CapabilitiesDocument, FOUNDATION_IMPLEMENTED_CLI, PhaseGate, foundation_capabilities,
+};
 use crate::limits::{ALL_DEFAULT_LIMITS, LimitUnit};
 use crate::output::ErrorKind;
 use serde_json::{Value, json};
@@ -20,6 +22,26 @@ pub const IMPLEMENTED_COMMANDS: &[&str] =
 /// Accepted by the parser for conflict checking, but refused with
 /// `invalid-usage` until their phase ships.
 pub const PLANNED_RANK_FLAGS: &[(&str, PhaseGate)] = &[];
+
+/// The phase a named command is planned for, when this build does not implement
+/// it yet. `None` for an implemented command or an unknown name.
+///
+/// The parser has no subcommand for a planned command, so without this a
+/// documented invocation such as `sr hook claude` is refused as unrecognized
+/// arguments, which says nothing about why it is unavailable. Both this and the
+/// `capabilities` registry read the same foundation inventory, so the refusal
+/// and the published status cannot disagree.
+pub fn planned_command_phase(name: &str) -> Option<&'static str> {
+    if IMPLEMENTED_COMMANDS.contains(&name) || FOUNDATION_IMPLEMENTED_CLI.contains(&name) {
+        return None;
+    }
+    let foundation = foundation_capabilities().ok()?;
+    foundation
+        .planned_cli
+        .iter()
+        .find(|command| command.name == name)
+        .map(|command| phase_name(command.earliest_phase))
+}
 
 const fn unit_name(unit: LimitUnit) -> &'static str {
     match unit {
