@@ -18,6 +18,7 @@ pub mod jev;
 pub mod limits;
 pub mod output;
 pub mod pipeline;
+mod platform_path;
 pub mod privacy;
 pub mod readiness;
 pub mod replay;
