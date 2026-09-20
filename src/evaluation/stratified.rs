@@ -265,156 +265,142 @@ pub enum AllocationMethod {
 }
 
 /// Allocate sample sizes n_h across represented strata.
+///
+/// The target is the requested size capped by the total population. Explicit
+/// allocations must name exactly the represented strata and sum to that target.
+/// Proportional allocation fixes binding population-capped floors, then uses
+/// largest remainders for the remaining proportional quotas. Ties use stratum
+/// keys. Equal allocation fills a common level with population caps.
 pub fn allocate_sample_sizes(
     strata_sizes: &BTreeMap<String, usize>,
     total_sample_size: usize,
     method: &AllocationMethod,
 ) -> Result<BTreeMap<String, usize>, EvaluationError> {
-    if strata_sizes.is_empty() {
-        return Ok(BTreeMap::new());
+    let invalid = |message: &str| EvaluationError::InvalidStratumAllocation(message.into());
+    if strata_sizes.is_empty() || strata_sizes.values().any(|&size| size == 0) {
+        return Err(invalid("represented strata must have positive populations"));
     }
+    let total_population = strata_sizes.values().try_fold(0usize, |sum, size| {
+        sum.checked_add(*size)
+            .ok_or_else(|| invalid("total stratum population overflows usize"))
+    })?;
+    let target = total_sample_size.min(total_population);
 
-    let total_population: usize = strata_sizes.values().sum();
-    if total_population == 0 {
-        return Err(EvaluationError::SamplingFailure(
-            "total population across strata is zero".into(),
-        ));
+    // Explicit allocations are an exact design, even when the budget permits a
+    // census. Never silently replace a malformed design with a different one.
+    if let AllocationMethod::Explicit { allocations } = method {
+        if !allocations.keys().eq(strata_sizes.keys()) {
+            return Err(invalid(
+                "explicit allocation keys must match represented strata",
+            ));
+        }
+        let mut total = 0usize;
+        for (key, &size) in allocations {
+            if size == 0 || size > strata_sizes[key] {
+                return Err(invalid(
+                    "explicit allocations must be positive and within population",
+                ));
+            }
+            total = total
+                .checked_add(size)
+                .ok_or_else(|| invalid("total explicit allocation overflows usize"))?;
+        }
+        if total != target {
+            return Err(invalid(
+                "explicit allocations must sum to the population-capped sample budget",
+            ));
+        }
+        return Ok(allocations.clone());
     }
-
-    // If budget covers the full population, every stratum becomes a complete census.
-    if total_sample_size >= total_population {
+    let floor = match method {
+        AllocationMethod::Proportional { min_floor }
+        | AllocationMethod::EqualPerStratum { min_floor } => (*min_floor).max(1),
+        AllocationMethod::Explicit { .. } => unreachable!("handled above"),
+    };
+    // This sum cannot exceed the already checked total population.
+    let required_floor: usize = strata_sizes.values().map(|&pop| pop.min(floor)).sum();
+    if target < required_floor {
+        return Err(EvaluationError::InsufficientSampleBudgetForStrata {
+            budget: total_sample_size,
+            required_floor,
+        });
+    }
+    if target == total_population {
         return Ok(strata_sizes.clone());
     }
 
-    match method {
-        AllocationMethod::Explicit { allocations } => {
-            let mut allocated: BTreeMap<String, usize> = BTreeMap::new();
-            for (key, &pop) in strata_sizes {
-                let Some(&req) = allocations.get(key) else {
-                    return Err(EvaluationError::InvalidStratumAllocation(format!(
-                        "missing explicit allocation for represented stratum '{key}'"
-                    )));
-                };
-                if req == 0 {
-                    return Err(EvaluationError::InvalidStratumAllocation(format!(
-                        "explicit allocation for represented stratum '{key}' must be > 0"
-                    )));
-                }
-                if req > pop {
-                    return Err(EvaluationError::InvalidStratumAllocation(format!(
-                        "explicit allocation for stratum '{key}' ({req}) exceeds population ({pop})"
-                    )));
-                }
-                allocated.insert(key.clone(), req);
+    if matches!(method, AllocationMethod::EqualPerStratum { .. }) {
+        // Find the largest common level that fits, with small strata capped at
+        // their population. Binary search avoids a loop per sampled family.
+        let mut low = floor.min(*strata_sizes.values().max().expect("nonempty"));
+        let mut high = *strata_sizes.values().max().expect("nonempty");
+        while low < high {
+            let gap = high - low;
+            let mid = low + gap / 2 + gap % 2;
+            let count: usize = strata_sizes.values().map(|&pop| pop.min(mid)).sum();
+            if count <= target {
+                low = mid;
+            } else {
+                high = mid - 1;
             }
-            Ok(allocated)
         }
-        AllocationMethod::Proportional { min_floor } => {
-            let floor = (*min_floor).max(1);
-            let num_strata = strata_sizes.len();
-            let total_required_floor = num_strata * floor;
-            if total_sample_size < total_required_floor {
-                return Err(EvaluationError::InsufficientSampleBudgetForStrata {
-                    budget: total_sample_size,
-                    required_floor: total_required_floor,
-                });
+        let mut allocated: BTreeMap<String, usize> = strata_sizes
+            .iter()
+            .map(|(key, &pop)| (key.clone(), pop.min(low)))
+            .collect();
+        let mut remaining = target - allocated.values().sum::<usize>();
+        for (key, count) in &mut allocated {
+            if remaining > 0 && *count < strata_sizes[key] {
+                *count += 1;
+                remaining -= 1;
             }
-
-            let mut allocated: BTreeMap<String, usize> = BTreeMap::new();
-            let mut remaining_budget = total_sample_size;
-
-            // 1. Assign floor (clamped to pop)
-            for (key, &pop) in strata_sizes {
-                let initial = pop.min(floor);
-                allocated.insert(key.clone(), initial);
-                remaining_budget = remaining_budget.saturating_sub(initial);
-            }
-
-            // 2. Compute proportional quotas for remaining budget
-            let mut remainders: Vec<(String, f64)> = Vec::new();
-            for (key, &pop) in strata_sizes {
-                let current = allocated[key];
-                let headroom = pop.saturating_sub(current);
-                if headroom > 0 {
-                    let ideal =
-                        (total_sample_size as f64) * (pop as f64) / (total_population as f64);
-                    let rem = ideal - (current as f64);
-                    remainders.push((key.clone(), rem));
-                }
-            }
-
-            // Sort by fractional remainder descending, tie-breaking by stratum key
-            remainders.sort_by(|a, b| {
-                b.1.partial_cmp(&a.1)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-                    .then_with(|| a.0.cmp(&b.0))
-            });
-
-            // Distribute remaining budget
-            while remaining_budget > 0 {
-                let mut progress = false;
-                for (key, _) in &remainders {
-                    if remaining_budget == 0 {
-                        break;
-                    }
-                    let pop = strata_sizes[key];
-                    let entry = allocated.get_mut(key).unwrap();
-                    if *entry < pop {
-                        *entry += 1;
-                        remaining_budget -= 1;
-                        progress = true;
-                    }
-                }
-                if !progress {
-                    break;
-                }
-            }
-
-            Ok(allocated)
         }
-        AllocationMethod::EqualPerStratum { min_floor } => {
-            let floor = (*min_floor).max(1);
-            let num_strata = strata_sizes.len();
-            let total_required_floor = num_strata * floor;
-            if total_sample_size < total_required_floor {
-                return Err(EvaluationError::InsufficientSampleBudgetForStrata {
-                    budget: total_sample_size,
-                    required_floor: total_required_floor,
-                });
-            }
+        return Ok(allocated);
+    }
 
-            let mut allocated: BTreeMap<String, usize> = BTreeMap::new();
-            let mut remaining_budget = total_sample_size;
-
-            // 1. Assign floor (clamped to pop)
-            for (key, &pop) in strata_sizes {
-                let initial = pop.min(floor);
-                allocated.insert(key.clone(), initial);
-                remaining_budget = remaining_budget.saturating_sub(initial);
-            }
-
-            // 2. Distribute remaining budget equally in rounds (alphabetical by key)
-            while remaining_budget > 0 {
-                let mut progress = false;
-                for (key, &pop) in strata_sizes {
-                    if remaining_budget == 0 {
-                        break;
-                    }
-                    let entry = allocated.get_mut(key).unwrap();
-                    if *entry < pop {
-                        *entry += 1;
-                        remaining_budget -= 1;
-                        progress = true;
-                    }
-                }
-                if !progress {
-                    break;
-                }
-            }
-
-            Ok(allocated)
+    // Constrained proportional apportionment: fix strata whose proportional
+    // quota falls below their capped floor, then recompute quotas for the rest.
+    // Products of two usize values fit u128 on supported 32/64-bit platforms.
+    let mut allocated = BTreeMap::new();
+    let mut active = strata_sizes.clone();
+    let mut remaining = target;
+    let mut active_population = total_population;
+    loop {
+        let constrained: Vec<String> = active
+            .iter()
+            .filter(|(_, pop)| {
+                (remaining as u128) * (**pop as u128)
+                    < (floor.min(**pop) as u128) * (active_population as u128)
+            })
+            .map(|(key, _)| key.clone())
+            .collect();
+        if constrained.is_empty() {
+            break;
+        }
+        for key in constrained {
+            let pop = active.remove(&key).expect("active stratum");
+            let count = floor.min(pop);
+            allocated.insert(key, count);
+            remaining -= count;
+            active_population -= pop;
         }
     }
+    // Hamilton largest-remainder allocation within the unconstrained strata.
+    // Exact integer remainders avoid floating point and key-dependent rounding.
+    let mut remainders = Vec::with_capacity(active.len());
+    let mut assigned = 0usize;
+    for (key, pop) in active {
+        let numerator = (remaining as u128) * (pop as u128);
+        let count = (numerator / active_population as u128) as usize;
+        remainders.push((key.clone(), numerator % active_population as u128));
+        allocated.insert(key, count);
+        assigned += count;
+    }
+    remainders.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    for (key, _) in remainders.into_iter().take(remaining - assigned) {
+        *allocated.get_mut(&key).expect("allocated active stratum") += 1;
+    }
+    Ok(allocated)
 }
 
 /// Audit-grade provenance describing how sampling randomness was obtained.
