@@ -180,6 +180,37 @@ or override the agent's governing instructions.
 
 ## Installation
 
+### Installer
+
+The installer selects a release for your platform, verifies its SHA256 checksum,
+and installs `sr` into `~/.local/bin`. When a release asset is unavailable, it
+builds from the selected source revision using the pinned Rust toolchain:
+
+```bash
+curl -fsSL "https://raw.githubusercontent.com/Dicklesworthstone/skillranker/main/install.sh?$(date +%s)" | bash -s -- --verify
+```
+
+It requires Bash, Python 3, `curl`, and `sha256sum` or `shasum`; source builds
+also require Git and Rust. If RCH is installed, compilation runs remotely and
+a remote failure does not trigger a local build. Existing binaries are backed
+up before replacement. `--easy-mode` also adds the install directory to your
+current shell's configuration, with a backup.
+
+```bash
+# Install from a trusted local checkout.
+bash install.sh --source . --verify
+
+# Install an air-gapped archive with its adjacent .sha256 file.
+bash install.sh --offline skillranker.tar.gz --verify
+```
+
+Detected Claude Code and Codex installations receive a small SkillRanker usage
+skill. Subcommand completions are installed for Bash, Zsh, and Fish. Existing
+customized integration files are preserved; `--no-configure` skips these steps.
+The installer leaves credentials and network consent to you and reports hooks
+as unconfigured. **Obtain your own TypeSafe API key before live ranking.**
+See [installer options, verification, and rollback](docs/installation.md).
+
 ### From source
 
 Build the `sr` binary with the repository's pinned Rust toolchain and lockfile:
