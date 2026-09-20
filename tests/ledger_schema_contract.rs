@@ -13,7 +13,7 @@ use skillranker::runtime::ProcessInvocation;
 use skillranker::storage::StoreError;
 use skillranker::storage::ledger::*;
 use std::fs;
-use std::os::unix::fs::DirBuilderExt;
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -461,6 +461,110 @@ fn test_invocation() -> (ProcessInvocation, Cx) {
     let invocation = ProcessInvocation::enter().expect("process invocation");
     let cx = invocation.request_cx().expect("request_cx");
     (invocation, cx)
+}
+
+#[test]
+fn ledger_handle_rejects_same_directory_database_replacement() {
+    let (inv, cx) = test_invocation();
+    let mut store = open_test_store(&inv, &cx, "database-replacement");
+    let stamp = store.stamp();
+    let cursor = SessionCursor {
+        workspace_root: "/data/workspace".into(),
+        session_id: "session".into(),
+        agent_branch: "main".into(),
+        cursor_kind: CursorKind::Observation,
+        transcript_generation: 1,
+        last_complete_event_id: "event-1".into(),
+        last_offset_bytes: 100,
+        updated_at_unix_ms: 1,
+    };
+    store
+        .update_session_cursor(inv.clock(), &cx, &cursor, stamp)
+        .unwrap();
+    assert_eq!(
+        store
+            .get_session_cursor(
+                inv.clock(),
+                &cx,
+                &cursor.workspace_root,
+                &cursor.session_id,
+                &cursor.agent_branch,
+                cursor.cursor_kind
+            )
+            .unwrap(),
+        Some(cursor.clone())
+    );
+
+    let path = store.database_path();
+    fs::rename(&path, path.with_file_name("preserved-original.sqlite3")).unwrap();
+    let replacement = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&path)
+        .unwrap();
+    let read = store.get_session_cursor(
+        inv.clock(),
+        &cx,
+        &cursor.workspace_root,
+        &cursor.session_id,
+        &cursor.agent_branch,
+        cursor.cursor_kind,
+    );
+    let write = store.update_session_cursor(inv.clock(), &cx, &cursor, stamp);
+    assert_eq!(
+        replacement.metadata().unwrap().len(),
+        0,
+        "replacement must remain untouched"
+    );
+    assert_eq!(
+        read,
+        Err(StoreError::StoreReplaced),
+        "detached history must not be returned"
+    );
+    assert_eq!(
+        write,
+        Err(StoreError::StoreReplaced),
+        "replacement must invalidate writes"
+    );
+    assert!(inv.shutdown());
+}
+
+#[test]
+fn ledger_handle_uses_current_context_after_opener_cancel_or_expiry() {
+    for cancel_opener in [true, false] {
+        let (opener, old_cx) = test_invocation();
+        let mut store = open_test_store(&opener, &old_cx, "reused-context");
+        let stamp = store.stamp();
+        let old_clock = opener.clock();
+        if cancel_opener {
+            opener.cancel_user(&old_cx);
+        }
+        assert!(opener.shutdown());
+        if !cancel_opener {
+            std::thread::sleep(std::time::Duration::from_millis(
+                old_clock.remaining_until_expiry().as_millis() + 1,
+            ));
+        }
+        let (current, cx) = test_invocation();
+        for number in 0..4 {
+            let snapshot = NewRosterSnapshot {
+                snapshot_id: format!("reused-{number}"),
+                ..snapshot_fixture()
+            };
+            store
+                .record_roster_snapshot(current.clock(), &cx, &snapshot, stamp)
+                .expect("fresh invocation must not inherit opener cancellation or expiry");
+        }
+        // Refreshing the context must not disable cancellation checks.
+        current.cancel_user(&cx);
+        assert!(
+            store
+                .record_roster_snapshot(current.clock(), &cx, &snapshot_fixture(), stamp)
+                .is_err()
+        );
+        assert!(current.shutdown());
+    }
 }
 
 fn temp_ledger_dir(test_name: &str) -> PathBuf {
