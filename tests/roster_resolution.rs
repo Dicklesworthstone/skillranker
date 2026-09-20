@@ -403,11 +403,13 @@ fn mixed_skill_root_preserves_valid_names_and_withholds_only_failed_competitors(
             .iter()
             .any(|(_, e)| *e == ResolutionError::UnsupportedLayout)
     );
+    // `blocked` exceeds SKILL_FILE_BYTES, which now reports Oversized rather
+    // than Read: the file is present and readable, just too large to parse.
     assert!(
         roster
             .diagnostics()
             .iter()
-            .any(|(_, e)| *e == ResolutionError::Read)
+            .any(|(_, e)| *e == ResolutionError::Oversized)
     );
     assert!(runtime.shutdown());
 }

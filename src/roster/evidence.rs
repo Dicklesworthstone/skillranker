@@ -351,6 +351,7 @@ pub(crate) const fn record_code(error: ResolutionError) -> &'static str {
         ResolutionError::UnsupportedLayout => "unsupported-layout",
         ResolutionError::Metadata => "malformed-metadata",
         ResolutionError::Read => "unreadable",
+        ResolutionError::Oversized => "oversized",
         ResolutionError::ChangedFile => "changed-during-read",
         ResolutionError::Limit => "limit",
         ResolutionError::InvalidBinding => "invalid-binding",

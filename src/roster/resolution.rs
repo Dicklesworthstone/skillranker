@@ -25,6 +25,10 @@ pub enum ResolutionError {
     ChangedFile,
     UnsupportedLayout,
     Read,
+    /// The file exceeded the per-skill read bound. Distinct from `Read`: the
+    /// entry is present and readable, just too large to parse, and saying
+    /// "unreadable" sends the owner looking for a permissions fault.
+    Oversized,
     Metadata,
     Limit,
     Cancelled,
@@ -472,8 +476,16 @@ pub fn resolve_claude_plan(
         .map_err(|_| ResolutionError::Limit)?;
         let read = match roots.read_absolute(candidate.path().as_path(), limit) {
             Ok(read) => read,
-            Err(_) => {
-                diagnostics.push((index, ResolutionError::Read));
+            Err(error) => {
+                diagnostics.push((
+                    index,
+                    match error {
+                        crate::authorized_read::ReadError::TooLarge { .. } => {
+                            ResolutionError::Oversized
+                        }
+                        _ => ResolutionError::Read,
+                    },
+                ));
                 withheld_names.insert(invocation.as_str().to_owned());
                 continue;
             }

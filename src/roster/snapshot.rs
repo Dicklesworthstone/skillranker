@@ -113,11 +113,16 @@ fn coverage(roster: &ResolvedRoster) -> (BTreeSet<String>, bool) {
             Diagnostic::EntryLimitReached | Diagnostic::ByteLimitReached => all = true,
         }
     }
-    // A record that could not be read might belong to any source.
+    // A record that could not be read might belong to any source. An oversized
+    // record is one of those: it is present but its content is unknown, so it
+    // keeps the completeness meaning it had while it was reported as unreadable.
     all |= roster.diagnostics().iter().any(|(_, error)| {
         matches!(
             error,
-            ResolutionError::Read | ResolutionError::ChangedFile | ResolutionError::Limit
+            ResolutionError::Read
+                | ResolutionError::Oversized
+                | ResolutionError::ChangedFile
+                | ResolutionError::Limit
         )
     });
     (incomplete, all)
