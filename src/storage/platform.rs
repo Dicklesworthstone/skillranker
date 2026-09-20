@@ -1,7 +1,7 @@
 //! Platform-specific admission, shared by cache and ledger descriptor walks.
 
+pub(crate) use crate::platform_path::storage_path;
 use nix::sys::statfs::Statfs;
-use std::path::PathBuf;
 
 pub(super) type DirectoryIdentity = (nix::libc::dev_t, nix::libc::ino_t);
 
@@ -28,28 +28,6 @@ pub(super) fn local_filesystem(stat: &Statfs) -> bool {
 #[cfg(any(target_os = "macos", test))]
 fn macos_filesystem(name: &str) -> bool {
     matches!(name, "apfs" | "hfs")
-}
-
-/// macOS supplies root-owned /tmp and /var aliases. Expand only those exact
-/// system aliases; arbitrary symlinks still fail the no-follow descriptor walk.
-pub(crate) fn storage_path(path: PathBuf) -> PathBuf {
-    #[cfg(target_os = "macos")]
-    {
-        use std::os::unix::fs::MetadataExt;
-        use std::path::Path;
-        for (alias, target) in [("/tmp", "/private/tmp"), ("/var", "/private/var")] {
-            if let Ok(rest) = path.strip_prefix(alias)
-                && let Ok(metadata) = std::fs::symlink_metadata(alias)
-                && metadata.file_type().is_symlink()
-                && metadata.uid() == 0
-                && std::fs::read_link(alias)
-                    .is_ok_and(|p| p == Path::new(target) || p == Path::new(&target[1..]))
-            {
-                return Path::new(target).join(rest);
-            }
-        }
-    }
-    path
 }
 
 #[cfg(test)]
@@ -81,30 +59,5 @@ mod tests {
         for name in ["nfs", "smbfs", "osxfuse", "webdav", "", "APFS"] {
             assert!(!macos_filesystem(name));
         }
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn system_aliases_expand_but_user_symlinks_do_not() {
-        use std::os::unix::fs::symlink;
-        assert_eq!(
-            storage_path(PathBuf::from("/tmp")),
-            PathBuf::from("/private/tmp")
-        );
-        assert_eq!(
-            storage_path(PathBuf::from("/var")),
-            PathBuf::from("/private/var")
-        );
-        let root = std::env::temp_dir().join(format!("sr-system-alias-{}", std::process::id()));
-        std::fs::create_dir_all(&root).unwrap();
-        let alias = root.join("user-alias");
-        symlink("/private/tmp", &alias).unwrap();
-        let expanded = storage_path(alias);
-        assert!(
-            std::fs::symlink_metadata(expanded)
-                .unwrap()
-                .file_type()
-                .is_symlink()
-        );
     }
 }

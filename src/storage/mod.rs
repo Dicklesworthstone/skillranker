@@ -35,6 +35,10 @@ use crate::blocking::{BlockingLeafKind, remaining_busy_wait, run_blocking_leaf};
 use crate::cache::{CacheKey, CachedResponseEntry, RequestFingerprint, RequestStage};
 use crate::jev::codec::{MAX_RESPONSE_BYTES, Usage};
 use crate::runtime::{EntryClock, ProcessInvocation, RuntimeError};
+use crate::sqlite_engine::EngineQualificationError;
+pub use crate::sqlite_engine::{
+    EngineIdentity, QUALIFIED_SQLITE_SOURCE_ID, QUALIFIED_SQLITE_VERSION, RUSQLITE_VERSION,
+};
 use asupersync::Cx;
 use filesystem::PrivateDirectory;
 use rusqlite::{
@@ -65,11 +69,6 @@ pub struct CacheCapacityReport {
     pub is_recording_admitted: bool,
 }
 pub const MAX_BUSY_WAIT_MS: u64 = 25;
-pub const RUSQLITE_VERSION: &str = "0.40.2";
-pub const QUALIFIED_SQLITE_VERSION: &str = "3.53.2";
-pub const QUALIFIED_SQLITE_SOURCE_ID: &str =
-    "2026-06-03 19:12:13 d6e03d8c777cfa2d35e3b60d8ec3e0187f3e9f99d8e2ee9cac695fd6fcdf1a24";
-const MIN_SQLITE_VERSION: i32 = 3_051_003;
 const APPLICATION_ID: i64 = 0x53524348; // SRCH: cache, never ledger/accounting.
 const SCHEMA_ID: &str = "sr-cache-responses-v3";
 /// Maximum age of a stored response; the ten-minute TTL is a ceiling.
@@ -132,14 +131,6 @@ impl fmt::Debug for CacheLocation {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("CacheLocation(<private>)")
     }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct EngineIdentity {
-    pub version: String,
-    pub version_number: i32,
-    pub source_id: String,
-    pub rust_dependency: &'static str,
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -240,6 +231,14 @@ impl From<rusqlite::Error> for StoreError {
         }
     }
 }
+impl From<EngineQualificationError> for StoreError {
+    fn from(error: EngineQualificationError) -> Self {
+        match error {
+            EngineQualificationError::Unqualified => Self::UnqualifiedEngine,
+            EngineQualificationError::Sqlite(error) => Self::from(error),
+        }
+    }
+}
 
 pub enum CacheOpen {
     Disabled,
@@ -280,35 +279,9 @@ pub(super) fn check_work(clock: EntryClock, cx: &Cx) -> Result<(), StoreError> {
     Ok(())
 }
 
-fn validate_engine(version: i32, name: &str, source: &str) -> Result<(), StoreError> {
-    if version < MIN_SQLITE_VERSION
-        || version != 3_053_002
-        || name != QUALIFIED_SQLITE_VERSION
-        || source != QUALIFIED_SQLITE_SOURCE_ID
-    {
-        return Err(StoreError::UnqualifiedEngine);
-    }
-    Ok(())
-}
-
-/// Qualify the actual linked engine without touching any disk store.
+/// Compatibility adapter: engine inspection is disk-free and platform-neutral.
 pub fn linked_engine() -> Result<EngineIdentity, StoreError> {
-    let version_number = rusqlite::version_number();
-    if version_number < MIN_SQLITE_VERSION {
-        return Err(StoreError::UnqualifiedEngine);
-    }
-    let connection = Connection::open_in_memory()?;
-    let (version, source_id): (String, String) =
-        connection.query_row("SELECT sqlite_version(), sqlite_source_id()", [], |row| {
-            Ok((row.get(0)?, row.get(1)?))
-        })?;
-    validate_engine(version_number, &version, &source_id)?;
-    Ok(EngineIdentity {
-        version,
-        version_number,
-        source_id,
-        rust_dependency: RUSQLITE_VERSION,
-    })
+    crate::sqlite_engine::linked_engine().map_err(StoreError::from)
 }
 
 /// Disabled persistence is checked before resolving platform paths or engine I/O.
@@ -783,7 +756,7 @@ impl CacheStore {
                     .as_ref()
                     .map(|(_, leader)| leader.lease_expires_at_unix_ms);
                 if fence.as_ref().is_some_and(|(path, _)| {
-                    platform::storage_path(path.clone()) != self.directory.database_path()
+                    storage_path(path.clone()) != self.directory.database_path()
                 }) {
                     return Err(StoreError::LeaseUnavailable);
                 }
@@ -1047,6 +1020,7 @@ mod tests {
         for (code, expected) in [
             (ErrorCode::DatabaseBusy, StoreError::Busy),
             (ErrorCode::DatabaseLocked, StoreError::Busy),
+            (ErrorCode::OperationInterrupted, StoreError::Cancelled),
             (ErrorCode::PermissionDenied, StoreError::Permissions),
             (ErrorCode::ReadOnly, StoreError::Permissions),
             (ErrorCode::SystemIoFailure, StoreError::Io),
@@ -1056,41 +1030,39 @@ mod tests {
             (ErrorCode::DiskFull, StoreError::InsufficientSpace),
             (ErrorCode::DatabaseCorrupt, StoreError::Corrupt),
         ] {
-            let error = rusqlite::Error::SqliteFailure(
-                rusqlite::ffi::Error {
-                    code,
-                    extended_code: 0,
-                },
-                Some("synthetic-private-sqlite-detail".to_owned()),
-            );
-            let safe = StoreError::from(error);
-            assert_eq!(safe, expected);
-            assert!(!format!("{safe:?}: {safe}").contains("synthetic-private"));
+            let sqlite_error = || {
+                rusqlite::Error::SqliteFailure(
+                    rusqlite::ffi::Error {
+                        code,
+                        extended_code: 0,
+                    },
+                    Some("synthetic-private-sqlite-detail".to_owned()),
+                )
+            };
+            for safe in [
+                StoreError::from(sqlite_error()),
+                StoreError::from(EngineQualificationError::Sqlite(sqlite_error())),
+            ] {
+                assert_eq!(safe, expected);
+                assert!(!format!("{safe:?}: {safe}").contains("synthetic-private"));
+            }
         }
     }
+
     #[test]
-    fn engine_guard_requires_minimum_and_the_exact_qualified_source() {
+    fn unqualified_identity_keeps_the_storage_error_contract() {
         assert_eq!(
-            validate_engine(
-                3_053_002,
-                QUALIFIED_SQLITE_VERSION,
-                QUALIFIED_SQLITE_SOURCE_ID
-            ),
-            Ok(())
+            StoreError::from(EngineQualificationError::Unqualified),
+            StoreError::UnqualifiedEngine
         );
-        for version in [3_050_004, 3_051_002, 3_051_003, 3_053_003] {
-            assert_eq!(
-                validate_engine(
-                    version,
-                    QUALIFIED_SQLITE_VERSION,
-                    QUALIFIED_SQLITE_SOURCE_ID
-                ),
-                Err(StoreError::UnqualifiedEngine)
-            );
-        }
-        assert_eq!(
-            validate_engine(3_053_002, QUALIFIED_SQLITE_VERSION, "unexpected-source"),
-            Err(StoreError::UnqualifiedEngine)
-        );
+    }
+
+    #[test]
+    fn storage_facade_returns_the_shared_qualified_identity() {
+        let identity: crate::sqlite_engine::EngineIdentity = linked_engine().unwrap();
+        assert_eq!(identity, crate::sqlite_engine::linked_engine().unwrap());
+        assert_eq!(identity.version, QUALIFIED_SQLITE_VERSION);
+        assert_eq!(identity.source_id, QUALIFIED_SQLITE_SOURCE_ID);
+        assert_eq!(identity.rust_dependency, RUSQLITE_VERSION);
     }
 }
