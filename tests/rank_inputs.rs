@@ -292,6 +292,58 @@ fn offline_ranking_without_a_cached_result_is_a_cache_miss() {
 }
 
 #[test]
+fn mixed_personal_root_keeps_explicit_project_skill_resolvable() {
+    let f = Fixture::new();
+    f.context("context.json", "ok");
+    let skills = f.root.join("home/.claude/skills");
+    for (relative, body) in [
+        ("README.md", "Not a skill".to_owned()),
+        (".marker", "Local marker".to_owned()),
+        ("notes/background.md", "Research notes".to_owned()),
+        (
+            "examples/deep/SKILL.md",
+            "# Example\n\nUnsupported layout".to_owned(),
+        ),
+        (
+            "beta/SKILL.md",
+            "x".repeat(skillranker::limits::SKILL_FILE_BYTES.max() + 1),
+        ),
+    ] {
+        let file = skills.join(relative);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(file, body).unwrap();
+    }
+    let run = |name| {
+        f.run(&[
+            "rank",
+            "--context",
+            "context.json",
+            "--require-skill",
+            name,
+            "--offline",
+            "--no-persist",
+            "--json",
+        ])
+    };
+    let output = run("alpha");
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stdout: {value}; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(value["decision"], "explicit");
+    assert_eq!(value["skills"][0]["invocation_name"], "alpha");
+    // The oversized personal beta might shadow project beta: it must still
+    // refuse that exact name rather than falling back to the project version.
+    let rejected = run("beta");
+    let value: Value = serde_json::from_slice(&rejected.stdout).unwrap();
+    assert_ne!(rejected.status.code(), Some(0), "{value}");
+    assert_ne!(value["decision"], "explicit", "{value}");
+}
+
+#[test]
 fn shared_ranking_flags_reach_the_rank_command() {
     let f = Fixture::new();
     f.context("context.json", &"error: ".repeat(400));

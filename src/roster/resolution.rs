@@ -453,7 +453,9 @@ pub fn resolve_claude_plan(
         budget(cx, clock)?;
         let Some(invocation) = claude_invocation(candidate.kind(), candidate.relative()) else {
             diagnostics.push((index, ResolutionError::UnsupportedLayout));
-            global_withhold = true;
+            // The verified direct-layout contract gives this path no callable
+            // name. It cannot shadow a supported binding. Keep the exclusion
+            // visible without revoking authority from unrelated skills.
             continue;
         };
         let remaining = DISCOVERY_PARSED_BYTES.max().saturating_sub(total);
@@ -509,8 +511,8 @@ pub fn resolve_claude_plan(
         }
     }
     // An omitted candidate might be the actual winner of a callable name.
-    // If the invocation name is unknowable (unsupported layout) or the failure
-    // was root-level (unreadable root or walk limits), withhold authority globally.
+    // Root-level failures (unreadable roots or walk limits) leave possible
+    // supported names unknown, so they still withhold authority globally.
     // Otherwise, withhold authority only for the specific invocation names the
     // failed candidate could have claimed, keeping the remaining valid records advisory.
     let discovery_withhold = discovery.diagnostics().iter().any(|d| {

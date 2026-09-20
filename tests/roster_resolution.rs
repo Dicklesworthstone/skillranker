@@ -359,7 +359,84 @@ fn trusted_override_cannot_enable_disabled_skill_and_forbidden_winner_has_no_fal
 }
 
 #[test]
-fn malformed_winner_and_unsupported_layout_withhold_authority() {
+fn mixed_skill_root_preserves_valid_names_and_withholds_only_failed_competitors() {
+    let root = tree();
+    let home = tree();
+    for name in ["helpful", "blocked"] {
+        write(
+            &root,
+            &format!(".claude/skills/{name}/SKILL.md"),
+            "# Valid\n\nUseful skill",
+        );
+    }
+    for name in ["README.md", ".marker", "research/notes.md"] {
+        write(&home, &format!(".claude/skills/{name}"), "Not a skill");
+    }
+    write(
+        &home,
+        ".claude/skills/examples/nested/SKILL.md",
+        "# Example\n\nNot a supported invocation layout",
+    );
+    write(
+        &home,
+        ".claude/skills/blocked/SKILL.md",
+        &"x".repeat(SKILL_FILE_BYTES.max() + 1),
+    );
+    let (clock, runtime, cx) = invocation();
+    let plan = claude_code_plan(&root, Some(&home), verified()).unwrap();
+    let roster = resolve_claude_plan(&plan, &BTreeMap::new(), &cx, &clock).unwrap();
+    assert!(roster.is_partial());
+    assert_eq!(
+        roster.advisory().count(),
+        1,
+        "unrelated malformed layouts must not suppress useful skills"
+    );
+    assert!(matches!(
+        roster.exact_name("helpful"),
+        ExactResolution::Resolved { .. }
+    ));
+    assert_eq!(roster.exact_name("blocked"), ExactResolution::Unverified);
+    assert_eq!(roster.exact_name("nested"), ExactResolution::Missing);
+    assert!(
+        roster
+            .diagnostics()
+            .iter()
+            .any(|(_, e)| *e == ResolutionError::UnsupportedLayout)
+    );
+    assert!(
+        roster
+            .diagnostics()
+            .iter()
+            .any(|(_, e)| *e == ResolutionError::Read)
+    );
+    assert!(runtime.shutdown());
+}
+
+#[test]
+fn unreadable_root_still_withholds_otherwise_valid_skills() {
+    let root = tree();
+    let home = tree();
+    write(
+        &root,
+        ".claude/skills/helpful/SKILL.md",
+        "# Valid\n\nUseful skill",
+    );
+    write(
+        &home,
+        ".claude/skills",
+        "A file cannot enumerate competing names",
+    );
+    let (clock, runtime, cx) = invocation();
+    let plan = claude_code_plan(&root, Some(&home), verified()).unwrap();
+    let roster = resolve_claude_plan(&plan, &BTreeMap::new(), &cx, &clock).unwrap();
+    assert!(roster.is_partial());
+    assert_eq!(roster.advisory().count(), 0);
+    assert_eq!(roster.exact_name("helpful"), ExactResolution::Unverified);
+    assert!(runtime.shutdown());
+}
+
+#[test]
+fn malformed_winner_withholds_its_name_but_unsupported_layout_claims_no_name() {
     let root = tree();
     let home = tree();
     write(
@@ -405,9 +482,16 @@ fn malformed_winner_and_unsupported_layout_withhold_authority() {
     );
     let unknown = resolve_claude_plan(&plan, &BTreeMap::new(), &cx, &clock).unwrap();
     assert!(unknown.is_partial());
-    assert_eq!(unknown.advisory().count(), 0);
-    assert_eq!(unknown.exact_name("other"), ExactResolution::Unverified);
-    assert_eq!(unknown.exact_name("run"), ExactResolution::Ambiguous);
+    assert_eq!(unknown.advisory().count(), 2);
+    assert!(matches!(
+        unknown.exact_name("other"),
+        ExactResolution::Resolved { .. }
+    ));
+    assert!(matches!(
+        unknown.exact_name("run"),
+        ExactResolution::Resolved { .. }
+    ));
+    assert_eq!(unknown.exact_name("deep"), ExactResolution::Missing);
     assert!(
         unknown
             .diagnostics()
