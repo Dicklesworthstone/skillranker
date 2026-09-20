@@ -117,6 +117,7 @@ try:
     p = subprocess.run(sys.argv[1:], env=env, stdin=subprocess.DEVNULL,
                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10)
     if p.returncode:
+        sys.stderr.buffer.write(p.stderr[:8192])
         sys.exit(1)
     sys.stdout.buffer.write(p.stdout)
 except (OSError, subprocess.TimeoutExpired):
@@ -133,7 +134,7 @@ cleanup() {
     # Keep a receipt instead of deleting a lock another process could acquire.
     if [[ "$LOCKED" == 1 ]]; then mv "$LOCK" "$TEMP/finished-lock" || true; fi
     if [[ -n "$TEMP" ]]; then
-        if [[ "$KEEP_TEMP" == 1 ]]; then info "Staging retained: $TEMP"
+        if [[ "$KEEP_TEMP" == 1 || "$status" != 0 ]]; then info "Staging retained: $TEMP"
         else python3 - "$TEMP" <<'PY'
 import shutil, sys
 shutil.rmtree(sys.argv[1])
@@ -276,6 +277,11 @@ build_source() {
 BIN=''
 if [[ -n "$OFFLINE" ]]; then
     [[ -f "$OFFLINE" ]] || die 'Offline archive does not exist'
+    python3 - "$OFFLINE" <<'PY'
+import os, sys
+if os.stat(sys.argv[1]).st_size > 200*1024*1024:
+    sys.exit('sr installer: compressed archive exceeds 200 MiB')
+PY
     # Snapshot input and sidecars before verification/extraction.
     cp "$OFFLINE" "$TEMP/archive.tar.gz"
     for suffix in sha256 sigstore.json; do
@@ -321,7 +327,8 @@ probe "$BIN" capabilities --json >"$TEMP/capabilities.json" || die 'Candidate ca
 python3 - "$TEMP/capabilities.json" <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1]))
-assert any(c.get('name') == 'rank' and c.get('status') == 'implemented' for c in d['commands']), 'rank is not implemented'
+if not any(c.get('name') == 'rank' and c.get('status') == 'implemented' for c in d['commands']):
+    sys.exit('sr installer: rank is not implemented in the candidate')
 PY
 if [[ "$VERIFY" == 1 ]]; then probe "$BIN" demo --case useful --json >"$TEMP/demo.json" || die 'Offline self-test failed'; fi
 BACKUP='none'
@@ -398,7 +405,9 @@ Docs: https://github.com/Dicklesworthstone/skillranker
 '''
 if configure:
     bundled = stage/'payload/skills/skillranker/SKILL.md'
-    if bundled.is_file(): skill = bundled.read_text()
+    if bundled.is_file():
+        try: skill = bundled.read_text()
+        except (OSError, UnicodeError): report('Bundled skill unreadable; using inline guide')
     for agent, directory in [('Claude Code', '.claude'), ('Codex', '.codex')]:
         if (home/directory).is_dir():
             status = write(home/directory/'skills/skillranker/SKILL.md', skill)

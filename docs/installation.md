@@ -54,6 +54,8 @@ an independently trusted public key. This requires cosign and the adjacent
 offline installation, with no source fallback. Without a trusted key, the
 installer explicitly reports that publisher signature verification was not
 performed. There is no GitHub Actions trust or build fallback.
+This DSR path verifies the signature against the supplied key offline; it does
+not require or claim Rekor transparency-log inclusion.
 
 An archive contains one root-level regular file named `sr`. Optional members
 are `LICENSE`, `README.md`, `skills/skillranker/SKILL.md`, and

@@ -8,6 +8,7 @@ import io
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import tarfile
 import tempfile
@@ -122,7 +123,7 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(skill.read_text(), "user customized skill\n")
         self.assertEqual(len(list(self.home.glob(".bashrc.sr-backup.*"))), 1)
         p = subprocess.run(["bash", "-c", 'source "$1"; command -v sr', "test", str(rc)],
-                           env=self.env, capture_output=True, check=True)
+                           env=self.env, capture_output=True, check=True, timeout=10)
         self.assertEqual(p.stdout.decode().strip(), str(self.dest / "sr"))
         self.assertFalse((self.home / ".claude/settings.json").exists())
         completion = self.home / ".local/share/bash-completion/completions/sr"
@@ -135,6 +136,39 @@ class InstallerTests(unittest.TestCase):
         key.write_text("not a valid trusted key")
         self.run_install(archive, "--cosign-key", str(key), success=False)
         self.assertFalse((self.dest / "sr").exists())
+
+    def test_oversized_archive_and_ambiguous_checksum_are_rejected(self):
+        archive = self.root / "oversized.tar.gz"
+        with archive.open("wb") as f:
+            f.truncate(200 * 1024 * 1024 + 1)
+        self.run_install(archive, "--no-configure", success=False)
+        self.assertFalse((self.dest / "sr").exists())
+        archive = self.archive()
+        sidecar = archive.with_name(archive.name + ".sha256")
+        sidecar.write_text(sidecar.read_text() * 2)
+        self.run_install(archive, "--no-configure", success=False)
+        self.assertFalse((self.dest / "sr").exists())
+
+    @unittest.skipUnless(shutil.which("cosign"), "cosign unavailable")
+    def test_real_signature_accepts_key_and_rejects_tampered_artifact(self):
+        archive = self.archive()
+        env = dict(self.env, COSIGN_PASSWORD="")
+        key = self.root / "test-key"
+        for args in [
+            ["cosign", "generate-key-pair", "--output-key-prefix", str(key)],
+            ["cosign", "sign-blob", "--key", str(key)+".key", "--tlog-upload=false",
+             "--bundle", str(archive)+".sigstore.json", str(archive)],
+        ]:
+            subprocess.run(args, env=env, capture_output=True, check=True, timeout=30)
+        self.run_install(archive, "--cosign-key", str(key)+".pub", "--no-configure")
+        before = (self.dest / "sr").read_bytes()
+        # Attacker can replace the archive AND its checksum but not the signature.
+        other = self.archive(binary=executable("0.2.0"))
+        archive.write_bytes(other.read_bytes())
+        archive.with_name(archive.name+".sha256").write_text(
+            hashlib.sha256(archive.read_bytes()).hexdigest()+"  "+archive.name+"\n")
+        self.run_install(archive, "--cosign-key", str(key)+".pub", "--no-configure", success=False)
+        self.assertEqual((self.dest / "sr").read_bytes(), before)
 
     def test_lock_is_not_stolen_even_with_force(self):
         self.dest.mkdir()
