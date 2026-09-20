@@ -37,6 +37,7 @@ pub const LEDGER_MUTATION_RESERVE_BYTES: u64 = 4 * 1024 * 1024;
 pub const LEDGER_RECORDING_CEILING_BYTES: u64 =
     LEDGER_QUOTA_BYTES - LEDGER_MAINTENANCE_RESERVE_BYTES - LEDGER_MUTATION_RESERVE_BYTES;
 pub const MAX_BUSY_WAIT_MS: u64 = 25;
+pub const DEFAULT_RETENTION_MS: i64 = 30 * 24 * 60 * 60 * 1000; // 30 days in milliseconds: 2_592_000_000
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct LedgerCapacityReport {
@@ -56,6 +57,7 @@ pub enum MaintenanceKind {
     Backup,
     Migration,
     Prune,
+    Clear,
 }
 
 impl MaintenanceKind {
@@ -65,6 +67,7 @@ impl MaintenanceKind {
             Self::Backup => "backup",
             Self::Migration => "migration",
             Self::Prune => "prune",
+            Self::Clear => "clear",
         }
     }
 }
@@ -310,7 +313,7 @@ impl fmt::Debug for LedgerLocation {
     }
 }
 
-#[derive(Clone, Copy, Eq, PartialEq)]
+#[derive(Clone, Copy, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct LedgerStamp {
     pub incarnation: [u8; 16],
     pub schema_generation: u64,
@@ -438,7 +441,199 @@ impl From<rusqlite::Error> for MigrationError {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct CleanupDebt {
+    pub expired_events: u64,
+    pub unreferenced_snapshots: u64,
+    pub expired_observations: u64,
+    pub expired_judgments: u64,
+    pub freelist_bytes: u64,
+    pub has_debt: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct PrunePreview {
+    pub cutoff_unix_ms: i64,
+    pub cutoff_iso: String,
+    pub events_to_prune: u64,
+    pub candidates_to_prune: u64,
+    pub observations_to_prune: u64,
+    pub judgments_to_prune: u64,
+    pub provider_attempts_to_prune: u64,
+    pub snapshots_to_prune: u64,
+    pub shared_snapshots_preserved: u64,
+    pub requires_apply: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct PruneReport {
+    pub cutoff_unix_ms: i64,
+    pub cutoff_iso: String,
+    pub events_pruned: u64,
+    pub candidates_pruned: u64,
+    pub observations_pruned: u64,
+    pub judgments_pruned: u64,
+    pub provider_attempts_pruned: u64,
+    pub snapshots_pruned: u64,
+    pub shared_snapshots_preserved: u64,
+    pub stamp_before: LedgerStamp,
+    pub stamp_after: LedgerStamp,
+    pub affected_provenance: &'static str,
+    pub preflight_headroom_bytes: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ClearPreview {
+    pub events_count: u64,
+    pub candidates_count: u64,
+    pub observations_count: u64,
+    pub judgments_count: u64,
+    pub provider_attempts_count: u64,
+    pub snapshots_count: u64,
+    pub session_cursors_count: u64,
+    pub feedback_proposals_count: u64,
+    pub calibrations_count: u64,
+    pub total_records: u64,
+    pub requires_apply: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ClearReport {
+    pub records_cleared: u64,
+    pub stamp_before: LedgerStamp,
+    pub stamp_after: LedgerStamp,
+    pub affected_provenance: &'static str,
+    pub preflight_headroom_bytes: u64,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct RetainedStats {
+    pub as_of_unix_ms: i64,
+    pub cutoff_unix_ms: i64,
+    pub total_events: u64,
+    pub active_events: u64,
+    pub expired_events: u64,
+    pub active_judgments: u64,
+    pub active_observations: u64,
+    pub active_snapshots: u64,
+}
+
+/// Formats a unix millisecond timestamp as ISO-8601 UTC string (e.g. `2026-09-01T00:00:00Z`).
+pub fn format_unix_ms(ms: i64) -> String {
+    let secs = ms.div_euclid(1000);
+    let rem_ms = ms.rem_euclid(1000);
+    let days = secs.div_euclid(86400);
+    let rem_secs = secs.rem_euclid(86400);
+    let (y, m, d) = civil_from_days(days);
+    let hour = rem_secs / 3600;
+    let min = (rem_secs % 3600) / 60;
+    let sec = rem_secs % 60;
+    if rem_ms == 0 {
+        format!("{y:04}-{m:02}-{d:02}T{hour:02}:{min:02}:{sec:02}Z")
+    } else {
+        format!("{y:04}-{m:02}-{d:02}T{hour:02}:{min:02}:{sec:02}.{rem_ms:03}Z")
+    }
+}
+
+/// Howard Hinnant's algorithm for days since unix epoch (1970-01-01) from civil date.
+pub fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146097 + doe - 719468
+}
+
+/// Howard Hinnant's algorithm for civil date from days since unix epoch (1970-01-01).
+pub fn civil_from_days(z: i64) -> (i64, i64, i64) {
+    let z = z + 719468;
+    let era = if z >= 0 { z } else { z - 146096 } / 146097;
+    let doe = z - era * 146097;
+    let yoe = (doe - doe / 1024 + doe / 1460 - doe / 146096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    (y, m, d)
+}
+
+/// Parses a date or cutoff string into a unix timestamp in milliseconds.
+/// Supports:
+/// - Relative durations: "30d", "7d", "24h"
+/// - ISO date: "YYYY-MM-DD" (UTC midnight)
+/// - ISO timestamp: "YYYY-MM-DDTHH:MM:SSZ" or "YYYY-MM-DDTHH:MM:SS"
+/// - Unix timestamp (ms or sec)
+pub fn parse_cutoff_to_unix_ms(input: &str, now_unix_ms: i64) -> Result<i64, String> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Err("Cutoff date cannot be empty".into());
+    }
+    if let Some(days_str) = trimmed.strip_suffix('d') {
+        let days = days_str.parse::<i64>().map_err(|_| format!("Invalid days duration: '{trimmed}'"))?;
+        let ms = days.checked_mul(86_400_000).ok_or_else(|| "Duration overflow".to_string())?;
+        return Ok(now_unix_ms.saturating_sub(ms));
+    }
+    if let Some(hours_str) = trimmed.strip_suffix('h') {
+        let hours = hours_str.parse::<i64>().map_err(|_| format!("Invalid hours duration: '{trimmed}'"))?;
+        let ms = hours.checked_mul(3_600_000).ok_or_else(|| "Duration overflow".to_string())?;
+        return Ok(now_unix_ms.saturating_sub(ms));
+    }
+    if let Ok(num) = trimmed.parse::<i64>() {
+        if num > 0 && num < 10_000_000_000 {
+            return Ok(num * 1000);
+        }
+        return Ok(num);
+    }
+    let date_part = if let Some((d, _)) = trimmed.split_once('T') {
+        d
+    } else if let Some((d, _)) = trimmed.split_once(' ') {
+        d
+    } else {
+        trimmed
+    };
+    let parts: Vec<&str> = date_part.split('-').collect();
+    if parts.len() != 3 {
+        return Err(format!("Invalid date format: '{trimmed}'. Expected YYYY-MM-DD, ISO timestamp, or duration like '30d'"));
+    }
+    let y = parts[0].parse::<i64>().map_err(|_| format!("Invalid year in '{trimmed}'"))?;
+    let m = parts[1].parse::<i64>().map_err(|_| format!("Invalid month in '{trimmed}'"))?;
+    let d = parts[2].parse::<i64>().map_err(|_| format!("Invalid day in '{trimmed}'"))?;
+    if !(1..=12).contains(&m) || !(1..=31).contains(&d) {
+        return Err(format!("Date out of range in '{trimmed}'"));
+    }
+    let days = days_from_civil(y, m, d);
+    let mut ms = days.checked_mul(86_400_000).ok_or_else(|| "Date overflow".to_string())?;
+
+    let time_str = if let Some((_, t)) = trimmed.split_once('T') {
+        Some(t.trim_end_matches('Z'))
+    } else if let Some((_, t)) = trimmed.split_once(' ') {
+        Some(t.trim_end_matches('Z'))
+    } else {
+        None
+    };
+
+    if let Some(t) = time_str {
+        let t_parts: Vec<&str> = t.split(':').collect();
+        if t_parts.len() >= 2 {
+            let hour = t_parts[0].parse::<i64>().map_err(|_| format!("Invalid hour in '{trimmed}'"))?;
+            let min = t_parts[1].parse::<i64>().map_err(|_| format!("Invalid minute in '{trimmed}'"))?;
+            let sec = if t_parts.len() >= 3 {
+                t_parts[2].parse::<f64>().map_err(|_| format!("Invalid second in '{trimmed}'"))?
+            } else {
+                0.0
+            };
+            let time_ms = (hour * 3600 + min * 60) * 1000 + (sec * 1000.0) as i64;
+            ms += time_ms;
+        }
+    }
+
+    Ok(ms)
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct LedgerStatusReport {
     pub status: &'static str,
     pub schema_version: Option<u32>,
@@ -447,6 +642,8 @@ pub struct LedgerStatusReport {
     pub data_generation: Option<u64>,
     pub is_read_only: bool,
     pub database_path: PathBuf,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cleanup_debt: Option<CleanupDebt>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1793,10 +1990,16 @@ pub fn ledger_status(
                     data_generation: None,
                     is_read_only: false,
                     database_path,
+                    cleanup_debt: None,
                 }),
                 Ok(LedgerOpen::ReadOnly(store)) => {
                     let stamp = store.stamp();
                     let ver = store.schema_version().ok();
+                    let now_ms = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis() as i64;
+                    let cleanup_debt = store.cleanup_debt(now_ms).ok();
                     Ok(LedgerStatusReport {
                         status: "read_only",
                         schema_version: ver,
@@ -1805,6 +2008,7 @@ pub fn ledger_status(
                         data_generation: Some(stamp.data_generation),
                         is_read_only: true,
                         database_path,
+                        cleanup_debt,
                     })
                 }
                 Ok(LedgerOpen::Ready(store)) => {
@@ -1815,6 +2019,11 @@ pub fn ledger_status(
                     } else {
                         "needs_migration"
                     };
+                    let now_ms = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis() as i64;
+                    let cleanup_debt = store.cleanup_debt(now_ms).ok();
                     Ok(LedgerStatusReport {
                         status,
                         schema_version: ver,
@@ -1823,6 +2032,7 @@ pub fn ledger_status(
                         data_generation: Some(stamp.data_generation),
                         is_read_only: false,
                         database_path,
+                        cleanup_debt,
                     })
                 }
                 Ok(LedgerOpen::Disabled) => Ok(LedgerStatusReport {
@@ -1833,6 +2043,7 @@ pub fn ledger_status(
                     data_generation: None,
                     is_read_only: false,
                     database_path,
+                    cleanup_debt: None,
                 }),
                 Err(StoreError::WrongStore) => Ok(LedgerStatusReport {
                     status: "wrong_store",
@@ -1842,6 +2053,7 @@ pub fn ledger_status(
                     data_generation: None,
                     is_read_only: false,
                     database_path,
+                    cleanup_debt: None,
                 }),
                 Err(e) => Err(e),
             }
@@ -2037,7 +2249,7 @@ impl LedgerStore {
             MaintenanceKind::Migration => db_and_wal_bytes
                 .checked_add(2 * 1024 * 1024)
                 .ok_or(StoreError::Quota)?,
-            MaintenanceKind::Prune => 2 * 1024 * 1024,
+            MaintenanceKind::Prune | MaintenanceKind::Clear => 2 * 1024 * 1024,
         };
         Ok(estimated)
     }
@@ -2082,6 +2294,9 @@ impl LedgerStore {
                 }
                 MaintenanceKind::Prune => {
                     "prune operation exceeds remaining quota headroom; run checkpoint_truncate to reclaim WAL space"
+                }
+                MaintenanceKind::Clear => {
+                    "clear operation exceeds remaining quota headroom; run checkpoint_truncate to reclaim WAL space"
                 }
             };
             return Err(MaintenanceError::QuotaExceeded {
@@ -2169,6 +2384,303 @@ impl LedgerStore {
         Ok(meta.len())
     }
 
+    /// Queries cleanup debt for events and records older than the logical retention policy (30 days).
+    pub fn cleanup_debt(&self, as_of_unix_ms: i64) -> Result<CleanupDebt, StoreError> {
+        let cutoff = as_of_unix_ms.saturating_sub(DEFAULT_RETENTION_MS);
+        let expired_events: i64 = self.connection.query_row(
+            "SELECT count(*) FROM ranking_events WHERE created_at_unix_ms < ?1",
+            [cutoff],
+            |r| r.get(0),
+        )?;
+        let unreferenced_snapshots: i64 = self.connection.query_row(
+            "SELECT count(*) FROM roster_snapshots
+             WHERE snapshot_id NOT IN (SELECT snapshot_id FROM ranking_events WHERE snapshot_id IS NOT NULL)",
+            [],
+            |r| r.get(0),
+        )?;
+        let expired_observations: i64 = self.connection.query_row(
+            "SELECT count(*) FROM observations
+             WHERE attributed_event_id IN (SELECT event_id FROM ranking_events WHERE created_at_unix_ms < ?1)
+                OR (attributed_event_id IS NULL AND observed_at_unix_ms < ?1)",
+            [cutoff],
+            |r| r.get(0),
+        )?;
+        let expired_judgments: i64 = self.connection.query_row(
+            "SELECT count(*) FROM judgments
+             WHERE attributed_event_id IN (SELECT event_id FROM ranking_events WHERE created_at_unix_ms < ?1)
+                OR created_at_unix_ms < ?1",
+            [cutoff],
+            |r| r.get(0),
+        )?;
+
+        let freelist_count: i64 = self.connection.query_row("PRAGMA freelist_count", [], |r| r.get(0))?;
+        let page_size: i64 = self.connection.query_row("PRAGMA page_size", [], |r| r.get(0))?;
+        let freelist_bytes = (freelist_count.max(0) as u64).saturating_mul(page_size.max(0) as u64);
+
+        let has_debt = expired_events > 0 || unreferenced_snapshots > 0 || expired_observations > 0 || expired_judgments > 0 || freelist_bytes > 1024 * 1024;
+
+        Ok(CleanupDebt {
+            expired_events: expired_events as u64,
+            unreferenced_snapshots: unreferenced_snapshots as u64,
+            expired_observations: expired_observations as u64,
+            expired_judgments: expired_judgments as u64,
+            freelist_bytes,
+            has_debt,
+        })
+    }
+
+    /// Queries statistics over active records, excluding records older than 30 days relative to versioned as_of timestamp.
+    pub fn query_retained_stats(&self, as_of_unix_ms: i64) -> Result<RetainedStats, StoreError> {
+        let cutoff = as_of_unix_ms.saturating_sub(DEFAULT_RETENTION_MS);
+        let total_events: i64 = self.connection.query_row(
+            "SELECT count(*) FROM ranking_events",
+            [],
+            |row| row.get(0),
+        )?;
+        let active_events: i64 = self.connection.query_row(
+            "SELECT count(*) FROM ranking_events WHERE created_at_unix_ms >= ?1",
+            [cutoff],
+            |row| row.get(0),
+        )?;
+        let expired_events = total_events.saturating_sub(active_events);
+        let active_judgments: i64 = self.connection.query_row(
+            "SELECT count(*) FROM judgments j JOIN ranking_events e ON j.attributed_event_id = e.event_id WHERE e.created_at_unix_ms >= ?1",
+            [cutoff],
+            |row| row.get(0),
+        )?;
+        let active_observations: i64 = self.connection.query_row(
+            "SELECT count(*) FROM observations WHERE (attributed_event_id IS NULL AND observed_at_unix_ms >= ?1) OR attributed_event_id IN (SELECT event_id FROM ranking_events WHERE created_at_unix_ms >= ?1)",
+            [cutoff],
+            |row| row.get(0),
+        )?;
+        let active_snapshots: i64 = self.connection.query_row(
+            "SELECT count(DISTINCT snapshot_id) FROM ranking_events WHERE created_at_unix_ms >= ?1 AND snapshot_id IS NOT NULL",
+            [cutoff],
+            |row| row.get(0),
+        )?;
+        Ok(RetainedStats {
+            as_of_unix_ms,
+            cutoff_unix_ms: cutoff,
+            total_events: total_events as u64,
+            active_events: active_events as u64,
+            expired_events: expired_events as u64,
+            active_judgments: active_judgments as u64,
+            active_observations: active_observations as u64,
+            active_snapshots: active_snapshots as u64,
+        })
+    }
+
+    /// Previews retention cleanup for records created before cutoff timestamp without mutating storage.
+    pub fn prune_preview(&self, cutoff_unix_ms: i64) -> Result<PrunePreview, StoreError> {
+        let events_to_prune: i64 = self.connection.query_row(
+            "SELECT count(*) FROM ranking_events WHERE created_at_unix_ms < ?1",
+            [cutoff_unix_ms],
+            |row| row.get(0),
+        )?;
+        let candidates_to_prune: i64 = self.connection.query_row(
+            "SELECT count(*) FROM ranking_candidates WHERE event_id IN (SELECT event_id FROM ranking_events WHERE created_at_unix_ms < ?1)",
+            [cutoff_unix_ms],
+            |row| row.get(0),
+        )?;
+        let judgments_to_prune: i64 = self.connection.query_row(
+            "SELECT count(*) FROM judgments WHERE attributed_event_id IN (SELECT event_id FROM ranking_events WHERE created_at_unix_ms < ?1)",
+            [cutoff_unix_ms],
+            |row| row.get(0),
+        )?;
+        let observations_to_prune: i64 = self.connection.query_row(
+            "SELECT count(*) FROM observations WHERE attributed_event_id IN (SELECT event_id FROM ranking_events WHERE created_at_unix_ms < ?1) OR (attributed_event_id IS NULL AND observed_at_unix_ms < ?1)",
+            [cutoff_unix_ms],
+            |row| row.get(0),
+        )?;
+        let provider_attempts_to_prune: i64 = self.connection.query_row(
+            "SELECT count(*) FROM provider_attempts WHERE owner_event_id IN (SELECT event_id FROM ranking_events WHERE created_at_unix_ms < ?1)",
+            [cutoff_unix_ms],
+            |row| row.get(0),
+        )?;
+
+        let shared_snapshots_preserved: i64 = self.connection.query_row(
+            "SELECT count(DISTINCT snapshot_id) FROM ranking_events
+             WHERE snapshot_id IS NOT NULL
+               AND created_at_unix_ms >= ?1
+               AND snapshot_id IN (SELECT snapshot_id FROM ranking_events WHERE created_at_unix_ms < ?1)",
+            [cutoff_unix_ms],
+            |row| row.get(0),
+        )?;
+
+        let snapshots_to_prune: i64 = self.connection.query_row(
+            "SELECT count(*) FROM roster_snapshots
+             WHERE created_at_unix_ms < ?1
+               AND snapshot_id NOT IN (
+                   SELECT snapshot_id FROM ranking_events WHERE snapshot_id IS NOT NULL AND created_at_unix_ms >= ?1
+               )",
+            [cutoff_unix_ms],
+            |row| row.get(0),
+        )?;
+
+        Ok(PrunePreview {
+            cutoff_unix_ms,
+            cutoff_iso: format_unix_ms(cutoff_unix_ms),
+            events_to_prune: events_to_prune as u64,
+            candidates_to_prune: candidates_to_prune as u64,
+            observations_to_prune: observations_to_prune as u64,
+            judgments_to_prune: judgments_to_prune as u64,
+            provider_attempts_to_prune: provider_attempts_to_prune as u64,
+            snapshots_to_prune: snapshots_to_prune as u64,
+            shared_snapshots_preserved: shared_snapshots_preserved as u64,
+            requires_apply: true,
+        })
+    }
+
+    /// Prunes events created before cutoff timestamp and their dependent records after preflighting headroom.
+    /// Advances data generation to invalidate derived priors and dependent decisions.
+    pub fn prune_apply(
+        &mut self,
+        cutoff_unix_ms: i64,
+        clock: EntryClock,
+        cx: &Cx,
+        expected_stamp: LedgerStamp,
+    ) -> Result<PruneReport, MaintenanceError> {
+        if self.read_only {
+            return Err(MaintenanceError::Store(StoreError::Permissions));
+        }
+        check_work(clock, cx)?;
+        self.directory.verify_database_file(&self.file, clock, cx)?;
+        let preflight = self.preflight_maintenance(MaintenanceKind::Prune)?;
+        refresh_busy_limit(&self.connection, clock, cx)?;
+
+        let tx = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        check_stamp(&tx, expected_stamp)?;
+
+        let preview = {
+            let events_to_prune: i64 = tx.query_row(
+                "SELECT count(*) FROM ranking_events WHERE created_at_unix_ms < ?1",
+                [cutoff_unix_ms],
+                |row| row.get(0),
+            )?;
+            let candidates_to_prune: i64 = tx.query_row(
+                "SELECT count(*) FROM ranking_candidates WHERE event_id IN (SELECT event_id FROM ranking_events WHERE created_at_unix_ms < ?1)",
+                [cutoff_unix_ms],
+                |row| row.get(0),
+            )?;
+            let judgments_to_prune: i64 = tx.query_row(
+                "SELECT count(*) FROM judgments WHERE attributed_event_id IN (SELECT event_id FROM ranking_events WHERE created_at_unix_ms < ?1)",
+                [cutoff_unix_ms],
+                |row| row.get(0),
+            )?;
+            let observations_to_prune: i64 = tx.query_row(
+                "SELECT count(*) FROM observations WHERE attributed_event_id IN (SELECT event_id FROM ranking_events WHERE created_at_unix_ms < ?1) OR (attributed_event_id IS NULL AND observed_at_unix_ms < ?1)",
+                [cutoff_unix_ms],
+                |row| row.get(0),
+            )?;
+            let provider_attempts_to_prune: i64 = tx.query_row(
+                "SELECT count(*) FROM provider_attempts WHERE owner_event_id IN (SELECT event_id FROM ranking_events WHERE created_at_unix_ms < ?1)",
+                [cutoff_unix_ms],
+                |row| row.get(0),
+            )?;
+            let shared_snapshots_preserved: i64 = tx.query_row(
+                "SELECT count(DISTINCT snapshot_id) FROM ranking_events
+                 WHERE snapshot_id IS NOT NULL
+                   AND created_at_unix_ms >= ?1
+                   AND snapshot_id IN (SELECT snapshot_id FROM ranking_events WHERE created_at_unix_ms < ?1)",
+                [cutoff_unix_ms],
+                |row| row.get(0),
+            )?;
+            let snapshots_to_prune: i64 = tx.query_row(
+                "SELECT count(*) FROM roster_snapshots
+                 WHERE created_at_unix_ms < ?1
+                   AND snapshot_id NOT IN (
+                       SELECT snapshot_id FROM ranking_events WHERE snapshot_id IS NOT NULL AND created_at_unix_ms >= ?1
+                   )",
+                [cutoff_unix_ms],
+                |row| row.get(0),
+            )?;
+            (
+                events_to_prune as u64,
+                candidates_to_prune as u64,
+                observations_to_prune as u64,
+                judgments_to_prune as u64,
+                provider_attempts_to_prune as u64,
+                snapshots_to_prune as u64,
+                shared_snapshots_preserved as u64,
+            )
+        };
+
+        let (
+            events_pruned,
+            candidates_pruned,
+            observations_pruned,
+            judgments_pruned,
+            provider_attempts_pruned,
+            snapshots_pruned,
+            shared_snapshots_preserved,
+        ) = preview;
+
+        if events_pruned > 0 || observations_pruned > 0 || snapshots_pruned > 0 {
+            tx.execute(
+                "DELETE FROM judgments WHERE attributed_event_id IN (SELECT event_id FROM ranking_events WHERE created_at_unix_ms < ?1)",
+                [cutoff_unix_ms],
+            )?;
+            tx.execute(
+                "DELETE FROM observations WHERE attributed_event_id IN (SELECT event_id FROM ranking_events WHERE created_at_unix_ms < ?1) OR (attributed_event_id IS NULL AND observed_at_unix_ms < ?1)",
+                [cutoff_unix_ms],
+            )?;
+            tx.execute(
+                "DELETE FROM provider_attempts WHERE owner_event_id IN (SELECT event_id FROM ranking_events WHERE created_at_unix_ms < ?1)",
+                [cutoff_unix_ms],
+            )?;
+            tx.execute(
+                "DELETE FROM ranking_candidates WHERE event_id IN (SELECT event_id FROM ranking_events WHERE created_at_unix_ms < ?1)",
+                [cutoff_unix_ms],
+            )?;
+            tx.execute(
+                "DELETE FROM ranking_events WHERE created_at_unix_ms < ?1",
+                [cutoff_unix_ms],
+            )?;
+            tx.execute(
+                "DELETE FROM roster_snapshots
+                 WHERE created_at_unix_ms < ?1
+                   AND snapshot_id NOT IN (SELECT snapshot_id FROM ranking_events WHERE snapshot_id IS NOT NULL)",
+                [cutoff_unix_ms],
+            )?;
+        }
+
+        let new_data_gen = expected_stamp
+            .data_generation
+            .checked_add(1)
+            .ok_or(StoreError::GenerationExhausted)?;
+
+        tx.execute(
+            "UPDATE store_meta SET data_generation = ?1 WHERE singleton = 1",
+            [new_data_gen as i64],
+        )?;
+
+        self.directory.verify_database_file(&self.file, clock, cx)?;
+        check_work(clock, cx)?;
+        tx.commit()?;
+
+        let stamp_before = self.stamp;
+        self.stamp.data_generation = new_data_gen;
+        let stamp_after = self.stamp;
+
+        Ok(PruneReport {
+            cutoff_unix_ms,
+            cutoff_iso: format_unix_ms(cutoff_unix_ms),
+            events_pruned,
+            candidates_pruned,
+            observations_pruned,
+            judgments_pruned,
+            provider_attempts_pruned,
+            snapshots_pruned,
+            shared_snapshots_preserved,
+            stamp_before,
+            stamp_after,
+            affected_provenance: "ordinary-retention-prune",
+            preflight_headroom_bytes: preflight.current_occupied_bytes,
+        })
+    }
+
     /// Prunes events created before cutoff timestamp and their dependent records after preflighting headroom.
     pub fn prune_events_before(
         &mut self,
@@ -2177,65 +2689,63 @@ impl LedgerStore {
         cx: &Cx,
         expected_stamp: LedgerStamp,
     ) -> Result<u64, MaintenanceError> {
+        let report = self.prune_apply(cutoff_unix_ms, clock, cx, expected_stamp)?;
+        Ok(report.events_pruned)
+    }
+
+    /// Previews clearing all mutable history without modifying storage.
+    pub fn clear_preview(&self) -> Result<ClearPreview, StoreError> {
+        let events_count: i64 = self.connection.query_row("SELECT count(*) FROM ranking_events", [], |r| r.get(0))?;
+        let candidates_count: i64 = self.connection.query_row("SELECT count(*) FROM ranking_candidates", [], |r| r.get(0))?;
+        let observations_count: i64 = self.connection.query_row("SELECT count(*) FROM observations", [], |r| r.get(0))?;
+        let judgments_count: i64 = self.connection.query_row("SELECT count(*) FROM judgments", [], |r| r.get(0))?;
+        let provider_attempts_count: i64 = self.connection.query_row("SELECT count(*) FROM provider_attempts", [], |r| r.get(0))?;
+        let snapshots_count: i64 = self.connection.query_row("SELECT count(*) FROM roster_snapshots", [], |r| r.get(0))?;
+        let session_cursors_count: i64 = self.connection.query_row("SELECT count(*) FROM session_cursors", [], |r| r.get(0))?;
+        let feedback_proposals_count: i64 = self.connection.query_row("SELECT count(*) FROM feedback_proposals", [], |r| r.get(0))?;
+        let calibrations_count: i64 = self.connection.query_row("SELECT count(*) FROM calibrations", [], |r| r.get(0))?;
+
+        let total = events_count
+            + candidates_count
+            + observations_count
+            + judgments_count
+            + provider_attempts_count
+            + snapshots_count
+            + session_cursors_count
+            + feedback_proposals_count
+            + calibrations_count;
+
+        Ok(ClearPreview {
+            events_count: events_count as u64,
+            candidates_count: candidates_count as u64,
+            observations_count: observations_count as u64,
+            judgments_count: judgments_count as u64,
+            provider_attempts_count: provider_attempts_count as u64,
+            snapshots_count: snapshots_count as u64,
+            session_cursors_count: session_cursors_count as u64,
+            feedback_proposals_count: feedback_proposals_count as u64,
+            calibrations_count: calibrations_count as u64,
+            total_records: total as u64,
+            requires_apply: true,
+        })
+    }
+
+    /// Clears all mutable history after preflighting headroom, advancing data generation.
+    pub fn clear_apply(
+        &mut self,
+        clock: EntryClock,
+        cx: &Cx,
+        expected_stamp: LedgerStamp,
+    ) -> Result<ClearReport, MaintenanceError> {
         if self.read_only {
             return Err(MaintenanceError::Store(StoreError::Permissions));
         }
         check_work(clock, cx)?;
         self.directory.verify_database_file(&self.file, clock, cx)?;
-        let _preflight = self.preflight_maintenance(MaintenanceKind::Prune)?;
+        let preflight = self.preflight_maintenance(MaintenanceKind::Clear)?;
         refresh_busy_limit(&self.connection, clock, cx)?;
 
-        let tx = self
-            .connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        check_stamp(&tx, expected_stamp)?;
-
-        let count: i64 = tx.query_row(
-            "SELECT count(*) FROM ranking_events WHERE created_at_unix_ms < ?1",
-            [cutoff_unix_ms],
-            |row| row.get(0),
-        )?;
-
-        if count > 0 {
-            tx.execute(
-                "DELETE FROM judgments WHERE attributed_event_id IN (SELECT event_id FROM ranking_events WHERE created_at_unix_ms < ?1)",
-                [cutoff_unix_ms],
-            )?;
-            tx.execute(
-                "DELETE FROM observations WHERE attributed_event_id IN (SELECT event_id FROM ranking_events WHERE created_at_unix_ms < ?1)",
-                [cutoff_unix_ms],
-            )?;
-            tx.execute(
-                "DELETE FROM provider_attempts WHERE owner_event_id IN (SELECT event_id FROM ranking_events WHERE created_at_unix_ms < ?1)",
-                [cutoff_unix_ms],
-            )?;
-            tx.execute(
-                "DELETE FROM ranking_events WHERE created_at_unix_ms < ?1",
-                [cutoff_unix_ms],
-            )?;
-        }
-
-        self.directory.verify_database_file(&self.file, clock, cx)?;
-        check_work(clock, cx)?;
-        tx.commit()?;
-
-        Ok(count as u64)
-    }
-
-    /// Advances the data generation and deletes mutable history, fencing stale writers.
-    pub fn clear(
-        &mut self,
-        clock: EntryClock,
-        cx: &Cx,
-        expected_stamp: LedgerStamp,
-    ) -> Result<LedgerStamp, StoreError> {
-        if self.read_only {
-            return Err(StoreError::Permissions);
-        }
-        check_work(clock, cx)?;
-        self.directory.verify_database_file(&self.file, clock, cx)?;
-        self.directory.admit_space()?;
-        refresh_busy_limit(&self.connection, clock, cx)?;
+        let preview = self.clear_preview()?;
 
         let tx = self
             .connection
@@ -2262,6 +2772,147 @@ impl LedgerStore {
         tx.execute("DELETE FROM session_cursors", [])?;
         tx.execute("DELETE FROM feedback_proposals", [])?;
         tx.execute("DELETE FROM calibrations", [])?;
+
+        self.directory.verify_database_file(&self.file, clock, cx)?;
+        check_work(clock, cx)?;
+        tx.commit()?;
+
+        let stamp_before = self.stamp;
+        self.stamp.data_generation = new_data_gen;
+        let stamp_after = self.stamp;
+
+        Ok(ClearReport {
+            records_cleared: preview.total_records,
+            stamp_before,
+            stamp_after,
+            affected_provenance: "explicit-ledger-clear",
+            preflight_headroom_bytes: preflight.current_occupied_bytes,
+        })
+    }
+
+    /// Advances the data generation and deletes mutable history, fencing stale writers.
+    pub fn clear(
+        &mut self,
+        clock: EntryClock,
+        cx: &Cx,
+        expected_stamp: LedgerStamp,
+    ) -> Result<LedgerStamp, StoreError> {
+        match self.clear_apply(clock, cx, expected_stamp) {
+            Ok(report) => Ok(report.stamp_after),
+            Err(MaintenanceError::Store(e)) => Err(e),
+            Err(MaintenanceError::QuotaExceeded { .. }) => Err(StoreError::Quota),
+            Err(MaintenanceError::InsufficientDiskSpace { .. }) => Err(StoreError::InsufficientSpace),
+            Err(MaintenanceError::Sqlite(_)) => Err(StoreError::Io),
+        }
+    }
+
+    /// Revises an existing judgment label, incrementing label_version and advancing data generation.
+    /// Fences concurrent stale writers and invalidates derived priors.
+    pub fn revise_judgment(
+        &mut self,
+        clock: EntryClock,
+        cx: &Cx,
+        judgment_id: &str,
+        new_label: JudgmentLabel,
+        provenance: &str,
+        updated_at_unix_ms: u64,
+        expected_stamp: LedgerStamp,
+    ) -> Result<LedgerStamp, StoreError> {
+        if self.read_only {
+            return Err(StoreError::Permissions);
+        }
+        check_work(clock, cx)?;
+        self.directory.verify_database_file(&self.file, clock, cx)?;
+        self.directory.admit_space()?;
+        refresh_busy_limit(&self.connection, clock, cx)?;
+
+        let tx = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        check_stamp(&tx, expected_stamp)?;
+
+        let current_version: i64 = tx
+            .query_row(
+                "SELECT label_version FROM judgments WHERE judgment_id = ?1",
+                [judgment_id],
+                |row| row.get(0),
+            )
+            .map_err(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => StoreError::InvalidRecord,
+                other => StoreError::from(other),
+            })?;
+
+        let new_version = current_version
+            .checked_add(1)
+            .ok_or(StoreError::GenerationExhausted)?;
+        let new_data_gen = expected_stamp
+            .data_generation
+            .checked_add(1)
+            .ok_or(StoreError::GenerationExhausted)?;
+
+        tx.execute(
+            "UPDATE judgments SET label = ?1, label_version = ?2, provenance = ?3, created_at_unix_ms = ?4 WHERE judgment_id = ?5",
+            params![
+                new_label.as_str(),
+                new_version,
+                provenance,
+                updated_at_unix_ms as i64,
+                judgment_id,
+            ],
+        )?;
+
+        tx.execute(
+            "UPDATE store_meta SET data_generation = ?1 WHERE singleton = 1",
+            [new_data_gen as i64],
+        )?;
+
+        self.directory.verify_database_file(&self.file, clock, cx)?;
+        check_work(clock, cx)?;
+        tx.commit()?;
+
+        self.stamp.data_generation = new_data_gen;
+        Ok(self.stamp)
+    }
+
+    /// Removes a judgment label, advancing data generation to invalidate derived priors.
+    pub fn remove_judgment(
+        &mut self,
+        clock: EntryClock,
+        cx: &Cx,
+        judgment_id: &str,
+        expected_stamp: LedgerStamp,
+    ) -> Result<LedgerStamp, StoreError> {
+        if self.read_only {
+            return Err(StoreError::Permissions);
+        }
+        check_work(clock, cx)?;
+        self.directory.verify_database_file(&self.file, clock, cx)?;
+        self.directory.admit_space()?;
+        refresh_busy_limit(&self.connection, clock, cx)?;
+
+        let tx = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        check_stamp(&tx, expected_stamp)?;
+
+        let rows_affected = tx.execute(
+            "DELETE FROM judgments WHERE judgment_id = ?1",
+            [judgment_id],
+        )?;
+
+        if rows_affected == 0 {
+            return Err(StoreError::InvalidRecord);
+        }
+
+        let new_data_gen = expected_stamp
+            .data_generation
+            .checked_add(1)
+            .ok_or(StoreError::GenerationExhausted)?;
+
+        tx.execute(
+            "UPDATE store_meta SET data_generation = ?1 WHERE singleton = 1",
+            [new_data_gen as i64],
+        )?;
 
         self.directory.verify_database_file(&self.file, clock, cx)?;
         check_work(clock, cx)?;

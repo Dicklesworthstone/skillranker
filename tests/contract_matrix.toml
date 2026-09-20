@@ -1266,6 +1266,29 @@ features = []
 status = "executed"
 
 [[boundaries]]
+id = "p5_ledger_retention_prune_clear"
+owner_bead = "sr-roadmap-l1i.6.5"
+member_beads = ["sr-roadmap-l1i.6.5"]
+phase = "P5"
+title = "Implement logical retention, cleanup debt, and explicit prune/clear"
+unit_property_tests = [
+    "tests/ledger_retention_contract.rs::boundary_dates_and_clock_policy_filters_expired_events",
+    "tests/ledger_retention_contract.rs::shared_referenced_snapshots_are_preserved_when_older_events_pruned",
+    "tests/ledger_retention_contract.rs::prune_dependency_graph_without_dangling_labels",
+    "tests/ledger_retention_contract.rs::revised_and_removed_labels_advance_generation_and_fence_stale_writers",
+    "tests/ledger_retention_contract.rs::prune_and_clear_preview_does_not_mutate_and_apply_mutates_and_fences",
+    "tests/ledger_retention_contract.rs::insufficient_reserve_preflight_fails_before_mutation",
+    "tests/ledger_retention_contract.rs::doctor_reports_cleanup_debt_when_ledger_has_expired_records",
+    "tests/ledger_retention_contract.rs::cli_ledger_prune_and_clear_e2e"
+]
+e2e_suite = "replay"
+e2e_cases = ["ledger-retention-prune-clear"]
+assertion_ids = ["ledger_retention_prune_clear_enforced"]
+platforms = ["linux"]
+features = []
+status = "executed"
+
+[[boundaries]]
 id = "p5_offline_replay"
 owner_bead = "sr-roadmap-l1i.6.16"
 member_beads = ["sr-roadmap-l1i.6.16"]
@@ -1454,7 +1477,7 @@ status = "planned"
 [[boundaries]]
 id = "p5_acceptance_gate"
 owner_bead = "sr-roadmap-l1i.6.29"
-member_beads = ["sr-roadmap-l1i.6.29", "sr-roadmap-l1i.6.10", "sr-roadmap-l1i.6.11", "sr-roadmap-l1i.6.12", "sr-roadmap-l1i.6.13", "sr-roadmap-l1i.6.14", "sr-roadmap-l1i.6.15", "sr-roadmap-l1i.6.17", "sr-roadmap-l1i.6.18", "sr-roadmap-l1i.6.19", "sr-roadmap-l1i.6.2", "sr-roadmap-l1i.6.20", "sr-roadmap-l1i.6.21", "sr-roadmap-l1i.6.22", "sr-roadmap-l1i.6.23", "sr-roadmap-l1i.6.24", "sr-roadmap-l1i.6.25", "sr-roadmap-l1i.6.26", "sr-roadmap-l1i.6.27", "sr-roadmap-l1i.6.3", "sr-roadmap-l1i.6.5", "sr-roadmap-l1i.6.6", "sr-roadmap-l1i.6.7", "sr-roadmap-l1i.6.8", "sr-roadmap-l1i.6.9"]
+member_beads = ["sr-roadmap-l1i.6.29", "sr-roadmap-l1i.6.10", "sr-roadmap-l1i.6.11", "sr-roadmap-l1i.6.12", "sr-roadmap-l1i.6.13", "sr-roadmap-l1i.6.14", "sr-roadmap-l1i.6.15", "sr-roadmap-l1i.6.17", "sr-roadmap-l1i.6.18", "sr-roadmap-l1i.6.19", "sr-roadmap-l1i.6.2", "sr-roadmap-l1i.6.20", "sr-roadmap-l1i.6.21", "sr-roadmap-l1i.6.22", "sr-roadmap-l1i.6.23", "sr-roadmap-l1i.6.24", "sr-roadmap-l1i.6.25", "sr-roadmap-l1i.6.26", "sr-roadmap-l1i.6.27", "sr-roadmap-l1i.6.3", "sr-roadmap-l1i.6.6", "sr-roadmap-l1i.6.7", "sr-roadmap-l1i.6.8", "sr-roadmap-l1i.6.9"]
 phase = "P5"
 title = "Accept local evidence, faithful replay and bounded evaluation"
 unit_property_tests = ["tests/p5_gate.rs::all_p5_contracts_verified"]

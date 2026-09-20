@@ -114,11 +114,24 @@ pub enum RosterCheck<'a> {
     Timeout,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum LedgerCheck {
+    NotAvailable,
+    Missing,
+    Ready {
+        cleanup_debt: Option<crate::storage::CleanupDebt>,
+    },
+    ReadOnly {
+        cleanup_debt: Option<crate::storage::CleanupDebt>,
+    },
+}
+
 pub struct Inputs<'a> {
     pub config: &'a ResolvedConfig,
     pub gate: EffectGate,
     pub roster: RosterCheck<'a>,
     pub transport: TransportState,
+    pub ledger: LedgerCheck,
 }
 
 /// Implemented local commands a user can still run, whatever failed.
@@ -250,6 +263,38 @@ pub fn report(inputs: &Inputs<'_>) -> Value {
         }),
     };
 
+    let ledger = match &inputs.ledger {
+        LedgerCheck::Ready { cleanup_debt } => {
+            let has_debt = cleanup_debt.as_ref().map(|d| d.has_debt).unwrap_or(false);
+            let next = if has_debt {
+                step(
+                    "ledger",
+                    "Run `sr ledger prune --apply` to clean up expired events and reclaim space.",
+                )
+            } else {
+                Value::Null
+            };
+            json!({
+                "state": "ready",
+                "blocks_ranking": false,
+                "cleanup_debt": cleanup_debt,
+                "next_step": next,
+            })
+        }
+        LedgerCheck::ReadOnly { cleanup_debt } => json!({
+            "state": "read-only",
+            "blocks_ranking": false,
+            "cleanup_debt": cleanup_debt,
+            "next_step": null,
+        }),
+        LedgerCheck::Missing | LedgerCheck::NotAvailable => json!({
+            "state": "not-available",
+            "blocks_ranking": false,
+            "cleanup_debt": null,
+            "next_step": null,
+        }),
+    };
+
     let effective = config.effective();
     json!({
         "schema_version": 1,
@@ -264,8 +309,7 @@ pub fn report(inputs: &Inputs<'_>) -> Value {
             "credential": credential,
             "network": network,
             "transport": transport,
-            // Optional history is not part of this build; it never blocks ranking.
-            "ledger": {"state": "not-available", "blocks_ranking": false, "next_step": null},
+            "ledger": ledger,
             "hook": {
                 "mode": effective.hook_mode().as_str(),
                 "mode_sources": sources(config, crate::config::SettingKey::HookMode),

@@ -12,7 +12,7 @@ use std::ffi::OsString;
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
-const HELP: &str = "SkillRanker — powered by TypeSafe.ai Jev\n\nUsage: sr [rank] [--context FILE | --transcript FILE --harness NAME | --session PATH | --latest]\n                 [--roster FILE] [--require-skill ID] [--dry-run [--shortlist-ids ID,...]]\n                 [--offline | --allow-network] [--json | --table]\n                 [--top N] [--shortlist M] [--gate FLOAT] [--fits FLOAT]\n                 [--explain] [--why-not ID] [--cursor TOKEN] [--no-tools] [--no-cache]\n                 [--save-case FILE]\n       sr doctor [--json | --table] [--offline | --allow-network]\n       sr doctor --config [--json | --table] [--top N] [--shortlist N]\n       sr roster [--json] [--limit N] [--cursor TOKEN]\n       sr roster --snapshot FILE | --diff FILE\n       sr capabilities [--json]\n       sr demo --case <useful|none|explicit|unavailable> [--json | --table]\n       sr replay FILE [--policy FILE] [--compare-policy FILE] [--json | --table]\n       sr ledger <init|migrate|status> [--apply] [--json]\n       sr --help | --version\n\nRank the next step of an agent session using TypeSafe Jev.\nRequires your own TypeSafe API key (TYPESAFE_API_KEY) and network consent (--allow-network).\n";
+const HELP: &str = "SkillRanker — powered by TypeSafe.ai Jev\n\nUsage: sr [rank] [--context FILE | --transcript FILE --harness NAME | --session PATH | --latest]\n                 [--roster FILE] [--require-skill ID] [--dry-run [--shortlist-ids ID,...]]\n                 [--offline | --allow-network] [--json | --table]\n                 [--top N] [--shortlist M] [--gate FLOAT] [--fits FLOAT]\n                 [--explain] [--why-not ID] [--cursor TOKEN] [--no-tools] [--no-cache]\n                 [--save-case FILE]\n       sr doctor [--json | --table] [--offline | --allow-network]\n       sr doctor --config [--json | --table] [--top N] [--shortlist N]\n       sr roster [--json] [--limit N] [--cursor TOKEN]\n       sr roster --snapshot FILE | --diff FILE\n       sr capabilities [--json]\n       sr demo --case <useful|none|explicit|unavailable> [--json | --table]\n       sr replay FILE [--policy FILE] [--compare-policy FILE] [--json | --table]\n       sr ledger <init|migrate|status|prune|clear> [--before TIME] [--apply] [--json]\n       sr --help | --version\n\nRank the next step of an agent session using TypeSafe Jev.\nRequires your own TypeSafe API key (TYPESAFE_API_KEY) and network consent (--allow-network).\n";
 
 fn command() -> Command {
     let mut doctor = Command::new("doctor")
@@ -368,6 +368,66 @@ fn command() -> Command {
                             Arg::new("help")
                                 .long("help")
                                 .short('h')
+                                .action(ArgAction::SetTrue),
+                        )
+                        .arg(
+                            Arg::new("json")
+                                .long("json")
+                                .action(ArgAction::SetTrue),
+                        )
+                        .arg(
+                            Arg::new("dir")
+                                .long("dir")
+                                .help("Custom ledger directory")
+                                .action(ArgAction::Set),
+                        ),
+                )
+                .subcommand(
+                    Command::new("prune")
+                        .disable_help_flag(true)
+                        .arg(
+                            Arg::new("help")
+                                .long("help")
+                                .short('h')
+                                .action(ArgAction::SetTrue),
+                        )
+                        .arg(
+                            Arg::new("before")
+                                .long("before")
+                                .help("Cutoff date (YYYY-MM-DD), timestamp, or duration (30d)")
+                                .action(ArgAction::Set),
+                        )
+                        .arg(
+                            Arg::new("apply")
+                                .long("apply")
+                                .help("Apply the retention cleanup")
+                                .action(ArgAction::SetTrue),
+                        )
+                        .arg(
+                            Arg::new("json")
+                                .long("json")
+                                .action(ArgAction::SetTrue),
+                        )
+                        .arg(
+                            Arg::new("dir")
+                                .long("dir")
+                                .help("Custom ledger directory")
+                                .action(ArgAction::Set),
+                        ),
+                )
+                .subcommand(
+                    Command::new("clear")
+                        .disable_help_flag(true)
+                        .arg(
+                            Arg::new("help")
+                                .long("help")
+                                .short('h')
+                                .action(ArgAction::SetTrue),
+                        )
+                        .arg(
+                            Arg::new("apply")
+                                .long("apply")
+                                .help("Apply clearing all history")
                                 .action(ArgAction::SetTrue),
                         )
                         .arg(
@@ -740,6 +800,242 @@ fn ledger_command(
                     status_report.target_version,
                     status_report.is_read_only
                 ))
+            }
+        }
+        "prune" => {
+            let before_str = sub_matches.get_one::<String>("before").map(|s| s.as_str());
+            let now_ms = clock.now().as_millis() as i64;
+            let cutoff_ms = match before_str {
+                Some(s) => crate::storage::parse_cutoff_to_unix_ms(s, now_ms)
+                    .map_err(|err| (2u8, "invalid-arguments", err))?,
+                None => now_ms.saturating_sub(crate::storage::DEFAULT_RETENTION_MS),
+            };
+            let apply = sub_matches.get_flag("apply");
+            if apply {
+                let open_res = crate::storage::open_ledger(
+                    &invocation,
+                    &cx,
+                    crate::storage::LedgerAccess::ExistingOnly,
+                    location,
+                )
+                .map_err(|err| {
+                    (9u8, "storage-failure", format!("Failed to open ledger for prune: {err}"))
+                })?;
+
+                let mut store = match open_res {
+                    crate::storage::LedgerOpen::Ready(store) => store,
+                    crate::storage::LedgerOpen::Missing => {
+                        return Err((
+                            9u8,
+                            "storage-failure",
+                            "Ledger database is missing; run `sr ledger init` first".into(),
+                        ));
+                    }
+                    crate::storage::LedgerOpen::ReadOnly(_) => {
+                        return Err((
+                            9u8,
+                            "storage-failure",
+                            "Ledger is opened read-only; prune mutations are blocked".into(),
+                        ));
+                    }
+                    crate::storage::LedgerOpen::Disabled => {
+                        return Err((
+                            9u8,
+                            "storage-failure",
+                            "Ledger persistence is disabled".into(),
+                        ));
+                    }
+                };
+
+                let stamp = store.stamp();
+                let report = store
+                    .prune_apply(cutoff_ms, invocation.clock(), &cx, stamp)
+                    .map_err(|err| {
+                        (9u8, "storage-failure", format!("Failed to apply prune: {err}"))
+                    })?;
+
+                if wants_json {
+                    serde_json::to_string_pretty(&report)
+                        .map(|s| format!("{s}\n"))
+                        .map_err(|e| (9u8, "storage-failure", e.to_string()))
+                } else {
+                    Ok(format!(
+                        "Pruned historical records before {} (cutoff {}):\n  Events pruned: {}\n  Candidates pruned: {}\n  Observations pruned: {}\n  Judgments pruned: {}\n  Provider attempts pruned: {}\n  Snapshots pruned: {}\n  Shared snapshots preserved: {}\n  New data generation: {}\n",
+                        report.cutoff_iso,
+                        report.cutoff_unix_ms,
+                        report.events_pruned,
+                        report.candidates_pruned,
+                        report.observations_pruned,
+                        report.judgments_pruned,
+                        report.provider_attempts_pruned,
+                        report.snapshots_pruned,
+                        report.shared_snapshots_preserved,
+                        report.stamp_after.data_generation
+                    ))
+                }
+            } else {
+                let open_res = crate::storage::open_ledger(
+                    &invocation,
+                    &cx,
+                    crate::storage::LedgerAccess::ExistingOnly,
+                    location,
+                )
+                .map_err(|err| {
+                    (9u8, "storage-failure", format!("Failed to open ledger for prune preview: {err}"))
+                })?;
+
+                let store = match open_res {
+                    crate::storage::LedgerOpen::Ready(store) => store,
+                    crate::storage::LedgerOpen::ReadOnly(store) => store,
+                    crate::storage::LedgerOpen::Missing => {
+                        return Err((
+                            9u8,
+                            "storage-failure",
+                            "Ledger database is missing; run `sr ledger init` first".into(),
+                        ));
+                    }
+                    crate::storage::LedgerOpen::Disabled => {
+                        return Err((
+                            9u8,
+                            "storage-failure",
+                            "Ledger persistence is disabled".into(),
+                        ));
+                    }
+                };
+
+                let preview = store.prune_preview(cutoff_ms).map_err(|err| {
+                    (9u8, "storage-failure", format!("Failed to preview prune: {err}"))
+                })?;
+
+                if wants_json {
+                    serde_json::to_string_pretty(&preview)
+                        .map(|s| format!("{s}\n"))
+                        .map_err(|e| (9u8, "storage-failure", e.to_string()))
+                } else {
+                    Ok(format!(
+                        "Prune preview for cutoff {} ({}):\n  Events to prune: {}\n  Candidates to prune: {}\n  Observations to prune: {}\n  Judgments to prune: {}\n  Provider attempts to prune: {}\n  Snapshots to prune: {}\n  Shared snapshots preserved: {}\nPass --apply to execute this retention cleanup.\n",
+                        preview.cutoff_iso,
+                        preview.cutoff_unix_ms,
+                        preview.events_to_prune,
+                        preview.candidates_to_prune,
+                        preview.observations_to_prune,
+                        preview.judgments_to_prune,
+                        preview.provider_attempts_to_prune,
+                        preview.snapshots_to_prune,
+                        preview.shared_snapshots_preserved,
+                    ))
+                }
+            }
+        }
+        "clear" => {
+            let apply = sub_matches.get_flag("apply");
+            if apply {
+                let open_res = crate::storage::open_ledger(
+                    &invocation,
+                    &cx,
+                    crate::storage::LedgerAccess::ExistingOnly,
+                    location,
+                )
+                .map_err(|err| {
+                    (9u8, "storage-failure", format!("Failed to open ledger for clear: {err}"))
+                })?;
+
+                let mut store = match open_res {
+                    crate::storage::LedgerOpen::Ready(store) => store,
+                    crate::storage::LedgerOpen::Missing => {
+                        return Err((
+                            9u8,
+                            "storage-failure",
+                            "Ledger database is missing; run `sr ledger init` first".into(),
+                        ));
+                    }
+                    crate::storage::LedgerOpen::ReadOnly(_) => {
+                        return Err((
+                            9u8,
+                            "storage-failure",
+                            "Ledger is opened read-only; clear mutations are blocked".into(),
+                        ));
+                    }
+                    crate::storage::LedgerOpen::Disabled => {
+                        return Err((
+                            9u8,
+                            "storage-failure",
+                            "Ledger persistence is disabled".into(),
+                        ));
+                    }
+                };
+
+                let stamp = store.stamp();
+                let report = store
+                    .clear_apply(invocation.clock(), &cx, stamp)
+                    .map_err(|err| {
+                        (9u8, "storage-failure", format!("Failed to clear ledger: {err}"))
+                    })?;
+
+                if wants_json {
+                    serde_json::to_string_pretty(&report)
+                        .map(|s| format!("{s}\n"))
+                        .map_err(|e| (9u8, "storage-failure", e.to_string()))
+                } else {
+                    Ok(format!(
+                        "Cleared all historical records ({} total records removed).\nNew data generation: {}\n",
+                        report.records_cleared,
+                        report.stamp_after.data_generation
+                    ))
+                }
+            } else {
+                let open_res = crate::storage::open_ledger(
+                    &invocation,
+                    &cx,
+                    crate::storage::LedgerAccess::ExistingOnly,
+                    location,
+                )
+                .map_err(|err| {
+                    (9u8, "storage-failure", format!("Failed to open ledger for clear preview: {err}"))
+                })?;
+
+                let store = match open_res {
+                    crate::storage::LedgerOpen::Ready(store) => store,
+                    crate::storage::LedgerOpen::ReadOnly(store) => store,
+                    crate::storage::LedgerOpen::Missing => {
+                        return Err((
+                            9u8,
+                            "storage-failure",
+                            "Ledger database is missing; run `sr ledger init` first".into(),
+                        ));
+                    }
+                    crate::storage::LedgerOpen::Disabled => {
+                        return Err((
+                            9u8,
+                            "storage-failure",
+                            "Ledger persistence is disabled".into(),
+                        ));
+                    }
+                };
+
+                let preview = store.clear_preview().map_err(|err| {
+                    (9u8, "storage-failure", format!("Failed to preview clear: {err}"))
+                })?;
+
+                if wants_json {
+                    serde_json::to_string_pretty(&preview)
+                        .map(|s| format!("{s}\n"))
+                        .map_err(|e| (9u8, "storage-failure", e.to_string()))
+                } else {
+                    Ok(format!(
+                        "Clear preview (entire history):\n  Total records to clear: {}\n  Events: {}\n  Candidates: {}\n  Observations: {}\n  Judgments: {}\n  Provider attempts: {}\n  Snapshots: {}\n  Session cursors: {}\n  Feedback proposals: {}\n  Calibrations: {}\nPass --apply to execute clearing all history.\n",
+                        preview.total_records,
+                        preview.events_count,
+                        preview.candidates_count,
+                        preview.observations_count,
+                        preview.judgments_count,
+                        preview.provider_attempts_count,
+                        preview.snapshots_count,
+                        preview.session_cursors_count,
+                        preview.feedback_proposals_count,
+                        preview.calibrations_count,
+                    ))
+                }
             }
         }
         _ => Err((
@@ -1438,11 +1734,49 @@ fn readiness(
         &TransportIdentity::current(config, origin.as_str()),
         0,
     );
+    let ledger = {
+        let invocation = crate::runtime::ProcessInvocation::from_clock(*clock);
+        if let Ok(inv) = invocation {
+            if let Ok(cx) = inv.request_cx() {
+                match crate::storage::open_ledger(
+                    &inv,
+                    &cx,
+                    crate::storage::LedgerAccess::ExistingOnly,
+                    crate::storage::LedgerLocation::Platform,
+                ) {
+                    Ok(crate::storage::LedgerOpen::Ready(store)) => {
+                        let now_ms = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_millis() as i64;
+                        let debt = store.cleanup_debt(now_ms).ok();
+                        crate::readiness::LedgerCheck::Ready { cleanup_debt: debt }
+                    }
+                    Ok(crate::storage::LedgerOpen::ReadOnly(store)) => {
+                        let now_ms = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_millis() as i64;
+                        let debt = store.cleanup_debt(now_ms).ok();
+                        crate::readiness::LedgerCheck::ReadOnly { cleanup_debt: debt }
+                    }
+                    Ok(crate::storage::LedgerOpen::Missing) => crate::readiness::LedgerCheck::NotAvailable,
+                    Ok(crate::storage::LedgerOpen::Disabled) => crate::readiness::LedgerCheck::NotAvailable,
+                    Err(_) => crate::readiness::LedgerCheck::NotAvailable,
+                }
+            } else {
+                crate::readiness::LedgerCheck::NotAvailable
+            }
+        } else {
+            crate::readiness::LedgerCheck::NotAvailable
+        }
+    };
     let value = report(&Inputs {
         config,
         gate,
         roster,
         transport,
+        ledger,
     });
     timely(clock)?;
     if json_output {
