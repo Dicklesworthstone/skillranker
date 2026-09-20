@@ -116,7 +116,7 @@ fn open_ready(inv: &ProcessInvocation, cx: &Cx, dir: &Path, init: bool) -> Ledge
     .unwrap()
     {
         LedgerOpen::Ready(store) => *store,
-        LedgerOpen::Disabled => panic!("expected Ready store"),
+        other => panic!("expected Ready store, got {other:?}"),
     }
 }
 

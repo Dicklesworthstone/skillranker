@@ -12,7 +12,7 @@ use std::ffi::OsString;
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
-const HELP: &str = "SkillRanker — powered by TypeSafe.ai Jev\n\nUsage: sr [rank] [--context FILE | --transcript FILE --harness NAME | --session PATH | --latest]\n                 [--roster FILE] [--require-skill ID] [--dry-run [--shortlist-ids ID,...]]\n                 [--offline | --allow-network] [--json | --table]\n                 [--top N] [--shortlist M] [--gate FLOAT] [--fits FLOAT]\n                 [--explain] [--why-not ID] [--cursor TOKEN] [--no-tools] [--no-cache]\n                 [--save-case FILE]\n       sr doctor [--json | --table] [--offline | --allow-network]\n       sr doctor --config [--json | --table] [--top N] [--shortlist N]\n       sr roster [--json] [--limit N] [--cursor TOKEN]\n       sr roster --snapshot FILE | --diff FILE\n       sr capabilities [--json]\n       sr demo --case <useful|none|explicit|unavailable> [--json | --table]\n       sr replay FILE [--policy FILE] [--compare-policy FILE] [--json | --table]\n       sr --help | --version\n\nRank the next step of an agent session using TypeSafe Jev.\nRequires your own TypeSafe API key (TYPESAFE_API_KEY) and network consent (--allow-network).\n";
+const HELP: &str = "SkillRanker — powered by TypeSafe.ai Jev\n\nUsage: sr [rank] [--context FILE | --transcript FILE --harness NAME | --session PATH | --latest]\n                 [--roster FILE] [--require-skill ID] [--dry-run [--shortlist-ids ID,...]]\n                 [--offline | --allow-network] [--json | --table]\n                 [--top N] [--shortlist M] [--gate FLOAT] [--fits FLOAT]\n                 [--explain] [--why-not ID] [--cursor TOKEN] [--no-tools] [--no-cache]\n                 [--save-case FILE]\n       sr doctor [--json | --table] [--offline | --allow-network]\n       sr doctor --config [--json | --table] [--top N] [--shortlist N]\n       sr roster [--json] [--limit N] [--cursor TOKEN]\n       sr roster --snapshot FILE | --diff FILE\n       sr capabilities [--json]\n       sr demo --case <useful|none|explicit|unavailable> [--json | --table]\n       sr replay FILE [--policy FILE] [--compare-policy FILE] [--json | --table]\n       sr ledger <init|migrate|status> [--apply] [--json]\n       sr --help | --version\n\nRank the next step of an agent session using TypeSafe Jev.\nRequires your own TypeSafe API key (TYPESAFE_API_KEY) and network consent (--allow-network).\n";
 
 fn command() -> Command {
     let mut doctor = Command::new("doctor")
@@ -299,6 +299,90 @@ fn command() -> Command {
                 )
                 .arg(Arg::new("table").long("table").action(ArgAction::SetTrue)),
         )
+        .subcommand(
+            Command::new("ledger")
+                .disable_help_flag(true)
+                .arg(
+                    Arg::new("help")
+                        .long("help")
+                        .short('h')
+                        .action(ArgAction::SetTrue),
+                )
+                .arg(
+                    Arg::new("json")
+                        .long("json")
+                        .action(ArgAction::SetTrue),
+                )
+                .subcommand(
+                    Command::new("init")
+                        .disable_help_flag(true)
+                        .arg(
+                            Arg::new("help")
+                                .long("help")
+                                .short('h')
+                                .action(ArgAction::SetTrue),
+                        )
+                        .arg(
+                            Arg::new("json")
+                                .long("json")
+                                .action(ArgAction::SetTrue),
+                        )
+                        .arg(
+                            Arg::new("dir")
+                                .long("dir")
+                                .help("Custom ledger directory")
+                                .action(ArgAction::Set),
+                        ),
+                )
+                .subcommand(
+                    Command::new("migrate")
+                        .disable_help_flag(true)
+                        .arg(
+                            Arg::new("help")
+                                .long("help")
+                                .short('h')
+                                .action(ArgAction::SetTrue),
+                        )
+                        .arg(
+                            Arg::new("apply")
+                                .long("apply")
+                                .help("Apply migrations after backup")
+                                .action(ArgAction::SetTrue),
+                        )
+                        .arg(
+                            Arg::new("json")
+                                .long("json")
+                                .action(ArgAction::SetTrue),
+                        )
+                        .arg(
+                            Arg::new("dir")
+                                .long("dir")
+                                .help("Custom ledger directory")
+                                .action(ArgAction::Set),
+                        ),
+                )
+                .subcommand(
+                    Command::new("status")
+                        .disable_help_flag(true)
+                        .arg(
+                            Arg::new("help")
+                                .long("help")
+                                .short('h')
+                                .action(ArgAction::SetTrue),
+                        )
+                        .arg(
+                            Arg::new("json")
+                                .long("json")
+                                .action(ArgAction::SetTrue),
+                        )
+                        .arg(
+                            Arg::new("dir")
+                                .long("dir")
+                                .help("Custom ledger directory")
+                                .action(ArgAction::Set),
+                        ),
+                ),
+        )
 }
 
 /// Exit and streams are deliberately separate; diagnostics never echo clap/TOML input.
@@ -454,8 +538,218 @@ fn execute(clock: &EntryClock, mut args: Vec<OsString>) -> Result<String, Failur
         }
         return replay_command(clock, replay_matches);
     }
+    if let Some(("ledger", ledger_matches)) = matches.subcommand() {
+        if ledger_matches.get_flag("help") {
+            return Ok(HELP.into());
+        }
+        return ledger_command(clock, ledger_matches);
+    }
     // Bare `sr` ranks once, as documented.
     rank_command(clock, None)
+}
+
+fn ledger_command(
+    clock: &EntryClock,
+    ledger_matches: &clap::ArgMatches,
+) -> Result<String, Failure> {
+    timely(clock)?;
+    let invocation = crate::runtime::ProcessInvocation::from_clock(*clock)
+        .map_err(|_| (6u8, "timeout", "Local runtime unavailable".into()))?;
+    let cx = invocation
+        .request_cx()
+        .map_err(|_| (6u8, "timeout", "Local runtime unavailable".into()))?;
+
+    let (sub_name, sub_matches) = match ledger_matches.subcommand() {
+        Some((name, m)) => (name, m),
+        None => {
+            return Err((
+                2,
+                "invalid-usage",
+                "Missing ledger subcommand (init, migrate, status); see sr --help".into(),
+            ));
+        }
+    };
+
+    if sub_matches.get_flag("help") {
+        return Ok(HELP.into());
+    }
+
+    let wants_json = sub_matches.get_flag("json") || ledger_matches.get_flag("json");
+    let location = if let Some(dir) = sub_matches.get_one::<String>("dir") {
+        crate::storage::LedgerLocation::Directory(PathBuf::from(dir))
+    } else {
+        crate::storage::LedgerLocation::Platform
+    };
+
+    let outcome: Result<String, Failure> = match sub_name {
+        "init" => {
+            let report = crate::storage::init_ledger(&invocation, &cx, location).map_err(|err| {
+                (9u8, "storage-failure", format!("Failed to initialize ledger: {err}"))
+            })?;
+            if wants_json {
+                serde_json::to_string_pretty(&report)
+                    .map(|s| format!("{s}\n"))
+                    .map_err(|e| (9u8, "storage-failure", e.to_string()))
+            } else {
+                match report.status {
+                    crate::storage::InitStatus::Created => Ok(format!(
+                        "Initialized new ledger at {} (schema version {}, incarnation {})\n",
+                        report.database_path.display(),
+                        report.schema_version,
+                        report.incarnation
+                    )),
+                    crate::storage::InitStatus::AlreadyCurrent => Ok(format!(
+                        "Ledger at {} is already current (schema version {}, incarnation {})\n",
+                        report.database_path.display(),
+                        report.schema_version,
+                        report.incarnation
+                    )),
+                }
+            }
+        }
+        "migrate" => {
+            let apply = sub_matches.get_flag("apply");
+            if apply {
+                let open_res = crate::storage::open_ledger(
+                    &invocation,
+                    &cx,
+                    crate::storage::LedgerAccess::Migrate,
+                    location,
+                )
+                .map_err(|err| {
+                    (9u8, "storage-failure", format!("Failed to open ledger for migration: {err}"))
+                })?;
+
+                let mut store = match open_res {
+                    crate::storage::LedgerOpen::Ready(store) => store,
+                    crate::storage::LedgerOpen::Missing => {
+                        return Err((
+                            9u8,
+                            "storage-failure",
+                            "Ledger database is missing; run `sr ledger init` first".into(),
+                        ));
+                    }
+                    crate::storage::LedgerOpen::ReadOnly(_) => {
+                        return Err((
+                            9u8,
+                            "storage-failure",
+                            "Ledger is opened read-only (newer schema version); migration cannot be applied".into(),
+                        ));
+                    }
+                    crate::storage::LedgerOpen::Disabled => {
+                        return Err((
+                            9u8,
+                            "storage-failure",
+                            "Ledger persistence is disabled".into(),
+                        ));
+                    }
+                };
+
+                let report = store.migrate_apply(invocation.clock(), &cx).map_err(|err| {
+                    (9u8, "storage-failure", format!("Migration failed: {err}"))
+                })?;
+
+                if wants_json {
+                    serde_json::to_string_pretty(&report)
+                        .map(|s| format!("{s}\n"))
+                        .map_err(|e| (9u8, "storage-failure", e.to_string()))
+                } else {
+                    Ok(format!(
+                        "Successfully migrated ledger from version {} to {}.\nBackup saved to {} ({} bytes).\nApplied migrations: {}\n",
+                        report.from_version,
+                        report.to_version,
+                        report.backup_path.display(),
+                        report.backup_bytes,
+                        report.applied_migrations.join(", ")
+                    ))
+                }
+            } else {
+                let open_res = crate::storage::open_ledger(
+                    &invocation,
+                    &cx,
+                    crate::storage::LedgerAccess::ExistingOnly,
+                    location,
+                )
+                .map_err(|err| {
+                    (9u8, "storage-failure", format!("Failed to open ledger for preview: {err}"))
+                })?;
+
+                let store = match open_res {
+                    crate::storage::LedgerOpen::Ready(store) => store,
+                    crate::storage::LedgerOpen::ReadOnly(store) => store,
+                    crate::storage::LedgerOpen::Missing => {
+                        return Err((
+                            9u8,
+                            "storage-failure",
+                            "Ledger database is missing; run `sr ledger init` first".into(),
+                        ));
+                    }
+                    crate::storage::LedgerOpen::Disabled => {
+                        return Err((
+                            9u8,
+                            "storage-failure",
+                            "Ledger persistence is disabled".into(),
+                        ));
+                    }
+                };
+
+                let preview = store.migrate_preview().map_err(|err| {
+                    (9u8, "storage-failure", format!("Migration preview failed: {err}"))
+                })?;
+
+                if wants_json {
+                    serde_json::to_string_pretty(&preview)
+                        .map(|s| format!("{s}\n"))
+                        .map_err(|e| (9u8, "storage-failure", e.to_string()))
+                } else {
+                    let mut out = format!(
+                        "Migration preview: current version {}, target version {}.\nRequired headroom: {} bytes.\n",
+                        preview.current_version,
+                        preview.target_version,
+                        preview.required_headroom_bytes
+                    );
+                    if preview.pending_migrations.is_empty() {
+                        out.push_str("Schema is already up to date. No pending migrations.\n");
+                    } else {
+                        out.push_str("Pending migrations:\n");
+                        for m in &preview.pending_migrations {
+                            out.push_str(&format!(
+                                "  - v{}: {} (checksum: {})\n    {}\n",
+                                m.version, m.name, m.checksum, m.description
+                            ));
+                        }
+                    }
+                    Ok(out)
+                }
+            }
+        }
+        "status" => {
+            let status_report = crate::storage::ledger_status(&invocation, &cx, location).map_err(|err| {
+                (9u8, "storage-failure", format!("Failed to inspect ledger status: {err}"))
+            })?;
+            if wants_json {
+                serde_json::to_string_pretty(&status_report)
+                    .map(|s| format!("{s}\n"))
+                    .map_err(|e| (9u8, "storage-failure", e.to_string()))
+            } else {
+                Ok(format!(
+                    "Ledger Status: {}\nPath: {}\nSchema Version: {}\nTarget Version: {}\nRead Only: {}\n",
+                    status_report.status,
+                    status_report.database_path.display(),
+                    status_report.schema_version.map(|v| v.to_string()).unwrap_or_else(|| "none".into()),
+                    status_report.target_version,
+                    status_report.is_read_only
+                ))
+            }
+        }
+        _ => Err((
+            2,
+            "invalid-usage",
+            format!("Unknown ledger subcommand: {sub_name}"),
+        )),
+    };
+
+    finish_invocation(invocation, outcome)
 }
 
 fn replay_command(

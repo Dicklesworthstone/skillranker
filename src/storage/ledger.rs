@@ -292,6 +292,7 @@ pub enum LedgerAccess {
     Disabled,
     ExistingOnly,
     Initialize,
+    Migrate,
 }
 
 #[derive(Clone, Eq, PartialEq)]
@@ -328,6 +329,8 @@ impl fmt::Debug for LedgerStamp {
 #[derive(Debug)]
 pub enum LedgerOpen {
     Disabled,
+    Missing,
+    ReadOnly(Box<LedgerStore>),
     Ready(Box<LedgerStore>),
 }
 
@@ -337,6 +340,7 @@ pub struct LedgerStore {
     file: File,
     stamp: LedgerStamp,
     engine: EngineIdentity,
+    read_only: bool,
 }
 
 impl fmt::Debug for LedgerStore {
@@ -344,9 +348,132 @@ impl fmt::Debug for LedgerStore {
         f.debug_struct("LedgerStore")
             .field("engine", &self.engine)
             .field("stamp", &self.stamp)
+            .field("read_only", &self.read_only)
             .finish_non_exhaustive()
     }
 }
+
+pub const LEDGER_TARGET_SCHEMA_VERSION: u32 = 2;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InitStatus {
+    Created,
+    AlreadyCurrent,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+pub struct InitReport {
+    pub status: InitStatus,
+    pub schema_version: u32,
+    pub database_path: PathBuf,
+    pub incarnation: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+pub struct MigrationPreview {
+    pub current_version: u32,
+    pub target_version: u32,
+    pub pending_migrations: Vec<PendingMigration>,
+    pub required_headroom_bytes: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+pub struct PendingMigration {
+    pub version: u32,
+    pub name: String,
+    pub description: String,
+    pub checksum: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+pub struct MigrationReport {
+    pub from_version: u32,
+    pub to_version: u32,
+    pub applied_migrations: Vec<String>,
+    pub backup_path: PathBuf,
+    pub backup_bytes: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum MigrationError {
+    AlreadyUpToDate,
+    UnsupportedNewerVersion { current_version: u32, target_version: u32 },
+    Preflight(MaintenanceError),
+    Store(StoreError),
+    Sqlite(String),
+}
+
+impl fmt::Display for MigrationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::AlreadyUpToDate => write!(f, "database schema is already up to date"),
+            Self::UnsupportedNewerVersion { current_version, target_version } => {
+                write!(f, "database schema version {current_version} is newer than supported version {target_version}; auto-downgrade is disabled")
+            }
+            Self::Preflight(err) => write!(f, "preflight check failed: {err}"),
+            Self::Store(err) => write!(f, "store error: {err}"),
+            Self::Sqlite(err) => write!(f, "sqlite error: {err}"),
+        }
+    }
+}
+
+impl std::error::Error for MigrationError {}
+
+impl From<MaintenanceError> for MigrationError {
+    fn from(err: MaintenanceError) -> Self {
+        Self::Preflight(err)
+    }
+}
+
+impl From<StoreError> for MigrationError {
+    fn from(err: StoreError) -> Self {
+        Self::Store(err)
+    }
+}
+
+impl From<rusqlite::Error> for MigrationError {
+    fn from(err: rusqlite::Error) -> Self {
+        Self::Sqlite(err.to_string())
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+pub struct LedgerStatusReport {
+    pub status: &'static str,
+    pub schema_version: Option<u32>,
+    pub target_version: u32,
+    pub schema_generation: Option<u64>,
+    pub data_generation: Option<u64>,
+    pub is_read_only: bool,
+    pub database_path: PathBuf,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MigrationStep {
+    pub from_version: u32,
+    pub to_version: u32,
+    pub name: &'static str,
+    pub checksum: &'static str,
+    pub description: &'static str,
+    pub ddl: &'static str,
+}
+
+pub const MIGRATION_V1_TO_V2: MigrationStep = MigrationStep {
+    from_version: 1,
+    to_version: 2,
+    name: "v2-add-audit-log",
+    checksum: "b5bb9d8014a0f9b1d61e21e796d78dccdf1352f23cd32812f4850b878ae4944c",
+    description: "Add ledger audit log table for provenance tracking",
+    ddl: "CREATE TABLE ledger_audit_log (
+    entry_id TEXT PRIMARY KEY CHECK(length(entry_id) > 0),
+    action TEXT NOT NULL CHECK(length(action) > 0),
+    occurred_at_unix_ms INTEGER NOT NULL CHECK(occurred_at_unix_ms >= 0),
+    detail TEXT
+) STRICT;",
+};
+
+pub const AVAILABLE_MIGRATIONS: &[MigrationStep] = &[MIGRATION_V1_TO_V2];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CursorKind {
@@ -1338,18 +1465,22 @@ fn configure(connection: &Connection, clock: EntryClock, cx: &Cx) -> Result<(), 
     Ok(())
 }
 
-fn schema_version(connection: &Connection) -> Result<i64, StoreError> {
-    let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
-    if version > i64::from(LEDGER_SCHEMA_VERSION) {
-        return Err(StoreError::NewerSchema { version });
-    }
-    Ok(version)
+fn configure_read_only(
+    connection: &Connection,
+    clock: EntryClock,
+    cx: &Cx,
+) -> Result<(), StoreError> {
+    check_work(clock, cx)?;
+    connection.set_limit(Limit::SQLITE_LIMIT_LENGTH, 2 * 1024 * 1024)?;
+    connection.set_limit(Limit::SQLITE_LIMIT_SQL_LENGTH, 64 * 1024)?;
+    connection.set_limit(Limit::SQLITE_LIMIT_ATTACHED, 0)?;
+    connection.set_limit(Limit::SQLITE_LIMIT_WORKER_THREADS, 0)?;
+    refresh_busy_limit(connection, clock, cx)?;
+    Ok(())
 }
 
+
 fn read_stamp(connection: &Connection) -> Result<LedgerStamp, StoreError> {
-    if schema_version(connection)? != i64::from(LEDGER_SCHEMA_VERSION) {
-        return Err(StoreError::IncompatibleSchema);
-    }
     let app: i64 = connection.pragma_query_value(None, "application_id", |row| row.get(0))?;
     if app != LEDGER_APPLICATION_ID {
         return Err(StoreError::WrongStore);
@@ -1359,7 +1490,7 @@ fn read_stamp(connection: &Connection) -> Result<LedgerStamp, StoreError> {
         [],
         |row| row.get(0),
     )?;
-    if objects != TABLES.len() as i64 {
+    if objects < TABLES.len() as i64 {
         return Err(StoreError::IncompatibleSchema);
     }
     for (name, _) in TABLES {
@@ -1380,7 +1511,7 @@ fn read_stamp(connection: &Connection) -> Result<LedgerStamp, StoreError> {
         [],
         |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
     )?;
-    if schema_gen < 1 || data_gen < 1 || schema != LEDGER_SCHEMA_ID {
+    if schema_gen < 1 || data_gen < 1 || !schema.starts_with("sr-ledger-") {
         return Err(StoreError::IncompatibleSchema);
     }
     let incarnation: [u8; 16] = incarnation
@@ -1407,13 +1538,18 @@ fn check_stamp(connection: &Connection, expected: LedgerStamp) -> Result<(), Sto
     Ok(())
 }
 
-fn initialize(connection: &mut Connection, clock: EntryClock, cx: &Cx) -> Result<(), StoreError> {
+fn initialize(
+    connection: &mut Connection,
+    clock: EntryClock,
+    cx: &Cx,
+) -> Result<InitStatus, StoreError> {
     configure(connection, clock, cx)?;
     let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
     check_work(clock, cx)?;
-    if schema_version(&tx)? == i64::from(LEDGER_SCHEMA_VERSION) {
+    let current_ver: i64 = tx.pragma_query_value(None, "user_version", |row| row.get(0))?;
+    if current_ver >= i64::from(LEDGER_SCHEMA_VERSION) {
         read_stamp(&tx)?;
-        return Ok(());
+        return Ok(InitStatus::AlreadyCurrent);
     }
     let app: i64 = tx.pragma_query_value(None, "application_id", |row| row.get(0))?;
     let objects: i64 = tx.query_row(
@@ -1439,7 +1575,7 @@ fn initialize(connection: &mut Connection, clock: EntryClock, cx: &Cx) -> Result
     tx.pragma_update(None, "user_version", LEDGER_SCHEMA_VERSION)?;
     refresh_busy_limit(&tx, clock, cx)?;
     tx.commit()?;
-    Ok(())
+    Ok(InitStatus::Created)
 }
 
 pub fn default_ledger_directory() -> Result<PathBuf, StoreError> {
@@ -1470,24 +1606,81 @@ fn open_blocking(
         LedgerLocation::Platform => default_ledger_directory()?,
         LedgerLocation::Directory(dir) => dir,
     };
-    let directory =
-        PrivateLedgerDirectory::open(path, access == LedgerAccess::Initialize, clock, cx)?;
-    let file = directory.open_database_file(access == LedgerAccess::Initialize, clock, cx)?;
+    let create = access == LedgerAccess::Initialize;
+    let directory = match PrivateLedgerDirectory::open(path, create, clock, cx) {
+        Err(StoreError::Missing) if !create => return Ok(LedgerOpen::Missing),
+        result => result?,
+    };
+    let file = match directory.open_database_file(create, clock, cx) {
+        Err(StoreError::Missing) if !create => return Ok(LedgerOpen::Missing),
+        result => result?,
+    };
     let database_path = directory.database_path();
-    let flags = OpenFlags::SQLITE_OPEN_READ_WRITE
-        | OpenFlags::SQLITE_OPEN_NO_MUTEX
-        | if access == LedgerAccess::Initialize {
-            OpenFlags::SQLITE_OPEN_CREATE
-        } else {
-            OpenFlags::empty()
-        };
-    let mut connection = Connection::open_with_flags(&database_path, flags)?;
     directory.verify_database_file(&file, clock, cx)?;
+
     if access == LedgerAccess::Initialize {
+        let flags = OpenFlags::SQLITE_OPEN_READ_WRITE
+            | OpenFlags::SQLITE_OPEN_NO_MUTEX
+            | OpenFlags::SQLITE_OPEN_CREATE;
+        let mut connection = Connection::open_with_flags(&database_path, flags)?;
+        directory.verify_database_file(&file, clock, cx)?;
         initialize(&mut connection, clock, cx)?;
-    } else {
-        configure(&connection, clock, cx)?;
+        let stamp = read_stamp(&connection)?;
+        directory.verify_database_file(&file, clock, cx)?;
+        return Ok(LedgerOpen::Ready(Box::new(LedgerStore {
+            connection,
+            directory,
+            file,
+            stamp,
+            engine,
+            read_only: false,
+        })));
     }
+
+    // ExistingOnly or Migrate: probe first with SQLITE_OPEN_READ_ONLY
+    let probe_flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+    let probe = match Connection::open_with_flags(&database_path, probe_flags) {
+        Err(rusqlite::Error::SqliteFailure(err, _))
+            if err.extended_code == rusqlite::ffi::SQLITE_CANTOPEN =>
+        {
+            return Ok(LedgerOpen::Missing);
+        }
+        result => result?,
+    };
+    let app: i64 = probe.pragma_query_value(None, "application_id", |row| row.get(0))?;
+    if app != LEDGER_APPLICATION_ID {
+        return Err(StoreError::WrongStore);
+    }
+    let user_ver: i64 = probe.pragma_query_value(None, "user_version", |row| row.get(0))?;
+    let stamp = read_stamp(&probe)?;
+    drop(probe);
+
+    check_work(clock, cx)?;
+    directory.verify_database_file(&file, clock, cx)?;
+
+    if user_ver > i64::from(LEDGER_TARGET_SCHEMA_VERSION) {
+        // Unsupported newer schema: open read-only where safe
+        let read_flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+        let connection = Connection::open_with_flags(&database_path, read_flags)?;
+        configure_read_only(&connection, clock, cx)?;
+        directory.verify_database_file(&file, clock, cx)?;
+        return Ok(LedgerOpen::ReadOnly(Box::new(LedgerStore {
+            connection,
+            directory,
+            file,
+            stamp,
+            engine,
+            read_only: true,
+        })));
+    }
+
+    if user_ver < i64::from(LEDGER_SCHEMA_VERSION) && access != LedgerAccess::Migrate {
+        return Err(StoreError::IncompatibleSchema);
+    }
+
+    let flags = OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+    let connection = Connection::open_with_flags(&database_path, flags)?;
+    configure(&connection, clock, cx)?;
     let stamp = read_stamp(&connection)?;
     directory.verify_database_file(&file, clock, cx)?;
     Ok(LedgerOpen::Ready(Box::new(LedgerStore {
@@ -1496,6 +1689,7 @@ fn open_blocking(
         file,
         stamp,
         engine,
+        read_only: false,
     })))
 }
 
@@ -1521,11 +1715,275 @@ pub fn open_ledger(
     .value
 }
 
+pub fn init_ledger(
+    invocation: &ProcessInvocation,
+    cx: &Cx,
+    location: LedgerLocation,
+) -> Result<InitReport, StoreError> {
+    let clock = invocation.clock();
+    let child = cx.clone();
+    run_blocking_leaf(
+        invocation,
+        cx,
+        BlockingLeafKind::Database,
+        false,
+        move || {
+            let path = match location {
+                LedgerLocation::Platform => default_ledger_directory()?,
+                LedgerLocation::Directory(dir) => dir,
+            };
+            let directory = PrivateLedgerDirectory::open(path, true, clock, &child)?;
+            let file = directory.open_database_file(true, clock, &child)?;
+            let database_path = directory.database_path();
+            let flags = OpenFlags::SQLITE_OPEN_READ_WRITE
+                | OpenFlags::SQLITE_OPEN_NO_MUTEX
+                | OpenFlags::SQLITE_OPEN_CREATE;
+            let mut connection = Connection::open_with_flags(&database_path, flags)?;
+            directory.verify_database_file(&file, clock, &child)?;
+            let status = initialize(&mut connection, clock, &child)?;
+            let stamp = read_stamp(&connection)?;
+            let user_ver: i64 =
+                connection.pragma_query_value(None, "user_version", |r| r.get(0))?;
+            directory.verify_database_file(&file, clock, &child)?;
+            Ok(InitReport {
+                status,
+                schema_version: user_ver as u32,
+                database_path,
+                incarnation: stamp
+                    .incarnation
+                    .iter()
+                    .map(|b| format!("{b:02x}"))
+                    .collect(),
+            })
+        },
+    )
+    .map_err(StoreError::Runtime)?
+    .value
+}
+
+pub fn ledger_status(
+    invocation: &ProcessInvocation,
+    cx: &Cx,
+    location: LedgerLocation,
+) -> Result<LedgerStatusReport, StoreError> {
+    let clock = invocation.clock();
+    let child = cx.clone();
+    run_blocking_leaf(
+        invocation,
+        cx,
+        BlockingLeafKind::Database,
+        false,
+        move || {
+            let path = match location {
+                LedgerLocation::Platform => default_ledger_directory()?,
+                LedgerLocation::Directory(dir) => dir,
+            };
+            let database_path = path.join(LEDGER_FILE);
+            match open_blocking(
+                clock,
+                &child,
+                LedgerAccess::ExistingOnly,
+                LedgerLocation::Directory(path),
+            ) {
+                Ok(LedgerOpen::Missing) => Ok(LedgerStatusReport {
+                    status: "missing",
+                    schema_version: None,
+                    target_version: LEDGER_TARGET_SCHEMA_VERSION,
+                    schema_generation: None,
+                    data_generation: None,
+                    is_read_only: false,
+                    database_path,
+                }),
+                Ok(LedgerOpen::ReadOnly(store)) => {
+                    let stamp = store.stamp();
+                    let ver = store.schema_version().ok();
+                    Ok(LedgerStatusReport {
+                        status: "read_only",
+                        schema_version: ver,
+                        target_version: LEDGER_TARGET_SCHEMA_VERSION,
+                        schema_generation: Some(stamp.schema_generation),
+                        data_generation: Some(stamp.data_generation),
+                        is_read_only: true,
+                        database_path,
+                    })
+                }
+                Ok(LedgerOpen::Ready(store)) => {
+                    let stamp = store.stamp();
+                    let ver = store.schema_version().ok();
+                    let status = if ver == Some(LEDGER_TARGET_SCHEMA_VERSION) {
+                        "ready"
+                    } else {
+                        "needs_migration"
+                    };
+                    Ok(LedgerStatusReport {
+                        status,
+                        schema_version: ver,
+                        target_version: LEDGER_TARGET_SCHEMA_VERSION,
+                        schema_generation: Some(stamp.schema_generation),
+                        data_generation: Some(stamp.data_generation),
+                        is_read_only: false,
+                        database_path,
+                    })
+                }
+                Ok(LedgerOpen::Disabled) => Ok(LedgerStatusReport {
+                    status: "disabled",
+                    schema_version: None,
+                    target_version: LEDGER_TARGET_SCHEMA_VERSION,
+                    schema_generation: None,
+                    data_generation: None,
+                    is_read_only: false,
+                    database_path,
+                }),
+                Err(StoreError::WrongStore) => Ok(LedgerStatusReport {
+                    status: "wrong_store",
+                    schema_version: None,
+                    target_version: LEDGER_TARGET_SCHEMA_VERSION,
+                    schema_generation: None,
+                    data_generation: None,
+                    is_read_only: false,
+                    database_path,
+                }),
+                Err(e) => Err(e),
+            }
+        },
+    )
+    .map_err(StoreError::Runtime)?
+    .value
+}
+
 // -----------------------------------------------------------------------------
 // LedgerStore Implementations
 // -----------------------------------------------------------------------------
 
 impl LedgerStore {
+    pub fn is_read_only(&self) -> bool {
+        self.read_only
+    }
+
+    pub fn schema_version(&self) -> Result<u32, StoreError> {
+        let v: i64 = self
+            .connection
+            .pragma_query_value(None, "user_version", |r| r.get(0))?;
+        Ok(v as u32)
+    }
+
+    pub fn migrate_preview(&self) -> Result<MigrationPreview, MigrationError> {
+        let current = self.schema_version()?;
+        let target = LEDGER_TARGET_SCHEMA_VERSION;
+        if current > target {
+            return Err(MigrationError::UnsupportedNewerVersion {
+                current_version: current,
+                target_version: target,
+            });
+        }
+        let pending: Vec<PendingMigration> = AVAILABLE_MIGRATIONS
+            .iter()
+            .filter(|m| m.from_version >= current && m.to_version <= target)
+            .map(|m| PendingMigration {
+                version: m.to_version,
+                name: m.name.to_string(),
+                description: m.description.to_string(),
+                checksum: m.checksum.to_string(),
+            })
+            .collect();
+
+        let required_headroom_bytes =
+            self.worst_case_maintenance_bytes(MaintenanceKind::Migration)?;
+
+        Ok(MigrationPreview {
+            current_version: current,
+            target_version: target,
+            pending_migrations: pending,
+            required_headroom_bytes,
+        })
+    }
+
+    pub fn migrate_apply(
+        &mut self,
+        clock: EntryClock,
+        cx: &Cx,
+    ) -> Result<MigrationReport, MigrationError> {
+        if self.read_only {
+            return Err(MigrationError::Store(StoreError::Permissions));
+        }
+        check_work(clock, cx)?;
+        self.directory.verify_database_file(&self.file, clock, cx)?;
+        refresh_busy_limit(&self.connection, clock, cx)?;
+
+        let current = self.schema_version()?;
+        let target = LEDGER_TARGET_SCHEMA_VERSION;
+        if current > target {
+            return Err(MigrationError::UnsupportedNewerVersion {
+                current_version: current,
+                target_version: target,
+            });
+        }
+        if current == target {
+            return Err(MigrationError::AlreadyUpToDate);
+        }
+
+        // 1. Preflight maintenance space before any modification
+        let _preflight = self.preflight_maintenance(MaintenanceKind::Migration)?;
+
+        // 2. Create atomic, recoverable WAL-inclusive backup using VACUUM INTO
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis();
+        let backup_file_name = format!(
+            "{}.pre_migration_v{}_to_v{}_{}.bak",
+            LEDGER_FILE, current, target, now_ms
+        );
+        let backup_path = self.directory.path.join(&backup_file_name);
+        let backup_bytes = self.backup_to(&backup_path, clock, cx)?;
+
+        // 3. Begin transaction
+        let tx = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        check_work(clock, cx)?;
+
+        let current_stamp = read_stamp(&tx)?;
+        if current_stamp.schema_generation != self.stamp.schema_generation {
+            return Err(MigrationError::Store(StoreError::StaleGeneration));
+        }
+
+        let mut applied = Vec::new();
+        let pending: Vec<&MigrationStep> = AVAILABLE_MIGRATIONS
+            .iter()
+            .filter(|m| m.from_version >= current && m.to_version <= target)
+            .collect();
+
+        for step in pending {
+            check_work(clock, cx)?;
+            tx.execute_batch(step.ddl)?;
+            tx.execute(
+                "INSERT INTO schema_migrations (version, checksum, applied_at_unix_ms) VALUES (?1, ?2, ?3)",
+                rusqlite::params![step.to_version, step.checksum, now_ms as i64],
+            )?;
+            applied.push(step.name.to_string());
+        }
+
+        tx.execute(
+            "UPDATE store_meta SET schema_generation = schema_generation + 1 WHERE singleton = 1",
+            [],
+        )?;
+        tx.pragma_update(None, "user_version", target)?;
+        refresh_busy_limit(&tx, clock, cx)?;
+        tx.commit()?;
+
+        self.stamp = read_stamp(&self.connection)?;
+        self.directory.verify_database_file(&self.file, clock, cx)?;
+
+        Ok(MigrationReport {
+            from_version: current,
+            to_version: target,
+            applied_migrations: applied,
+            backup_path,
+            backup_bytes,
+        })
+    }
+
     pub fn stamp(&self) -> LedgerStamp {
         self.stamp
     }
@@ -1653,6 +2111,9 @@ impl LedgerStore {
 
     /// Checkpoints and truncates the WAL file to bound WAL growth and reclaim space.
     pub fn checkpoint_truncate(&mut self, clock: EntryClock, cx: &Cx) -> Result<(), StoreError> {
+        if self.read_only {
+            return Err(StoreError::Permissions);
+        }
         check_work(clock, cx)?;
         self.directory.verify_database_file(&self.file, clock, cx)?;
         refresh_busy_limit(&self.connection, clock, cx)?;
@@ -1664,6 +2125,9 @@ impl LedgerStore {
 
     /// Runs VACUUM after preflighting headroom against quota and free disk space.
     pub fn vacuum(&mut self, clock: EntryClock, cx: &Cx) -> Result<(), MaintenanceError> {
+        if self.read_only {
+            return Err(MaintenanceError::Store(StoreError::Permissions));
+        }
         check_work(clock, cx)?;
         self.directory.verify_database_file(&self.file, clock, cx)?;
         let _preflight = self.preflight_maintenance(MaintenanceKind::Vacuum)?;
@@ -1697,6 +2161,9 @@ impl LedgerStore {
         let _ = self.connection.set_limit(Limit::SQLITE_LIMIT_ATTACHED, 0);
         backup_res?;
 
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(dest_path, std::fs::Permissions::from_mode(0o600));
+
         self.directory.verify_database_file(&self.file, clock, cx)?;
         let meta = std::fs::metadata(dest_path).map_err(|_| StoreError::Io)?;
         Ok(meta.len())
@@ -1710,6 +2177,9 @@ impl LedgerStore {
         cx: &Cx,
         expected_stamp: LedgerStamp,
     ) -> Result<u64, MaintenanceError> {
+        if self.read_only {
+            return Err(MaintenanceError::Store(StoreError::Permissions));
+        }
         check_work(clock, cx)?;
         self.directory.verify_database_file(&self.file, clock, cx)?;
         let _preflight = self.preflight_maintenance(MaintenanceKind::Prune)?;
@@ -1759,6 +2229,9 @@ impl LedgerStore {
         cx: &Cx,
         expected_stamp: LedgerStamp,
     ) -> Result<LedgerStamp, StoreError> {
+        if self.read_only {
+            return Err(StoreError::Permissions);
+        }
         check_work(clock, cx)?;
         self.directory.verify_database_file(&self.file, clock, cx)?;
         self.directory.admit_space()?;
@@ -1805,6 +2278,9 @@ impl LedgerStore {
         snapshot: &NewRosterSnapshot,
         expected_stamp: LedgerStamp,
     ) -> Result<(), StoreError> {
+        if self.read_only {
+            return Err(StoreError::Permissions);
+        }
         check_work(clock, cx)?;
         let members_json = validated_snapshot(snapshot)?;
         check_work(clock, cx)?;
@@ -1834,6 +2310,9 @@ impl LedgerStore {
         snapshot: Option<&NewRosterSnapshot>,
         expected_stamp: LedgerStamp,
     ) -> Result<(), StoreError> {
+        if self.read_only {
+            return Err(StoreError::Permissions);
+        }
         check_work(clock, cx)?;
         if candidates
             .iter()
@@ -1932,6 +2411,9 @@ impl LedgerStore {
         cursor: &SessionCursor,
         expected_stamp: LedgerStamp,
     ) -> Result<(), StoreError> {
+        if self.read_only {
+            return Err(StoreError::Permissions);
+        }
         check_work(clock, cx)?;
         self.directory.verify_database_file(&self.file, clock, cx)?;
         self.directory.admit_space()?;
@@ -2024,6 +2506,9 @@ impl LedgerStore {
         attempt: &NewProviderAttempt,
         expected_stamp: LedgerStamp,
     ) -> Result<(), StoreError> {
+        if self.read_only {
+            return Err(StoreError::Permissions);
+        }
         check_work(clock, cx)?;
         self.directory.verify_database_file(&self.file, clock, cx)?;
         self.directory.admit_space()?;
@@ -2070,6 +2555,9 @@ impl LedgerStore {
         outcome: &ProviderAttemptOutcome<'_>,
         expected_stamp: LedgerStamp,
     ) -> Result<(), StoreError> {
+        if self.read_only {
+            return Err(StoreError::Permissions);
+        }
         check_work(clock, cx)?;
         self.directory.verify_database_file(&self.file, clock, cx)?;
         self.directory.admit_space()?;
@@ -2120,6 +2608,9 @@ impl LedgerStore {
         obs: &NewObservation,
         expected_stamp: LedgerStamp,
     ) -> Result<(), StoreError> {
+        if self.read_only {
+            return Err(StoreError::Permissions);
+        }
         check_work(clock, cx)?;
         self.directory.verify_database_file(&self.file, clock, cx)?;
         self.directory.admit_space()?;
@@ -2161,6 +2652,9 @@ impl LedgerStore {
         judgment: &NewJudgment,
         expected_stamp: LedgerStamp,
     ) -> Result<(), StoreError> {
+        if self.read_only {
+            return Err(StoreError::Permissions);
+        }
         check_work(clock, cx)?;
         self.directory.verify_database_file(&self.file, clock, cx)?;
         self.directory.admit_space()?;
@@ -2199,6 +2693,9 @@ impl LedgerStore {
         proposal: &NewFeedbackProposal,
         expected_stamp: LedgerStamp,
     ) -> Result<(), StoreError> {
+        if self.read_only {
+            return Err(StoreError::Permissions);
+        }
         check_work(clock, cx)?;
         self.directory.verify_database_file(&self.file, clock, cx)?;
         self.directory.admit_space()?;
@@ -2237,6 +2734,9 @@ impl LedgerStore {
         cal: &NewCalibration,
         expected_stamp: LedgerStamp,
     ) -> Result<(), StoreError> {
+        if self.read_only {
+            return Err(StoreError::Permissions);
+        }
         check_work(clock, cx)?;
         self.directory.verify_database_file(&self.file, clock, cx)?;
         self.directory.admit_space()?;

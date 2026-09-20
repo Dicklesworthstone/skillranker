@@ -13,10 +13,12 @@ pub use export::{
     export_private_atomic,
 };
 pub use ledger::{
-    LEDGER_FILE, LEDGER_MAINTENANCE_RESERVE_BYTES, LEDGER_MUTATION_RESERVE_BYTES,
-    LEDGER_QUOTA_BYTES, LEDGER_RECORDING_CEILING_BYTES, LEDGER_SCHEMA_ID, LEDGER_SCHEMA_VERSION,
-    LedgerCapacityReport, LedgerOpen, LedgerStore, MaintenanceError, MaintenanceKind,
-    MaintenancePreflight,
+    InitReport, InitStatus, LEDGER_FILE, LEDGER_MAINTENANCE_RESERVE_BYTES,
+    LEDGER_MUTATION_RESERVE_BYTES, LEDGER_QUOTA_BYTES, LEDGER_RECORDING_CEILING_BYTES,
+    LEDGER_SCHEMA_ID, LEDGER_SCHEMA_VERSION, LEDGER_TARGET_SCHEMA_VERSION, LedgerAccess,
+    LedgerCapacityReport, LedgerLocation, LedgerOpen, LedgerStamp, LedgerStatusReport, LedgerStore,
+    MaintenanceError, MaintenanceKind, MaintenancePreflight, MigrationError, MigrationPreview,
+    MigrationReport, MigrationStep, PendingMigration, init_ledger, ledger_status, open_ledger,
 };
 
 use crate::blocking::{BlockingLeafKind, remaining_busy_wait, run_blocking_leaf};

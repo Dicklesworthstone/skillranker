@@ -66,7 +66,7 @@ fn open_test_store(inv: &ProcessInvocation, cx: &Cx, name: &str) -> LedgerStore 
     .unwrap()
     {
         LedgerOpen::Ready(store) => *store,
-        LedgerOpen::Disabled => panic!("ledger unexpectedly disabled"),
+        other => panic!("expected Ready store, got {other:?}"),
     }
 }
 
