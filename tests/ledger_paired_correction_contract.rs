@@ -1115,4 +1115,417 @@ fn cli_feedback_command_e2e() {
     assert_eq!(val_single["status"], "single-judgment");
     assert_eq!(val_single["skill_id"], "skill-cli-2");
     assert_eq!(val_single["verdict"], "useful");
+    // 5. Conflicting flags: both --instead and --verdict specified -> exit code 2
+    let out_conflict = Command::new(bin)
+        .args([
+            "feedback",
+            "ev-cli-1",
+            "--skill",
+            "skill-cli-1",
+            "--instead",
+            "skill-cli-2",
+            "--verdict",
+            "useful",
+            "--dir",
+            dir_str,
+            "--json",
+        ])
+        .output()
+        .expect("run feedback CLI");
+    assert_eq!(out_conflict.status.code(), Some(2));
+    let val_conflict: serde_json::Value =
+        serde_json::from_slice(&out_conflict.stdout).expect("parse conflict json");
+    assert_eq!(val_conflict["error"]["kind"], "invalid-usage");
+    assert!(
+        val_conflict["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("Cannot specify both --instead and --verdict")
+    );
+
+    // 6. Missing both --instead and --verdict -> exit code 2
+    let out_neither = Command::new(bin)
+        .args([
+            "feedback",
+            "ev-cli-1",
+            "--skill",
+            "skill-cli-1",
+            "--dir",
+            dir_str,
+            "--json",
+        ])
+        .output()
+        .expect("run feedback CLI");
+    assert_eq!(out_neither.status.code(), Some(2));
+    let val_neither: serde_json::Value =
+        serde_json::from_slice(&out_neither.stdout).expect("parse neither json");
+    assert_eq!(val_neither["error"]["kind"], "invalid-usage");
+    assert!(
+        val_neither["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("Must specify either --instead for paired correction or --verdict for single feedback")
+    );
+}
+
+#[test]
+fn invalid_alternative_leaves_existing_original_untouched() {
+    let dir = temp_private_dir("orig-untouched");
+    let (inv, cx) = test_invocation();
+
+    init_ledger(&inv, &cx, LedgerLocation::Directory(dir.clone())).expect("init ledger");
+
+    let open_res = open_ledger(
+        &inv,
+        &cx,
+        LedgerAccess::ExistingOnly,
+        LedgerLocation::Directory(dir.clone()),
+    )
+    .expect("open ledger");
+    let mut store = match open_res {
+        LedgerOpen::Ready(s) => s,
+        other => panic!("expected Ready, got {other:?}"),
+    };
+
+    let members = vec![
+        SnapshotMember {
+            skill_id: "orig-skill".into(),
+            invocation_name: Some("orig-skill".into()),
+            content_hash: Some("hash-orig".into()),
+            source: "workspace".into(),
+            eligible: true,
+            exclusion_reason: None,
+        },
+        SnapshotMember {
+            skill_id: "shadowed-alt".into(),
+            invocation_name: Some("shadowed-alt".into()),
+            content_hash: Some("hash-shd".into()),
+            source: "workspace".into(),
+            eligible: false,
+            exclusion_reason: Some("shadowed".into()),
+        },
+    ];
+    let snapshot = make_snapshot("snap-orig-v1", &members, MembershipCoverage::Complete);
+    let event = make_event("ev-orig-1", Some("snap-orig-v1"));
+    let cand = make_candidate("ev-orig-1", "orig-skill", 1, false, None);
+
+    let stamp0 = store.stamp();
+    store
+        .record_ranking_event(inv.clock(), &cx, &event, &[cand], Some(&snapshot), stamp0)
+        .expect("record event");
+
+    // Establish an initial single judgment on orig-skill (e.g. Useful, version 1)
+    let stamp1 = store.stamp();
+    let req_initial = SingleFeedbackRequest {
+        event_id: "ev-orig-1".into(),
+        skill_id: "orig-skill".into(),
+        verdict: JudgmentLabel::Useful,
+        reason_code: Some("initial_assessment".into()),
+        provenance: Some("initial-assessor".into()),
+        expected_version: None,
+    };
+    let (_, stamp2) = store
+        .record_single_feedback(inv.clock(), &cx, &req_initial, stamp1)
+        .expect("initial feedback");
+
+    let expected_gen = stamp2.data_generation;
+
+    // Now attempt a paired correction proposing an invalid (shadowed) alternative
+    let req_bad = PairedCorrectionRequest {
+        event_id: "ev-orig-1".into(),
+        original_skill_id: "orig-skill".into(),
+        alternative_skill_id: "shadowed-alt".into(),
+        reason_code: Some("try_substitute".into()),
+        provenance: Some("second-assessor".into()),
+        expected_version: None,
+    };
+    let err = store
+        .record_paired_correction(inv.clock(), &cx, &req_bad, stamp2)
+        .expect_err("invalid alternative must fail");
+    assert!(matches!(err, FeedbackError::IneligibleAlternative { .. }));
+
+    // Verify: in the database, the original judgment is completely untouched
+    let db_path = dir.join(LEDGER_FILE);
+    let conn = Connection::open(&db_path).expect("open db");
+    let (label, ver, prov): (String, i64, String) = conn
+        .query_row(
+            "SELECT label, label_version, provenance FROM judgments WHERE attributed_event_id = 'ev-orig-1' AND skill_id = 'orig-skill'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .expect("query judgment");
+    assert_eq!(label, "useful", "original label must remain untouched");
+    assert_eq!(ver, 1, "original version must remain 1");
+    assert_eq!(prov, "initial-assessor", "original provenance must remain untouched");
+
+    let total_jdgs: i64 = conn
+        .query_row("SELECT count(*) FROM judgments", [], |r| r.get(0))
+        .expect("count");
+    assert_eq!(total_jdgs, 1, "no new judgments created");
+
+    let current_gen: i64 = conn
+        .query_row("SELECT data_generation FROM store_meta WHERE singleton = 1", [], |r| r.get(0))
+        .expect("query gen");
+    assert_eq!(current_gen as u64, expected_gen, "data_generation must remain untouched on abort");
+}
+
+#[test]
+fn partial_group_revision_invalidates_derivation() {
+    let dir = temp_private_dir("group-inval");
+    let (inv, cx) = test_invocation();
+
+    init_ledger(&inv, &cx, LedgerLocation::Directory(dir.clone())).expect("init ledger");
+
+    let open_res = open_ledger(
+        &inv,
+        &cx,
+        LedgerAccess::ExistingOnly,
+        LedgerLocation::Directory(dir.clone()),
+    )
+    .expect("open ledger");
+    let mut store = match open_res {
+        LedgerOpen::Ready(s) => s,
+        other => panic!("expected Ready, got {other:?}"),
+    };
+
+    let members = vec![
+        SnapshotMember {
+            skill_id: "paired-orig".into(),
+            invocation_name: Some("paired-orig".into()),
+            content_hash: Some("hash-po".into()),
+            source: "workspace".into(),
+            eligible: true,
+            exclusion_reason: None,
+        },
+        SnapshotMember {
+            skill_id: "paired-alt".into(),
+            invocation_name: Some("paired-alt".into()),
+            content_hash: Some("hash-pa".into()),
+            source: "workspace".into(),
+            eligible: true,
+            exclusion_reason: None,
+        },
+    ];
+    let snapshot = make_snapshot("snap-grp-v1", &members, MembershipCoverage::Complete);
+    let event = make_event("ev-grp-1", Some("snap-grp-v1"));
+    let cand = make_candidate("ev-grp-1", "paired-orig", 1, false, None);
+
+    let stamp0 = store.stamp();
+    store
+        .record_ranking_event(inv.clock(), &cx, &event, &[cand], Some(&snapshot), stamp0)
+        .expect("record event");
+
+    // 1. Commit initial paired correction
+    let stamp1 = store.stamp();
+    let req_paired = PairedCorrectionRequest {
+        event_id: "ev-grp-1".into(),
+        original_skill_id: "paired-orig".into(),
+        alternative_skill_id: "paired-alt".into(),
+        reason_code: Some("prefer_alt".into()),
+        provenance: Some("alice".into()),
+        expected_version: None,
+    };
+    let (outcome, stamp2) = store
+        .record_paired_correction(inv.clock(), &cx, &req_paired, stamp1)
+        .expect("commit paired");
+    let grp_id = match &outcome {
+        FeedbackOutcome::PairedCorrection { group_id, .. } => group_id.clone(),
+        _ => panic!("expected PairedCorrection"),
+    };
+
+    let gen_paired = stamp2.data_generation;
+
+    // 2. Now Assessor Bob revises ONE side of the paired group via single feedback
+    let req_single = SingleFeedbackRequest {
+        event_id: "ev-grp-1".into(),
+        skill_id: "paired-orig".into(),
+        verdict: JudgmentLabel::Useful, // changes original from harmful to useful!
+        reason_code: Some("reconsidered".into()),
+        provenance: Some("bob".into()),
+        expected_version: Some(1), // matches version 1
+    };
+    let (_, stamp3) = store
+        .record_single_feedback(inv.clock(), &cx, &req_single, stamp2)
+        .expect("revise one side");
+
+    // data_generation must advance, invalidating derived priors and group interpretation
+    assert_eq!(
+        stamp3.data_generation,
+        gen_paired + 1,
+        "single revision of one side must advance data_generation"
+    );
+
+    // Database check:
+    let db_path = dir.join(LEDGER_FILE);
+    let conn = Connection::open(&db_path).expect("open db");
+
+    let orig_row: (String, i64, String) = conn
+        .query_row(
+            "SELECT label, label_version, provenance FROM judgments WHERE attributed_event_id = 'ev-grp-1' AND skill_id = 'paired-orig'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .expect("query orig");
+    assert_eq!(orig_row.0, "useful");
+    assert_eq!(orig_row.1, 2);
+    assert_eq!(orig_row.2, "bob", "revised side has new provenance");
+
+    let alt_row: (String, i64, String) = conn
+        .query_row(
+            "SELECT label, label_version, provenance FROM judgments WHERE attributed_event_id = 'ev-grp-1' AND skill_id = 'paired-alt'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .expect("query alt");
+    assert_eq!(alt_row.0, "useful");
+    assert_eq!(alt_row.1, 1);
+    assert!(
+        alt_row.2.starts_with(&format!("paired:{grp_id}:")),
+        "unrevised side retains old group provenance"
+    );
+
+    // 3. Stale update attempt: another assessor tries to update paired-orig with expected_version = 1
+    let req_stale = PairedCorrectionRequest {
+        event_id: "ev-grp-1".into(),
+        original_skill_id: "paired-orig".into(),
+        alternative_skill_id: "paired-alt".into(),
+        reason_code: None,
+        provenance: Some("carol".into()),
+        expected_version: Some(1), // Stale! paired-orig is now version 2
+    };
+    let err = store
+        .record_paired_correction(inv.clock(), &cx, &req_stale, stamp3)
+        .expect_err("stale expected_version must fail with RevisionConflict");
+    match err {
+        FeedbackError::RevisionConflict { expected, actual } => {
+            assert_eq!(expected, 1);
+            assert_eq!(actual, 2);
+        }
+        other => panic!("expected RevisionConflict, got {other:?}"),
+    }
+}
+
+#[test]
+fn multiple_acceptable_alternatives_stay_partial() {
+    let dir = temp_private_dir("mult-partial");
+    let (inv, cx) = test_invocation();
+
+    init_ledger(&inv, &cx, LedgerLocation::Directory(dir.clone())).expect("init ledger");
+
+    let open_res = open_ledger(
+        &inv,
+        &cx,
+        LedgerAccess::ExistingOnly,
+        LedgerLocation::Directory(dir.clone()),
+    )
+    .expect("open ledger");
+    let mut store = match open_res {
+        LedgerOpen::Ready(s) => s,
+        other => panic!("expected Ready, got {other:?}"),
+    };
+
+    let members = vec![
+        SnapshotMember {
+            skill_id: "skill-1".into(),
+            invocation_name: Some("skill-1".into()),
+            content_hash: Some("hash-1".into()),
+            source: "workspace".into(),
+            eligible: true,
+            exclusion_reason: None,
+        },
+        SnapshotMember {
+            skill_id: "skill-2".into(),
+            invocation_name: Some("skill-2".into()),
+            content_hash: Some("hash-2".into()),
+            source: "workspace".into(),
+            eligible: true,
+            exclusion_reason: None,
+        },
+        SnapshotMember {
+            skill_id: "skill-3".into(),
+            invocation_name: Some("skill-3".into()),
+            content_hash: Some("hash-3".into()),
+            source: "workspace".into(),
+            eligible: true,
+            exclusion_reason: None,
+        },
+        SnapshotMember {
+            skill_id: "skill-4".into(),
+            invocation_name: Some("skill-4".into()),
+            content_hash: Some("hash-4".into()),
+            source: "workspace".into(),
+            eligible: true,
+            exclusion_reason: None,
+        },
+    ];
+    let snapshot = make_snapshot("snap-mult-v1", &members, MembershipCoverage::Complete);
+    let event = make_event("ev-mult-1", Some("snap-mult-v1"));
+    let cands = vec![
+        make_candidate("ev-mult-1", "skill-1", 1, false, None),
+        make_candidate("ev-mult-1", "skill-2", 2, false, None),
+        make_candidate("ev-mult-1", "skill-3", 3, false, None),
+        make_candidate("ev-mult-1", "skill-4", 4, false, None),
+    ];
+
+    let stamp0 = store.stamp();
+    store
+        .record_ranking_event(inv.clock(), &cx, &event, &cands, Some(&snapshot), stamp0)
+        .expect("record event");
+
+    // Assessor 1: skill-1 was wrong, skill-2 would have worked
+    let stamp1 = store.stamp();
+    let req1 = PairedCorrectionRequest {
+        event_id: "ev-mult-1".into(),
+        original_skill_id: "skill-1".into(),
+        alternative_skill_id: "skill-2".into(),
+        reason_code: Some("alt2_good".into()),
+        provenance: Some("assessor-1".into()),
+        expected_version: None,
+    };
+    let (_, stamp2) = store
+        .record_paired_correction(inv.clock(), &cx, &req1, stamp1)
+        .expect("paired 1");
+
+    // Assessor 2: skill-1 was wrong, skill-3 also acceptable
+    let req2 = PairedCorrectionRequest {
+        event_id: "ev-mult-1".into(),
+        original_skill_id: "skill-1".into(),
+        alternative_skill_id: "skill-3".into(),
+        reason_code: Some("alt3_also_good".into()),
+        provenance: Some("assessor-2".into()),
+        expected_version: Some(1), // skill-1 version was 1
+    };
+    let (_, _stamp3) = store
+        .record_paired_correction(inv.clock(), &cx, &req2, stamp2)
+        .expect("paired 2");
+
+    // DB inspection:
+    // skill-1: Harmful, version 2
+    // skill-2: Useful, version 1
+    // skill-3: Useful, version 1
+    // skill-4: NO judgment! Other skills remain unjudged.
+    let db_path = dir.join(LEDGER_FILE);
+    let conn = Connection::open(&db_path).expect("open db");
+
+    let rows: Vec<(String, String, i64)> = conn
+        .prepare("SELECT skill_id, label, label_version FROM judgments WHERE attributed_event_id = 'ev-mult-1' ORDER BY skill_id")
+        .expect("prep")
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .expect("query")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("collect");
+
+    assert_eq!(rows.len(), 3, "exactly 3 skills have judgments");
+    assert_eq!(rows[0], ("skill-1".into(), "harmful".into(), 2));
+    assert_eq!(rows[1], ("skill-2".into(), "useful".into(), 1));
+    assert_eq!(rows[2], ("skill-3".into(), "useful".into(), 1));
+
+    let skill4_count: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM judgments WHERE attributed_event_id = 'ev-mult-1' AND skill_id = 'skill-4'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("count skill-4");
+    assert_eq!(skill4_count, 0, "skill-4 remains unjudged; acceptable set stays partial");
 }
