@@ -333,8 +333,8 @@ pub const MAX_SNAPSHOT_MEMBERS: usize = 10_000;
 #[serde(deny_unknown_fields)]
 struct SnapshotMember {
     skill_id: String,
-    invocation_name: String,
-    content_hash: String,
+    invocation_name: Option<String>,
+    content_hash: Option<String>,
     source: String,
     eligible: bool,
     exclusion_reason: Option<String>,
@@ -370,8 +370,16 @@ fn validated_snapshot(snapshot: &NewRosterSnapshot) -> Result<String, StoreError
     let mut ids = BTreeSet::new();
     for member in &members {
         if !bounded_metadata(&member.skill_id, 256)
-            || !bounded_metadata(&member.invocation_name, 1024)
-            || !bounded_metadata(&member.content_hash, 256)
+            || member
+                .invocation_name
+                .as_ref()
+                .is_some_and(|name| !bounded_metadata(name, 1024))
+            || member
+                .content_hash
+                .as_ref()
+                .is_some_and(|hash| !bounded_metadata(hash, 256))
+            || (member.eligible
+                && (member.invocation_name.is_none() || member.content_hash.is_none()))
             || !bounded_metadata(&member.source, 256)
             || member.exclusion_reason.as_ref().is_some_and(|reason| {
                 !bounded_metadata(reason, 256)
@@ -396,7 +404,11 @@ fn validated_snapshot(snapshot: &NewRosterSnapshot) -> Result<String, StoreError
     }
     // Membership is a set. Normalize formatting and order for exact reuse.
     members.sort_unstable_by(|a, b| a.skill_id.cmp(&b.skill_id));
-    serde_json::to_string(&members).map_err(|_| StoreError::InvalidRecord)
+    let encoded = serde_json::to_string(&members).map_err(|_| StoreError::InvalidRecord)?;
+    if encoded.len() > MAX_SNAPSHOT_METADATA_BYTES {
+        return Err(StoreError::InvalidRecord);
+    }
+    Ok(encoded)
 }
 
 fn insert_snapshot(
@@ -421,25 +433,7 @@ fn insert_snapshot(
             snapshot.created_at_unix_ms as i64
         ],
     )?;
-    let stored = tx.query_row(
-        "SELECT workspace_root, adapter, total_candidates, eligible_candidates,
-                membership_coverage, members_json, created_at_unix_ms
-         FROM roster_snapshots WHERE snapshot_id = ?1",
-        [&snapshot.snapshot_id],
-        |row| {
-            Ok(NewRosterSnapshot {
-                snapshot_id: snapshot.snapshot_id.clone(),
-                workspace_root: row.get(0)?,
-                adapter: row.get(1)?,
-                total_candidates: row.get(2)?,
-                eligible_candidates: row.get(3)?,
-                membership_coverage: MembershipCoverage::parse_str(&row.get::<_, String>(4)?)
-                    .ok_or(rusqlite::Error::InvalidQuery)?,
-                members_json: row.get(5)?,
-                created_at_unix_ms: row.get(6)?,
-            })
-        },
-    )?;
+    let stored = read_snapshot(tx, &snapshot.snapshot_id)?.ok_or(StoreError::Corrupt)?;
     if stored.workspace_root != snapshot.workspace_root
         || stored.adapter != snapshot.adapter
         || stored.total_candidates != snapshot.total_candidates
@@ -450,6 +444,36 @@ fn insert_snapshot(
         return Err(StoreError::RecordConflict);
     }
     Ok(())
+}
+
+fn read_snapshot(
+    tx: &rusqlite::Transaction<'_>,
+    snapshot_id: &str,
+) -> Result<Option<NewRosterSnapshot>, StoreError> {
+    Ok(tx
+        .query_row(
+            "SELECT workspace_root, adapter, total_candidates, eligible_candidates,
+                membership_coverage, members_json, created_at_unix_ms
+         FROM roster_snapshots WHERE snapshot_id = ?1",
+            [snapshot_id],
+            |row| {
+                Ok(NewRosterSnapshot {
+                    snapshot_id: snapshot_id.to_owned(),
+                    workspace_root: row.get(0)?,
+                    adapter: row.get(1)?,
+                    total_candidates: u64::try_from(row.get::<_, i64>(2)?)
+                        .map_err(|_| rusqlite::Error::InvalidQuery)?,
+                    eligible_candidates: u64::try_from(row.get::<_, i64>(3)?)
+                        .map_err(|_| rusqlite::Error::InvalidQuery)?,
+                    membership_coverage: MembershipCoverage::parse_str(&row.get::<_, String>(4)?)
+                        .ok_or(rusqlite::Error::InvalidQuery)?,
+                    members_json: row.get(5)?,
+                    created_at_unix_ms: u64::try_from(row.get::<_, i64>(6)?)
+                        .map_err(|_| rusqlite::Error::InvalidQuery)?,
+                })
+            },
+        )
+        .optional()?)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1393,16 +1417,13 @@ impl LedgerStore {
             insert_snapshot(&tx, snap, members)?;
         }
         if let Some(snapshot_id) = &event.snapshot_id {
-            let workspace: Option<String> = tx
-                .query_row(
-                    "SELECT workspace_root FROM roster_snapshots WHERE snapshot_id = ?1",
-                    [snapshot_id],
-                    |row| row.get(0),
-                )
-                .optional()?;
-            if workspace.as_deref() != Some(event.workspace_root.as_str()) {
+            let stored = read_snapshot(&tx, snapshot_id)?.ok_or(StoreError::InvalidRecord)?;
+            if stored.workspace_root != event.workspace_root {
                 return Err(StoreError::InvalidRecord);
             }
+            // Pre-validation ledgers may contain opaque JSON. Referencing an
+            // existing ID must not turn that unknown evidence into a claim.
+            validated_snapshot(&stored)?;
         }
 
         tx.execute(

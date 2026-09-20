@@ -377,6 +377,86 @@ fn ledger_event_cannot_attach_candidates_to_another_existing_event() {
     assert!(inv.shutdown());
 }
 
+#[test]
+fn ledger_snapshot_reference_revalidates_legacy_rows_and_preserves_unknown_coverage() {
+    let (inv, cx) = test_invocation();
+    let mut store = open_test_store(&inv, &cx, "snapshot-reference");
+    let stamp = store.stamp();
+    let valid = snapshot_fixture();
+    store
+        .record_roster_snapshot(inv.clock(), &cx, &valid, stamp)
+        .unwrap();
+    let conn = Connection::open(store.database_path()).unwrap();
+    // This represents a row written before the metadata boundary was fixed.
+    conn.execute(
+        "UPDATE roster_snapshots SET members_json = ?1",
+        [r#"[{"body":"PRIVATE_BODY_SENTINEL"}]"#],
+    )
+    .unwrap();
+    assert!(
+        store
+            .record_ranking_event(inv.clock(), &cx, &event_fixture("legacy"), &[], None, stamp)
+            .is_err()
+    );
+    assert_eq!(
+        conn.query_row("SELECT count(*) FROM ranking_events", [], |row| row
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    conn.execute(
+        "UPDATE roster_snapshots SET members_json = ?1",
+        [&valid.members_json],
+    )
+    .unwrap();
+    store
+        .record_ranking_event(inv.clock(), &cx, &event_fixture("valid"), &[], None, stamp)
+        .unwrap();
+
+    for (id, coverage, total, eligible, members) in [
+        ("empty", MembershipCoverage::Complete, 0, 0, "[]".to_owned()),
+        (
+            "unknown",
+            MembershipCoverage::Unknown,
+            2,
+            1,
+            "[]".to_owned(),
+        ),
+        (
+            "partial",
+            MembershipCoverage::Partial,
+            2,
+            1,
+            valid.members_json.clone(),
+        ),
+        (
+            "unreadable-member",
+            MembershipCoverage::Complete,
+            1,
+            0,
+            serde_json::json!([{
+                "skill_id": "unreadable", "invocation_name": null,
+                "content_hash": null, "source": "workspace", "eligible": false,
+                "exclusion_reason": "unreadable"
+            }])
+            .to_string(),
+        ),
+    ] {
+        let snapshot = NewRosterSnapshot {
+            snapshot_id: id.into(),
+            membership_coverage: coverage,
+            total_candidates: total,
+            eligible_candidates: eligible,
+            members_json: members,
+            ..valid.clone()
+        };
+        store
+            .record_roster_snapshot(inv.clock(), &cx, &snapshot, stamp)
+            .unwrap();
+    }
+    assert!(inv.shutdown());
+}
+
 fn test_invocation() -> (ProcessInvocation, Cx) {
     let invocation = ProcessInvocation::enter().expect("process invocation");
     let cx = invocation.request_cx().expect("request_cx");
