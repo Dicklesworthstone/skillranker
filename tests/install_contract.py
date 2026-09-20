@@ -174,13 +174,15 @@ class InstallerTests(unittest.TestCase):
         self.dest.mkdir()
         lock = self.dest / ".sr-install.lock"
         lock.mkdir()
-        (lock / "pid").write_text(str(os.getpid()))
-        p = subprocess.run(["bash", str(INSTALLER), "--offline", str(self.archive()),
-                            "--dest", str(self.dest), "--force", "--keep-temp", "--quiet"],
-                           env=self.env, capture_output=True, timeout=30)
-        self.assertNotEqual(p.returncode, 0)
-        self.assertEqual((lock / "pid").read_text(), str(os.getpid()))
-        self.assertFalse((self.dest / "sr").exists())
+        for pid in [str(os.getpid()), "99999999", "invalid"]:
+            (lock / "pid").write_text(pid)
+            p = subprocess.run(["bash", str(INSTALLER), "--offline", str(self.archive()),
+                                "--dest", str(self.dest), "--force", "--keep-temp", "--quiet"],
+                               env=self.env, capture_output=True, timeout=30)
+            self.assertNotEqual(p.returncode, 0)
+            self.assertEqual((lock / "pid").read_text(), pid)
+            self.assertFalse((self.dest / "sr").exists())
+            if pid == "99999999": self.assertIn(b"Stale install lock", p.stderr)
 
     def test_downgrade_requires_explicit_intent(self):
         self.run_install(self.archive(binary=executable("9.0.0")), "--no-configure")
@@ -193,6 +195,30 @@ class InstallerTests(unittest.TestCase):
                            env=self.env, capture_output=True, timeout=30)
         self.assertNotEqual(p.returncode, 0)
         self.assertFalse(self.dest.exists())
+
+    def test_remote_source_failure_never_runs_local_cargo(self):
+        source = self.root / "source with spaces"
+        source.mkdir()
+        (source / "Cargo.lock").write_text("version = 4\n")
+        (source / "rust-toolchain.toml").write_text('[toolchain]\nchannel="stable"\n')
+        event = self.root / "remote-invoked"
+        rch = self.root / "tools/rch"
+        rch.write_text("#!/bin/sh\n"
+                       'test "${RCH_REQUIRE_REMOTE:-}" = 1 || exit 90\n'
+                       'test -z "${TYPESAFE_API_KEY+x}" || exit 91\n'
+                       f'touch "{event}"\n'
+                       'echo intentional-remote-failure >&2\nexit 23\n')
+        p = subprocess.run(["bash", str(INSTALLER), "--source", str(source),
+                            "--dest", str(self.dest), "--keep-temp", "--no-configure", "--quiet"],
+                           env=dict(self.env, TYPESAFE_API_KEY="fixture-secret"),
+                           capture_output=True, timeout=30)
+        self.assertNotEqual(p.returncode, 0)
+        self.assertTrue(event.exists())
+        self.assertFalse((self.dest / "sr").exists())
+        logs = list(self.dest.glob(".sr-install.*/build.log"))
+        self.assertEqual(len(logs), 1)
+        self.assertIn("intentional-remote-failure", logs[0].read_text())
+        self.assertNotIn("unexpected-network-or-build", logs[0].read_text())
 
     @unittest.skipUnless(os.environ.get("SR_INSTALL_TEST_BINARY"), "real release binary not supplied")
     def test_real_release_binary(self):

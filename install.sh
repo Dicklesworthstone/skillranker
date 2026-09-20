@@ -103,6 +103,12 @@ run_with_spinner() {
     if [[ "$HAS_GUM" == 1 && "$QUIET" == 0 ]]; then gum spin --title "$title" -- "$@"
     else "$@"; fi
 }
+run_logged() {
+    local title="$1"; shift
+    run_with_spinner "$title" python3 -c \
+        'import subprocess,sys; log=open(sys.argv[1],"wb"); sys.exit(subprocess.call(sys.argv[2:],stdout=log,stderr=log))' \
+        "$TEMP/build.log" "$@"
+}
 sha256() {
     if command -v sha256sum >/dev/null; then sha256sum "$1" | cut -d ' ' -f1
     elif command -v shasum >/dev/null; then shasum -a 256 "$1" | cut -d ' ' -f1
@@ -127,7 +133,7 @@ PY
 download() {
     curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL \
         --connect-timeout 5 --max-time 120 --max-filesize 209715200 \
-        "${PROXY_ARGS[@]}" "$1" -o "$2" 2>"$TEMP/download.stderr"
+        ${PROXY_ARGS[@]+"${PROXY_ARGS[@]}"} "$1" -o "$2" 2>"$TEMP/download.stderr"
 }
 cleanup() {
     local status=$?
@@ -257,18 +263,17 @@ build_source() {
     if [[ -z "$SOURCE" ]]; then
         command -v git >/dev/null || die 'Source build requires git'
         SOURCE="$TEMP/source"
-        run_with_spinner 'Fetching source (see build.log on failure)' git clone --depth 1 --single-branch \
-            --branch "${VERSION:+v}${VERSION:-main}" "$BASE.git" "$SOURCE" >"$TEMP/build.log" 2>&1 || die "Source fetch failed; log: $TEMP/build.log (use --keep-temp)"
+        run_logged 'Fetching source (see build.log on failure)' git clone --depth 1 --single-branch \
+            --branch "${VERSION:+v}${VERSION:-main}" "$BASE.git" "$SOURCE" || die "Source fetch failed; log: $TEMP/build.log (use --keep-temp)"
     fi
     SOURCE=$(cd "$SOURCE" && pwd -P)
     [[ -f "$SOURCE/Cargo.lock" && -f "$SOURCE/rust-toolchain.toml" ]] || die 'Source must be a SkillRanker checkout with lockfile and pinned toolchain'
     # A unique target avoids accidentally installing an old local build after RCH.
     BUILD_TARGET="$TEMP/target"
-    info 'Building sr from source; this can take several minutes'
     if command -v rch >/dev/null; then
-        (cd "$SOURCE" && RCH_REQUIRE_REMOTE=1 rch exec -- cargo build --release --locked --bin sr --target-dir "$BUILD_TARGET") >"$TEMP/build.log" 2>&1 || die "Remote build failed; log: $TEMP/build.log (use --keep-temp)"
+        (cd "$SOURCE" && run_logged 'Building sr remotely; this can take several minutes' env RCH_REQUIRE_REMOTE=1 rch exec -- cargo build --release --locked --bin sr --target-dir "$BUILD_TARGET") || die "Remote build failed; log: $TEMP/build.log (use --keep-temp)"
     else
-        (cd "$SOURCE" && cargo build --release --locked --bin sr --target-dir "$BUILD_TARGET") >"$TEMP/build.log" 2>&1 || die "Source build failed; log: $TEMP/build.log (use --keep-temp)"
+        (cd "$SOURCE" && run_logged 'Building sr locally; this can take several minutes' cargo build --release --locked --bin sr --target-dir "$BUILD_TARGET") || die "Source build failed; log: $TEMP/build.log (use --keep-temp)"
     fi
     BIN="$BUILD_TARGET/release/sr"
     [[ -f "$BIN" ]] || die 'Build returned without a local artifact. Check RCH artifact transfer; no stale binary installed.'
@@ -296,9 +301,9 @@ else
     if [[ -z "$VERSION" ]]; then
         info 'Resolving the latest GitHub release'
         if download "https://api.github.com/repos/$REPO/releases/latest" "$TEMP/release.json"; then
-            VERSION=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["tag_name"].removeprefix("v"))' "$TEMP/release.json")
+            VERSION=$(python3 -c 'import json,sys; tag=json.load(open(sys.argv[1]))["tag_name"]; print(tag[1:] if tag.startswith("v") else tag)' "$TEMP/release.json")
         else
-            REDIRECT=$(curl --proto '=https' --proto-redir '=https' -fsSL --connect-timeout 5 --max-time 15 "${PROXY_ARGS[@]}" -o /dev/null -w '%{url_effective}' "$BASE/releases/latest" 2>"$TEMP/redirect.stderr") || REDIRECT=''
+            REDIRECT=$(curl --proto '=https' --proto-redir '=https' -fsSL --connect-timeout 5 --max-time 15 ${PROXY_ARGS[@]+"${PROXY_ARGS[@]}"} -o /dev/null -w '%{url_effective}' "$BASE/releases/latest" 2>"$TEMP/redirect.stderr") || REDIRECT=''
             if [[ "$REDIRECT" == "$BASE/releases/tag/v"* ]]; then VERSION="${REDIRECT##*/v}"; fi
         fi
     fi
