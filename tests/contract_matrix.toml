@@ -1340,6 +1340,33 @@ features = []
 status = "executed"
 
 [[boundaries]]
+id = "p5_observation_watermark"
+owner_bead = "sr-roadmap-l1i.6.9"
+member_beads = ["sr-roadmap-l1i.6.9"]
+phase = "P5"
+title = "Implement load attribution and atomic observation watermarks"
+unit_property_tests = [
+    "tests/observation_contract.rs::test_cas_cursor_generation_conflict_prevents_stale_overwrites",
+    "tests/observation_contract.rs::test_atomic_watermark_advance_and_generation_bump",
+    "tests/observation_contract.rs::test_deduplication_of_source_event_key",
+    "tests/observation_contract.rs::test_attribution_to_latest_preceding_emission_within_30_min",
+    "tests/observation_contract.rs::test_failed_or_attempted_tools_become_attempted",
+    "tests/observation_contract.rs::test_prose_mentions_and_arbitrary_paths_never_count_as_loads",
+    "tests/observation_contract.rs::test_path_only_reads_without_content_hash_never_suppress_references",
+    "tests/observation_contract.rs::test_compaction_invalidates_prior_epoch_suppression",
+    "tests/observation_contract.rs::test_workflows_remain_repeatable",
+    "tests/observation_contract.rs::test_observe_cli_refuses_no_ledger_and_no_persist",
+    "tests/observation_contract.rs::test_observe_cli_requires_ledger_existence",
+    "tests/observation_contract.rs::test_observe_cli_e2e_with_context"
+]
+e2e_suite = "replay"
+e2e_cases = ["ledger-observation-watermark", "ledger-load-attribution"]
+assertion_ids = ["observation_watermark_atomic", "load_attribution_enforced"]
+platforms = ["linux"]
+features = []
+status = "executed"
+
+[[boundaries]]
 id = "p5_offline_replay"
 owner_bead = "sr-roadmap-l1i.6.16"
 member_beads = ["sr-roadmap-l1i.6.16"]
@@ -1528,7 +1555,7 @@ status = "planned"
 [[boundaries]]
 id = "p5_acceptance_gate"
 owner_bead = "sr-roadmap-l1i.6.29"
-member_beads = ["sr-roadmap-l1i.6.29", "sr-roadmap-l1i.6.10", "sr-roadmap-l1i.6.11", "sr-roadmap-l1i.6.12", "sr-roadmap-l1i.6.13", "sr-roadmap-l1i.6.14", "sr-roadmap-l1i.6.15", "sr-roadmap-l1i.6.17", "sr-roadmap-l1i.6.18", "sr-roadmap-l1i.6.19", "sr-roadmap-l1i.6.2", "sr-roadmap-l1i.6.20", "sr-roadmap-l1i.6.21", "sr-roadmap-l1i.6.22", "sr-roadmap-l1i.6.23", "sr-roadmap-l1i.6.24", "sr-roadmap-l1i.6.25", "sr-roadmap-l1i.6.26", "sr-roadmap-l1i.6.27", "sr-roadmap-l1i.6.3", "sr-roadmap-l1i.6.7", "sr-roadmap-l1i.6.9"]
+member_beads = ["sr-roadmap-l1i.6.29", "sr-roadmap-l1i.6.10", "sr-roadmap-l1i.6.11", "sr-roadmap-l1i.6.12", "sr-roadmap-l1i.6.13", "sr-roadmap-l1i.6.14", "sr-roadmap-l1i.6.15", "sr-roadmap-l1i.6.17", "sr-roadmap-l1i.6.18", "sr-roadmap-l1i.6.19", "sr-roadmap-l1i.6.2", "sr-roadmap-l1i.6.20", "sr-roadmap-l1i.6.21", "sr-roadmap-l1i.6.22", "sr-roadmap-l1i.6.23", "sr-roadmap-l1i.6.24", "sr-roadmap-l1i.6.25", "sr-roadmap-l1i.6.26", "sr-roadmap-l1i.6.27", "sr-roadmap-l1i.6.3", "sr-roadmap-l1i.6.7"]
 phase = "P5"
 title = "Accept local evidence, faithful replay and bounded evaluation"
 unit_property_tests = ["tests/p5_gate.rs::all_p5_contracts_verified"]

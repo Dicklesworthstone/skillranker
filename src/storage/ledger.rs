@@ -3498,6 +3498,220 @@ impl LedgerStore {
         Ok(())
     }
 
+    pub fn record_observations_with_cursor(
+        &mut self,
+        clock: EntryClock,
+        cx: &Cx,
+        observations: &[NewObservation],
+        cursor: &SessionCursor,
+        expected_cursor_gen: Option<u64>,
+        expected_stamp: LedgerStamp,
+    ) -> Result<LedgerStamp, StoreError> {
+        if self.read_only {
+            return Err(StoreError::Permissions);
+        }
+        check_work(clock, cx)?;
+        self.directory.verify_database_file(&self.file, clock, cx)?;
+        self.directory.admit_space()?;
+        refresh_busy_limit(&self.connection, clock, cx)?;
+
+        let tx = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        check_stamp(&tx, expected_stamp)?;
+
+        // Compare-and-swap on cursor generation if specified
+        if let Some(expected_gen) = expected_cursor_gen {
+            let current_gen: Option<i64> = tx
+                .query_row(
+                    "SELECT transcript_generation FROM session_cursors
+                     WHERE workspace_root = ?1 AND session_id = ?2 AND agent_branch = ?3 AND cursor_kind = ?4",
+                    params![
+                        cursor.workspace_root,
+                        cursor.session_id,
+                        cursor.agent_branch,
+                        cursor.cursor_kind.as_str(),
+                    ],
+                    |r| r.get(0),
+                )
+                .optional()?;
+
+            match current_gen {
+                Some(current_g) if current_g as u64 != expected_gen => {
+                    return Err(StoreError::RecordConflict);
+                }
+                None if expected_gen != 0 => {
+                    return Err(StoreError::RecordConflict);
+                }
+                _ => {}
+            }
+        }
+
+        // Insert observations with deduplication on source_event_key
+        for obs in observations {
+            let attributed_event_id = match &obs.attributed_event_id {
+                Some(id) => Some(id.clone()),
+                None => {
+                    let min_time = obs.observed_at_unix_ms.saturating_sub(1_800_000);
+                    tx.query_row(
+                        "SELECT event_id FROM ranking_events
+                         WHERE workspace_root = ?1 AND session_id = ?2 AND agent_branch = ?3
+                           AND exposure_state IN ('emitted', 'acknowledged')
+                           AND created_at_unix_ms <= ?4 AND created_at_unix_ms >= ?5
+                         ORDER BY created_at_unix_ms DESC LIMIT 1",
+                        params![
+                            obs.workspace_root,
+                            obs.session_id,
+                            obs.agent_branch,
+                            obs.observed_at_unix_ms as i64,
+                            min_time as i64,
+                        ],
+                        |r| r.get(0),
+                    )
+                    .optional()?
+                }
+            };
+            tx.execute(
+                "INSERT INTO observations (
+                    observation_id, source_event_key, workspace_root, session_id,
+                    agent_branch, attributed_event_id, skill_id, evidence_state, observed_at_unix_ms
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                ON CONFLICT (source_event_key) DO NOTHING",
+                params![
+                    obs.observation_id,
+                    obs.source_event_key,
+                    obs.workspace_root,
+                    obs.session_id,
+                    obs.agent_branch,
+                    attributed_event_id,
+                    obs.skill_id,
+                    obs.evidence_state.as_str(),
+                    obs.observed_at_unix_ms as i64,
+                ],
+            )?;
+        }
+
+        // Upsert the cursor watermark
+        tx.execute(
+            "INSERT INTO session_cursors (
+                workspace_root, session_id, agent_branch, cursor_kind,
+                transcript_generation, last_complete_event_id, last_offset_bytes, updated_at_unix_ms
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            ON CONFLICT (workspace_root, session_id, agent_branch, cursor_kind) DO UPDATE SET
+                transcript_generation = excluded.transcript_generation,
+                last_complete_event_id = excluded.last_complete_event_id,
+                last_offset_bytes = excluded.last_offset_bytes,
+                updated_at_unix_ms = excluded.updated_at_unix_ms",
+            params![
+                cursor.workspace_root,
+                cursor.session_id,
+                cursor.agent_branch,
+                cursor.cursor_kind.as_str(),
+                cursor.transcript_generation as i64,
+                cursor.last_complete_event_id,
+                cursor.last_offset_bytes as i64,
+                cursor.updated_at_unix_ms as i64,
+            ],
+        )?;
+
+        let new_data_gen = expected_stamp
+            .data_generation
+            .checked_add(1)
+            .ok_or(StoreError::GenerationExhausted)?;
+
+        tx.execute(
+            "UPDATE store_meta SET data_generation = ?1 WHERE singleton = 1",
+            [new_data_gen as i64],
+        )?;
+
+        self.directory.verify_database_file(&self.file, clock, cx)?;
+        check_work(clock, cx)?;
+        tx.commit()?;
+
+        self.stamp.data_generation = new_data_gen;
+        Ok(self.stamp)
+    }
+
+    pub fn get_session_observations(
+        &self,
+        clock: EntryClock,
+        cx: &Cx,
+        workspace_root: &str,
+        session_id: &str,
+    ) -> Result<Vec<NewObservation>, StoreError> {
+        check_work(clock, cx)?;
+        self.directory.verify_database_file(&self.file, clock, cx)?;
+        refresh_busy_limit(&self.connection, clock, cx)?;
+
+        let mut stmt = self.connection.prepare(
+            "SELECT observation_id, source_event_key, workspace_root, session_id,
+                    agent_branch, attributed_event_id, skill_id, evidence_state, observed_at_unix_ms
+             FROM observations
+             WHERE workspace_root = ?1 AND session_id = ?2
+             ORDER BY observed_at_unix_ms ASC",
+        )?;
+
+        let rows = stmt.query_map(params![workspace_root, session_id], |row| {
+            let state_str: String = row.get(7)?;
+            let state = EvidenceState::parse_str(&state_str).unwrap_or(EvidenceState::Attempted);
+            let time: i64 = row.get(8)?;
+            Ok(NewObservation {
+                observation_id: row.get(0)?,
+                source_event_key: row.get(1)?,
+                workspace_root: row.get(2)?,
+                session_id: row.get(3)?,
+                agent_branch: row.get(4)?,
+                attributed_event_id: row.get(5)?,
+                skill_id: row.get(6)?,
+                evidence_state: state,
+                observed_at_unix_ms: time as u64,
+            })
+        })?;
+
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    pub fn find_latest_preceding_emission(
+        &self,
+        clock: EntryClock,
+        cx: &Cx,
+        workspace_root: &str,
+        session_id: &str,
+        agent_branch: &str,
+        observed_at_unix_ms: u64,
+        max_window_ms: u64,
+    ) -> Result<Option<String>, StoreError> {
+        check_work(clock, cx)?;
+        self.directory.verify_database_file(&self.file, clock, cx)?;
+        refresh_busy_limit(&self.connection, clock, cx)?;
+
+        let min_time = observed_at_unix_ms.saturating_sub(max_window_ms);
+        let event_id: Option<String> = self
+            .connection
+            .query_row(
+                "SELECT event_id FROM ranking_events
+                 WHERE workspace_root = ?1 AND session_id = ?2 AND agent_branch = ?3
+                   AND exposure_state IN ('emitted', 'acknowledged')
+                   AND created_at_unix_ms <= ?4 AND created_at_unix_ms >= ?5
+                 ORDER BY created_at_unix_ms DESC LIMIT 1",
+                params![
+                    workspace_root,
+                    session_id,
+                    agent_branch,
+                    observed_at_unix_ms as i64,
+                    min_time as i64,
+                ],
+                |r| r.get(0),
+            )
+            .optional()?;
+
+        Ok(event_id)
+    }
+
     pub fn record_judgment(
         &mut self,
         clock: EntryClock,
@@ -4512,6 +4726,189 @@ pub fn record_acknowledgment(
                 stamp,
             )?;
             Ok(recorded)
+        },
+    )
+    .map_err(StoreError::Runtime)?;
+    res.value
+}
+
+pub fn record_observations_with_cursor(
+    invocation: &ProcessInvocation,
+    cx: &Cx,
+    access: LedgerAccess,
+    location: LedgerLocation,
+    observations: &[NewObservation],
+    cursor: &SessionCursor,
+    expected_cursor_gen: Option<u64>,
+) -> Result<bool, StoreError> {
+    if access == LedgerAccess::Disabled {
+        return Err(StoreError::Permissions);
+    }
+    let clock = invocation.clock();
+    let child = cx.clone();
+    let observations = observations.to_vec();
+    let cursor = cursor.clone();
+    let res = run_blocking_leaf(
+        invocation,
+        cx,
+        BlockingLeafKind::Database,
+        false,
+        move || {
+            let mut store = match open_blocking(clock, &child, access, location)? {
+                LedgerOpen::Ready(store) => *store,
+                LedgerOpen::Missing => {
+                    return Err(StoreError::Missing);
+                }
+                LedgerOpen::Disabled | LedgerOpen::ReadOnly(_) => {
+                    return Err(StoreError::Permissions);
+                }
+            };
+            let stamp = store.stamp();
+            store.record_observations_with_cursor(
+                clock,
+                &child,
+                &observations,
+                &cursor,
+                expected_cursor_gen,
+                stamp,
+            )?;
+            Ok(true)
+        },
+    )
+    .map_err(StoreError::Runtime)?;
+    res.value
+}
+
+pub fn get_session_cursor(
+    invocation: &ProcessInvocation,
+    cx: &Cx,
+    access: LedgerAccess,
+    location: LedgerLocation,
+    workspace_root: &str,
+    session_id: &str,
+    agent_branch: &str,
+    kind: CursorKind,
+) -> Result<Option<SessionCursor>, StoreError> {
+    if access == LedgerAccess::Disabled {
+        return Err(StoreError::Permissions);
+    }
+    let clock = invocation.clock();
+    let child = cx.clone();
+    let workspace_root = workspace_root.to_string();
+    let session_id = session_id.to_string();
+    let agent_branch = agent_branch.to_string();
+    let res = run_blocking_leaf(
+        invocation,
+        cx,
+        BlockingLeafKind::Database,
+        false,
+        move || {
+            let store = match open_blocking(clock, &child, access, location)? {
+                LedgerOpen::Ready(store) => *store,
+                LedgerOpen::ReadOnly(store) => *store,
+                LedgerOpen::Missing => {
+                    return Err(StoreError::Missing);
+                }
+                LedgerOpen::Disabled => {
+                    return Err(StoreError::Permissions);
+                }
+            };
+            store.get_session_cursor(
+                clock,
+                &child,
+                &workspace_root,
+                &session_id,
+                &agent_branch,
+                kind,
+            )
+        },
+    )
+    .map_err(StoreError::Runtime)?;
+    res.value
+}
+
+pub fn get_session_observations(
+    invocation: &ProcessInvocation,
+    cx: &Cx,
+    access: LedgerAccess,
+    location: LedgerLocation,
+    workspace_root: &str,
+    session_id: &str,
+) -> Result<Vec<NewObservation>, StoreError> {
+    if access == LedgerAccess::Disabled {
+        return Err(StoreError::Permissions);
+    }
+    let clock = invocation.clock();
+    let child = cx.clone();
+    let workspace_root = workspace_root.to_string();
+    let session_id = session_id.to_string();
+    let res = run_blocking_leaf(
+        invocation,
+        cx,
+        BlockingLeafKind::Database,
+        false,
+        move || {
+            let store = match open_blocking(clock, &child, access, location)? {
+                LedgerOpen::Ready(store) => *store,
+                LedgerOpen::ReadOnly(store) => *store,
+                LedgerOpen::Missing => {
+                    return Err(StoreError::Missing);
+                }
+                LedgerOpen::Disabled => {
+                    return Err(StoreError::Permissions);
+                }
+            };
+            store.get_session_observations(clock, &child, &workspace_root, &session_id)
+        },
+    )
+    .map_err(StoreError::Runtime)?;
+    res.value
+}
+
+pub fn find_latest_preceding_emission(
+    invocation: &ProcessInvocation,
+    cx: &Cx,
+    access: LedgerAccess,
+    location: LedgerLocation,
+    workspace_root: &str,
+    session_id: &str,
+    agent_branch: &str,
+    observed_at_unix_ms: u64,
+    max_window_ms: u64,
+) -> Result<Option<String>, StoreError> {
+    if access == LedgerAccess::Disabled {
+        return Err(StoreError::Permissions);
+    }
+    let clock = invocation.clock();
+    let child = cx.clone();
+    let workspace_root = workspace_root.to_string();
+    let session_id = session_id.to_string();
+    let agent_branch = agent_branch.to_string();
+    let res = run_blocking_leaf(
+        invocation,
+        cx,
+        BlockingLeafKind::Database,
+        false,
+        move || {
+            let store = match open_blocking(clock, &child, access, location)? {
+                LedgerOpen::Ready(store) => *store,
+                LedgerOpen::ReadOnly(store) => *store,
+                LedgerOpen::Missing => {
+                    return Err(StoreError::Missing);
+                }
+                LedgerOpen::Disabled => {
+                    return Err(StoreError::Permissions);
+                }
+            };
+            store.find_latest_preceding_emission(
+                clock,
+                &child,
+                &workspace_root,
+                &session_id,
+                &agent_branch,
+                observed_at_unix_ms,
+                max_window_ms,
+            )
         },
     )
     .map_err(StoreError::Runtime)?;

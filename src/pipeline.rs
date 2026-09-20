@@ -21,8 +21,9 @@ use crate::config::{
     ConfigSources, PolicyBoundary, PolicyReceipt, PublicationKind, ResolvedConfig, Revalidation,
 };
 use crate::context::anchor::resolve_task_anchor;
-use crate::context::branch::{LoadedSkillRecord, resolve_active_branch};
+use crate::context::branch::{SkillUsageKind, resolve_active_branch};
 use crate::context::jsonl::{CursorKind, snapshot_jsonl};
+use crate::context::tool::{SimpleSkillResolver, SkillMatch, extract_loaded_skill_records};
 use crate::context::render::{RenderContextOptions, render_context_and_receipt};
 use crate::context::source::{
     SelectionOutcome, SelectionReason, SourceError, SourceOptions, SourceTarget,
@@ -79,7 +80,7 @@ pub use crate::jev::client::JevTransport;
 
 /// The provisional contract rank resolves Claude skills under: the documented
 /// project-over-personal precedence, not yet verified by conformance evidence.
-const PROVISIONAL_CLAUDE_CONTRACT: &str = "claude-code-documented-unverified";
+pub(crate) const PROVISIONAL_CLAUDE_CONTRACT: &str = "claude-code-documented-unverified";
 
 /// How a result's visibility is labeled: "unverified" for the provisional
 /// Claude contract (and any unverified binding), "verified" only for a
@@ -545,6 +546,58 @@ fn compute_context_digest(ctx: &NormalizedContext) -> ContentHash {
         bytes.extend_from_slice(&evt_json);
     }
     ContentHash::from_bytes(&bytes)
+}
+
+pub(crate) fn skill_evidence_resolver_from_roster(roster: &ResolvedRoster) -> SimpleSkillResolver {
+    let mut resolver = SimpleSkillResolver::new();
+    for skill in roster.skills() {
+        let record = skill.record();
+        let usage_kind = match record.usage_kind {
+            crate::roster::UsageKind::Workflow => SkillUsageKind::Workflow,
+            crate::roster::UsageKind::Reference => SkillUsageKind::Reference,
+            crate::roster::UsageKind::Unknown => SkillUsageKind::Unknown,
+        };
+        let match_info = SkillMatch {
+            skill_id: record.id.clone(),
+            usage_kind,
+            source_content: Some(record.source_content.clone()),
+            rendered_content: record.rendered_content.clone(),
+            has_dynamic_arguments: false,
+            turn_scoped: false,
+        };
+        resolver.register_tool(record.invocation_name.as_str(), match_info.clone());
+        resolver.register_tool(record.display_name.as_str(), match_info.clone());
+
+        for binding in skill.bindings() {
+            resolver.register_tool(
+                binding.invocation.as_str(),
+                SkillMatch {
+                    skill_id: binding.id.clone(),
+                    ..match_info.clone()
+                },
+            );
+        }
+
+        for alias in &record.aliases {
+            resolver.register_tool(alias.invocation.as_str(), match_info.clone());
+        }
+
+        let path_str = match &record.target {
+            crate::roster::LoadTarget::File(p) => {
+                Some(p.as_path().to_string_lossy().to_string())
+            }
+            _ => None,
+        };
+        if let Some(p) = path_str {
+            let path_match = SkillMatch {
+                source_content: None,
+                rendered_content: None,
+                ..match_info
+            };
+            resolver.register_path(p, path_match);
+        }
+    }
+    resolver
 }
 
 async fn rank_once(
@@ -1214,7 +1267,17 @@ async fn rank_once(
     }
 
     // 6. Advisory candidate admission & local policy filtering
-    let loaded_records: Vec<LoadedSkillRecord> = Vec::new();
+    let evidence_resolver = skill_evidence_resolver_from_roster(&roster);
+    let default_epoch = crate::identity::ContextEpoch::new("epoch-0").expect("valid default epoch");
+    let current_epoch = active_branch
+        .map(|b| &b.current_epoch)
+        .unwrap_or(&default_epoch);
+    let loaded_records = extract_loaded_skill_records(
+        &normalized_context.events,
+        &evidence_resolver,
+        active_branch,
+        current_epoch,
+    );
     let loaded_state = LoadedState {
         branch: active_branch,
         records: &loaded_records,
@@ -1239,7 +1302,7 @@ async fn rank_once(
         }
     }
     let excluded_refs: BTreeSet<&SkillId> = excluded_skills.iter().collect();
-    let loaded_refs: BTreeSet<&SkillId> = BTreeSet::new();
+    let loaded_refs: BTreeSet<&SkillId> = loaded_records.iter().map(|r| &r.skill_id).collect();
     let policy_view = PolicyView {
         excluded: &excluded_refs,
         already_loaded: &loaded_refs,

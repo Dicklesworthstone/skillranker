@@ -14,19 +14,20 @@ pub use export::{
     export_private_atomic,
 };
 pub use ledger::{
-    CandidateStage, CleanupDebt, ClearPreview, ClearReport, DEFAULT_RETENTION_MS, DecisionKind,
-    ExposureState, FeedbackError, FeedbackOutcome, FeedbackRequest, InitReport, InitStatus,
-    JudgmentLabel, LEDGER_FILE, LEDGER_MAINTENANCE_RESERVE_BYTES, LEDGER_MUTATION_RESERVE_BYTES,
-    LEDGER_QUOTA_BYTES, LEDGER_RECORDING_CEILING_BYTES, LEDGER_SCHEMA_ID, LEDGER_SCHEMA_VERSION,
-    LEDGER_TARGET_SCHEMA_VERSION, LedgerAccess, LedgerCapacityReport, LedgerLocation, LedgerOpen,
-    LedgerStamp, LedgerStatusReport, LedgerStore, MaintenanceError, MaintenanceKind,
-    MaintenancePreflight, MembershipCoverage, MigrationError, MigrationPreview, MigrationReport,
-    MigrationStep, NewCalibration, NewFeedbackProposal, NewJudgment, NewObservation,
-    NewProviderAttempt, NewRankingCandidate, NewRankingEvent, NewRosterSnapshot,
-    PairedCorrectionRequest, PendingMigration, ProposalStatus, PrunePreview, PruneReport,
-    RetainedStats, SingleFeedbackRequest, SnapshotMember, format_unix_ms, init_ledger,
-    ledger_status, open_ledger, parse_cutoff_to_unix_ms, record_acknowledgment, record_emission,
-    record_ranking, submit_feedback,
+    CandidateStage, CleanupDebt, ClearPreview, ClearReport, CursorKind, DEFAULT_RETENTION_MS,
+    DecisionKind, EvidenceState, ExposureState, FeedbackError, FeedbackOutcome, FeedbackRequest,
+    InitReport, InitStatus, JudgmentLabel, LEDGER_FILE, LEDGER_MAINTENANCE_RESERVE_BYTES,
+    LEDGER_MUTATION_RESERVE_BYTES, LEDGER_QUOTA_BYTES, LEDGER_RECORDING_CEILING_BYTES,
+    LEDGER_SCHEMA_ID, LEDGER_SCHEMA_VERSION, LEDGER_TARGET_SCHEMA_VERSION, LedgerAccess,
+    LedgerCapacityReport, LedgerLocation, LedgerOpen, LedgerStamp, LedgerStatusReport, LedgerStore,
+    MaintenanceError, MaintenanceKind, MaintenancePreflight, MembershipCoverage, MigrationError,
+    MigrationPreview, MigrationReport, MigrationStep, NewCalibration, NewFeedbackProposal,
+    NewJudgment, NewObservation, NewProviderAttempt, NewRankingCandidate, NewRankingEvent,
+    NewRosterSnapshot, PairedCorrectionRequest, PendingMigration, ProposalStatus, PrunePreview,
+    PruneReport, RetainedStats, SessionCursor, SingleFeedbackRequest, SnapshotMember,
+    find_latest_preceding_emission, format_unix_ms, get_session_cursor, get_session_observations,
+    init_ledger, ledger_status, open_ledger, parse_cutoff_to_unix_ms, record_acknowledgment,
+    record_emission, record_observations_with_cursor, record_ranking, submit_feedback,
 };
 
 use crate::blocking::{BlockingLeafKind, remaining_busy_wait, run_blocking_leaf};

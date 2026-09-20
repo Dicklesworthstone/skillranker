@@ -22,6 +22,7 @@ pub const IMPLEMENTED_COMMANDS: &[&str] = &[
     "doctor",
     "feedback",
     "ledger",
+    "observe",
     "rank",
     "replay",
     "roster",
