@@ -545,11 +545,62 @@ impl Default for CostReceipt {
     }
 }
 
-#[derive(Clone, Copy, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum AttemptState {
     Admitted,
     Sent,
     Finished,
+}
+
+/// What became of one admitted attempt. `Unknown` is deliberate: an attempt
+/// whose response never arrived is not a success and not a clean failure, and
+/// the ledger must not resolve that ambiguity on its behalf.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AttemptOutcome {
+    Admitted,
+    Sent,
+    Completed,
+    Failed,
+    Discarded,
+}
+
+impl AttemptOutcome {
+    /// The wire word for this outcome, matching the ledger's `status` domain.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Admitted => "admitted",
+            Self::Sent => "sent",
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+            Self::Discarded => "discarded",
+        }
+    }
+}
+
+/// One attempt's bounded provenance: who owned it, which stage it served, when
+/// it moved, and what it cost. Aggregate counters cannot answer "which attempt
+/// incurred this token spend", which is what recording attempt ownership needs.
+///
+/// Times are monotonic from process entry, as the clock is. A writer that needs
+/// wall-clock times converts them once, against a single reading, rather than
+/// each transition sampling its own.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AttemptProvenance {
+    pub attempt_id: String,
+    pub stage: RankingStage,
+    pub admitted_at: MonotonicMillis,
+    pub sent_at: Option<MonotonicMillis>,
+    pub settled_at: Option<MonotonicMillis>,
+    pub outcome: AttemptOutcome,
+    /// Present only for an attempt that returned usage. A sent attempt with no
+    /// response keeps `None`: absent is not zero.
+    pub usage: Option<Usage>,
+}
+
+#[derive(Clone, Debug)]
+struct AttemptTrace {
+    state: AttemptState,
+    provenance: AttemptProvenance,
 }
 
 /// Invocation-wide coordinator for HTTP attempt admission and cost accounting.
@@ -565,7 +616,7 @@ pub struct AttemptAdmission {
     logical_requests_started: u32,
     current_stage: Option<RankingStage>,
     wide_completed: bool,
-    issued_attempt_ids: BTreeMap<String, AttemptState>,
+    issued_attempt_ids: BTreeMap<String, AttemptTrace>,
     owner: Arc<()>,
     current_stage_completed: bool,
 }
@@ -606,6 +657,38 @@ impl AttemptAdmission {
 
     pub const fn budget(&self) -> AttemptBudget {
         self.budget
+    }
+
+    fn attempt_state(&self, attempt_id: &str) -> Option<AttemptState> {
+        self.issued_attempt_ids
+            .get(attempt_id)
+            .map(|trace| trace.state)
+    }
+
+    /// Move one attempt to `state` and update its provenance. The caller has
+    /// already validated ownership and the current state, so a missing entry
+    /// here cannot happen; if it ever did, dropping the update is safer than
+    /// inventing an attempt the ledger would then claim was real.
+    fn settle(
+        &mut self,
+        attempt_id: &str,
+        state: AttemptState,
+        update: impl FnOnce(&mut AttemptProvenance),
+    ) {
+        if let Some(trace) = self.issued_attempt_ids.get_mut(attempt_id) {
+            trace.state = state;
+            update(&mut trace.provenance);
+        }
+    }
+
+    /// Every attempt this invocation admitted, in admission order, with what
+    /// became of it. A cache-served invocation admits none and therefore yields
+    /// none: a follower that reuses an owner's response adds no attempt of its
+    /// own, and must not appear to have incurred one.
+    pub fn attempts(&self) -> impl Iterator<Item = &AttemptProvenance> {
+        self.issued_attempt_ids
+            .values()
+            .map(|trace| &trace.provenance)
     }
 
     pub const fn receipt(&self) -> &CostReceipt {
@@ -656,7 +739,7 @@ impl AttemptAdmission {
         if self
             .issued_attempt_ids
             .values()
-            .any(|state| *state != AttemptState::Finished)
+            .any(|trace| trace.state != AttemptState::Finished)
         {
             return Err(AdmissionRefusal::StageOrderingViolation {
                 stage,
@@ -716,8 +799,21 @@ impl AttemptAdmission {
                 attempt_id: attempt_id.as_str().to_owned(),
             });
         }
-        self.issued_attempt_ids
-            .insert(attempt_id.as_str().to_owned(), AttemptState::Admitted);
+        self.issued_attempt_ids.insert(
+            attempt_id.as_str().to_owned(),
+            AttemptTrace {
+                state: AttemptState::Admitted,
+                provenance: AttemptProvenance {
+                    attempt_id: attempt_id.as_str().to_owned(),
+                    stage,
+                    admitted_at: now,
+                    sent_at: None,
+                    settled_at: None,
+                    outcome: AttemptOutcome::Admitted,
+                    usage: None,
+                },
+            },
+        );
 
         // 6. Update accounting
         self.receipt.admitted_attempts = sequence;
@@ -742,14 +838,16 @@ impl AttemptAdmission {
     /// Record that an admitted permit was sent across the wire.
     pub fn record_sent(&mut self, sent: &SentAttempt) -> Result<(), AdmissionError> {
         if !Arc::ptr_eq(&self.owner, &sent.owner)
-            || self.issued_attempt_ids.get(sent.attempt_id.as_str())
-                != Some(&AttemptState::Admitted)
+            || self.attempt_state(sent.attempt_id.as_str()) != Some(AttemptState::Admitted)
         {
             return Err(AdmissionError::AttemptNotActive);
         }
         self.receipt.sent_attempts = self.receipt.sent_attempts.saturating_add(1);
-        self.issued_attempt_ids
-            .insert(sent.attempt_id.as_str().to_owned(), AttemptState::Sent);
+        let now = self.clock.now();
+        self.settle(sent.attempt_id.as_str(), AttemptState::Sent, |provenance| {
+            provenance.sent_at = Some(now);
+            provenance.outcome = AttemptOutcome::Sent;
+        });
         Ok(())
     }
 
@@ -760,7 +858,7 @@ impl AttemptAdmission {
         usage: Usage,
     ) -> Result<(), AdmissionError> {
         if !Arc::ptr_eq(&self.owner, &sent.owner)
-            || self.issued_attempt_ids.get(sent.attempt_id.as_str()) != Some(&AttemptState::Sent)
+            || self.attempt_state(sent.attempt_id.as_str()) != Some(AttemptState::Sent)
         {
             return Err(AdmissionError::AttemptNotActive);
         }
@@ -787,8 +885,16 @@ impl AttemptAdmission {
             self.wide_completed = true;
         }
         self.current_stage_completed = true;
-        self.issued_attempt_ids
-            .insert(sent.attempt_id.as_str().to_owned(), AttemptState::Finished);
+        let now = self.clock.now();
+        self.settle(
+            sent.attempt_id.as_str(),
+            AttemptState::Finished,
+            |provenance| {
+                provenance.settled_at = Some(now);
+                provenance.outcome = AttemptOutcome::Completed;
+                provenance.usage = Some(usage);
+            },
+        );
         Ok(())
     }
 
@@ -801,27 +907,38 @@ impl AttemptAdmission {
         _reason: &str,
     ) -> Result<(), AdmissionError> {
         if !Arc::ptr_eq(&self.owner, &sent.owner)
-            || self.issued_attempt_ids.get(sent.attempt_id.as_str()) != Some(&AttemptState::Sent)
+            || self.attempt_state(sent.attempt_id.as_str()) != Some(AttemptState::Sent)
         {
             return Err(AdmissionError::AttemptNotActive);
         }
         self.receipt.record_terminal_error();
-        self.issued_attempt_ids
-            .insert(sent.attempt_id.as_str().to_owned(), AttemptState::Finished);
+        let now = self.clock.now();
+        self.settle(
+            sent.attempt_id.as_str(),
+            AttemptState::Finished,
+            |provenance| {
+                provenance.settled_at = Some(now);
+                provenance.outcome = AttemptOutcome::Failed;
+            },
+        );
         Ok(())
     }
 
     /// Record an attempt that was admitted but cancelled/discarded before bytes reached the wire.
     pub fn record_discard(&mut self, discarded: &DiscardedAttempt) -> Result<(), AdmissionError> {
         if !Arc::ptr_eq(&self.owner, &discarded.owner)
-            || self.issued_attempt_ids.get(discarded.attempt_id.as_str())
-                != Some(&AttemptState::Admitted)
+            || self.attempt_state(discarded.attempt_id.as_str()) != Some(AttemptState::Admitted)
         {
             return Err(AdmissionError::AttemptNotActive);
         }
-        self.issued_attempt_ids.insert(
-            discarded.attempt_id.as_str().to_owned(),
+        let now = self.clock.now();
+        self.settle(
+            discarded.attempt_id.as_str(),
             AttemptState::Finished,
+            |provenance| {
+                provenance.settled_at = Some(now);
+                provenance.outcome = AttemptOutcome::Discarded;
+            },
         );
         Ok(())
     }
