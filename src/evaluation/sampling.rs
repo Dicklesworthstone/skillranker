@@ -1,9 +1,10 @@
 //! Rejection-based deterministic sampling and shuffle adapted from FrankenNumPy (sr-roadmap-l1i.6.18).
 //!
 //! Provides:
-//! 1. PCG64-DXSM 128-bit pseudo-random number generator with bit-exact NumPy/FrankenNumPy parity.
+//! 1. PCG64-DXSM raw generator adapted from FrankenNumPy; integer seeding and
+//!    bounded draws use SkillRanker's own deterministic conventions.
 //! 2. Unbiased rejection-based bounded integer generation (eliminating modulo bias).
-//! 3. Floyd's sampling algorithm without replacement (`choice_indices(pop_size, size, false)`).
+//! 3. Floyd subset selection followed by an unbiased shuffle without replacement.
 //! 4. Fisher-Yates slice shuffling (`shuffle_slice`).
 //! 5. Deterministic seeded replay and provenance tracking.
 
@@ -12,6 +13,12 @@ use std::fmt;
 
 const PCG_DEFAULT_MULTIPLIER_128: u128 = 0x2360_ed05_1fc6_5da4_4385_df64_9fcc_f645;
 const PCG_CHEAP_MULTIPLIER: u64 = 0xda94_2042_e4dd_58b5;
+
+/// Version of the seed mapping, bounded draws, and ordered sampling stream.
+/// Record alongside the seed/checkpoint for reproducible evaluation artifacts.
+/// Version 2 shuffles Floyd's selected subset; historical unshuffled draws and
+/// subsequent RNG states are not interchangeable with this version.
+pub const SAMPLING_VERSION: &str = "sr-evaluation-sampling-v2";
 
 /// Sampling error kinds.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -36,7 +43,8 @@ impl fmt::Display for SamplingError {
 
 impl std::error::Error for SamplingError {}
 
-/// PCG-XSL-DXSM-128/64 generator matching NumPy / FrankenNumPy's PCG64DXSM bit generator.
+/// PCG64-DXSM raw generator. Matching explicit state and increment produces the
+/// adapted FrankenNumPy raw stream; high-level sampling is not NumPy bit parity.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Pcg64Dxsm {
     state: u128,
@@ -59,7 +67,8 @@ impl Pcg64Dxsm {
         Self { state, inc }
     }
 
-    /// Construct a generator from a single 64-bit seed.
+    /// Construct a generator from SkillRanker's custom 64-bit seed mapping.
+    /// This does not implement NumPy's SeedSequence integer-seed initialization.
     #[must_use]
     pub fn from_seed(seed: u64) -> Self {
         // Construct deterministic 128-bit initial state and sequence words
@@ -113,7 +122,9 @@ impl Pcg64Dxsm {
         sample as f64 / (1u64 << 53) as f64
     }
 
-    /// Generate an unbiased random integer in `[0, upper_bound)` via Lemire / NumPy rejection sampling.
+    /// Generate an unbiased random integer in `[0, upper_bound)` by rejecting
+    /// the incomplete residue before modulo reduction. This is not NumPy's
+    /// multiply-high bounded-draw algorithm and need not produce the same draws.
     ///
     /// Eliminates modulo bias completely by discarding values in the incomplete upper residue.
     pub fn bounded_u64(&mut self, upper_bound: u64) -> Result<u64, SamplingError> {
@@ -131,7 +142,9 @@ impl Pcg64Dxsm {
 
     /// Choose `size` integer indices from `[0, pop_size)`.
     ///
-    /// When `replace == false`, implements Floyd's sampling algorithm with rejection-based draws.
+    /// When `replace == false`, selects a uniform subset using Floyd's algorithm
+    /// and shuffles it so each ordering is equally likely. Returning Floyd's
+    /// insertion order would bias prefixes and always leave a full draw sorted.
     /// Guarantees membership in `[0, pop_size)` and uniqueness of all selected indices.
     pub fn choice_indices(
         &mut self,
@@ -175,6 +188,10 @@ impl Pcg64Dxsm {
             }
         }
 
+        // Floyd is uniform over unordered subsets, not their insertion order.
+        // A uniform shuffle gives each ordered sample probability
+        // 1 / (binomial(pop_size, size) * size!), including full-population draws.
+        self.shuffle_slice(&mut result);
         Ok(result)
     }
 
