@@ -118,7 +118,7 @@ impl Fixture {
         )
         .unwrap();
     }
-    /// An unsupported layout whose invocation name is unknowable.
+    /// An unsupported layout with no name under the direct-layout contract.
     fn add_unsupported_layout(&self) {
         let dir = self.project().join("nested").join("deep");
         fs::create_dir_all(&dir).unwrap();
@@ -296,7 +296,7 @@ fn retrieve_all(
 
 /// One malformed or escaping file among valid ones leaves the other names
 /// advisory and inspectable, while a same-name malformed winner still withholds
-/// that name. An unknowable layout withholds authority globally.
+/// that name. Unsupported layouts stay excluded without claiming another name.
 #[test]
 fn unreadable_or_malformed_records_leave_no_eligible_output() {
     for hostile in ["malformed", "escape"] {
@@ -372,22 +372,30 @@ fn unreadable_or_malformed_records_leave_no_eligible_output() {
         assert!(invocation.shutdown());
     }
 
-    // An unsupported layout whose name is unknowable withholds authority globally
+    // An unsupported layout claims no callable name and cannot shadow valid skills.
     {
         let f = Fixture::new(3);
         let (clock, invocation, cx) = runtime();
         f.add_unsupported_layout();
         let roster = f.resolve(&clock, &cx);
         assert!(roster.is_partial());
+        let admitted = retrieve_all(&roster, &invocation, &cx, &clock).unwrap();
+        assert_eq!(admitted.len(), 4);
+        let options = OptionMap::new(&roster, &admitted).unwrap();
+        let offered = names(&options);
         assert_eq!(
-            retrieve_all(&roster, &invocation, &cx, &clock).unwrap_err(),
-            RetrievalError::NoEligibleCandidates
+            offered,
+            BTreeSet::from([
+                "skill-0000".to_owned(),
+                "skill-0001".to_owned(),
+                "skill-0002".to_owned(),
+                "personal-only".to_owned(),
+            ])
         );
-        for skill in roster.skills() {
-            assert!(
-                OptionMap::new(&roster, std::slice::from_ref(&skill.record().id)).is_err(),
-                "nested: {} became an option",
-                skill.record().invocation_name.as_str()
+        for excluded in ["nested", "deep"] {
+            assert_eq!(
+                roster.exact_name(excluded),
+                skillranker::roster::resolution::ExactResolution::Missing
             );
         }
         assert!(invocation.shutdown());

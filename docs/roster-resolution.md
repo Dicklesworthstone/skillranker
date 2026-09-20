@@ -50,8 +50,11 @@ restrict-only inputs. See the [Claude skill contract](https://code.claude.com/do
 
 Nested, plugin, managed, synced, and legacy-command discovery are not implemented
 here. Unsupported layouts and parsing/read failures produce bounded diagnostics
-and partial coverage. An unreadable root, walk limits, or an unsupported layout
-(whose callable name is unknowable) withhold invocation authority globally.
+and partial coverage. Unreadable roots and walk limits withhold invocation
+authority globally because they can hide supported competing names. An unsupported
+layout has no callable name under this adapter's direct-layout contract: it stays
+excluded without revoking authority from unrelated valid skills. Ordinary notes
+and marker files do not become skill candidates.
 For per-file metadata or read errors where the callable name is known from the
 supported `<name>/SKILL.md` layout, authority is withheld specifically for the
 invocation names the failed candidates could claim (preventing shadowed winners),
