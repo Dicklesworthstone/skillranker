@@ -18,8 +18,8 @@ use nix::sys::statfs::{
 };
 use nix::sys::statvfs::fstatvfs;
 use rusqlite::{
-    Connection, OpenFlags, OptionalExtension, TransactionBehavior, config::DbConfig, limits::Limit,
-    params,
+    Connection, ErrorCode, OpenFlags, OptionalExtension, TransactionBehavior, config::DbConfig,
+    limits::Limit, params,
 };
 use std::collections::BTreeSet;
 use std::fmt;
@@ -34,7 +34,116 @@ pub const LEDGER_SCHEMA_ID: &str = "sr-ledger-v1";
 pub const LEDGER_QUOTA_BYTES: u64 = 256 * 1024 * 1024;
 pub const LEDGER_MAINTENANCE_RESERVE_BYTES: u64 = 16 * 1024 * 1024;
 pub const LEDGER_MUTATION_RESERVE_BYTES: u64 = 4 * 1024 * 1024;
+pub const LEDGER_RECORDING_CEILING_BYTES: u64 =
+    LEDGER_QUOTA_BYTES - LEDGER_MAINTENANCE_RESERVE_BYTES - LEDGER_MUTATION_RESERVE_BYTES;
 pub const MAX_BUSY_WAIT_MS: u64 = 25;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct LedgerCapacityReport {
+    pub total_quota_bytes: u64,
+    pub maintenance_reserve_bytes: u64,
+    pub mutation_reserve_bytes: u64,
+    pub recording_ceiling_bytes: u64,
+    pub occupied_bytes: u64,
+    pub usable_recording_bytes: u64,
+    pub available_disk_bytes: u64,
+    pub is_recording_admitted: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MaintenanceKind {
+    Vacuum,
+    Backup,
+    Migration,
+    Prune,
+}
+
+impl MaintenanceKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Vacuum => "vacuum",
+            Self::Backup => "backup",
+            Self::Migration => "migration",
+            Self::Prune => "prune",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MaintenancePreflight {
+    pub kind: MaintenanceKind,
+    pub current_occupied_bytes: u64,
+    pub required_additional_bytes: u64,
+    pub projected_total_bytes: u64,
+    pub available_disk_bytes: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum MaintenanceError {
+    QuotaExceeded {
+        occupied_bytes: u64,
+        required_additional_bytes: u64,
+        quota_bytes: u64,
+        recovery_step: &'static str,
+    },
+    InsufficientDiskSpace {
+        available_bytes: u64,
+        required_additional_bytes: u64,
+        recovery_step: &'static str,
+    },
+    Store(StoreError),
+    Sqlite(String),
+}
+
+impl fmt::Display for MaintenanceError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::QuotaExceeded {
+                occupied_bytes,
+                required_additional_bytes,
+                quota_bytes,
+                recovery_step,
+            } => write!(
+                f,
+                "ledger maintenance requires {required_additional_bytes} additional bytes, which would exceed the {quota_bytes} byte quota (currently {occupied_bytes} bytes occupied); recovery step: {recovery_step}"
+            ),
+            Self::InsufficientDiskSpace {
+                available_bytes,
+                required_additional_bytes,
+                recovery_step,
+            } => write!(
+                f,
+                "ledger maintenance requires {required_additional_bytes} bytes but only {available_bytes} bytes are available on disk; recovery step: {recovery_step}"
+            ),
+            Self::Store(err) => write!(f, "ledger store error during maintenance: {err}"),
+            Self::Sqlite(msg) => write!(f, "ledger SQLite error during maintenance: {msg}"),
+        }
+    }
+}
+
+impl std::error::Error for MaintenanceError {}
+
+impl From<StoreError> for MaintenanceError {
+    fn from(err: StoreError) -> Self {
+        Self::Store(err)
+    }
+}
+
+impl From<rusqlite::Error> for MaintenanceError {
+    fn from(err: rusqlite::Error) -> Self {
+        match err.sqlite_error_code() {
+            Some(ErrorCode::DatabaseBusy | ErrorCode::DatabaseLocked) => {
+                Self::Store(StoreError::Busy)
+            }
+            Some(ErrorCode::OperationInterrupted) => Self::Store(StoreError::Cancelled),
+            Some(ErrorCode::DiskFull) => Self::Store(StoreError::InsufficientSpace),
+            Some(ErrorCode::PermissionDenied | ErrorCode::ReadOnly) => {
+                Self::Store(StoreError::Permissions)
+            }
+            _ => Self::Sqlite(err.to_string()),
+        }
+    }
+}
 
 const SCHEMA_MIGRATIONS_DDL: &str = "CREATE TABLE schema_migrations (
     version INTEGER PRIMARY KEY CHECK(version >= 1),
@@ -924,6 +1033,7 @@ pub(crate) struct PrivateLedgerDirectory {
     pub path: PathBuf,
     handle: File,
     identity: (u64, u64),
+    simulated_available_disk_bytes: Option<u64>,
 }
 
 impl PrivateLedgerDirectory {
@@ -978,9 +1088,53 @@ impl PrivateLedgerDirectory {
             path,
             handle: handle.into(),
             identity: (stat.st_dev, stat.st_ino),
+            simulated_available_disk_bytes: None,
         };
-        directory.admit_space()?;
+        if create {
+            directory.admit_space()?;
+        } else {
+            directory.inspect_files()?;
+        }
         Ok(directory)
+    }
+
+    pub fn set_simulated_available_disk_bytes(&mut self, bytes: Option<u64>) {
+        self.simulated_available_disk_bytes = bytes;
+    }
+
+    pub fn available_disk_bytes(&self) -> Result<u64, StoreError> {
+        if let Some(simulated) = self.simulated_available_disk_bytes {
+            return Ok(simulated);
+        }
+        let stat = fstatvfs(&self.handle).map_err(io_error)?;
+        let available = u128::from(stat.blocks_available()) * u128::from(stat.fragment_size());
+        Ok(u64::try_from(available).unwrap_or(u64::MAX))
+    }
+
+    pub fn capacity_report(&self) -> Result<LedgerCapacityReport, StoreError> {
+        let occupied_bytes = self.inspect_files()?;
+        let available_disk_bytes = self.available_disk_bytes()?;
+
+        let recording_ceiling_bytes = LEDGER_QUOTA_BYTES
+            .saturating_sub(LEDGER_MAINTENANCE_RESERVE_BYTES)
+            .saturating_sub(LEDGER_MUTATION_RESERVE_BYTES);
+
+        let usable_recording_bytes = recording_ceiling_bytes.saturating_sub(occupied_bytes);
+
+        let is_recording_admitted = occupied_bytes <= recording_ceiling_bytes
+            && (available_disk_bytes as u128)
+                >= u128::from(LEDGER_MAINTENANCE_RESERVE_BYTES + LEDGER_MUTATION_RESERVE_BYTES);
+
+        Ok(LedgerCapacityReport {
+            total_quota_bytes: LEDGER_QUOTA_BYTES,
+            maintenance_reserve_bytes: LEDGER_MAINTENANCE_RESERVE_BYTES,
+            mutation_reserve_bytes: LEDGER_MUTATION_RESERVE_BYTES,
+            recording_ceiling_bytes,
+            occupied_bytes,
+            usable_recording_bytes,
+            available_disk_bytes,
+            is_recording_admitted,
+        })
     }
 
     pub fn database_path(&self) -> PathBuf {
@@ -1032,6 +1186,7 @@ impl PrivateLedgerDirectory {
     pub fn inspect_files(&self) -> Result<u64, StoreError> {
         let uid = nix::unistd::geteuid().as_raw();
         let mut bytes = 0_u64;
+        let mut checked_names = BTreeSet::new();
         for suffix in ["", "-wal", "-shm", "-journal"] {
             let name = format!("{LEDGER_FILE}{suffix}");
             match fstatat(&self.handle, name.as_str(), AtFlags::AT_SYMLINK_NOFOLLOW) {
@@ -1040,12 +1195,39 @@ impl PrivateLedgerDirectory {
                     bytes = bytes
                         .checked_add(u64::try_from(stat.st_size).map_err(|_| StoreError::Quota)?)
                         .ok_or(StoreError::Quota)?;
+                    checked_names.insert(name);
                 }
                 Err(Errno::ENOENT) => {}
                 Err(error) => return Err(io_error(error)),
             }
         }
-        if bytes > LEDGER_QUOTA_BYTES - LEDGER_MAINTENANCE_RESERVE_BYTES {
+        if let Ok(entries) = std::fs::read_dir(&self.path) {
+            for entry in entries {
+                let entry = entry.map_err(|_| StoreError::Io)?;
+                let file_name = entry.file_name();
+                let name_str = file_name.to_string_lossy();
+                if checked_names.contains(name_str.as_ref()) {
+                    continue;
+                }
+                match fstatat(
+                    &self.handle,
+                    name_str.as_ref(),
+                    AtFlags::AT_SYMLINK_NOFOLLOW,
+                ) {
+                    Ok(stat) => {
+                        owned_regular(&stat, uid)?;
+                        bytes = bytes
+                            .checked_add(
+                                u64::try_from(stat.st_size).map_err(|_| StoreError::Quota)?,
+                            )
+                            .ok_or(StoreError::Quota)?;
+                    }
+                    Err(Errno::ENOENT) => {}
+                    Err(error) => return Err(io_error(error)),
+                }
+            }
+        }
+        if bytes > LEDGER_QUOTA_BYTES {
             return Err(StoreError::Quota);
         }
         Ok(bytes)
@@ -1056,8 +1238,12 @@ impl PrivateLedgerDirectory {
             return Err(StoreError::UnsupportedFilesystem);
         }
         let bytes = self.inspect_files()?;
-        let stat = fstatvfs(&self.handle).map_err(io_error)?;
-        let available = u128::from(stat.blocks_available()) * u128::from(stat.fragment_size());
+        let available = if let Some(simulated) = self.simulated_available_disk_bytes {
+            u128::from(simulated)
+        } else {
+            let stat = fstatvfs(&self.handle).map_err(io_error)?;
+            u128::from(stat.blocks_available()) * u128::from(stat.fragment_size())
+        };
         recording_capacity(bytes, available)
     }
 
@@ -1068,7 +1254,11 @@ impl PrivateLedgerDirectory {
         cx: &Cx,
     ) -> Result<File, StoreError> {
         self.revalidate(clock, cx)?;
-        self.admit_space()?;
+        if create {
+            self.admit_space()?;
+        } else {
+            self.inspect_files()?;
+        }
         let flags = OFlag::O_RDWR | OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK | OFlag::O_CLOEXEC;
         let fd = match openat(&self.handle, LEDGER_FILE, flags, Mode::empty()) {
             Err(Errno::ENOENT) if create => match openat(
@@ -1136,6 +1326,15 @@ fn configure(connection: &Connection, clock: EntryClock, cx: &Cx) -> Result<(), 
     connection.pragma_update(None, "temp_store", "MEMORY")?;
     connection.pragma_update(None, "journal_mode", "WAL")?;
     connection.pragma_update(None, "foreign_keys", "ON")?;
+    connection.pragma_update(None, "synchronous", "NORMAL")?;
+    connection.pragma_update(None, "wal_autocheckpoint", 1000)?;
+    connection.pragma_update(None, "journal_size_limit", 4 * 1024 * 1024)?;
+    let page_size: i64 = connection.pragma_query_value(None, "page_size", |row| row.get(0))?;
+    if (512..=65536).contains(&page_size) {
+        let max_pages =
+            i64::try_from(LEDGER_RECORDING_CEILING_BYTES / (page_size as u64)).unwrap_or(i64::MAX);
+        connection.pragma_update(None, "max_page_count", max_pages)?;
+    }
     Ok(())
 }
 
@@ -1337,6 +1536,220 @@ impl LedgerStore {
 
     pub fn database_path(&self) -> PathBuf {
         self.directory.database_path()
+    }
+
+    pub fn set_simulated_available_disk_bytes(&mut self, bytes: Option<u64>) {
+        self.directory.set_simulated_available_disk_bytes(bytes);
+    }
+
+    /// Exposes usable recording capacity separately from the total quota cap.
+    pub fn capacity_report(&self) -> Result<LedgerCapacityReport, StoreError> {
+        self.directory.capacity_report()
+    }
+
+    /// Estimates worst-case additional bytes needed on disk for the given maintenance operation.
+    pub fn worst_case_maintenance_bytes(&self, kind: MaintenanceKind) -> Result<u64, StoreError> {
+        let uid = nix::unistd::geteuid().as_raw();
+        let mut db_and_wal_bytes = 0_u64;
+        for suffix in ["", "-wal", "-journal"] {
+            let name = format!("{LEDGER_FILE}{suffix}");
+            match fstatat(
+                &self.directory.handle,
+                name.as_str(),
+                AtFlags::AT_SYMLINK_NOFOLLOW,
+            ) {
+                Ok(stat) => {
+                    owned_regular(&stat, uid)?;
+                    db_and_wal_bytes = db_and_wal_bytes
+                        .checked_add(u64::try_from(stat.st_size).map_err(|_| StoreError::Quota)?)
+                        .ok_or(StoreError::Quota)?;
+                }
+                Err(Errno::ENOENT) => {}
+                Err(error) => return Err(io_error(error)),
+            }
+        }
+        let min_temp_bytes = 1024 * 1024; // 1 MiB
+        let estimated = match kind {
+            MaintenanceKind::Vacuum => db_and_wal_bytes
+                .checked_add(min_temp_bytes)
+                .ok_or(StoreError::Quota)?,
+            MaintenanceKind::Backup => db_and_wal_bytes
+                .checked_add(64 * 1024)
+                .ok_or(StoreError::Quota)?,
+            MaintenanceKind::Migration => db_and_wal_bytes
+                .checked_add(2 * 1024 * 1024)
+                .ok_or(StoreError::Quota)?,
+            MaintenanceKind::Prune => 2 * 1024 * 1024,
+        };
+        Ok(estimated)
+    }
+
+    /// Preflights maintenance operation worst-case additional bytes against both quota and free disk space.
+    pub fn preflight_maintenance(
+        &self,
+        kind: MaintenanceKind,
+    ) -> Result<MaintenancePreflight, MaintenanceError> {
+        let required_bytes = self.worst_case_maintenance_bytes(kind)?;
+        self.preflight_maintenance_with_bytes(kind, required_bytes)
+    }
+
+    /// Preflights maintenance with explicit required additional bytes against quota and free disk space.
+    pub fn preflight_maintenance_with_bytes(
+        &self,
+        kind: MaintenanceKind,
+        required_additional_bytes: u64,
+    ) -> Result<MaintenancePreflight, MaintenanceError> {
+        let occupied_bytes = self.directory.inspect_files()?;
+        let available_disk_bytes = self.directory.available_disk_bytes()?;
+
+        let projected_total_bytes = occupied_bytes
+            .checked_add(required_additional_bytes)
+            .ok_or(MaintenanceError::QuotaExceeded {
+                occupied_bytes,
+                required_additional_bytes,
+                quota_bytes: LEDGER_QUOTA_BYTES,
+                recovery_step: "projected storage size overflows integer bounds; prune historical records",
+            })?;
+
+        if projected_total_bytes > LEDGER_QUOTA_BYTES {
+            let recovery_step = match kind {
+                MaintenanceKind::Vacuum => {
+                    "database size is too large to vacuum within the 256 MiB quota; prune expired events before compacting"
+                }
+                MaintenanceKind::Backup => {
+                    "backup would exceed the 256 MiB directory quota; target a separate external backup destination or prune events"
+                }
+                MaintenanceKind::Migration => {
+                    "database size leaves insufficient headroom for pre-migration backup within quota; prune old records before migrating"
+                }
+                MaintenanceKind::Prune => {
+                    "prune operation exceeds remaining quota headroom; run checkpoint_truncate to reclaim WAL space"
+                }
+            };
+            return Err(MaintenanceError::QuotaExceeded {
+                occupied_bytes,
+                required_additional_bytes,
+                quota_bytes: LEDGER_QUOTA_BYTES,
+                recovery_step,
+            });
+        }
+
+        if (available_disk_bytes as u128) < (required_additional_bytes as u128) {
+            return Err(MaintenanceError::InsufficientDiskSpace {
+                available_bytes: available_disk_bytes,
+                required_additional_bytes,
+                recovery_step: "free disk space on the filesystem hosting the ledger directory before retrying maintenance",
+            });
+        }
+
+        Ok(MaintenancePreflight {
+            kind,
+            current_occupied_bytes: occupied_bytes,
+            required_additional_bytes,
+            projected_total_bytes,
+            available_disk_bytes,
+        })
+    }
+
+    /// Checkpoints and truncates the WAL file to bound WAL growth and reclaim space.
+    pub fn checkpoint_truncate(&mut self, clock: EntryClock, cx: &Cx) -> Result<(), StoreError> {
+        check_work(clock, cx)?;
+        self.directory.verify_database_file(&self.file, clock, cx)?;
+        refresh_busy_limit(&self.connection, clock, cx)?;
+        self.connection
+            .pragma_update(None, "wal_checkpoint", "TRUNCATE")?;
+        self.directory.verify_database_file(&self.file, clock, cx)?;
+        Ok(())
+    }
+
+    /// Runs VACUUM after preflighting headroom against quota and free disk space.
+    pub fn vacuum(&mut self, clock: EntryClock, cx: &Cx) -> Result<(), MaintenanceError> {
+        check_work(clock, cx)?;
+        self.directory.verify_database_file(&self.file, clock, cx)?;
+        let _preflight = self.preflight_maintenance(MaintenanceKind::Vacuum)?;
+        refresh_busy_limit(&self.connection, clock, cx)?;
+
+        self.connection.set_limit(Limit::SQLITE_LIMIT_ATTACHED, 1)?;
+        let vacuum_res = self.connection.execute_batch("VACUUM;");
+        let _ = self.connection.set_limit(Limit::SQLITE_LIMIT_ATTACHED, 0);
+        vacuum_res?;
+
+        self.file = self.directory.open_database_file(false, clock, cx)?;
+        self.directory.verify_database_file(&self.file, clock, cx)?;
+        Ok(())
+    }
+
+    /// Creates an atomic, recoverable, WAL-inclusive backup using VACUUM INTO after preflighting headroom.
+    pub fn backup_to(
+        &mut self,
+        dest_path: &Path,
+        clock: EntryClock,
+        cx: &Cx,
+    ) -> Result<u64, MaintenanceError> {
+        check_work(clock, cx)?;
+        self.directory.verify_database_file(&self.file, clock, cx)?;
+        let _preflight = self.preflight_maintenance(MaintenanceKind::Backup)?;
+        refresh_busy_limit(&self.connection, clock, cx)?;
+
+        let path_str = dest_path.to_str().ok_or(StoreError::UnsafePath)?;
+        self.connection.set_limit(Limit::SQLITE_LIMIT_ATTACHED, 1)?;
+        let backup_res = self.connection.execute("VACUUM INTO ?1", [path_str]);
+        let _ = self.connection.set_limit(Limit::SQLITE_LIMIT_ATTACHED, 0);
+        backup_res?;
+
+        self.directory.verify_database_file(&self.file, clock, cx)?;
+        let meta = std::fs::metadata(dest_path).map_err(|_| StoreError::Io)?;
+        Ok(meta.len())
+    }
+
+    /// Prunes events created before cutoff timestamp and their dependent records after preflighting headroom.
+    pub fn prune_events_before(
+        &mut self,
+        cutoff_unix_ms: i64,
+        clock: EntryClock,
+        cx: &Cx,
+        expected_stamp: LedgerStamp,
+    ) -> Result<u64, MaintenanceError> {
+        check_work(clock, cx)?;
+        self.directory.verify_database_file(&self.file, clock, cx)?;
+        let _preflight = self.preflight_maintenance(MaintenanceKind::Prune)?;
+        refresh_busy_limit(&self.connection, clock, cx)?;
+
+        let tx = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        check_stamp(&tx, expected_stamp)?;
+
+        let count: i64 = tx.query_row(
+            "SELECT count(*) FROM ranking_events WHERE created_at_unix_ms < ?1",
+            [cutoff_unix_ms],
+            |row| row.get(0),
+        )?;
+
+        if count > 0 {
+            tx.execute(
+                "DELETE FROM judgments WHERE attributed_event_id IN (SELECT event_id FROM ranking_events WHERE created_at_unix_ms < ?1)",
+                [cutoff_unix_ms],
+            )?;
+            tx.execute(
+                "DELETE FROM observations WHERE attributed_event_id IN (SELECT event_id FROM ranking_events WHERE created_at_unix_ms < ?1)",
+                [cutoff_unix_ms],
+            )?;
+            tx.execute(
+                "DELETE FROM provider_attempts WHERE owner_event_id IN (SELECT event_id FROM ranking_events WHERE created_at_unix_ms < ?1)",
+                [cutoff_unix_ms],
+            )?;
+            tx.execute(
+                "DELETE FROM ranking_events WHERE created_at_unix_ms < ?1",
+                [cutoff_unix_ms],
+            )?;
+        }
+
+        self.directory.verify_database_file(&self.file, clock, cx)?;
+        check_work(clock, cx)?;
+        tx.commit()?;
+
+        Ok(count as u64)
     }
 
     /// Advances the data generation and deletes mutable history, fencing stale writers.

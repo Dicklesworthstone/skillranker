@@ -1223,6 +1223,27 @@ features = []
 status = "executed"
 
 [[boundaries]]
+id = "p5_quota_headroom"
+owner_bead = "sr-roadmap-l1i.6.3"
+member_beads = ["sr-roadmap-l1i.6.3"]
+phase = "P5"
+title = "Reserve quota headroom and preflight bounded maintenance"
+unit_property_tests = [
+    "tests/ledger_quota_headroom_contract.rs::ledger_and_cache_constants_and_capacity_reports_expose_recording_ceiling",
+    "tests/ledger_quota_headroom_contract.rs::filling_recording_capacity_blocks_mutations_and_preserves_history",
+    "tests/ledger_quota_headroom_contract.rs::maintenance_preflight_and_execution_succeed_within_reserve_at_recording_ceiling",
+    "tests/ledger_quota_headroom_contract.rs::simulated_external_full_disk_fails_preflight_before_mutation_with_required_space_and_hint",
+    "tests/ledger_quota_headroom_contract.rs::maintenance_exceeding_hard_quota_fails_preflight_with_required_space_and_hint",
+    "tests/ledger_quota_headroom_contract.rs::backup_to_creates_atomic_wal_inclusive_backup_and_preserves_charges"
+]
+e2e_suite = "replay"
+e2e_cases = ["ledger-quota-headroom", "ledger-bounded-maintenance"]
+assertion_ids = ["quota_headroom_enforced"]
+platforms = ["linux"]
+features = []
+status = "executed"
+
+[[boundaries]]
 id = "p5_offline_replay"
 owner_bead = "sr-roadmap-l1i.6.16"
 member_beads = ["sr-roadmap-l1i.6.16"]

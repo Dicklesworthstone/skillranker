@@ -1,8 +1,8 @@
 //! Private, local cache directory admission. All opens walk trusted descriptors.
 
 use super::{
-    CACHE_FILE, CACHE_QUOTA_BYTES, MAINTENANCE_RESERVE_BYTES, MUTATION_RESERVE_BYTES, StoreError,
-    check_work,
+    CACHE_FILE, CACHE_QUOTA_BYTES, CacheCapacityReport, MAINTENANCE_RESERVE_BYTES,
+    MUTATION_RESERVE_BYTES, StoreError, check_work,
 };
 use crate::runtime::EntryClock;
 use asupersync::Cx;
@@ -13,6 +13,7 @@ use nix::sys::statfs::{
     BTRFS_SUPER_MAGIC, EXT4_SUPER_MAGIC, FsType, TMPFS_MAGIC, XFS_SUPER_MAGIC, fstatfs,
 };
 use nix::sys::statvfs::fstatvfs;
+use std::collections::BTreeSet;
 use std::fs::File;
 use std::path::{Component, Path, PathBuf};
 
@@ -130,7 +131,11 @@ impl PrivateDirectory {
             handle: handle.into(),
             identity: (stat.st_dev, stat.st_ino),
         };
-        directory.admit_space()?;
+        if create {
+            directory.admit_space()?;
+        } else {
+            directory.inspect_files()?;
+        }
         Ok(directory)
     }
 
@@ -166,6 +171,7 @@ impl PrivateDirectory {
     pub fn inspect_files(&self) -> Result<u64, StoreError> {
         let uid = nix::unistd::geteuid().as_raw();
         let mut bytes = 0_u64;
+        let mut checked_names = BTreeSet::new();
         for suffix in ["", "-wal", "-shm", "-journal"] {
             let name = format!("{CACHE_FILE}{suffix}");
             match fstatat(&self.handle, name.as_str(), AtFlags::AT_SYMLINK_NOFOLLOW) {
@@ -174,15 +180,71 @@ impl PrivateDirectory {
                     bytes = bytes
                         .checked_add(u64::try_from(stat.st_size).map_err(|_| StoreError::Quota)?)
                         .ok_or(StoreError::Quota)?;
+                    checked_names.insert(name);
                 }
                 Err(Errno::ENOENT) => {}
                 Err(error) => return Err(io_error(error)),
             }
         }
-        if bytes > CACHE_QUOTA_BYTES - MAINTENANCE_RESERVE_BYTES {
+        if let Ok(entries) = std::fs::read_dir(&self.path) {
+            for entry in entries {
+                let entry = entry.map_err(|_| StoreError::Io)?;
+                let file_name = entry.file_name();
+                let name_str = file_name.to_string_lossy();
+                if checked_names.contains(name_str.as_ref()) {
+                    continue;
+                }
+                match fstatat(
+                    &self.handle,
+                    name_str.as_ref(),
+                    AtFlags::AT_SYMLINK_NOFOLLOW,
+                ) {
+                    Ok(stat) => {
+                        owned_regular(&stat, uid)?;
+                        bytes = bytes
+                            .checked_add(
+                                u64::try_from(stat.st_size).map_err(|_| StoreError::Quota)?,
+                            )
+                            .ok_or(StoreError::Quota)?;
+                    }
+                    Err(Errno::ENOENT) => {}
+                    Err(error) => return Err(io_error(error)),
+                }
+            }
+        }
+        if bytes > CACHE_QUOTA_BYTES {
             return Err(StoreError::Quota);
         }
         Ok(bytes)
+    }
+
+    pub fn capacity_report(&self) -> Result<CacheCapacityReport, StoreError> {
+        let occupied_bytes = self.inspect_files()?;
+        let stat = fstatvfs(&self.handle).map_err(io_error)?;
+        let available_disk_bytes =
+            u64::try_from(u128::from(stat.blocks_available()) * u128::from(stat.fragment_size()))
+                .unwrap_or(u64::MAX);
+
+        let recording_ceiling_bytes = CACHE_QUOTA_BYTES
+            .saturating_sub(MAINTENANCE_RESERVE_BYTES)
+            .saturating_sub(MUTATION_RESERVE_BYTES);
+
+        let usable_recording_bytes = recording_ceiling_bytes.saturating_sub(occupied_bytes);
+
+        let is_recording_admitted = occupied_bytes <= recording_ceiling_bytes
+            && (available_disk_bytes as u128)
+                >= u128::from(MAINTENANCE_RESERVE_BYTES + MUTATION_RESERVE_BYTES);
+
+        Ok(CacheCapacityReport {
+            total_quota_bytes: CACHE_QUOTA_BYTES,
+            maintenance_reserve_bytes: MAINTENANCE_RESERVE_BYTES,
+            mutation_reserve_bytes: MUTATION_RESERVE_BYTES,
+            recording_ceiling_bytes,
+            occupied_bytes,
+            usable_recording_bytes,
+            available_disk_bytes,
+            is_recording_admitted,
+        })
     }
 
     pub fn admit_space(&self) -> Result<(), StoreError> {
@@ -202,7 +264,11 @@ impl PrivateDirectory {
         cx: &Cx,
     ) -> Result<File, StoreError> {
         self.revalidate(clock, cx)?;
-        self.admit_space()?;
+        if create {
+            self.admit_space()?;
+        } else {
+            self.inspect_files()?;
+        }
         let flags = OFlag::O_RDWR | OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK | OFlag::O_CLOEXEC;
         let fd = match openat(&self.handle, CACHE_FILE, flags, Mode::empty()) {
             Err(Errno::ENOENT) if create => match openat(

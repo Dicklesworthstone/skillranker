@@ -12,6 +12,12 @@ pub use export::{
     DEFAULT_MAX_CASE_BYTES, DEFAULT_MAX_SNAPSHOT_BYTES, ExportConfig, ExportError,
     export_private_atomic,
 };
+pub use ledger::{
+    LEDGER_FILE, LEDGER_MAINTENANCE_RESERVE_BYTES, LEDGER_MUTATION_RESERVE_BYTES,
+    LEDGER_QUOTA_BYTES, LEDGER_RECORDING_CEILING_BYTES, LEDGER_SCHEMA_ID, LEDGER_SCHEMA_VERSION,
+    LedgerCapacityReport, LedgerOpen, LedgerStore, MaintenanceError, MaintenanceKind,
+    MaintenancePreflight,
+};
 
 use crate::blocking::{BlockingLeafKind, remaining_busy_wait, run_blocking_leaf};
 use crate::cache::{CacheKey, CachedResponseEntry, RequestFingerprint, RequestStage};
@@ -32,6 +38,20 @@ pub const MAINTENANCE_RESERVE_BYTES: u64 = 4 * 1024 * 1024;
 // Metadata and key writes are single rows. A response row is bounded by the
 // decoded-response cap; SQLite's page quota, not this margin, stops recording.
 pub const MUTATION_RESERVE_BYTES: u64 = 1024 * 1024;
+pub const CACHE_RECORDING_CEILING_BYTES: u64 =
+    CACHE_QUOTA_BYTES - MAINTENANCE_RESERVE_BYTES - MUTATION_RESERVE_BYTES;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CacheCapacityReport {
+    pub total_quota_bytes: u64,
+    pub maintenance_reserve_bytes: u64,
+    pub mutation_reserve_bytes: u64,
+    pub recording_ceiling_bytes: u64,
+    pub occupied_bytes: u64,
+    pub usable_recording_bytes: u64,
+    pub available_disk_bytes: u64,
+    pub is_recording_admitted: bool,
+}
 pub const MAX_BUSY_WAIT_MS: u64 = 25;
 pub const RUSQLITE_VERSION: &str = "0.40.2";
 pub const QUALIFIED_SQLITE_VERSION: &str = "3.53.2";
@@ -585,6 +605,22 @@ impl CacheStore {
     /// scopes every keyed request and namespace fingerprint to this store.
     pub const fn fingerprint_key(&self) -> CacheKey {
         CacheKey::from_bytes(self.key)
+    }
+
+    /// Exposes usable recording capacity separately from the total quota cap.
+    pub fn capacity_report(&self) -> Result<CacheCapacityReport, StoreError> {
+        self.directory.capacity_report()
+    }
+
+    /// Checkpoints and truncates the WAL file to bound WAL growth and reclaim space.
+    pub fn checkpoint_truncate(&mut self, clock: EntryClock, cx: &Cx) -> Result<(), StoreError> {
+        check_work(clock, cx)?;
+        self.directory.verify_database_file(&self.file, clock, cx)?;
+        refresh_busy_limit(&self.connection, clock, cx)?;
+        self.connection
+            .pragma_update(None, "wal_checkpoint", "TRUNCATE")?;
+        self.directory.verify_database_file(&self.file, clock, cx)?;
+        Ok(())
     }
 
     /// Read one stored response of this generation by exact namespace hash,
