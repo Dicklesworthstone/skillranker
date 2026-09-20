@@ -750,23 +750,7 @@ impl SqliteLeaseCoordinator {
         let mut conn = open_qualified_connection(&self.db_path)?;
         conn.busy_timeout(busy_wait.min(Duration::from_millis(25)))?;
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let row: Option<(Vec<u8>, i64, i64, i64, i64)> = tx
-            .query_row(
-                "SELECT owner_token, fencing_generation, expires_at_unix_ms, is_completed, acquired_at_unix_ms \
-                 FROM sr_coordination_leases WHERE coordination_key=?1",
-                params![leader.key.as_bytes()],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
-            )
-            .optional()?;
-        let now = now();
-        let valid = row.is_some_and(|(token, generation, expiry, completed, acquired)| {
-            token.as_slice() == leader.owner_token.as_bytes()
-                && u64::try_from(generation).ok() == Some(leader.fencing_generation.as_u64())
-                && u64::try_from(expiry).ok() == Some(leader.lease_expires_at_unix_ms)
-                && completed == 0
-                && u64::try_from(acquired).is_ok_and(|acquired| now >= acquired)
-                && now < leader.lease_expires_at_unix_ms
-        });
+        let valid = Self::active_lease_in_transaction(&tx, leader, now())?;
         if !valid {
             return Ok(None);
         }
@@ -791,86 +775,16 @@ impl SqliteLeaseCoordinator {
     ) -> Result<PublishOutcome, CoordinationError> {
         let mut conn = open_qualified_connection(&self.db_path)?;
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-
-        let row: Option<(Vec<u8>, i64, i64, i64)> = tx
-            .query_row(
-                "SELECT owner_token, fencing_generation, expires_at_unix_ms, is_completed
-                 FROM sr_coordination_leases WHERE coordination_key = ?1",
-                params![key.as_bytes()],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-            )
-            .optional()?;
-
-        let Some((cur_token, cur_gen_i64, exp_i64, _completed)) = row else {
-            tx.commit()?;
-            return Ok(PublishOutcome::Superseded {
-                expected_generation: generation,
-                current_generation: None,
-            });
-        };
-
-        let cur_gen = FencingGeneration(cur_gen_i64 as u64);
-        let expires_at = exp_i64 as u64;
-
-        if cur_token.as_slice() != owner_token.as_bytes() || cur_gen != generation {
-            tx.commit()?;
-            return Ok(PublishOutcome::Superseded {
-                expected_generation: generation,
-                current_generation: Some(cur_gen),
-            });
-        }
-
-        if now_unix_ms >= expires_at {
-            tx.commit()?;
-            return Ok(PublishOutcome::Superseded {
-                expected_generation: generation,
-                current_generation: Some(cur_gen),
-            });
-        }
-
-        if let Some((cache_key, cache_ns, entry)) = cache_entry {
-            let ns_hash = MemoryResponseCache::namespace_hash(cache_key, cache_ns);
-            let stage_str = entry.stage.as_str();
-            let fp_bytes = entry.request_fingerprint.as_bytes();
-
-            tx.execute(
-                "INSERT INTO sr_response_cache (
-                    namespace_hash, stage, request_fingerprint, response_bytes,
-                    received_at_unix_ms, ttl_seconds, model, model_revision,
-                    input_tokens, output_tokens, attempt_id
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
-                 ON CONFLICT(namespace_hash, stage, request_fingerprint) DO UPDATE SET
-                    response_bytes = excluded.response_bytes,
-                    received_at_unix_ms = excluded.received_at_unix_ms,
-                    ttl_seconds = excluded.ttl_seconds,
-                    model = excluded.model,
-                    model_revision = excluded.model_revision,
-                    input_tokens = excluded.input_tokens,
-                    output_tokens = excluded.output_tokens,
-                    attempt_id = excluded.attempt_id",
-                params![
-                    &ns_hash[..],
-                    stage_str,
-                    &fp_bytes[..],
-                    &entry.response_bytes[..],
-                    entry.received_at_unix_ms as i64,
-                    entry.ttl_seconds as i64,
-                    &entry.model,
-                    &entry.model_revision,
-                    entry.original_usage.input_tokens as i64,
-                    entry.original_usage.output_tokens as i64,
-                    &entry.attempt_id
-                ],
-            )?;
-        }
-
-        tx.execute(
-            "UPDATE sr_coordination_leases SET is_completed = 1 WHERE coordination_key = ?1",
-            params![key.as_bytes()],
+        let result = Self::complete_in_transaction(
+            &tx,
+            key,
+            owner_token,
+            generation,
+            now_unix_ms,
+            cache_entry,
         )?;
         tx.commit()?;
-
-        Ok(PublishOutcome::Published)
+        Ok(result)
     }
 }
 
@@ -883,99 +797,9 @@ impl LeaseCoordinator for SqliteLeaseCoordinator {
     ) -> Result<LeaseAcquisition, CoordinationError> {
         let mut conn = open_qualified_connection(&self.db_path)?;
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-
-        let row: Option<(Vec<u8>, i64, i64, i64, String, i64)> = tx
-            .query_row(
-                "SELECT owner_token, fencing_generation, acquired_at_unix_ms, expires_at_unix_ms, attempt_id, is_completed
-                 FROM sr_coordination_leases WHERE coordination_key = ?1",
-                params![key.as_bytes()],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
-            )
-            .optional()?;
-
-        if let Some((_raw_token, gen_i64, _acq, exp_i64, _att, completed_i64)) = row {
-            let cur_fence_gen = FencingGeneration(gen_i64 as u64);
-            let expires_at = exp_i64 as u64;
-            let is_completed = completed_i64 == 1;
-
-            if now_unix_ms < expires_at {
-                if is_completed {
-                    tx.commit()?;
-                    return Ok(LeaseAcquisition::AlreadyCompleted);
-                }
-                tx.commit()?;
-                return Ok(LeaseAcquisition::Following(FollowerContext {
-                    key,
-                    leader_generation: cur_fence_gen,
-                    lease_expires_at_unix_ms: expires_at,
-                }));
-            }
-
-            // Expired lease -> successor reacquires with bumped fencing generation
-            let new_gen = cur_fence_gen.next();
-            let new_token = OwnerToken::generate()
-                .map_err(|e| CoordinationError::StorageError(e.to_string()))?;
-            let new_expires_at = now_unix_ms.saturating_add(policy.lease_ttl_ms);
-            let new_attempt_id = format!("att-proc-{}", new_gen.as_u64());
-
-            tx.execute(
-                "UPDATE sr_coordination_leases SET
-                    owner_token = ?1,
-                    fencing_generation = ?2,
-                    acquired_at_unix_ms = ?3,
-                    expires_at_unix_ms = ?4,
-                    attempt_id = ?5,
-                    is_completed = 0
-                 WHERE coordination_key = ?6",
-                params![
-                    new_token.as_bytes(),
-                    new_gen.as_u64() as i64,
-                    now_unix_ms as i64,
-                    new_expires_at as i64,
-                    new_attempt_id,
-                    key.as_bytes()
-                ],
-            )?;
-            tx.commit()?;
-
-            return Ok(LeaseAcquisition::Leading(LeaderContext {
-                key,
-                owner_token: new_token,
-                fencing_generation: new_gen,
-                lease_expires_at_unix_ms: new_expires_at,
-                attempt_id: new_attempt_id,
-            }));
-        }
-
-        // New lease row
-        let new_token =
-            OwnerToken::generate().map_err(|e| CoordinationError::StorageError(e.to_string()))?;
-        let init_gen = FencingGeneration::initial();
-        let new_expires_at = now_unix_ms.saturating_add(policy.lease_ttl_ms);
-        let new_attempt_id = format!("att-proc-{}", init_gen.as_u64());
-
-        tx.execute(
-            "INSERT INTO sr_coordination_leases (
-                coordination_key, owner_token, fencing_generation, acquired_at_unix_ms, expires_at_unix_ms, attempt_id, is_completed
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0)",
-            params![
-                key.as_bytes(),
-                new_token.as_bytes(),
-                init_gen.as_u64() as i64,
-                now_unix_ms as i64,
-                new_expires_at as i64,
-                new_attempt_id
-            ],
-        )?;
+        let outcome = Self::acquire_in_transaction(&tx, key, now_unix_ms, policy)?;
         tx.commit()?;
-
-        Ok(LeaseAcquisition::Leading(LeaderContext {
-            key,
-            owner_token: new_token,
-            fencing_generation: init_gen,
-            lease_expires_at_unix_ms: new_expires_at,
-            attempt_id: new_attempt_id,
-        }))
+        Ok(outcome)
     }
 
     fn force_reacquire(
@@ -986,94 +810,9 @@ impl LeaseCoordinator for SqliteLeaseCoordinator {
     ) -> Result<LeaseAcquisition, CoordinationError> {
         let mut conn = open_qualified_connection(&self.db_path)?;
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-
-        let row: Option<(Vec<u8>, i64, i64, i64, String, i64)> = tx
-            .query_row(
-                "SELECT owner_token, fencing_generation, acquired_at_unix_ms, expires_at_unix_ms, attempt_id, is_completed
-                 FROM sr_coordination_leases WHERE coordination_key = ?1",
-                params![key.as_bytes()],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
-            )
-            .optional()?;
-
-        if let Some((_raw_token, gen_i64, _acq, exp_i64, _att, completed_i64)) = row {
-            let cur_fence_gen = FencingGeneration(gen_i64 as u64);
-            let expires_at = exp_i64 as u64;
-            let is_completed = completed_i64 == 1;
-
-            // If another leader already reacquired to refresh and is currently unexpired, follow them
-            if !is_completed && now_unix_ms < expires_at {
-                tx.commit()?;
-                return Ok(LeaseAcquisition::Following(FollowerContext {
-                    key,
-                    leader_generation: cur_fence_gen,
-                    lease_expires_at_unix_ms: expires_at,
-                }));
-            }
-
-            let new_gen = cur_fence_gen.next();
-            let new_token = OwnerToken::generate()
-                .map_err(|e| CoordinationError::StorageError(e.to_string()))?;
-            let new_expires_at = now_unix_ms.saturating_add(policy.lease_ttl_ms);
-            let new_attempt_id = format!("att-proc-{}", new_gen.as_u64());
-
-            tx.execute(
-                "UPDATE sr_coordination_leases SET
-                    owner_token = ?1,
-                    fencing_generation = ?2,
-                    acquired_at_unix_ms = ?3,
-                    expires_at_unix_ms = ?4,
-                    attempt_id = ?5,
-                    is_completed = 0
-                 WHERE coordination_key = ?6",
-                params![
-                    new_token.as_bytes(),
-                    new_gen.as_u64() as i64,
-                    now_unix_ms as i64,
-                    new_expires_at as i64,
-                    new_attempt_id,
-                    key.as_bytes()
-                ],
-            )?;
-            tx.commit()?;
-
-            return Ok(LeaseAcquisition::Leading(LeaderContext {
-                key,
-                owner_token: new_token,
-                fencing_generation: new_gen,
-                lease_expires_at_unix_ms: new_expires_at,
-                attempt_id: new_attempt_id,
-            }));
-        }
-
-        let new_token =
-            OwnerToken::generate().map_err(|e| CoordinationError::StorageError(e.to_string()))?;
-        let init_gen = FencingGeneration::initial();
-        let new_expires_at = now_unix_ms.saturating_add(policy.lease_ttl_ms);
-        let new_attempt_id = format!("att-proc-{}", init_gen.as_u64());
-
-        tx.execute(
-            "INSERT INTO sr_coordination_leases (
-                coordination_key, owner_token, fencing_generation, acquired_at_unix_ms, expires_at_unix_ms, attempt_id, is_completed
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0)",
-            params![
-                key.as_bytes(),
-                new_token.as_bytes(),
-                init_gen.as_u64() as i64,
-                now_unix_ms as i64,
-                new_expires_at as i64,
-                new_attempt_id
-            ],
-        )?;
+        let outcome = Self::force_reacquire_in_transaction(&tx, key, now_unix_ms, policy)?;
         tx.commit()?;
-
-        Ok(LeaseAcquisition::Leading(LeaderContext {
-            key,
-            owner_token: new_token,
-            fencing_generation: init_gen,
-            lease_expires_at_unix_ms: new_expires_at,
-            attempt_id: new_attempt_id,
-        }))
+        Ok(outcome)
     }
 
     fn complete(
@@ -1098,32 +837,7 @@ impl SqliteLeaseCoordinator {
         busy_budget: Duration,
     ) -> Result<Option<LeaseRecord>, CoordinationError> {
         let conn = open_qualified_connection_with_budget(&self.db_path, busy_budget)?;
-        let row: Option<(Vec<u8>, i64, i64, i64, String, i64)> = conn
-            .query_row(
-                "SELECT owner_token, fencing_generation, acquired_at_unix_ms, expires_at_unix_ms, attempt_id, is_completed
-                 FROM sr_coordination_leases WHERE coordination_key = ?1",
-                params![key.as_bytes()],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
-            )
-            .optional()?;
-
-        let Some((token_bytes, gen_i64, acq, exp, att, comp)) = row else {
-            return Ok(None);
-        };
-
-        let mut token_arr = [0u8; 16];
-        if token_bytes.len() == 16 {
-            token_arr.copy_from_slice(&token_bytes);
-        }
-
-        Ok(Some(LeaseRecord {
-            owner_token: OwnerToken::from_bytes(token_arr),
-            fencing_generation: FencingGeneration(gen_i64 as u64),
-            acquired_at_unix_ms: acq as u64,
-            expires_at_unix_ms: exp as u64,
-            attempt_id: att,
-            is_completed: comp == 1,
-        }))
+        Self::check_lease_on_connection(&conn, key)
     }
 }
 
@@ -1824,4 +1538,344 @@ pub struct CoordinatedResponse {
     pub new_tokens: u64,
     pub attempt_id: Option<String>,
     pub is_follower: bool,
+}
+
+impl SqliteLeaseCoordinator {
+    pub(crate) fn acquire_in_transaction(
+        tx: &rusqlite::Transaction<'_>,
+        key: CoordinationKey,
+        now_unix_ms: u64,
+        policy: &CoordinationPolicy,
+    ) -> Result<LeaseAcquisition, CoordinationError> {
+        let row: Option<(Vec<u8>, i64, i64, i64, String, i64)> = tx
+            .query_row(
+                "SELECT owner_token, fencing_generation, acquired_at_unix_ms, expires_at_unix_ms, attempt_id, is_completed
+                 FROM sr_coordination_leases WHERE coordination_key = ?1",
+                params![key.as_bytes()],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
+            )
+            .optional()?;
+
+        if let Some((_raw_token, gen_i64, _acq, exp_i64, _att, completed_i64)) = row {
+            let cur_fence_gen = FencingGeneration(gen_i64 as u64);
+            let expires_at = exp_i64 as u64;
+            let is_completed = completed_i64 == 1;
+
+            if now_unix_ms < expires_at {
+                if is_completed {
+                    return Ok(LeaseAcquisition::AlreadyCompleted);
+                }
+                return Ok(LeaseAcquisition::Following(FollowerContext {
+                    key,
+                    leader_generation: cur_fence_gen,
+                    lease_expires_at_unix_ms: expires_at,
+                }));
+            }
+
+            // Expired lease -> successor reacquires with bumped fencing generation
+            let new_gen = cur_fence_gen.next();
+            let new_token = OwnerToken::generate()
+                .map_err(|e| CoordinationError::StorageError(e.to_string()))?;
+            let new_expires_at = now_unix_ms.saturating_add(policy.lease_ttl_ms);
+            let new_attempt_id = format!("att-proc-{}", new_gen.as_u64());
+
+            tx.execute(
+                "UPDATE sr_coordination_leases SET
+                    owner_token = ?1,
+                    fencing_generation = ?2,
+                    acquired_at_unix_ms = ?3,
+                    expires_at_unix_ms = ?4,
+                    attempt_id = ?5,
+                    is_completed = 0
+                 WHERE coordination_key = ?6",
+                params![
+                    new_token.as_bytes(),
+                    new_gen.as_u64() as i64,
+                    now_unix_ms as i64,
+                    new_expires_at as i64,
+                    new_attempt_id,
+                    key.as_bytes()
+                ],
+            )?;
+
+            return Ok(LeaseAcquisition::Leading(LeaderContext {
+                key,
+                owner_token: new_token,
+                fencing_generation: new_gen,
+                lease_expires_at_unix_ms: new_expires_at,
+                attempt_id: new_attempt_id,
+            }));
+        }
+
+        // New lease row
+        let new_token =
+            OwnerToken::generate().map_err(|e| CoordinationError::StorageError(e.to_string()))?;
+        let init_gen = FencingGeneration::initial();
+        let new_expires_at = now_unix_ms.saturating_add(policy.lease_ttl_ms);
+        let new_attempt_id = format!("att-proc-{}", init_gen.as_u64());
+
+        tx.execute(
+            "INSERT INTO sr_coordination_leases (
+                coordination_key, owner_token, fencing_generation, acquired_at_unix_ms, expires_at_unix_ms, attempt_id, is_completed
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0)",
+            params![
+                key.as_bytes(),
+                new_token.as_bytes(),
+                init_gen.as_u64() as i64,
+                now_unix_ms as i64,
+                new_expires_at as i64,
+                new_attempt_id
+            ],
+        )?;
+
+        Ok(LeaseAcquisition::Leading(LeaderContext {
+            key,
+            owner_token: new_token,
+            fencing_generation: init_gen,
+            lease_expires_at_unix_ms: new_expires_at,
+            attempt_id: new_attempt_id,
+        }))
+    }
+}
+
+impl SqliteLeaseCoordinator {
+    pub(crate) fn force_reacquire_in_transaction(
+        tx: &rusqlite::Transaction<'_>,
+        key: CoordinationKey,
+        now_unix_ms: u64,
+        policy: &CoordinationPolicy,
+    ) -> Result<LeaseAcquisition, CoordinationError> {
+        let row: Option<(Vec<u8>, i64, i64, i64, String, i64)> = tx
+            .query_row(
+                "SELECT owner_token, fencing_generation, acquired_at_unix_ms, expires_at_unix_ms, attempt_id, is_completed
+                 FROM sr_coordination_leases WHERE coordination_key = ?1",
+                params![key.as_bytes()],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
+            )
+            .optional()?;
+
+        if let Some((_raw_token, gen_i64, _acq, exp_i64, _att, completed_i64)) = row {
+            let cur_fence_gen = FencingGeneration(gen_i64 as u64);
+            let expires_at = exp_i64 as u64;
+            let is_completed = completed_i64 == 1;
+
+            // If another leader already reacquired to refresh and is currently unexpired, follow them
+            if !is_completed && now_unix_ms < expires_at {
+                return Ok(LeaseAcquisition::Following(FollowerContext {
+                    key,
+                    leader_generation: cur_fence_gen,
+                    lease_expires_at_unix_ms: expires_at,
+                }));
+            }
+
+            let new_gen = cur_fence_gen.next();
+            let new_token = OwnerToken::generate()
+                .map_err(|e| CoordinationError::StorageError(e.to_string()))?;
+            let new_expires_at = now_unix_ms.saturating_add(policy.lease_ttl_ms);
+            let new_attempt_id = format!("att-proc-{}", new_gen.as_u64());
+
+            tx.execute(
+                "UPDATE sr_coordination_leases SET
+                    owner_token = ?1,
+                    fencing_generation = ?2,
+                    acquired_at_unix_ms = ?3,
+                    expires_at_unix_ms = ?4,
+                    attempt_id = ?5,
+                    is_completed = 0
+                 WHERE coordination_key = ?6",
+                params![
+                    new_token.as_bytes(),
+                    new_gen.as_u64() as i64,
+                    now_unix_ms as i64,
+                    new_expires_at as i64,
+                    new_attempt_id,
+                    key.as_bytes()
+                ],
+            )?;
+
+            return Ok(LeaseAcquisition::Leading(LeaderContext {
+                key,
+                owner_token: new_token,
+                fencing_generation: new_gen,
+                lease_expires_at_unix_ms: new_expires_at,
+                attempt_id: new_attempt_id,
+            }));
+        }
+
+        let new_token =
+            OwnerToken::generate().map_err(|e| CoordinationError::StorageError(e.to_string()))?;
+        let init_gen = FencingGeneration::initial();
+        let new_expires_at = now_unix_ms.saturating_add(policy.lease_ttl_ms);
+        let new_attempt_id = format!("att-proc-{}", init_gen.as_u64());
+
+        tx.execute(
+            "INSERT INTO sr_coordination_leases (
+                coordination_key, owner_token, fencing_generation, acquired_at_unix_ms, expires_at_unix_ms, attempt_id, is_completed
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0)",
+            params![
+                key.as_bytes(),
+                new_token.as_bytes(),
+                init_gen.as_u64() as i64,
+                now_unix_ms as i64,
+                new_expires_at as i64,
+                new_attempt_id
+            ],
+        )?;
+
+        Ok(LeaseAcquisition::Leading(LeaderContext {
+            key,
+            owner_token: new_token,
+            fencing_generation: init_gen,
+            lease_expires_at_unix_ms: new_expires_at,
+            attempt_id: new_attempt_id,
+        }))
+    }
+}
+
+impl SqliteLeaseCoordinator {
+    pub(crate) fn active_lease_in_transaction(
+        tx: &rusqlite::Transaction<'_>,
+        leader: &LeaderContext,
+        now: u64,
+    ) -> Result<bool, CoordinationError> {
+        let row: Option<(Vec<u8>, i64, i64, i64, i64)> = tx
+            .query_row(
+                "SELECT owner_token, fencing_generation, expires_at_unix_ms, is_completed, acquired_at_unix_ms \
+                 FROM sr_coordination_leases WHERE coordination_key=?1",
+                params![leader.key.as_bytes()],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )
+            .optional()?;
+        Ok(
+            row.is_some_and(|(token, generation, expiry, completed, acquired)| {
+                token.as_slice() == leader.owner_token.as_bytes()
+                    && u64::try_from(generation).ok() == Some(leader.fencing_generation.as_u64())
+                    && u64::try_from(expiry).ok() == Some(leader.lease_expires_at_unix_ms)
+                    && completed == 0
+                    && u64::try_from(acquired).is_ok_and(|acquired| now >= acquired)
+                    && now < leader.lease_expires_at_unix_ms
+            }),
+        )
+    }
+}
+
+impl SqliteLeaseCoordinator {
+    pub(crate) fn complete_in_transaction(
+        tx: &rusqlite::Transaction<'_>,
+        key: CoordinationKey,
+        owner_token: OwnerToken,
+        generation: FencingGeneration,
+        now_unix_ms: u64,
+        cache_entry: Option<(&CacheKey, &CacheNamespace, &CachedResponseEntry)>,
+    ) -> Result<PublishOutcome, CoordinationError> {
+        let row: Option<(Vec<u8>, i64, i64, i64)> = tx
+            .query_row(
+                "SELECT owner_token, fencing_generation, expires_at_unix_ms, is_completed
+                 FROM sr_coordination_leases WHERE coordination_key = ?1",
+                params![key.as_bytes()],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .optional()?;
+
+        let Some((cur_token, cur_gen_i64, exp_i64, _completed)) = row else {
+            return Ok(PublishOutcome::Superseded {
+                expected_generation: generation,
+                current_generation: None,
+            });
+        };
+
+        let cur_gen = FencingGeneration(cur_gen_i64 as u64);
+        let expires_at = exp_i64 as u64;
+
+        if cur_token.as_slice() != owner_token.as_bytes() || cur_gen != generation {
+            return Ok(PublishOutcome::Superseded {
+                expected_generation: generation,
+                current_generation: Some(cur_gen),
+            });
+        }
+
+        if now_unix_ms >= expires_at {
+            return Ok(PublishOutcome::Superseded {
+                expected_generation: generation,
+                current_generation: Some(cur_gen),
+            });
+        }
+
+        if let Some((cache_key, cache_ns, entry)) = cache_entry {
+            let ns_hash = MemoryResponseCache::namespace_hash(cache_key, cache_ns);
+            let stage_str = entry.stage.as_str();
+            let fp_bytes = entry.request_fingerprint.as_bytes();
+
+            tx.execute(
+                "INSERT INTO sr_response_cache (
+                    namespace_hash, stage, request_fingerprint, response_bytes,
+                    received_at_unix_ms, ttl_seconds, model, model_revision,
+                    input_tokens, output_tokens, attempt_id
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                 ON CONFLICT(namespace_hash, stage, request_fingerprint) DO UPDATE SET
+                    response_bytes = excluded.response_bytes,
+                    received_at_unix_ms = excluded.received_at_unix_ms,
+                    ttl_seconds = excluded.ttl_seconds,
+                    model = excluded.model,
+                    model_revision = excluded.model_revision,
+                    input_tokens = excluded.input_tokens,
+                    output_tokens = excluded.output_tokens,
+                    attempt_id = excluded.attempt_id",
+                params![
+                    &ns_hash[..],
+                    stage_str,
+                    &fp_bytes[..],
+                    &entry.response_bytes[..],
+                    entry.received_at_unix_ms as i64,
+                    entry.ttl_seconds as i64,
+                    &entry.model,
+                    &entry.model_revision,
+                    entry.original_usage.input_tokens as i64,
+                    entry.original_usage.output_tokens as i64,
+                    &entry.attempt_id
+                ],
+            )?;
+        }
+
+        tx.execute(
+            "UPDATE sr_coordination_leases SET is_completed = 1 WHERE coordination_key = ?1",
+            params![key.as_bytes()],
+        )?;
+
+        Ok(PublishOutcome::Published)
+    }
+}
+
+impl SqliteLeaseCoordinator {
+    pub(crate) fn check_lease_on_connection(
+        conn: &Connection,
+        key: CoordinationKey,
+    ) -> Result<Option<LeaseRecord>, CoordinationError> {
+        let row: Option<(Vec<u8>, i64, i64, i64, String, i64)> = conn
+            .query_row(
+                "SELECT owner_token, fencing_generation, acquired_at_unix_ms, expires_at_unix_ms, attempt_id, is_completed
+                 FROM sr_coordination_leases WHERE coordination_key = ?1",
+                params![key.as_bytes()],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
+            )
+            .optional()?;
+
+        let Some((token_bytes, gen_i64, acq, exp, att, comp)) = row else {
+            return Ok(None);
+        };
+
+        let mut token_arr = [0u8; 16];
+        if token_bytes.len() == 16 {
+            token_arr.copy_from_slice(&token_bytes);
+        }
+
+        Ok(Some(LeaseRecord {
+            owner_token: OwnerToken::from_bytes(token_arr),
+            fencing_generation: FencingGeneration(gen_i64 as u64),
+            acquired_at_unix_ms: acq as u64,
+            expires_at_unix_ms: exp as u64,
+            attempt_id: att,
+            is_completed: comp == 1,
+        }))
+    }
 }
