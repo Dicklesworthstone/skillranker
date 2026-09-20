@@ -49,15 +49,16 @@ fails closed until its source and tests are reviewed; a Cargo version string
 alone is not engine evidence. `linked_engine()` exposes only this public engine
 identity for future doctor integration. See [SQLite's WAL documentation](https://www.sqlite.org/wal.html).
 
-Schema version 2 uses application ID `SRCH` and exactly three strict tables:
+Schema version 3 uses application ID `SRCH` and exactly four strict tables:
 metadata (an opaque 16-byte random incarnation, nonnegative generation and a
 fixed schema identity), the fingerprint key (32 bytes from the operating
-system CSPRNG, drawn once at initialization), and validated responses. Every
+system CSPRNG, drawn once at initialization), validated responses, and single-flight
+leases. Every
 table's stored DDL and the singleton cardinalities are checked, so a matching
 `user_version` alone cannot authorize mutation. A newer schema is inspected with
 a read-only SQLite connection and rejected. This is not a promise of zero WAL
 shared-memory bookkeeping. Corrupt, foreign, or incompatible stores, including
-version 1 foundation stores, are refused without replacement, downgrade,
+version 1 foundation stores and version 2 response caches, are refused without replacement, downgrade,
 permission repair, or automatic migration. The rank caller then continues
 uncached. No migration, backup or repair command is implemented here.
 
@@ -73,6 +74,26 @@ future; none of them could ever be served. Freshness, model matching and stage
 pairing are the caller's decisions (see [response cache](response-cache.md)).
 The key never leaves the store except as keyed-hash input, and `Debug` output
 omits it.
+
+## Single-store response publication
+
+Production lease acquisition, settlement reads, completion, and response writes
+use the same qualified `cache.sqlite3`. They do not create `leases.sqlite3` or
+use the helper coordinator's alternate response schema. Lease rows contain
+only bounded ownership metadata and share the cache's page and sidecar quota.
+
+`record_response_fenced` checks the supplied cache path, store incarnation and
+generation, current lease owner and fencing generation, completion status, and
+expiry inside the same `BEGIN IMMEDIATE` that inserts the response. Expiry is
+checked again before commit. A successor cannot acquire between validation and
+publication. No database transaction spans provider work. Completion is a later
+metadata transaction; neither this design nor stdout delivery claims exactly-once
+publication. Optional recording or completion failures retain a valid answer with
+warnings; confirmed supersession withholds it.
+
+Older stores are preserved and refused, with no hook-time migration. Old cache
+and lease files are not removed. Upgrading does not coordinate concurrent old
+and new executable versions through those incompatible stores.
 
 ## Filesystem boundary
 
@@ -140,7 +161,7 @@ effects, repeated initialization, private WAL files, path/type/link/mode refusal
 corrupt/foreign/newer stores, schema drift, real lock contention with successful
 retry, generation/incarnation fencing, overflow, cancellation, expiry, quota,
 directory replacement and abrupt process death across committed/uncommitted
-generations. Schema v2 cases cover a random, stable, never-printed key; exact
+generations. Response-cache cases cover a random, stable, never-printed key; exact
 response identity and generation fencing for reads and writes; pruning of
 expired, future and earlier-generation rows; refusal of unbounded entries; and
 refusal of a version 1 store without repair. Unit tests separately cover engine qualification and the

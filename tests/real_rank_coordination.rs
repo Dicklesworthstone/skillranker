@@ -262,7 +262,10 @@ fn ordinary_two_consumer_success_incurs_one_pair_and_subsequent_exact_offline_re
     let cache_file = f.cache_dir().join("sr").join("cache.sqlite3");
     eprintln!("cache_file exists: {}", cache_file.exists());
     let leases_file = f.cache_dir().join("sr").join("leases.sqlite3");
-    eprintln!("leases_file exists: {}", leases_file.exists());
+    assert!(
+        !leases_file.exists(),
+        "production created a separate lease database"
+    );
 
     assert_eq!(out_a.status.code(), Some(0));
     assert_eq!(out_b.status.code(), Some(0));
@@ -391,14 +394,14 @@ fn stale_leader_superseded_cannot_overwrite_newer_cache_or_complete_lease() {
     wait_for_marker(&marker);
     let pid = nix::unistd::Pid::from_raw(i32::try_from(a.0.as_ref().unwrap().id()).unwrap());
     nix::sys::signal::kill(pid, nix::sys::signal::Signal::SIGSTOP).unwrap();
-    let leases_path = f.cache_dir().join("sr/leases.sqlite3");
+    let leases_path = f.cache_dir().join("sr/cache.sqlite3");
     let conn = rusqlite::Connection::open(&leases_path).unwrap();
     conn.busy_timeout(Duration::from_millis(25)).unwrap();
     // A is stopped after sending its wide request and before receiving it.
     // Advance durable lease expiry, then let a real successor run and publish.
     assert_eq!(
         conn.execute(
-            "UPDATE sr_coordination_leases SET expires_at_unix_ms=0 WHERE is_completed=0",
+            "UPDATE sr_coordination_leases SET acquired_at_unix_ms=0, expires_at_unix_ms=0 WHERE is_completed=0",
             []
         )
         .unwrap(),
@@ -504,7 +507,7 @@ fn completed_lease_with_absent_pair_reacquires_leadership_before_fresh_evaluatio
         serde_json::from_slice::<Value>(&second.stdout).unwrap()["decision"],
         "ranked"
     );
-    let leases = rusqlite::Connection::open(f.cache_dir().join("sr/leases.sqlite3")).unwrap();
+    let leases = rusqlite::Connection::open(f.cache_dir().join("sr/cache.sqlite3")).unwrap();
     let state: (i64, i64, i64) = leases
         .query_row(
             "SELECT count(*),max(fencing_generation),min(is_completed) FROM sr_coordination_leases",
@@ -615,7 +618,7 @@ fn busy_optional_lease_completion_keeps_answer_without_claiming_completion() {
             .unwrap(),
     ));
     wait_for_marker(&marker);
-    let lease = rusqlite::Connection::open(f.cache_dir().join("sr/leases.sqlite3")).unwrap();
+    let lease = rusqlite::Connection::open(f.cache_dir().join("sr/cache.sqlite3")).unwrap();
     lease.execute_batch("BEGIN IMMEDIATE").unwrap();
     let output = child.wait();
     assert_eq!(

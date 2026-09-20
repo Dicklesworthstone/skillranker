@@ -1,8 +1,8 @@
 #![cfg(target_os = "linux")]
 //! Real lease and production cache stores; no model or storage doubles.
 use skillranker::cache::{
-    CachedResponseEntry, CoordinationError, CoordinationKey, CoordinationPolicy, LeaderContext,
-    LeaseAcquisition, LeaseCoordinator, RequestFingerprint, RequestStage, SqliteLeaseCoordinator,
+    CachedResponseEntry, CoordinationKey, LeaderContext, LeaseAcquisition, RequestFingerprint,
+    RequestStage,
 };
 use skillranker::jev::codec::Usage;
 use skillranker::runtime::ProcessInvocation;
@@ -105,137 +105,129 @@ fn read(store: CacheStore) -> Vec<u8> {
     value.unwrap().response_bytes
 }
 
-#[test]
-fn successor_cannot_acquire_during_publication_callback() {
-    let dir = directory();
-    let coordinator = SqliteLeaseCoordinator::open(dir.join("leases.sqlite3")).unwrap();
-    let key = CoordinationKey::from_bytes([1; 32]);
-    let policy = CoordinationPolicy::default();
-    let leader = leading(coordinator.acquire(key, 1000, &policy).unwrap());
-    let store = open(&dir);
-    coordinator
-        .with_active_lease(
-            &leader,
-            Duration::from_millis(25),
-            || 1001,
-            || {
-                // An independent SQLite connection sees an expired lease, but cannot
-                // replace it while the publisher owns the writer transaction.
-                assert_eq!(
-                    coordinator.acquire(key, 7000, &policy).unwrap_err(),
-                    CoordinationError::StorageBusy
-                );
-                let invocation = ProcessInvocation::enter().unwrap();
-                let cx = invocation.request_cx().unwrap();
-                let stored = store
-                    .record_response(&invocation, &cx, [3; 32], entry(b"owner-a"), now())
-                    .unwrap();
-                assert!(invocation.shutdown());
-                assert_eq!(read(stored), b"owner-a");
-            },
-        )
-        .unwrap()
+fn acquire(
+    store: CacheStore,
+    key: CoordinationKey,
+    refresh: bool,
+) -> Result<(CacheStore, LeaderContext), StoreError> {
+    let invocation = ProcessInvocation::enter().unwrap();
+    let cx = invocation.request_cx().unwrap();
+    let result = store
+        .acquire_lease(&invocation, &cx, key, refresh)
+        .map(|(store, result)| (store, leading(result)));
+    assert!(invocation.shutdown());
+    result
+}
+fn complete(store: CacheStore, leader: &LeaderContext) -> CacheStore {
+    let invocation = ProcessInvocation::enter().unwrap();
+    let cx = invocation.request_cx().unwrap();
+    let (store, outcome) = store
+        .complete_lease(&invocation, &cx, leader.clone())
         .unwrap();
-    let successor = leading(coordinator.acquire(key, 7000, &policy).unwrap());
-    assert!(successor.fencing_generation > leader.fencing_generation);
-    let mut invoked = false;
-    assert!(
-        coordinator
-            .with_active_lease(
-                &leader,
-                Duration::from_millis(25),
-                || 1001,
-                || {
-                    invoked = true;
-                }
-            )
-            .unwrap()
-            .is_none()
+    assert_eq!(outcome, skillranker::cache::PublishOutcome::Published);
+    assert!(invocation.shutdown());
+    store
+}
+
+#[test]
+fn publication_and_acquisition_share_the_actual_cache_writer() {
+    let dir = directory();
+    let path = dir.join("cache.sqlite3");
+    let key = CoordinationKey::from_bytes([1; 32]);
+    let (store, leader) = acquire(open(&dir), key, false).unwrap();
+    let contender = open(&dir);
+    let lock = rusqlite::Connection::open(&path).unwrap();
+    lock.execute_batch("BEGIN IMMEDIATE").unwrap();
+    assert_eq!(
+        write(store, &path, &leader, b"blocked").unwrap_err(),
+        StoreError::Busy
     );
-    assert!(!invoked, "stale owner callback executed");
+    assert_eq!(
+        acquire(contender, CoordinationKey::from_bytes([9; 32]), false).unwrap_err(),
+        StoreError::Busy
+    );
+    assert_eq!(
+        lock.query_row("SELECT count(*) FROM sr_cache_response", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    lock.execute_batch("ROLLBACK").unwrap();
+    let stored = write(open(&dir), &path, &leader, b"owner-a").unwrap();
+    assert_eq!(read(stored), b"owner-a");
+    assert!(
+        !dir.join("leases.sqlite3").exists(),
+        "separate lease database created"
+    );
+    let helper_bodies: i64 = lock
+        .query_row(
+            "SELECT count(*) FROM sqlite_schema WHERE name='sr_response_cache'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        helper_bodies, 0,
+        "incompatible helper response schema created"
+    );
 }
 
 #[test]
 fn stale_owner_cannot_replace_successors_actual_cache_body() {
     let dir = directory();
-    let path = dir.join("leases.sqlite3");
-    let coordinator = SqliteLeaseCoordinator::open(&path).unwrap();
+    let path = dir.join("cache.sqlite3");
     let key = CoordinationKey::from_bytes([2; 32]);
-    let policy = CoordinationPolicy::default();
-    let a = leading(coordinator.acquire(key, now(), &policy).unwrap());
-    let store = write(open(&dir), &path, &a, b"owner-a").unwrap();
-    coordinator
-        .complete(key, a.owner_token, a.fencing_generation, now())
-        .unwrap();
-    let b = leading(coordinator.force_reacquire(key, now(), &policy).unwrap());
+    let (store, a) = acquire(open(&dir), key, false).unwrap();
+    let store = write(store, &path, &a, b"owner-a").unwrap();
+    let store = complete(store, &a);
+    let (store, b) = acquire(store, key, true).unwrap();
     let store = write(store, &path, &b, b"owner-b").unwrap();
     assert_eq!(
         write(store, &path, &a, b"stale-a").unwrap_err(),
         StoreError::LeaseSuperseded
     );
     assert_eq!(read(open(&dir)), b"owner-b");
-    coordinator
-        .complete(key, b.owner_token, b.fencing_generation, now())
-        .unwrap();
+    let store = complete(open(&dir), &b);
     assert_eq!(
-        write(open(&dir), &path, &b, b"completed-b").unwrap_err(),
+        write(store, &path, &b, b"completed-b").unwrap_err(),
         StoreError::LeaseSuperseded
     );
     assert_eq!(read(open(&dir)), b"owner-b");
-    let bodies: i64 = rusqlite::Connection::open(path)
-        .unwrap()
-        .query_row("SELECT count(*) FROM sr_response_cache", [], |r| r.get(0))
-        .unwrap();
-    assert_eq!(
-        bodies, 0,
-        "coordination state must not hold response bodies"
-    );
 }
 
 #[test]
 fn expired_owner_does_not_create_a_cache_response() {
     let dir = directory();
-    let path = dir.join("leases.sqlite3");
-    let coordinator = SqliteLeaseCoordinator::open(&path).unwrap();
-    let a = leading(
-        coordinator
-            .acquire(
-                CoordinationKey::from_bytes([5; 32]),
-                1000,
-                &CoordinationPolicy::default(),
-            )
-            .unwrap(),
-    );
+    let path = dir.join("cache.sqlite3");
+    let (store, a) = acquire(open(&dir), CoordinationKey::from_bytes([5; 32]), false).unwrap();
+    let db = rusqlite::Connection::open(&path).unwrap();
+    db.execute(
+        "UPDATE sr_coordination_leases SET acquired_at_unix_ms=0, expires_at_unix_ms=0",
+        [],
+    )
+    .unwrap();
     assert_eq!(
-        write(open(&dir), &path, &a, b"expired").unwrap_err(),
+        write(store, &path, &a, b"expired").unwrap_err(),
         StoreError::LeaseSuperseded
     );
-    let rows: i64 = rusqlite::Connection::open(dir.join("cache.sqlite3"))
-        .unwrap()
-        .query_row("SELECT count(*) FROM sr_cache_response", [], |r| r.get(0))
-        .unwrap();
-    assert_eq!(rows, 0);
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM sr_cache_response", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
 }
 
 #[test]
-fn optional_cache_refusal_and_unavailable_lease_are_distinct() {
+fn optional_recording_errors_are_distinct_from_supersession() {
     let dir = directory();
-    let path = dir.join("leases.sqlite3");
-    let coordinator = SqliteLeaseCoordinator::open(&path).unwrap();
-    let leader = leading(
-        coordinator
-            .acquire(
-                CoordinationKey::from_bytes([6; 32]),
-                now(),
-                &CoordinationPolicy::default(),
-            )
-            .unwrap(),
-    );
+    let path = dir.join("cache.sqlite3");
+    let (store, leader) = acquire(open(&dir), CoordinationKey::from_bytes([8; 32]), false).unwrap();
     let invocation = ProcessInvocation::enter().unwrap();
     let cx = invocation.request_cx().unwrap();
     let mut oversized = entry(b"not-written");
     oversized.response_bytes = vec![0; skillranker::jev::codec::MAX_RESPONSE_BYTES + 1];
-    let error = open(&dir)
+    let error = store
         .record_response_fenced(
             &invocation,
             &cx,
@@ -246,21 +238,17 @@ fn optional_cache_refusal_and_unavailable_lease_are_distinct() {
         .unwrap_err();
     assert_eq!(error, StoreError::Quota);
     assert!(invocation.shutdown());
-    let lock = rusqlite::Connection::open(&path).unwrap();
-    lock.execute_batch("BEGIN IMMEDIATE").unwrap();
     assert_eq!(
-        write(open(&dir), &path, &leader, b"blocked").unwrap_err(),
+        write(
+            open(&dir),
+            &dir.join("leases.sqlite3"),
+            &leader,
+            b"wrong-store"
+        )
+        .unwrap_err(),
         StoreError::LeaseUnavailable
     );
-    lock.execute_batch("ROLLBACK").unwrap();
-    let cache = rusqlite::Connection::open(dir.join("cache.sqlite3")).unwrap();
-    assert_eq!(
-        cache
-            .query_row("SELECT count(*) FROM sr_cache_response", [], |r| r
-                .get::<_, i64>(0))
-            .unwrap(),
-        0
-    );
+    assert!(!dir.join("leases.sqlite3").exists());
     let stored = write(open(&dir), &path, &leader, b"healthy").unwrap();
     assert_eq!(read(stored), b"healthy");
 }

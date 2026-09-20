@@ -794,3 +794,59 @@ fn a_version_one_store_is_refused_without_repair() {
         .unwrap();
     assert_eq!((version, tables), (1, 1), "nothing was added or rewritten");
 }
+
+#[test]
+fn version_two_response_cache_is_preserved_without_automatic_migration() {
+    let path = private_tree("version-two");
+    let db = raw_database(&path);
+    db.execute_batch(r#"CREATE TABLE sr_cache_meta (
+        singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+        incarnation BLOB NOT NULL CHECK(length(incarnation)=16),
+        generation INTEGER NOT NULL CHECK(generation>=0),
+        schema_id TEXT NOT NULL
+    ) STRICT;
+CREATE TABLE sr_cache_key (
+        singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+        key BLOB NOT NULL CHECK(length(key)=32)
+    ) STRICT;
+CREATE TABLE sr_cache_response (
+        generation INTEGER NOT NULL CHECK(generation>=0),
+        namespace BLOB NOT NULL CHECK(length(namespace)=32),
+        stage TEXT NOT NULL CHECK(stage IN ('wide','rerank')),
+        fingerprint BLOB NOT NULL CHECK(length(fingerprint)=32),
+        response BLOB NOT NULL CHECK(length(response)<=2097152),
+        received_at_unix_ms INTEGER NOT NULL CHECK(received_at_unix_ms>=0),
+        ttl_seconds INTEGER NOT NULL CHECK(ttl_seconds BETWEEN 1 AND 600),
+        model TEXT NOT NULL CHECK(length(model) BETWEEN 1 AND 256),
+        model_revision TEXT CHECK(model_revision IS NULL OR length(model_revision)<=256),
+        input_tokens INTEGER NOT NULL CHECK(input_tokens>=0),
+        output_tokens INTEGER NOT NULL CHECK(output_tokens>=0),
+        PRIMARY KEY (generation, namespace, stage, fingerprint)
+    ) STRICT ;
+INSERT INTO sr_cache_meta VALUES (1, zeroblob(16), 7, 'sr-cache-responses-v2');
+INSERT INTO sr_cache_key VALUES (1, zeroblob(32));
+INSERT INTO sr_cache_response VALUES (7, zeroblob(32), 'wide', zeroblob(32), x'010203', 1000, 600, 'jev-test', NULL, 1, 2);
+PRAGMA application_id=1397900104;
+PRAGMA user_version=2;
+"#).unwrap();
+    for access in [CacheAccess::ExistingOnly, CacheAccess::Initialize] {
+        assert_eq!(
+            open(&path, access).unwrap_err(),
+            StoreError::IncompatibleSchema
+        );
+    }
+    let version: i64 = db
+        .pragma_query_value(None, "user_version", |r| r.get(0))
+        .unwrap();
+    let tables: i64 = db
+        .query_row(
+            "SELECT count(*) FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let body: Vec<u8> = db
+        .query_row("SELECT response FROM sr_cache_response", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!((version, tables, body), (2, 3, vec![1, 2, 3]));
+}

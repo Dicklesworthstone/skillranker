@@ -26,7 +26,7 @@ use rusqlite::{
 use std::{fmt, fs::File, path::PathBuf, time::Duration};
 
 pub const CACHE_FILE: &str = "cache.sqlite3";
-pub const CACHE_SCHEMA_VERSION: u32 = 2;
+pub const CACHE_SCHEMA_VERSION: u32 = 3;
 pub const CACHE_QUOTA_BYTES: u64 = 64 * 1024 * 1024;
 pub const MAINTENANCE_RESERVE_BYTES: u64 = 4 * 1024 * 1024;
 // Metadata and key writes are single rows. A response row is bounded by the
@@ -39,7 +39,7 @@ pub const QUALIFIED_SQLITE_SOURCE_ID: &str =
     "2026-06-03 19:12:13 d6e03d8c777cfa2d35e3b60d8ec3e0187f3e9f99d8e2ee9cac695fd6fcdf1a24";
 const MIN_SQLITE_VERSION: i32 = 3_051_003;
 const APPLICATION_ID: i64 = 0x53524348; // SRCH: cache, never ledger/accounting.
-const SCHEMA_ID: &str = "sr-cache-responses-v2";
+const SCHEMA_ID: &str = "sr-cache-responses-v3";
 /// Maximum age of a stored response; the ten-minute TTL is a ceiling.
 pub const MAX_RESPONSE_TTL_SECONDS: u32 = 600;
 const METADATA_DDL: &str = "CREATE TABLE sr_cache_meta (
@@ -68,10 +68,20 @@ const RESPONSE_DDL: &str = "CREATE TABLE sr_cache_response (
         output_tokens INTEGER NOT NULL CHECK(output_tokens>=0),
         PRIMARY KEY (generation, namespace, stage, fingerprint)
     ) STRICT";
-const TABLES: [(&str, &str); 3] = [
+const LEASE_DDL: &str = "CREATE TABLE sr_coordination_leases (
+        coordination_key BLOB PRIMARY KEY CHECK(length(coordination_key)=32),
+        owner_token BLOB NOT NULL CHECK(length(owner_token)=16),
+        fencing_generation INTEGER NOT NULL CHECK(fencing_generation>=1),
+        acquired_at_unix_ms INTEGER NOT NULL CHECK(acquired_at_unix_ms>=0),
+        expires_at_unix_ms INTEGER NOT NULL CHECK(expires_at_unix_ms>=acquired_at_unix_ms),
+        attempt_id TEXT NOT NULL CHECK(length(attempt_id)<=128),
+        is_completed INTEGER NOT NULL CHECK(is_completed IN (0,1))
+    ) STRICT";
+const TABLES: [(&str, &str); 4] = [
     ("sr_cache_meta", METADATA_DDL),
     ("sr_cache_key", KEY_DDL),
     ("sr_cache_response", RESPONSE_DDL),
+    ("sr_coordination_leases", LEASE_DDL),
 ];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -681,8 +691,8 @@ impl CacheStore {
         self.record_response_inner(invocation, cx, namespace, entry, now_unix_ms, None)
     }
 
-    /// Keep the lease writer lock through this store's commit. Recheck owner,
-    /// generation and expiry after acquiring it, and expiry again before commit.
+    /// Validate ownership and write the response inside one cache transaction.
+    /// The supplied path must identify this cache, never a separate lease store.
     pub fn record_response_fenced(
         self,
         invocation: &ProcessInvocation,
@@ -724,63 +734,184 @@ impl CacheStore {
                 let expires = fence
                     .as_ref()
                     .map(|(_, leader)| leader.lease_expires_at_unix_ms);
-                let write = || {
-                    configure(&self.connection, clock, &child)?;
-                    self.directory
-                        .verify_database_file(&self.file, clock, &child)?;
-                    refresh_busy_limit(&self.connection, clock, &child)?;
-                    let expected = self.stamp;
-                    let generation = sql_integer(expected.generation)?;
-                    let now = sql_integer(now_unix_ms)?;
-                    let tx = self
-                        .connection
-                        .transaction_with_behavior(TransactionBehavior::Immediate)?;
-                    check_stamp(&tx, expected)?;
-                    self.directory.admit_space()?;
-                    tx.execute(
-                        "DELETE FROM sr_cache_response WHERE generation<>?1 \
-                     OR received_at_unix_ms>?2 OR received_at_unix_ms+ttl_seconds*1000<=?2",
-                        params![generation, now],
-                    )?;
-                    tx.execute(
-                        "INSERT OR REPLACE INTO sr_cache_response VALUES \
-                     (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-                        params![
-                            generation,
-                            &namespace[..],
-                            entry.stage.as_str(),
-                            &entry.request_fingerprint.as_bytes()[..],
-                            entry.response_bytes,
-                            sql_integer(entry.received_at_unix_ms)?,
-                            entry.ttl_seconds,
-                            entry.model,
-                            entry.model_revision,
-                            sql_integer(entry.original_usage.input_tokens)?,
-                            sql_integer(entry.original_usage.output_tokens)?,
-                        ],
-                    )?;
-                    refresh_busy_limit(&tx, clock, &child)?;
-                    if expires.is_some_and(|expires| cache_wall_clock_ms() >= expires) {
-                        return Err(StoreError::LeaseSuperseded);
-                    }
-                    tx.commit()?;
-                    self.directory
-                        .verify_database_file(&self.file, clock, &child)?;
-                    check_work(clock, &child)?;
-                    Ok(self)
-                };
-                if let Some((path, leader)) = fence {
-                    let coordinator = crate::cache::SqliteLeaseCoordinator::open(path)
-                        .map_err(|_| StoreError::LeaseUnavailable)?;
-                    let busy = remaining_busy_wait(&clock, Duration::from_millis(MAX_BUSY_WAIT_MS))
-                        .map_err(StoreError::Runtime)?;
-                    coordinator
-                        .with_active_lease(&leader, busy, cache_wall_clock_ms, write)
-                        .map_err(|_| StoreError::LeaseUnavailable)?
-                        .ok_or(StoreError::LeaseSuperseded)?
-                } else {
-                    write()
+                if fence
+                    .as_ref()
+                    .is_some_and(|(path, _)| path != &self.directory.database_path())
+                {
+                    return Err(StoreError::LeaseUnavailable);
                 }
+                configure(&self.connection, clock, &child)?;
+                self.directory
+                    .verify_database_file(&self.file, clock, &child)?;
+                refresh_busy_limit(&self.connection, clock, &child)?;
+                let expected = self.stamp;
+                let generation = sql_integer(expected.generation)?;
+                let now = sql_integer(now_unix_ms)?;
+                let tx = self
+                    .connection
+                    .transaction_with_behavior(TransactionBehavior::Immediate)?;
+                check_stamp(&tx, expected)?;
+                if let Some((_, leader)) = &fence
+                    && !crate::cache::SqliteLeaseCoordinator::active_lease_in_transaction(
+                        &tx,
+                        leader,
+                        cache_wall_clock_ms(),
+                    )
+                    .map_err(coordination_error)?
+                {
+                    return Err(StoreError::LeaseSuperseded);
+                }
+                self.directory.admit_space()?;
+                tx.execute(
+                    "DELETE FROM sr_cache_response WHERE generation<>?1 \
+                 OR received_at_unix_ms>?2 OR received_at_unix_ms+ttl_seconds*1000<=?2",
+                    params![generation, now],
+                )?;
+                tx.execute(
+                    "INSERT OR REPLACE INTO sr_cache_response VALUES \
+                 (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                    params![
+                        generation,
+                        &namespace[..],
+                        entry.stage.as_str(),
+                        &entry.request_fingerprint.as_bytes()[..],
+                        entry.response_bytes,
+                        sql_integer(entry.received_at_unix_ms)?,
+                        entry.ttl_seconds,
+                        entry.model,
+                        entry.model_revision,
+                        sql_integer(entry.original_usage.input_tokens)?,
+                        sql_integer(entry.original_usage.output_tokens)?,
+                    ],
+                )?;
+                refresh_busy_limit(&tx, clock, &child)?;
+                if expires.is_some_and(|expires| cache_wall_clock_ms() >= expires) {
+                    return Err(StoreError::LeaseSuperseded);
+                }
+                tx.commit()?;
+                self.directory
+                    .verify_database_file(&self.file, clock, &child)?;
+                check_work(clock, &child)?;
+                Ok(self)
+            },
+        )
+        .map_err(StoreError::Runtime)?
+        .value
+    }
+
+    fn lease_transaction<T: Send + 'static>(
+        mut self,
+        invocation: &ProcessInvocation,
+        cx: &Cx,
+        operation: impl FnOnce(&rusqlite::Transaction<'_>) -> Result<T, StoreError> + Send + 'static,
+    ) -> Result<(Self, T), StoreError> {
+        let clock = invocation.clock();
+        let child = cx.clone();
+        run_blocking_leaf(
+            invocation,
+            cx,
+            BlockingLeafKind::Database,
+            false,
+            move || {
+                configure(&self.connection, clock, &child)?;
+                self.directory
+                    .verify_database_file(&self.file, clock, &child)?;
+                refresh_busy_limit(&self.connection, clock, &child)?;
+                let tx = self
+                    .connection
+                    .transaction_with_behavior(TransactionBehavior::Immediate)?;
+                check_stamp(&tx, self.stamp)?;
+                self.directory.admit_space()?;
+                let result = operation(&tx)?;
+                refresh_busy_limit(&tx, clock, &child)?;
+                tx.commit()?;
+                self.directory
+                    .verify_database_file(&self.file, clock, &child)?;
+                check_work(clock, &child)?;
+                Ok((self, result))
+            },
+        )
+        .map_err(StoreError::Runtime)?
+        .value
+    }
+
+    /// Acquire or refresh leadership in the same qualified store as responses.
+    pub fn acquire_lease(
+        self,
+        invocation: &ProcessInvocation,
+        cx: &Cx,
+        key: crate::cache::CoordinationKey,
+        force_refresh: bool,
+    ) -> Result<(Self, crate::cache::LeaseAcquisition), StoreError> {
+        self.lease_transaction(invocation, cx, move |tx| {
+            let policy = crate::cache::CoordinationPolicy::default();
+            if force_refresh {
+                crate::cache::SqliteLeaseCoordinator::force_reacquire_in_transaction(
+                    tx,
+                    key,
+                    cache_wall_clock_ms(),
+                    &policy,
+                )
+            } else {
+                crate::cache::SqliteLeaseCoordinator::acquire_in_transaction(
+                    tx,
+                    key,
+                    cache_wall_clock_ms(),
+                    &policy,
+                )
+            }
+            .map_err(coordination_error)
+        })
+    }
+
+    /// Mark completion without hiding response bodies in coordination state.
+    pub fn complete_lease(
+        self,
+        invocation: &ProcessInvocation,
+        cx: &Cx,
+        leader: crate::cache::LeaderContext,
+    ) -> Result<(Self, crate::cache::PublishOutcome), StoreError> {
+        self.lease_transaction(invocation, cx, move |tx| {
+            crate::cache::SqliteLeaseCoordinator::complete_in_transaction(
+                tx,
+                leader.key,
+                leader.owner_token,
+                leader.fencing_generation,
+                cache_wall_clock_ms(),
+                None,
+            )
+            .map_err(coordination_error)
+        })
+    }
+
+    /// Read settlement without obtaining a writer lock or advancing state.
+    pub fn lease(
+        self,
+        invocation: &ProcessInvocation,
+        cx: &Cx,
+        key: crate::cache::CoordinationKey,
+    ) -> Result<(Self, Option<crate::cache::LeaseRecord>), StoreError> {
+        let clock = invocation.clock();
+        let child = cx.clone();
+        run_blocking_leaf(
+            invocation,
+            cx,
+            BlockingLeafKind::Database,
+            false,
+            move || {
+                configure(&self.connection, clock, &child)?;
+                self.directory
+                    .verify_database_file(&self.file, clock, &child)?;
+                check_stamp(&self.connection, self.stamp)?;
+                let result = crate::cache::SqliteLeaseCoordinator::check_lease_on_connection(
+                    &self.connection,
+                    key,
+                )
+                .map_err(coordination_error)?;
+                self.directory
+                    .verify_database_file(&self.file, clock, &child)?;
+                check_work(clock, &child)?;
+                Ok((self, result))
             },
         )
         .map_err(StoreError::Runtime)?
@@ -843,6 +974,13 @@ impl CacheStore {
         )
         .map_err(StoreError::Runtime)?
         .value
+    }
+}
+
+fn coordination_error(error: crate::cache::CoordinationError) -> StoreError {
+    match error {
+        crate::cache::CoordinationError::StorageBusy => StoreError::Busy,
+        _ => StoreError::LeaseUnavailable,
     }
 }
 
