@@ -1193,7 +1193,7 @@ e2e_cases = ["full-core-cli-suite"]
 assertion_ids = ["p4_gate_passed"]
 platforms = ["linux"]
 features = []
-status = "planned"
+status = "executed"
 
 # ==============================================================================
 # Phase P5: Local Evidence, Replay, Feedback and Evaluation

@@ -326,6 +326,7 @@ fn all_p4_invariants_verified() {
     assert_eq!(val["skills"][0]["invocation_name"], "security_audit");
     assert_eq!(val["usage"]["requests"], 0);
     assert_eq!(val["usage"]["http_attempts"], 0);
+    assert!(invocation.shutdown(), "explicit pipeline shutdown cleanly");
 
     // Missing required skill fails locally without guessing or substituting
     let ctx_file_missing = create_gate_context_file(&workspace, "Run non-existent skill.");
@@ -337,9 +338,12 @@ fn all_p4_invariants_verified() {
         false,
         false,
     );
-    let err_doc = invocation
+    let clock_missing = test_clock();
+    let inv_missing = ProcessInvocation::from_clock(clock_missing).unwrap();
+    let cx_missing = inv_missing.request_cx().unwrap();
+    let err_doc = inv_missing
         .runtime()
-        .block_on(async { execute_pipeline(&invocation, &cx, missing_args, None).await })
+        .block_on(async { execute_pipeline(&inv_missing, &cx_missing, missing_args, None).await })
         .expect("missing required skill produces structured failure document");
     assert_eq!(err_doc.exit_code(), CliExit::Roster);
     let val = err_doc.as_value();
@@ -348,6 +352,10 @@ fn all_p4_invariants_verified() {
     let unresolved = val["unresolved"].as_array().expect("unresolved array");
     assert_eq!(unresolved[0]["reference"], "non_existent_skill");
     assert_eq!(unresolved[0]["reason"], "missing");
+    assert!(
+        inv_missing.shutdown(),
+        "missing skill runtime shutdown cleanly"
+    );
 
     // =========================================================================
     // Invariant 3: Two-Stage Jev Ranking with Mock Transport
@@ -368,6 +376,20 @@ fn all_p4_invariants_verified() {
             }
         }
         let top_key = q_choice.keys().find(|k| k.as_str() != "__none__").unwrap();
+        let mut phase_probs = serde_json::Map::new();
+        for p in [
+            "planning",
+            "implementing",
+            "debugging",
+            "testing",
+            "reviewing",
+            "releasing",
+            "conversing",
+            "other",
+        ] {
+            phase_probs.insert(p.into(), json!(0.125));
+        }
+
         let resp_json = json!({
             "model": "jev-test",
             "answers": {
@@ -383,7 +405,7 @@ fn all_p4_invariants_verified() {
                 "phase": {
                     "type": "choice",
                     "choice": "testing",
-                    "probabilities": {"testing": 0.90, "other": 0.10},
+                    "probabilities": phase_probs,
                     "confidence": 0.85
                 }
             },
@@ -444,7 +466,12 @@ fn all_p4_invariants_verified() {
         no_persist: true,
         save_case: false,
     };
-    let rank_args = gate_rank_args(
+    let mut sources_with_key = ConfigSources::default();
+    sources_with_key
+        .environment
+        .push(("TYPESAFE_API_KEY".into(), "test-api-key-xyz".into()));
+
+    let mut rank_args = gate_rank_args(
         workspace.clone(),
         ctx_file_rank,
         network_flags,
@@ -452,11 +479,15 @@ fn all_p4_invariants_verified() {
         false,
         false,
     );
+    rank_args.sources = sources_with_key;
 
-    let ranked_doc = invocation
+    let clock_ranked = test_clock();
+    let inv_ranked = ProcessInvocation::from_clock(clock_ranked).unwrap();
+    let cx_ranked = inv_ranked.request_cx().unwrap();
+    let ranked_doc = inv_ranked
         .runtime()
         .block_on(async {
-            execute_pipeline(&invocation, &cx, rank_args, Some(&mock_transport)).await
+            execute_pipeline(&inv_ranked, &cx_ranked, rank_args, Some(&mock_transport)).await
         })
         .expect("pipeline execution succeeded");
 
@@ -465,6 +496,7 @@ fn all_p4_invariants_verified() {
     let ranked_val = ranked_doc.as_value();
     assert_eq!(ranked_val["decision"], "ranked");
     assert_eq!(mock_transport.recorded_requests.lock().unwrap().len(), 2);
+    assert!(inv_ranked.shutdown(), "ranked pipeline shutdown cleanly");
 
     // =========================================================================
     // Invariant 4: Dry-Run Zero Network and Zero Mutation Guarantee
@@ -487,17 +519,23 @@ fn all_p4_invariants_verified() {
         true,
     );
 
-    let dry_doc = invocation
+    let clock_dry = test_clock();
+    let inv_dry = ProcessInvocation::from_clock(clock_dry).unwrap();
+    let cx_dry = inv_dry.request_cx().unwrap();
+    let dry_doc = inv_dry
         .runtime()
-        .block_on(async { execute_pipeline(&invocation, &cx, dry_args, None).await })
+        .block_on(async { execute_pipeline(&inv_dry, &cx_dry, dry_args, None).await })
         .expect("dry-run succeeds without network");
 
     assert_eq!(dry_doc.kind(), OutputKind::Artifact(ArtifactKind::Preview));
     assert_eq!(dry_doc.exit_code(), CliExit::Success);
     let dry_val = dry_doc.as_value();
-    assert_eq!(dry_val["kind"], "dry-run");
-    assert_eq!(dry_val["usage"]["requests"], 0);
-    assert_eq!(dry_val["usage"]["http_attempts"], 0);
+    assert_eq!(dry_val["kind"], "preview");
+    assert_eq!(dry_val["actionable"], false);
+    assert_eq!(dry_val["stateless"], true);
+    assert!(dry_val["local_decision"].is_null());
+    assert_eq!(dry_val["provider_request"]["stages"][0]["stage"], "wide");
+    assert!(inv_dry.shutdown(), "dry-run pipeline shutdown cleanly");
 
     // =========================================================================
     // Invariant 5: Progressive Stage Exclusions and Explainability
@@ -513,9 +551,12 @@ fn all_p4_invariants_verified() {
         true,
         false,
     );
-    let explain_doc = invocation
+    let clock_explain = test_clock();
+    let inv_explain = ProcessInvocation::from_clock(clock_explain).unwrap();
+    let cx_explain = inv_explain.request_cx().unwrap();
+    let explain_doc = inv_explain
         .runtime()
-        .block_on(async { execute_pipeline(&invocation, &cx, explain_args, None).await })
+        .block_on(async { execute_pipeline(&inv_explain, &cx_explain, explain_args, None).await })
         .expect("explain pipeline execution succeeded");
 
     assert_eq!(explain_doc.kind(), OutputKind::Decision(Decision::Explicit));
@@ -525,7 +566,16 @@ fn all_p4_invariants_verified() {
         "explain doc must contain trace"
     );
     let trace = &explain_val["trace"];
-    assert!(trace.get("excluded_skills").is_some());
+    assert_eq!(trace["total"], 8);
+    let trace_entries = trace["entries"].as_array().expect("entries array");
+    assert_eq!(trace_entries.len(), 8);
+    assert_eq!(
+        trace_entries[0]["skill_id"],
+        explain_val["skills"][0]["skill_id"]
+    );
+    assert_eq!(trace_entries[0]["stage"], "discovery");
+    assert_eq!(trace_entries[0]["status"], "passed");
+    assert!(inv_explain.shutdown(), "explain pipeline shutdown cleanly");
 
     // =========================================================================
     // Invariant 6: Fenced Lease Coordination and Response Cache Isolation
@@ -543,9 +593,13 @@ fn all_p4_invariants_verified() {
         .create(&cache_dir)
         .unwrap();
 
+    let clock_cache = test_clock();
+    let inv_cache = ProcessInvocation::from_clock(clock_cache).unwrap();
+    let cx_cache = inv_cache.request_cx().unwrap();
+
     let store = match open_cache(
-        &invocation,
-        &cx,
+        &inv_cache,
+        &cx_cache,
         CacheAccess::Initialize,
         CacheLocation::Directory(cache_dir.clone()),
     )
@@ -595,8 +649,8 @@ fn all_p4_invariants_verified() {
 
     let store = store
         .record_response_fenced(
-            &invocation,
-            &cx,
+            &inv_cache,
+            &cx_cache,
             [1; 32],
             entry,
             (leases_path.clone(), leader.clone()),
@@ -635,8 +689,8 @@ fn all_p4_invariants_verified() {
     };
 
     let stale_write = store.record_response_fenced(
-        &invocation,
-        &cx,
+        &inv_cache,
+        &cx_cache,
         [1; 32],
         stale_entry,
         (leases_path, leader),
@@ -651,7 +705,7 @@ fn all_p4_invariants_verified() {
 
     // Clean runtime shutdown
     assert!(
-        invocation.shutdown(),
+        inv_cache.shutdown(),
         "runtime must cleanly shut down within deadline"
     );
 }
