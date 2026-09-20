@@ -1373,14 +1373,32 @@ member_beads = ["sr-roadmap-l1i.6.16"]
 phase = "P5"
 title = "Replay and compare supported local policies without ambient effects"
 unit_property_tests = [
-    "tests/replay_contract.rs::offline_replay_equivalence"
+    "tests/replay_contract.rs::replay_executes_identical_ranked_decision"
 ]
 e2e_suite = "replay"
 e2e_cases = ["replay-matches-original"]
 assertion_ids = ["faithful_replay"]
 platforms = ["linux"]
 features = []
-status = "planned"
+status = "executed"
+
+[[boundaries]]
+id = "p5_replay_isolation"
+owner_bead = "sr-roadmap-l1i.6.27"
+member_beads = ["sr-roadmap-l1i.6.27"]
+phase = "P5"
+title = "Prove capture, replay isolation and history non-leakage"
+unit_property_tests = [
+    "tests/replay_cli_contract.rs::replay_is_strictly_isolated_from_ambient_environment",
+    "tests/replay_case_completeness.rs::a_case_without_a_recorded_confidence_declines_to_recompute",
+    "tests/replay_contract.rs::replay_save_and_load_enforces_owner_only_and_no_clobber"
+]
+e2e_suite = "replay"
+e2e_cases = ["replay-isolation-guarantees"]
+assertion_ids = ["replay_isolation_verified"]
+platforms = ["linux"]
+features = []
+status = "executed"
 
 [[boundaries]]
 id = "p5_eval_accounting"
@@ -1389,14 +1407,14 @@ member_beads = ["sr-roadmap-l1i.6.28"]
 phase = "P5"
 title = "Prove evaluation accounting, sampling math and robustness reports"
 unit_property_tests = [
-    "tests/eval_accounting.rs::evaluation_math_oracles"
+    "tests/evaluation_design_weighted_contract.rs::test_design_weighted_ratio_estimator"
 ]
 e2e_suite = "replay"
 e2e_cases = ["loss-denominators-exact"]
 assertion_ids = ["math_correct"]
 platforms = ["linux"]
 features = []
-status = "planned"
+status = "executed"
 
 # ==============================================================================
 # Phase P6: Recorded Claude Shadow Hooks and User Controls

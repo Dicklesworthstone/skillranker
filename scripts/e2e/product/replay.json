@@ -1,0 +1,222 @@
+{
+  "schema_version": 1,
+  "suite": "replay",
+  "tier": "rust-product-integration",
+  "targets": [
+    "evaluation_design_weighted_contract",
+    "ledger_exposure_lifecycle_contract",
+    "ledger_migration_contract",
+    "ledger_paired_correction_contract",
+    "ledger_quota_headroom_contract",
+    "ledger_retention_contract",
+    "ledger_schema_contract",
+    "observation_contract",
+    "replay_case_completeness",
+    "replay_cli_contract",
+    "replay_contract"
+  ],
+  "cases": [
+    {
+      "id": "ledger-schema",
+      "assertions": [
+        "storage_intact"
+      ],
+      "tests": [
+        "ledger_schema_contract::ledger_initialization_creates_tables_and_metadata",
+        "ledger_schema_contract::ledger_foreign_keys_and_uniqueness_enforced",
+        "ledger_schema_contract::ledger_session_cursors_distinct_watermarks",
+        "ledger_schema_contract::ledger_roster_snapshot_stores_membership_without_skill_bodies",
+        "ledger_schema_contract::ledger_provider_attempts_and_calibrations_lifecycle"
+      ]
+    },
+    {
+      "id": "ledger-repositories",
+      "assertions": [
+        "storage_intact"
+      ],
+      "tests": [
+        "ledger_schema_contract::ledger_store_incarnation_and_generation_fencing",
+        "ledger_schema_contract::ledger_handle_rejects_same_directory_database_replacement",
+        "ledger_schema_contract::ledger_handle_uses_current_context_after_opener_cancel_or_expiry"
+      ]
+    },
+    {
+      "id": "ledger-quota-headroom",
+      "assertions": [
+        "quota_headroom_enforced"
+      ],
+      "tests": [
+        "ledger_quota_headroom_contract::ledger_and_cache_constants_and_capacity_reports_expose_recording_ceiling",
+        "ledger_quota_headroom_contract::filling_recording_capacity_blocks_mutations_and_preserves_history"
+      ]
+    },
+    {
+      "id": "ledger-bounded-maintenance",
+      "assertions": [
+        "quota_headroom_enforced"
+      ],
+      "tests": [
+        "ledger_quota_headroom_contract::maintenance_preflight_and_execution_succeed_within_reserve_at_recording_ceiling",
+        "ledger_quota_headroom_contract::simulated_external_full_disk_fails_preflight_before_mutation_with_required_space_and_hint",
+        "ledger_quota_headroom_contract::maintenance_exceeding_hard_quota_fails_preflight_with_required_space_and_hint",
+        "ledger_quota_headroom_contract::backup_to_creates_atomic_wal_inclusive_backup_and_preserves_charges"
+      ]
+    },
+    {
+      "id": "ledger-init-migration",
+      "assertions": [
+        "ledger_init_migration_idempotent"
+      ],
+      "tests": [
+        "ledger_migration_contract::absent_only_init_creates_schema_and_reinit_is_idempotent_without_reset",
+        "ledger_migration_contract::unsupported_newer_schema_opens_read_only_and_refuses_mutations_without_downgrade",
+        "ledger_migration_contract::migration_preview_then_apply_creates_wal_inclusive_backup_and_coordinates_generations",
+        "ledger_migration_contract::migration_preflight_quota_failure_aborts_before_mutation_or_backup",
+        "ledger_migration_contract::hooks_and_rank_never_silently_initialize_or_migrate_ledger",
+        "ledger_migration_contract::cli_ledger_subcommands_e2e"
+      ]
+    },
+    {
+      "id": "ledger-wal-backup-recover",
+      "assertions": [
+        "ledger_init_migration_idempotent"
+      ],
+      "tests": [
+        "ledger_migration_contract::concurrent_writer_fences_stale_stamp"
+      ]
+    },
+    {
+      "id": "ledger-retention-prune-clear",
+      "assertions": [
+        "ledger_retention_prune_clear_enforced"
+      ],
+      "tests": [
+        "ledger_retention_contract::boundary_dates_and_clock_policy_filters_expired_events",
+        "ledger_retention_contract::shared_referenced_snapshots_are_preserved_when_older_events_pruned",
+        "ledger_retention_contract::prune_dependency_graph_without_dangling_labels",
+        "ledger_retention_contract::revised_and_removed_labels_advance_generation_and_fence_stale_writers",
+        "ledger_retention_contract::prune_and_clear_preview_does_not_mutate_and_apply_mutates_and_fences",
+        "ledger_retention_contract::insufficient_reserve_preflight_fails_before_mutation",
+        "ledger_retention_contract::doctor_reports_cleanup_debt_when_ledger_has_expired_records",
+        "ledger_retention_contract::cli_ledger_prune_and_clear_e2e"
+      ]
+    },
+    {
+      "id": "ledger-paired-correction",
+      "assertions": [
+        "snapshot_deduplication_and_paired_correction_enforced"
+      ],
+      "tests": [
+        "ledger_paired_correction_contract::unchanged_roster_snapshot_deduplication",
+        "ledger_paired_correction_contract::valid_paired_correction_atomic_commit",
+        "ledger_paired_correction_contract::ineligible_alternative_aborts_transaction_zero_judgments",
+        "ledger_paired_correction_contract::absent_alternative_records_prospective_proposal",
+        "ledger_paired_correction_contract::outside_shortlist_eligible_alternative_accepted",
+        "ledger_paired_correction_contract::missing_snapshot_fails_closed",
+        "ledger_paired_correction_contract::revision_conflict_prevents_stale_overwrites",
+        "ledger_paired_correction_contract::identical_skills_rejected",
+        "ledger_paired_correction_contract::single_feedback_useful_and_harmful",
+        "ledger_paired_correction_contract::cli_feedback_command_e2e"
+      ]
+    },
+    {
+      "id": "ledger-exposure-lifecycle",
+      "assertions": [
+        "exposure_states_recorded_separately"
+      ],
+      "tests": [
+        "ledger_exposure_lifecycle_contract::prepare_before_stdout_and_emit_after_successful_write",
+        "ledger_exposure_lifecycle_contract::crash_or_failure_between_prepare_and_stdout_leaves_delivery_unknown",
+        "ledger_exposure_lifecycle_contract::empty_shadow_output_never_emits",
+        "ledger_exposure_lifecycle_contract::verified_acknowledgment_lifecycle_and_idempotency",
+        "ledger_exposure_lifecycle_contract::duplicate_delivery_key_across_different_events_rejected",
+        "ledger_exposure_lifecycle_contract::distinct_modes_and_channels_recorded",
+        "ledger_exposure_lifecycle_contract::disabled_or_missing_ledger_degrades_gracefully",
+        "ledger_exposure_lifecycle_contract::invalid_records_rejected",
+        "ledger_exposure_lifecycle_contract::cli_emission_lifecycle_e2e"
+      ]
+    },
+    {
+      "id": "ledger-observation-watermark",
+      "assertions": [
+        "observation_watermark_atomic",
+        "load_attribution_enforced"
+      ],
+      "tests": [
+        "observation_contract::test_cas_cursor_generation_conflict_prevents_stale_overwrites",
+        "observation_contract::test_atomic_watermark_advance_and_generation_bump",
+        "observation_contract::test_deduplication_of_source_event_key",
+        "observation_contract::test_workflows_remain_repeatable",
+        "observation_contract::test_observe_cli_refuses_no_ledger_and_no_persist",
+        "observation_contract::test_observe_cli_requires_ledger_existence",
+        "observation_contract::test_observe_cli_e2e_with_context"
+      ]
+    },
+    {
+      "id": "ledger-load-attribution",
+      "assertions": [
+        "observation_watermark_atomic",
+        "load_attribution_enforced"
+      ],
+      "tests": [
+        "observation_contract::test_attribution_to_latest_preceding_emission_within_30_min",
+        "observation_contract::test_failed_or_attempted_tools_become_attempted",
+        "observation_contract::test_prose_mentions_and_arbitrary_paths_never_count_as_loads",
+        "observation_contract::test_path_only_reads_without_content_hash_never_suppress_references",
+        "observation_contract::test_compaction_invalidates_prior_epoch_suppression"
+      ]
+    },
+    {
+      "id": "replay-matches-original",
+      "assertions": [
+        "faithful_replay"
+      ],
+      "tests": [
+        "replay_contract::replay_executes_identical_ranked_decision",
+        "replay_contract::replay_recomputes_with_policy_overrides",
+        "replay_contract::replay_case_validates_and_roundtrips",
+        "replay_contract::replay_save_and_load_enforces_owner_only_and_no_clobber",
+        "replay_cli_contract::replay_runs_recorded_case_with_json_envelope",
+        "replay_case_completeness::a_recorded_confidence_is_reproduced_not_replaced_by_a_probability",
+        "replay_case_completeness::a_case_without_a_recorded_confidence_declines_to_recompute",
+        "replay_case_completeness::a_replayed_recommendation_keeps_its_visibility_caveat",
+        "replay_case_completeness::a_replay_states_no_filesystem_path_it_never_recorded",
+        "replay_case_completeness::a_case_without_visibility_omits_it_rather_than_inventing_one"
+      ]
+    },
+    {
+      "id": "replay-isolation-guarantees",
+      "assertions": [
+        "replay_isolation_verified"
+      ],
+      "tests": [
+        "replay_cli_contract::replay_is_strictly_isolated_from_ambient_environment",
+        "replay_cli_contract::replay_rejects_non_owner_only_permissions",
+        "replay_cli_contract::replay_rejects_incompatible_policy_with_uncaptured_prior",
+        "replay_cli_contract::replay_low_gate_lowering_without_rerank_reports_partial_and_not_established",
+        "replay_contract::replay_rejects_uncaptured_prior_policy",
+        "replay_contract::replay_low_gate_abstention_without_rerank_is_complete"
+      ]
+    },
+    {
+      "id": "loss-denominators-exact",
+      "assertions": [
+        "math_correct"
+      ],
+      "tests": [
+        "evaluation_design_weighted_contract::test_exact_900_100_frame_reproduction",
+        "evaluation_design_weighted_contract::test_tiny_population_exact_enumeration_unbiasedness_and_coverage",
+        "evaluation_design_weighted_contract::test_missing_labels_bounds_and_conservative_upper_assignment",
+        "evaluation_design_weighted_contract::test_full_census_zero_sampling_variance",
+        "evaluation_design_weighted_contract::test_design_weighted_ratio_estimator"
+      ]
+    },
+    {
+      "id": "complete-phase-coverage",
+      "assertions": [
+        "complete_independent_evidence"
+      ],
+      "tests": "all"
+    }
+  ]
+}
