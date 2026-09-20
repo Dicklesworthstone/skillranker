@@ -1081,6 +1081,8 @@ e2e_cases = ["demo-inert-envelope"]
 assertion_ids = ["non_actionable_envelope"]
 platforms = ["linux"]
 features = []
+status = "planned"
+
 [[boundaries]]
 id = "p4_cache_isolation"
 owner_bead = "sr-roadmap-l1i.5.20"
