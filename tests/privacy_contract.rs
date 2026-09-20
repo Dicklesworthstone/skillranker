@@ -833,7 +833,7 @@ fn disclosure_receipts() {
     // Sub-case 5: Truncation tracking in receipt
     // -------------------------------------------------------------------------
     let budget_options = RenderContextOptions {
-        max_total_scalars: 80, // tight budget forces truncation
+        max_total_scalars: 90, // tight budget forces truncation (overhead 13 + min excerpt 30 = 43)
         ..standard_options.clone()
     };
 
