@@ -401,7 +401,10 @@ pub struct MigrationReport {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum MigrationError {
     AlreadyUpToDate,
-    UnsupportedNewerVersion { current_version: u32, target_version: u32 },
+    UnsupportedNewerVersion {
+        current_version: u32,
+        target_version: u32,
+    },
     Preflight(MaintenanceError),
     Store(StoreError),
     Sqlite(String),
@@ -411,8 +414,14 @@ impl fmt::Display for MigrationError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::AlreadyUpToDate => write!(f, "database schema is already up to date"),
-            Self::UnsupportedNewerVersion { current_version, target_version } => {
-                write!(f, "database schema version {current_version} is newer than supported version {target_version}; auto-downgrade is disabled")
+            Self::UnsupportedNewerVersion {
+                current_version,
+                target_version,
+            } => {
+                write!(
+                    f,
+                    "database schema version {current_version} is newer than supported version {target_version}; auto-downgrade is disabled"
+                )
             }
             Self::Preflight(err) => write!(f, "preflight check failed: {err}"),
             Self::Store(err) => write!(f, "store error: {err}"),
@@ -572,13 +581,21 @@ pub fn parse_cutoff_to_unix_ms(input: &str, now_unix_ms: i64) -> Result<i64, Str
         return Err("Cutoff date cannot be empty".into());
     }
     if let Some(days_str) = trimmed.strip_suffix('d') {
-        let days = days_str.parse::<i64>().map_err(|_| format!("Invalid days duration: '{trimmed}'"))?;
-        let ms = days.checked_mul(86_400_000).ok_or_else(|| "Duration overflow".to_string())?;
+        let days = days_str
+            .parse::<i64>()
+            .map_err(|_| format!("Invalid days duration: '{trimmed}'"))?;
+        let ms = days
+            .checked_mul(86_400_000)
+            .ok_or_else(|| "Duration overflow".to_string())?;
         return Ok(now_unix_ms.saturating_sub(ms));
     }
     if let Some(hours_str) = trimmed.strip_suffix('h') {
-        let hours = hours_str.parse::<i64>().map_err(|_| format!("Invalid hours duration: '{trimmed}'"))?;
-        let ms = hours.checked_mul(3_600_000).ok_or_else(|| "Duration overflow".to_string())?;
+        let hours = hours_str
+            .parse::<i64>()
+            .map_err(|_| format!("Invalid hours duration: '{trimmed}'"))?;
+        let ms = hours
+            .checked_mul(3_600_000)
+            .ok_or_else(|| "Duration overflow".to_string())?;
         return Ok(now_unix_ms.saturating_sub(ms));
     }
     if let Ok(num) = trimmed.parse::<i64>() {
@@ -596,16 +613,26 @@ pub fn parse_cutoff_to_unix_ms(input: &str, now_unix_ms: i64) -> Result<i64, Str
     };
     let parts: Vec<&str> = date_part.split('-').collect();
     if parts.len() != 3 {
-        return Err(format!("Invalid date format: '{trimmed}'. Expected YYYY-MM-DD, ISO timestamp, or duration like '30d'"));
+        return Err(format!(
+            "Invalid date format: '{trimmed}'. Expected YYYY-MM-DD, ISO timestamp, or duration like '30d'"
+        ));
     }
-    let y = parts[0].parse::<i64>().map_err(|_| format!("Invalid year in '{trimmed}'"))?;
-    let m = parts[1].parse::<i64>().map_err(|_| format!("Invalid month in '{trimmed}'"))?;
-    let d = parts[2].parse::<i64>().map_err(|_| format!("Invalid day in '{trimmed}'"))?;
+    let y = parts[0]
+        .parse::<i64>()
+        .map_err(|_| format!("Invalid year in '{trimmed}'"))?;
+    let m = parts[1]
+        .parse::<i64>()
+        .map_err(|_| format!("Invalid month in '{trimmed}'"))?;
+    let d = parts[2]
+        .parse::<i64>()
+        .map_err(|_| format!("Invalid day in '{trimmed}'"))?;
     if !(1..=12).contains(&m) || !(1..=31).contains(&d) {
         return Err(format!("Date out of range in '{trimmed}'"));
     }
     let days = days_from_civil(y, m, d);
-    let mut ms = days.checked_mul(86_400_000).ok_or_else(|| "Date overflow".to_string())?;
+    let mut ms = days
+        .checked_mul(86_400_000)
+        .ok_or_else(|| "Date overflow".to_string())?;
 
     let time_str = if let Some((_, t)) = trimmed.split_once('T') {
         Some(t.trim_end_matches('Z'))
@@ -618,10 +645,16 @@ pub fn parse_cutoff_to_unix_ms(input: &str, now_unix_ms: i64) -> Result<i64, Str
     if let Some(t) = time_str {
         let t_parts: Vec<&str> = t.split(':').collect();
         if t_parts.len() >= 2 {
-            let hour = t_parts[0].parse::<i64>().map_err(|_| format!("Invalid hour in '{trimmed}'"))?;
-            let min = t_parts[1].parse::<i64>().map_err(|_| format!("Invalid minute in '{trimmed}'"))?;
+            let hour = t_parts[0]
+                .parse::<i64>()
+                .map_err(|_| format!("Invalid hour in '{trimmed}'"))?;
+            let min = t_parts[1]
+                .parse::<i64>()
+                .map_err(|_| format!("Invalid minute in '{trimmed}'"))?;
             let sec = if t_parts.len() >= 3 {
-                t_parts[2].parse::<f64>().map_err(|_| format!("Invalid second in '{trimmed}'"))?
+                t_parts[2]
+                    .parse::<f64>()
+                    .map_err(|_| format!("Invalid second in '{trimmed}'"))?
             } else {
                 0.0
             };
@@ -1676,7 +1709,6 @@ fn configure_read_only(
     Ok(())
 }
 
-
 fn read_stamp(connection: &Connection) -> Result<LedgerStamp, StoreError> {
     let app: i64 = connection.pragma_query_value(None, "application_id", |row| row.get(0))?;
     if app != LEDGER_APPLICATION_ID {
@@ -2413,11 +2445,19 @@ impl LedgerStore {
             |r| r.get(0),
         )?;
 
-        let freelist_count: i64 = self.connection.query_row("PRAGMA freelist_count", [], |r| r.get(0))?;
-        let page_size: i64 = self.connection.query_row("PRAGMA page_size", [], |r| r.get(0))?;
+        let freelist_count: i64 = self
+            .connection
+            .query_row("PRAGMA freelist_count", [], |r| r.get(0))?;
+        let page_size: i64 = self
+            .connection
+            .query_row("PRAGMA page_size", [], |r| r.get(0))?;
         let freelist_bytes = (freelist_count.max(0) as u64).saturating_mul(page_size.max(0) as u64);
 
-        let has_debt = expired_events > 0 || unreferenced_snapshots > 0 || expired_observations > 0 || expired_judgments > 0 || freelist_bytes > 1024 * 1024;
+        let has_debt = expired_events > 0
+            || unreferenced_snapshots > 0
+            || expired_observations > 0
+            || expired_judgments > 0
+            || freelist_bytes > 1024 * 1024;
 
         Ok(CleanupDebt {
             expired_events: expired_events as u64,
@@ -2432,11 +2472,9 @@ impl LedgerStore {
     /// Queries statistics over active records, excluding records older than 30 days relative to versioned as_of timestamp.
     pub fn query_retained_stats(&self, as_of_unix_ms: i64) -> Result<RetainedStats, StoreError> {
         let cutoff = as_of_unix_ms.saturating_sub(DEFAULT_RETENTION_MS);
-        let total_events: i64 = self.connection.query_row(
-            "SELECT count(*) FROM ranking_events",
-            [],
-            |row| row.get(0),
-        )?;
+        let total_events: i64 =
+            self.connection
+                .query_row("SELECT count(*) FROM ranking_events", [], |row| row.get(0))?;
         let active_events: i64 = self.connection.query_row(
             "SELECT count(*) FROM ranking_events WHERE created_at_unix_ms >= ?1",
             [cutoff],
@@ -2695,15 +2733,33 @@ impl LedgerStore {
 
     /// Previews clearing all mutable history without modifying storage.
     pub fn clear_preview(&self) -> Result<ClearPreview, StoreError> {
-        let events_count: i64 = self.connection.query_row("SELECT count(*) FROM ranking_events", [], |r| r.get(0))?;
-        let candidates_count: i64 = self.connection.query_row("SELECT count(*) FROM ranking_candidates", [], |r| r.get(0))?;
-        let observations_count: i64 = self.connection.query_row("SELECT count(*) FROM observations", [], |r| r.get(0))?;
-        let judgments_count: i64 = self.connection.query_row("SELECT count(*) FROM judgments", [], |r| r.get(0))?;
-        let provider_attempts_count: i64 = self.connection.query_row("SELECT count(*) FROM provider_attempts", [], |r| r.get(0))?;
-        let snapshots_count: i64 = self.connection.query_row("SELECT count(*) FROM roster_snapshots", [], |r| r.get(0))?;
-        let session_cursors_count: i64 = self.connection.query_row("SELECT count(*) FROM session_cursors", [], |r| r.get(0))?;
-        let feedback_proposals_count: i64 = self.connection.query_row("SELECT count(*) FROM feedback_proposals", [], |r| r.get(0))?;
-        let calibrations_count: i64 = self.connection.query_row("SELECT count(*) FROM calibrations", [], |r| r.get(0))?;
+        let events_count: i64 =
+            self.connection
+                .query_row("SELECT count(*) FROM ranking_events", [], |r| r.get(0))?;
+        let candidates_count: i64 =
+            self.connection
+                .query_row("SELECT count(*) FROM ranking_candidates", [], |r| r.get(0))?;
+        let observations_count: i64 =
+            self.connection
+                .query_row("SELECT count(*) FROM observations", [], |r| r.get(0))?;
+        let judgments_count: i64 =
+            self.connection
+                .query_row("SELECT count(*) FROM judgments", [], |r| r.get(0))?;
+        let provider_attempts_count: i64 =
+            self.connection
+                .query_row("SELECT count(*) FROM provider_attempts", [], |r| r.get(0))?;
+        let snapshots_count: i64 =
+            self.connection
+                .query_row("SELECT count(*) FROM roster_snapshots", [], |r| r.get(0))?;
+        let session_cursors_count: i64 =
+            self.connection
+                .query_row("SELECT count(*) FROM session_cursors", [], |r| r.get(0))?;
+        let feedback_proposals_count: i64 =
+            self.connection
+                .query_row("SELECT count(*) FROM feedback_proposals", [], |r| r.get(0))?;
+        let calibrations_count: i64 =
+            self.connection
+                .query_row("SELECT count(*) FROM calibrations", [], |r| r.get(0))?;
 
         let total = events_count
             + candidates_count
@@ -2801,13 +2857,16 @@ impl LedgerStore {
             Ok(report) => Ok(report.stamp_after),
             Err(MaintenanceError::Store(e)) => Err(e),
             Err(MaintenanceError::QuotaExceeded { .. }) => Err(StoreError::Quota),
-            Err(MaintenanceError::InsufficientDiskSpace { .. }) => Err(StoreError::InsufficientSpace),
+            Err(MaintenanceError::InsufficientDiskSpace { .. }) => {
+                Err(StoreError::InsufficientSpace)
+            }
             Err(MaintenanceError::Sqlite(_)) => Err(StoreError::Io),
         }
     }
 
     /// Revises an existing judgment label, incrementing label_version and advancing data generation.
     /// Fences concurrent stale writers and invalidates derived priors.
+    #[allow(clippy::too_many_arguments)]
     pub fn revise_judgment(
         &mut self,
         clock: EntryClock,

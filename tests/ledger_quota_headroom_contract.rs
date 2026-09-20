@@ -189,7 +189,9 @@ fn ledger_and_cache_constants_and_capacity_reports_expose_recording_ceiling() {
         panic!("expected CacheOpen::Ready");
     };
 
-    let cache_report = cache_store.capacity_report().expect("cache capacity_report");
+    let cache_report = cache_store
+        .capacity_report()
+        .expect("cache capacity_report");
     assert_eq!(cache_report.total_quota_bytes, CACHE_QUOTA_BYTES);
     assert_eq!(
         cache_report.maintenance_reserve_bytes,
@@ -243,6 +245,7 @@ fn filling_recording_capacity_blocks_mutations_and_preserves_history() {
     let dummy_file = fs::OpenOptions::new()
         .write(true)
         .create(true)
+        .truncate(true)
         .mode(0o600)
         .open(&dummy_path)
         .expect("open dummy file");
@@ -261,7 +264,14 @@ fn filling_recording_capacity_blocks_mutations_and_preserves_history() {
     let event2 = event_fixture("event-blocked", "snap-baseline");
     let cand2 = candidate_fixture("event-blocked", "review");
     let err = store
-        .record_ranking_event(clock, &cx, &event2, &[cand2.clone()], None, stamp)
+        .record_ranking_event(
+            clock,
+            &cx,
+            &event2,
+            std::slice::from_ref(&cand2),
+            None,
+            stamp,
+        )
         .unwrap_err();
     assert_eq!(err, StoreError::Quota);
 
@@ -346,6 +356,7 @@ fn maintenance_preflight_and_execution_succeed_within_reserve_at_recording_ceili
     let dummy_file = fs::OpenOptions::new()
         .write(true)
         .create(true)
+        .truncate(true)
         .mode(0o600)
         .open(&dummy_path)
         .expect("open dummy file");
@@ -387,7 +398,9 @@ fn maintenance_preflight_and_execution_succeed_within_reserve_at_recording_ceili
 
     // Remove the sidecar to drop below ceiling
     fs::remove_file(&dummy_path).expect("remove sidecar");
-    let report_after = store.capacity_report().expect("capacity report after prune");
+    let report_after = store
+        .capacity_report()
+        .expect("capacity report after prune");
     assert!(report_after.is_recording_admitted);
 }
 
@@ -512,7 +525,9 @@ fn simulated_external_full_disk_fails_preflight_before_mutation_with_required_sp
 
     // 7. Remove simulated pressure and verify maintenance succeeds
     store.set_simulated_available_disk_bytes(None);
-    store.vacuum(clock, &cx).expect("vacuum succeeds after disk restored");
+    store
+        .vacuum(clock, &cx)
+        .expect("vacuum succeeds after disk restored");
 }
 
 #[test]
