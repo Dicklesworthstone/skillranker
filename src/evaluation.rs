@@ -10,6 +10,7 @@
 
 pub mod numerics;
 pub mod sampling;
+pub mod stratified;
 
 pub use numerics::{
     BACKEND_PROVENANCE, BackendProvenance, BetaDist, NumericsError, clopper_pearson_ci,
@@ -17,6 +18,13 @@ pub use numerics::{
     zero_event_upper_bound,
 };
 pub use sampling::{Pcg64Dxsm, SamplingError, choice_indices, shuffle_slice};
+pub use stratified::{
+    AllocationMethod, DesignStatus, EstimandWeighting, FamilyRepresentativeRule,
+    FrozenSampleManifest, InputQuality, ObservableStratum, RandomizationProvenance,
+    RetrievalProfile, SampledCaseEntry, StratumAllocation, allocate_sample_sizes,
+    compute_frame_digest, draw_os_seed, draw_stratified_sample, partition_strata,
+    replay_manifest_sample, select_family_representatives, verify_manifest_against_frame,
+};
 
 use crate::limits::{EVALUATION_CASE_RECORDS, EVALUATION_DATASET_BYTES, EVALUATION_DATASET_DEPTH};
 use crate::output::{ErrorKind, SCHEMA_VERSION};
@@ -29,8 +37,14 @@ use std::io::BufRead;
 /// Evaluation error kinds with structured diagnostics.
 #[derive(Debug)]
 pub enum EvaluationError {
-    OversizedDataset { len: usize, max: usize },
-    RecordLimitReached { count: usize, max: usize },
+    OversizedDataset {
+        len: usize,
+        max: usize,
+    },
+    RecordLimitReached {
+        count: usize,
+        max: usize,
+    },
     ExcessiveDepth,
     InvalidJson(String),
     DuplicateKey(String),
@@ -38,6 +52,17 @@ pub enum EvaluationError {
     InvalidField(String),
     CardinalityViolation(String),
     SplitContamination(String),
+    SamplingFailure(String),
+    InsufficientSampleBudgetForStrata {
+        budget: usize,
+        required_floor: usize,
+    },
+    InvalidStratumAllocation(String),
+    FrameDigestMismatch {
+        expected: String,
+        actual: String,
+    },
+    ManifestVerificationFailure(String),
     Io(std::io::Error),
 }
 
@@ -52,8 +77,15 @@ impl EvaluationError {
             | Self::DuplicateKey(_)
             | Self::UnsupportedVersion(_)
             | Self::InvalidField(_)
+            | Self::FrameDigestMismatch { .. }
+            | Self::ManifestVerificationFailure(_)
             | Self::CardinalityViolation(_) => ErrorKind::MalformedInput,
-            Self::SplitContamination(_) => ErrorKind::InvalidConfiguration,
+            Self::SplitContamination(_) | Self::InvalidStratumAllocation(_) => {
+                ErrorKind::InvalidConfiguration
+            }
+            Self::SamplingFailure(_) | Self::InsufficientSampleBudgetForStrata { .. } => {
+                ErrorKind::InvalidUsage
+            }
             Self::Io(err) => match err.kind() {
                 std::io::ErrorKind::NotFound => ErrorKind::InvalidUsage,
                 std::io::ErrorKind::PermissionDenied => ErrorKind::MalformedInput,
@@ -82,6 +114,31 @@ impl fmt::Display for EvaluationError {
             }
             Self::SplitContamination(msg) => {
                 write!(f, "evaluation split contamination: {msg}")
+            }
+            Self::SamplingFailure(msg) => write!(f, "evaluation sampling failure: {msg}"),
+            Self::InsufficientSampleBudgetForStrata {
+                budget,
+                required_floor,
+            } => {
+                write!(
+                    f,
+                    "insufficient sample budget ({budget}) to satisfy stratum floor requirements ({required_floor})"
+                )
+            }
+            Self::InvalidStratumAllocation(msg) => {
+                write!(f, "invalid stratum allocation: {msg}")
+            }
+            Self::FrameDigestMismatch { expected, actual } => {
+                write!(
+                    f,
+                    "evaluation frame digest mismatch (expected {expected}, actual {actual})"
+                )
+            }
+            Self::ManifestVerificationFailure(msg) => {
+                write!(
+                    f,
+                    "manifest verification failed against evaluation frame: {msg}"
+                )
             }
             Self::Io(err) => write!(f, "evaluation I/O error: {err}"),
         }
