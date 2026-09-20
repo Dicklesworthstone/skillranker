@@ -2,9 +2,9 @@
 //! label revision resolution, split isolation, and reconciliation (sr-roadmap-l1i.6.17).
 
 use skillranker::evaluation::{
-    compute_metrics, join_evaluation_frame, parse_case_records_streaming, parse_labels_streaming,
-    resolve_label_revisions, verify_split_isolation, CaseKey, EvaluationCaseRecord,
-    EvaluationError, EvaluationSplit, JudgedLabel, LabelStatus, RelevanceClass,
+    CaseKey, EvaluationCaseRecord, EvaluationError, EvaluationSplit, JudgedLabel, LabelStatus,
+    RelevanceClass, compute_metrics, join_evaluation_frame, parse_case_records_streaming,
+    parse_labels_streaming, resolve_label_revisions, verify_split_isolation,
 };
 use skillranker::output::SCHEMA_VERSION;
 use std::collections::BTreeMap;

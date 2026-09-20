@@ -47,3 +47,46 @@ is no runtime dependency on the source projects.
 - **Consumers:** the privacy module (`src/privacy`) and, after later
   integration beads, outgoing provider payload preparation. Nothing in this
   repository sends data to any third-party service as a result of this copy.
+
+## frankenscipy — statistical confidence intervals and logsumexp
+
+- **Source repository:** <https://github.com/Dicklesworthstone/frankenscipy>
+- **Source files:**
+  - `crates/fsci-stats/src/lib.rs` (SHA-256: `01dd4dcc8fed57fcb1b6a6bd4e1e74ff84ad69624a4af9666220e4cdcf9f75a6`)
+  - `crates/fsci-special/src/beta.rs` (SHA-256: `5a64958a2e4742352ebf565935c1a7e87a63ed90c1b33778bee51c220b617a55`)
+- **Inspected revision:** `213a417c739025ed865a3875c89a7d86726ecb5a`
+- **License:** MIT License (with OpenAI/Anthropic Rider), Copyright (c) 2026
+  Jeffrey Emanuel. The full license text, including the rider, is preserved
+  verbatim in [`LICENSE`](LICENSE).
+- **Local copies and adaptations** (local file: `src/evaluation/numerics.rs`):
+  - Adapted `wilson_ci` for two-sided binomial proportion intervals.
+  - Adapted `clopper_pearson_ci` and one-sided `clopper_pearson_one_sided_upper`
+    with exact `BetaDist` PPF integration and stable closed-form zero-event
+    calculation (`-expm1(log(1 - alpha) / n)`).
+  - Adapted Lentz's continued fraction method for incomplete beta (`betacf`)
+    and bracketed root-finding for `betaincinv`.
+  - Adapted Wichura (1988) AS241 rational approximation for standard normal
+    quantile (`standard_normal_ppf`).
+  - Adapted max-shifted `logsumexp` for finite and infinite floating point slices.
+  - **Removed** workspace and transitive dependencies: zero external crate dependencies,
+    safe standalone pure Rust.
+- **Consumers:** the evaluation module (`src/evaluation/numerics.rs`).
+
+## franken_numpy — deterministic PCG64-DXSM sampling
+
+- **Source repository:** <https://github.com/Dicklesworthstone/franken_numpy>
+- **Source file:** `crates/fnp-random/src/lib.rs`
+- **Inspected revision:** `52700bc2a6d2ab48dab5e608b1cfa34d781a7bb1`
+- **Source file SHA-256:**
+  `9c92a7eedc12518d10ccda345239929bc7c83e8eb060321afc447260f753c472`
+- **License:** MIT License (with OpenAI/Anthropic Rider), Copyright (c) 2026
+  Jeffrey Emanuel. The full license text, including the rider, is preserved
+  verbatim in [`LICENSE`](LICENSE).
+- **Local copies and adaptations** (local file: `src/evaluation/sampling.rs`):
+  - Adapted `Pcg64Dxsm` 128-bit state generator with DXSM output permutation.
+  - Adapted Lemire / NumPy rejection sampling for unbiased bounded integer generation (`bounded_u64`).
+  - Adapted Floyd's algorithm without replacement for `choice_indices(pop_size, size, false)`.
+  - Adapted Fisher-Yates shuffle for `shuffle_slice`.
+  - **Removed** ndarray, rayon, and getrandom dependencies: pure deterministic safe Rust.
+- **Consumers:** the evaluation module (`src/evaluation/sampling.rs`).
+

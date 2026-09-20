@@ -8,6 +8,16 @@
 //! 5. Null-key and unmatched case preservation (never silently dropped or fabricated).
 //! 6. Independent metrics computation with honest denominators and explicit unknown/unjudged tracking.
 
+pub mod numerics;
+pub mod sampling;
+
+pub use numerics::{
+    BACKEND_PROVENANCE, BackendProvenance, BetaDist, NumericsError, clopper_pearson_ci,
+    clopper_pearson_one_sided_upper, ln_beta, log_gamma, logsumexp, standard_normal_ppf, wilson_ci,
+    zero_event_upper_bound,
+};
+pub use sampling::{Pcg64Dxsm, SamplingError, choice_indices, shuffle_slice};
+
 use crate::limits::{EVALUATION_CASE_RECORDS, EVALUATION_DATASET_BYTES, EVALUATION_DATASET_DEPTH};
 use crate::output::{ErrorKind, SCHEMA_VERSION};
 use serde::{Deserialize, Serialize};
