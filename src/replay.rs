@@ -171,6 +171,12 @@ pub struct RecordedWideChoice {
 pub struct RecordedRerankChoice {
     pub choice: String,
     pub choices_probability: f64,
+    /// The provider's own stated confidence for the choice question, which is
+    /// what a live decision reports as `choice_confidence`. Absent in cases
+    /// captured before this field existed; absent is then reported as unknown
+    /// rather than filled with a different quantity.
+    #[serde(default)]
+    pub stated_confidence: Option<f64>,
     #[serde(default)]
     pub fits: Vec<CandidateFitItem>,
     pub distribution: Vec<ChoiceDistributionItem>,
@@ -898,9 +904,16 @@ fn make_recomputed_ranked(
     recomputed["skills"] = Value::Array(ranked_skills);
     recomputed["omitted_rank_mass"] = Value::from(omitted_mass);
     recomputed["none_probability"] = Value::from(none_prob);
-    if let Some(rerank) = &case.recorded_responses.rerank {
-        recomputed["choice_confidence"] = Value::from(rerank.choices_probability);
-    }
+    // `choice_confidence` is the provider's stated confidence, not the chosen
+    // option's probability. Substituting one for the other made every
+    // historical-versus-recomputed comparison show a difference that no policy
+    // change caused, which is precisely the signal replay exists to give.
+    recomputed["choice_confidence"] = case
+        .recorded_responses
+        .rerank
+        .as_ref()
+        .and_then(|rerank| rerank.stated_confidence)
+        .map_or(Value::Null, Value::from);
     if let Some(roster) = recomputed.get_mut("roster").and_then(Value::as_object_mut) {
         let wide_count = case.captured_request.candidate_options.len() as u64;
         let shortlist_count = case

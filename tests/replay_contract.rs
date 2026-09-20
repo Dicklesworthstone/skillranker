@@ -109,6 +109,7 @@ fn sample_ranked_case() -> ReplayCase {
             rerank: Some(RecordedRerankChoice {
                 choice: "s_triage".into(),
                 choices_probability: 0.80,
+                stated_confidence: Some(0.81),
                 fits: vec![
                     CandidateFitItem {
                         skill_id: "s_triage".into(),
