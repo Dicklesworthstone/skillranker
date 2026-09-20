@@ -611,10 +611,10 @@ fn is_hook_claude_invocation(args: &[OsString]) -> bool {
             if s.starts_with('-') {
                 continue;
             }
-            if s == "hook" {
-                if let Some(sub) = iter.next() {
-                    return sub.to_str() == Some("claude");
-                }
+            if s == "hook"
+                && let Some(sub) = iter.next()
+            {
+                return sub.to_str() == Some("claude");
             }
             break;
         }
