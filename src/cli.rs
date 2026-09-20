@@ -1259,6 +1259,13 @@ fn observe_command(clock: &EntryClock, matches: &clap::ArgMatches) -> Result<Str
     } else if let (Some(transcript_str), Some(harness_str)) = (transcript_file, harness_opt) {
         let harness_id = crate::identity::HarnessId::new(harness_str)
             .map_err(|_| (2u8, "invalid-arguments", "Invalid harness ID".into()))?;
+        if harness_id.as_str() != "claude_code" {
+            return Err((
+                2u8,
+                "invalid-usage",
+                "Unsupported harness: only claude_code is supported for native transcripts".into(),
+            ));
+        }
         let path = PathBuf::from(transcript_str);
         let transcript_path = if path.is_absolute() {
             path
@@ -1340,7 +1347,7 @@ fn observe_command(clock: &EntryClock, matches: &clap::ArgMatches) -> Result<Str
     };
 
     let branch_target = crate::context::branch::BranchResolutionTarget {
-        target_event_id: normalized_context.current_request.event_id.clone(),
+        target_event_id: None,
         target_branch_id: matches
             .get_one::<String>("branch")
             .and_then(|s| crate::identity::BranchId::new(s).ok())
@@ -1416,13 +1423,22 @@ fn observe_command(clock: &EntryClock, matches: &clap::ArgMatches) -> Result<Str
 
     let evidence_resolver = crate::pipeline::skill_evidence_resolver_from_roster(&roster);
 
+    let is_native = transcript_file.is_some();
+    let cursor_session_id = if is_native {
+        format!("native:{}:{}", harness_opt.unwrap(), session_id)
+    } else if let Some(producer) = &normalized_context.producer_id {
+        format!("producer:{}:{}", producer.as_str(), session_id)
+    } else {
+        session_id.clone()
+    };
+
     let existing_cursor = crate::storage::get_session_cursor(
         &invocation,
         &cx,
         crate::storage::LedgerAccess::ExistingOnly,
         location.clone(),
         workspace.to_string_lossy().as_ref(),
-        &session_id,
+        &cursor_session_id,
         &agent_branch,
         crate::storage::CursorKind::Observation,
     )
@@ -1452,15 +1468,30 @@ fn observe_command(clock: &EntryClock, matches: &clap::ArgMatches) -> Result<Str
         None => (Some(0), 1),
     };
 
-    let session_identity = normalized_context
-        .session_identity(Some(workspace_id))
-        .map_err(|e| {
-            (
-                7u8,
-                "malformed-input",
-                format!("Invalid session identity: {e:?}"),
-            )
-        })?;
+    let session_identity = if is_native {
+        let adapter = crate::identity::AdapterId::new(crate::adapter::CLAUDE_CODE_ID).unwrap();
+        let version =
+            crate::identity::AdapterVersion::new(crate::adapter::CONTRACT_VERSION.to_string())
+                .unwrap();
+        crate::identity::SessionIdentity {
+            source: crate::identity::SourceProvenance::Native { adapter, version },
+            workspace: Some(workspace_id.clone()),
+            session: normalized_context.session_id.clone(),
+            agent: normalized_context.agent_id.clone(),
+            branch: normalized_context.branch_id.clone(),
+            epoch: normalized_context.context_epoch.clone(),
+        }
+    } else {
+        normalized_context
+            .session_identity(Some(workspace_id))
+            .map_err(|e| {
+                (
+                    7u8,
+                    "malformed-input",
+                    format!("Invalid session identity: {e:?}"),
+                )
+            })?
+    };
 
     let raw_observations = crate::context::tool::extract_load_observations(
         &normalized_context.events,
@@ -1481,7 +1512,8 @@ fn observe_command(clock: &EntryClock, matches: &clap::ArgMatches) -> Result<Str
         };
         let event_id_str = obs.event_id.as_ref().map_or("event-0", |e| e.as_str());
         let source_event_key = format!(
-            "{}:{}:{}:{}",
+            "{}:{}:{}:{}:{}",
+            if is_native { "native" } else { "normalized" },
             session_id,
             agent_branch,
             event_id_str,
@@ -1515,7 +1547,7 @@ fn observe_command(clock: &EntryClock, matches: &clap::ArgMatches) -> Result<Str
 
     let new_cursor = crate::storage::SessionCursor {
         workspace_root: workspace.to_string_lossy().to_string(),
-        session_id: session_id.clone(),
+        session_id: cursor_session_id.clone(),
         agent_branch: agent_branch.clone(),
         cursor_kind: crate::storage::CursorKind::Observation,
         transcript_generation: next_generation,

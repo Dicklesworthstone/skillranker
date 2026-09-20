@@ -1153,3 +1153,399 @@ fn test_observe_cli_e2e_with_context() {
         "second observe run advances cursor generation atomically to 2"
     );
 }
+
+#[test]
+fn test_observe_cli_native_final_turn_success_and_idempotency() {
+    let bin = env!("CARGO_BIN_EXE_sr");
+    let ledger_dir = temp_private_dir("native-obs-ledger");
+    let ledger_dir_str = ledger_dir.to_str().unwrap();
+
+    // Initialize ledger via CLI
+    let init_out = std::process::Command::new(bin)
+        .args(["ledger", "init", "--dir", ledger_dir_str, "--json"])
+        .output()
+        .expect("run ledger init");
+    assert_eq!(init_out.status.code(), Some(0));
+
+    // Create a mock workspace
+    let ws_dir = temp_private_dir("native-obs-ws");
+    let ws_path_str = ws_dir.to_str().unwrap();
+
+    // Create a skill in the workspace's .claude/skills directory
+    let skill_dir = ws_dir.join(".claude").join("skills").join("code-review");
+    fs::create_dir_all(&skill_dir).expect("create skill dir");
+    let skill_content = "---\nname: code-review\ndescription: Review pull requests and code changes\n---\n# code-review\nInspect diffs.\n";
+    fs::write(skill_dir.join("SKILL.md"), skill_content).expect("write SKILL.md");
+
+    // Pre-record an emitted ranking event for this session so we test attribution
+    let (inv, cx) = test_invocation();
+    let ranking_ev = NewRankingEvent {
+        event_id: "rank-ev-1".into(),
+        verified_delivery_key: None,
+        workspace_root: ws_path_str.into(),
+        session_id: "native-sess-1".into(),
+        agent_branch: "main".into(),
+        mode_channel: "hook".into(),
+        policy_version: "v1".into(),
+        schema_version: 1,
+        decision: DecisionKind::Ranked,
+        reason: "eligible".into(),
+        exposure_state: ExposureState::Emitted,
+        elapsed_ms: 20,
+        created_at_unix_ms: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64,
+        input_tokens: Some(50),
+        output_tokens: Some(10),
+        snapshot_id: None,
+    };
+    record_ranking(
+        &inv,
+        &cx,
+        LedgerAccess::ExistingOnly,
+        LedgerLocation::Directory(ledger_dir.clone()),
+        &ranking_ev,
+        &[],
+        None,
+    )
+    .expect("record ranking event");
+
+    // Create skill in workspace roster
+    let skill_dir = ws_dir.join(".claude/skills/code-review");
+    fs::create_dir_all(&skill_dir).expect("create skill dir");
+    fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\nname: code-review\ndescription: Code review skill.\n---\n# code-review\n",
+    )
+    .expect("write SKILL.md");
+
+    // Create a native Claude transcript
+    let transcript_path = ws_dir.join("native-sess-1.jsonl");
+    let lines = [
+        format!("{{\"cwd\":\"{}\",\"sessionId\":\"native-sess-1\"}}", ws_path_str),
+        "{\"type\":\"user\",\"uuid\":\"msg-u1\",\"sessionId\":\"native-sess-1\",\"message\":{\"role\":\"user\",\"content\":\"Please review code\"}}".to_string(),
+        "{\"type\":\"assistant\",\"uuid\":\"msg-a1\",\"sessionId\":\"native-sess-1\",\"parentUuid\":\"msg-u1\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"call-cr-1\",\"name\":\"code-review\",\"input\":{\"path\":\"src/lib.rs\"}}]}}".to_string(),
+        "{\"type\":\"tool_result\",\"uuid\":\"msg-r1\",\"sessionId\":\"native-sess-1\",\"parentUuid\":\"msg-a1\",\"tool_use_id\":\"call-cr-1\",\"content\":\"Review passed\",\"is_error\":false}".to_string(),
+    ];
+    fs::write(&transcript_path, lines.join("\n") + "\n").expect("write transcript");
+
+    // Run sr observe --transcript ... --harness claude_code --dir ... --json
+    let out = std::process::Command::new(bin)
+        .current_dir(&ws_dir)
+        .args([
+            "observe",
+            "--transcript",
+            transcript_path.to_str().unwrap(),
+            "--harness",
+            "claude_code",
+            "--dir",
+            ledger_dir_str,
+            "--json",
+        ])
+        .output()
+        .expect("run sr observe");
+
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "observe should succeed; stdout: {}, stderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let out_json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(out_json.get("status").and_then(|v| v.as_str()), Some("ok"));
+    assert_eq!(
+        out_json.get("session_id").and_then(|v| v.as_str()),
+        Some("native-sess-1")
+    );
+    assert_eq!(
+        out_json.get("observations_recorded").and_then(|v| v.as_u64()),
+        Some(1)
+    );
+    assert_eq!(
+        out_json.get("cursor_generation").and_then(|v| v.as_u64()),
+        Some(1)
+    );
+
+    // Verify DB records
+    let db_path = ledger_dir.join(LEDGER_FILE);
+    let conn = Connection::open(&db_path).expect("open db");
+
+    // Verify native session cursor is isolated under native namespace
+    let (cur_gen, last_ev): (i64, String) = conn
+        .query_row(
+            "SELECT transcript_generation, last_complete_event_id FROM session_cursors WHERE session_id = 'native:claude_code:native-sess-1'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .expect("query native cursor");
+    assert_eq!(cur_gen, 1);
+    assert_eq!(last_ev, "msg-r1");
+
+    // Verify observation is recorded and attributed to the preceding ranking event
+    let (skill_id, ev_state, attr_id): (String, String, Option<String>) = conn
+        .query_row(
+            "SELECT skill_id, evidence_state, attributed_event_id FROM observations WHERE session_id = 'native-sess-1'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .expect("query observation");
+    assert!(skill_id.starts_with("s_"));
+    assert_eq!(ev_state, "loaded");
+    assert_eq!(attr_id, Some("rank-ev-1".to_string()));
+
+    // Run sr observe a second time: idempotent, generation advances to 2, no duplicate observation
+    let out_2 = std::process::Command::new(bin)
+        .current_dir(&ws_dir)
+        .args([
+            "observe",
+            "--transcript",
+            transcript_path.to_str().unwrap(),
+            "--harness",
+            "claude_code",
+            "--dir",
+            ledger_dir_str,
+            "--json",
+        ])
+        .output()
+        .expect("run sr observe second time");
+
+    assert_eq!(out_2.status.code(), Some(0));
+    let out_json_2: serde_json::Value = serde_json::from_slice(&out_2.stdout).unwrap();
+    assert_eq!(
+        out_json_2.get("cursor_generation").and_then(|v| v.as_u64()),
+        Some(2)
+    );
+
+    let obs_count: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM observations WHERE session_id = 'native-sess-1'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("query count");
+    assert_eq!(obs_count, 1, "observation row must not be duplicated on repeated run");
+}
+
+#[test]
+fn test_observe_cli_cass_and_normalized_same_ids_cannot_move_native_cursor() {
+    let bin = env!("CARGO_BIN_EXE_sr");
+    let ledger_dir = temp_private_dir("ns-isolation-ledger");
+    let ledger_dir_str = ledger_dir.to_str().unwrap();
+
+    let init_out = std::process::Command::new(bin)
+        .args(["ledger", "init", "--dir", ledger_dir_str, "--json"])
+        .output()
+        .expect("run ledger init");
+    assert_eq!(init_out.status.code(), Some(0));
+
+    let ws_dir = temp_private_dir("ns-isolation-ws");
+    let ws_path_str = ws_dir.to_str().unwrap();
+
+    // 1. Setup native transcript and run observe to advance native cursor to generation 1
+    let transcript_path = ws_dir.join("shared-session.jsonl");
+    let lines = [
+        format!("{{\"cwd\":\"{}\",\"sessionId\":\"shared-session\"}}", ws_path_str),
+        "{\"type\":\"user\",\"uuid\":\"msg-u1\",\"sessionId\":\"shared-session\",\"text\":\"Hello\"}".to_string(),
+    ];
+    fs::write(&transcript_path, lines.join("\n") + "\n").expect("write transcript");
+
+    let native_out = std::process::Command::new(bin)
+        .current_dir(&ws_dir)
+        .args([
+            "observe",
+            "--transcript",
+            transcript_path.to_str().unwrap(),
+            "--harness",
+            "claude_code",
+            "--dir",
+            ledger_dir_str,
+            "--json",
+        ])
+        .output()
+        .expect("run native observe");
+    assert_eq!(native_out.status.code(), Some(0));
+
+    let db_path = ledger_dir.join(LEDGER_FILE);
+    let conn = Connection::open(&db_path).expect("open db");
+
+    let cur_gen_native: i64 = conn
+        .query_row(
+            "SELECT transcript_generation FROM session_cursors WHERE session_id = 'native:claude_code:shared-session'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("query native cursor");
+    assert_eq!(cur_gen_native, 1);
+
+    // 2. Cass session source must fail with exit code 3 (missing-session) and cannot move native cursor
+    let cass_out = std::process::Command::new(bin)
+        .current_dir(&ws_dir)
+        .args([
+            "observe",
+            "--session",
+            "/data/cass/shared-session.json",
+            "--dir",
+            ledger_dir_str,
+            "--json",
+        ])
+        .output()
+        .expect("run cass observe");
+    assert_eq!(
+        cass_out.status.code(),
+        Some(3),
+        "cass session must fail with exit code 3 (missing-session)"
+    );
+
+    let cur_gen_native_after_cass: i64 = conn
+        .query_row(
+            "SELECT transcript_generation FROM session_cursors WHERE session_id = 'native:claude_code:shared-session'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("query native cursor");
+    assert_eq!(cur_gen_native_after_cass, 1, "cass must not move native cursor");
+
+    // 3. Normalized context with the SAME session ID ("shared-session")
+    let ctx_path = ws_dir.join("context.json");
+    let ctx_val = serde_json::json!({
+        "schema_version": 1,
+        "harness": "claude_code",
+        "producer_id": null,
+        "workspace_root": ws_path_str,
+        "session_id": "shared-session",
+        "agent_id": null,
+        "branch_id": "main",
+        "context_epoch": "epoch-0",
+        "current_request": {
+            "event_id": "req-1",
+            "text": "Do work",
+            "attachments_omitted": false,
+            "essential_attachment_missing": false
+        },
+        "events": [
+            {
+                "event_id": "req-1",
+                "parent_id": null,
+                "turn_id": null,
+                "agent_id": null,
+                "branch_id": "main",
+                "role": "user",
+                "kind": "message",
+                "timestamp_unix_ms": 1700000000000_i64,
+                "text": "Do work",
+                "tool": null
+            }
+        ],
+        "explicit_skill_references": [],
+        "supplied_loads": []
+    });
+    fs::write(&ctx_path, ctx_val.to_string()).expect("write ctx");
+
+    let norm_out = std::process::Command::new(bin)
+        .current_dir(&ws_dir)
+        .args([
+            "observe",
+            "--context",
+            ctx_path.to_str().unwrap(),
+            "--dir",
+            ledger_dir_str,
+            "--json",
+        ])
+        .output()
+        .expect("run normalized observe");
+    assert_eq!(norm_out.status.code(), Some(0));
+
+    // Normalized cursor was created at its own key ("shared-session") at gen 1
+    let cur_gen_norm: i64 = conn
+        .query_row(
+            "SELECT transcript_generation FROM session_cursors WHERE session_id = 'shared-session'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("query normalized cursor");
+    assert_eq!(cur_gen_norm, 1);
+
+    // Native cursor at "native:claude_code:shared-session" STILL IS AT GENERATION 1!
+    let cur_gen_native_after_norm: i64 = conn
+        .query_row(
+            "SELECT transcript_generation FROM session_cursors WHERE session_id = 'native:claude_code:shared-session'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("query native cursor");
+    assert_eq!(
+        cur_gen_native_after_norm,
+        1,
+        "normalized context with same session ID must not move native cursor"
+    );
+}
+
+#[test]
+fn test_observe_cli_refuses_unsupported_harness_and_missing_session() {
+    let bin = env!("CARGO_BIN_EXE_sr");
+    let ws_dir = temp_private_dir("err-obs-ws");
+
+    // Unsupported harness rejected with exit code 2
+    let dummy_transcript = ws_dir.join("dummy.jsonl");
+    fs::write(&dummy_transcript, "{}\n").unwrap();
+
+    let out_bad_harness = std::process::Command::new(bin)
+        .current_dir(&ws_dir)
+        .args([
+            "observe",
+            "--transcript",
+            dummy_transcript.to_str().unwrap(),
+            "--harness",
+            "codex_cli",
+        ])
+        .output()
+        .expect("run bad harness");
+    assert_eq!(
+        out_bad_harness.status.code(),
+        Some(2),
+        "unsupported harness must be rejected with exit code 2 (invalid-usage)"
+    );
+
+    // Missing session ID in normalized context rejected with exit code 3
+    let ctx_path = ws_dir.join("no_session_ctx.json");
+    let ctx_val = serde_json::json!({
+        "schema_version": 1,
+        "harness": "claude_code",
+        "producer_id": null,
+        "workspace_root": ws_dir.to_str().unwrap(),
+        "session_id": null,
+        "agent_id": null,
+        "branch_id": null,
+        "context_epoch": null,
+        "current_request": {
+            "event_id": "req-1",
+            "text": "hello",
+            "attachments_omitted": false,
+            "essential_attachment_missing": false
+        },
+        "events": [],
+        "explicit_skill_references": [],
+        "supplied_loads": []
+    });
+    fs::write(&ctx_path, ctx_val.to_string()).unwrap();
+
+    let out_no_sess = std::process::Command::new(bin)
+        .current_dir(&ws_dir)
+        .args([
+            "observe",
+            "--context",
+            ctx_path.to_str().unwrap(),
+            "--dir",
+            ws_dir.to_str().unwrap(),
+            "--json",
+        ])
+        .output()
+        .expect("run no session");
+    assert_eq!(
+        out_no_sess.status.code(),
+        Some(3),
+        "missing durable session identity must be rejected with exit code 3 (missing-session)"
+    );
+}
