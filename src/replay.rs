@@ -878,7 +878,10 @@ fn build_outcome(
             "cases_completed": 1,
             "stages_required": stages_req,
             "stages_completed": stages_comp,
-            "evidence_compatible": true
+            // A run that could not recompute did not have compatible evidence.
+            // Reporting `true` beside a null recomputation told a reader the
+            // artifact was sufficient when it demonstrably was not.
+            "evidence_compatible": run_status == RunStatus::Complete
         }),
     );
     envelope.insert("historical".into(), case.historical_decision.clone());
