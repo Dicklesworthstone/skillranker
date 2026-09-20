@@ -636,6 +636,8 @@ fn open_qualified_connection_with_budget(
     path: &Path,
     busy_budget: Duration,
 ) -> Result<Connection, CoordinationError> {
+    let normalized = crate::storage::storage_path(path.to_path_buf());
+    let path = normalized.as_path();
     crate::storage::linked_engine().map_err(|e| CoordinationError::StorageError(e.to_string()))?;
     validate_sqlite_path(path)?;
 
@@ -702,7 +704,7 @@ pub struct SqliteLeaseCoordinator {
 impl SqliteLeaseCoordinator {
     /// Creates or connects to a SQLite lease coordinator at `db_path`.
     pub fn open(db_path: impl AsRef<Path>) -> Result<Self, CoordinationError> {
-        let db_path = crate::storage::storage_path(db_path.as_ref().to_path_buf());
+        let db_path = db_path.as_ref().to_path_buf();
         let conn = open_qualified_connection(&db_path)?;
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS sr_coordination_leases (
@@ -907,7 +909,7 @@ pub struct SqliteResponseCache {
 impl SqliteResponseCache {
     /// Creates or connects to a SQLite response cache at `db_path`.
     pub fn open(db_path: impl AsRef<Path>) -> Result<Self, CoordinationError> {
-        let db_path = crate::storage::storage_path(db_path.as_ref().to_path_buf());
+        let db_path = db_path.as_ref().to_path_buf();
         let conn = open_qualified_connection(&db_path)?;
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS sr_response_cache (
@@ -1379,7 +1381,9 @@ impl SingleFlightCoordinator {
             && let Some(sql) = &self.sqlite
         {
             match cache.sqlite_path() {
-                Some(path) if path == sql.db_path() => {}
+                Some(path)
+                    if crate::storage::storage_path(path.to_path_buf())
+                        == crate::storage::storage_path(sql.db_path().to_path_buf()) => {}
                 Some(other) => {
                     return Err(CoordinationError::StorageError(format!(
                         "response cache store mismatch: coordinator bound to SQLite {:?}, supplied cache bound to {:?}",
