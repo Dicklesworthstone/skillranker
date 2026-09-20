@@ -271,12 +271,18 @@ build_source() {
     [[ -f "$SOURCE/Cargo.lock" && -f "$SOURCE/rust-toolchain.toml" ]] || die 'Source must be a SkillRanker checkout with lockfile and pinned toolchain'
     # A unique target avoids accidentally installing an old local build after RCH.
     BUILD_TARGET="$TEMP/target"
-    if command -v rch >/dev/null; then
-        (cd "$SOURCE" && run_logged 'Building sr remotely; this can take several minutes' env RCH_REQUIRE_REMOTE=1 rch exec -- cargo build --release --locked --bin sr --target-dir "$BUILD_TARGET") || die "Remote build failed; log: $TEMP/build.log (use --keep-temp)"
-    else
-        (cd "$SOURCE" && run_logged 'Building sr locally; this can take several minutes' cargo build --release --locked --bin sr --target-dir "$BUILD_TARGET") || die "Source build failed; log: $TEMP/build.log (use --keep-temp)"
-    fi
+    local build_args=(build --release --locked --bin sr --target-dir "$BUILD_TARGET")
     BIN="$BUILD_TARGET/release/sr"
+    if [[ "$OS" == Darwin ]]; then
+        # Without a target, RCH may select a Linux worker for a macOS install.
+        build_args+=(--target "$TARGET")
+        BIN="$BUILD_TARGET/$TARGET/release/sr"
+    fi
+    if command -v rch >/dev/null; then
+        (cd "$SOURCE" && run_logged 'Building sr remotely; this can take several minutes' env RCH_REQUIRE_REMOTE=1 rch exec -- cargo "${build_args[@]}") || die "Remote build failed; log: $TEMP/build.log (use --keep-temp)"
+    else
+        (cd "$SOURCE" && run_logged 'Building sr locally; this can take several minutes' cargo "${build_args[@]}") || die "Source build failed; log: $TEMP/build.log (use --keep-temp)"
+    fi
     [[ -f "$BIN" ]] || die 'Build returned without a local artifact. Check RCH artifact transfer; no stale binary installed.'
 }
 
