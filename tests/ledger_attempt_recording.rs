@@ -190,6 +190,22 @@ impl Fixture {
             .unwrap()
     }
 
+    /// Every event with the two fields a failed run's record turns on: what it
+    /// decided, and whether it claimed a roster snapshot it never had.
+    fn events(&self) -> Vec<(String, String, Option<String>, String)> {
+        let conn = rusqlite::Connection::open(self.ledger_db()).unwrap();
+        let mut statement = conn
+            .prepare("SELECT event_id, decision, snapshot_id, reason FROM ranking_events")
+            .unwrap();
+        statement
+            .query_map([], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+    }
+
     fn event_ids(&self) -> Vec<String> {
         let conn = rusqlite::Connection::open(self.ledger_db()).unwrap();
         let mut statement = conn.prepare("SELECT event_id FROM ranking_events").unwrap();
@@ -419,4 +435,61 @@ fn a_cache_served_rerun_adds_no_attempt_of_its_own() {
         rows.len() - after_first
     );
     assert_eq!(rows.len(), served);
+}
+
+#[test]
+fn a_run_that_fails_after_paying_still_records_its_attempts() {
+    // The case with no other record at all. A run that fails publishes no
+    // decision, so before this the attempts it paid for existed only in the
+    // emitted document of one process and nowhere durable.
+    let f = Fixture::new();
+    f.claude_session("rec-failed", TASK);
+    f.ledger_init();
+    let provider = Provider::start(&f, "always-503");
+    let out = f.rank(provider.port);
+    assert!(
+        !out.status.success(),
+        "a provider that only refuses must not produce a ranking"
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(4),
+        "provider/budget failures exit 4: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let served = provider.finish();
+    assert!(served >= 1, "the run reached the provider");
+
+    let rows = f.attempts();
+    assert_eq!(
+        rows.len(),
+        served,
+        "recorded {} attempts for {served} refused requests: {rows:#?}",
+        rows.len()
+    );
+    let events = f.events();
+    assert_eq!(events.len(), 1, "{events:#?}");
+    let (event_id, decision, snapshot, reason) = &events[0];
+    assert_eq!(decision, "unavailable");
+    // A run that failed mid-flight has no decision whose membership a snapshot
+    // could describe, so it must not claim one.
+    assert_eq!(*snapshot, None);
+    // The failure's typed kind, never its message.
+    assert!(
+        !reason.is_empty() && !reason.contains(' '),
+        "reason is a kebab-case kind, got {reason:?}"
+    );
+    for row in &rows {
+        assert_eq!(row.owner_event_id, *event_id);
+        assert_eq!(row.stage, "wide", "the run never reached rerank");
+        // The provider answered with a status, so the ending is established.
+        assert_eq!(row.status, "failed", "{row:#?}");
+        assert_eq!(row.http_status, Some(503));
+        assert_eq!(row.error_kind.as_deref(), Some("http-status"));
+        // It refused; it did not report usage, and absent is not zero.
+        assert_eq!(row.input_tokens, None);
+        assert_eq!(row.output_tokens, None);
+        assert!(row.admitted_at >= 1_700_000_000_000, "{row:#?}");
+        assert!(row.sent_at.unwrap() >= row.admitted_at);
+    }
 }

@@ -205,6 +205,51 @@ struct Progress {
     /// A single-flight lease this invocation leads; completed on every path.
     lease: Option<(PathBuf, LeaderContext)>,
     capture: Option<CaseCapture>,
+    /// What a run that then fails needs in order to still record the attempts it
+    /// already paid for. A failing run emits no decision to record, so without
+    /// this its provider cost exists nowhere durable — and a failed attempt is
+    /// exactly the cost that no other record accounts for.
+    failed_recording: Option<FailureRecording>,
+}
+
+/// Identity and cost carried out of a failing run, so an unavailable event can
+/// own the attempts that were already made.
+///
+/// Everything here is captured before the first send and refreshed after each
+/// stage settles, because the error itself unwinds past the point where the
+/// session, roster and context are still in scope.
+struct FailureRecording {
+    ledger_dir: Option<PathBuf>,
+    workspace_root: String,
+    session_id: String,
+    agent_branch: String,
+    mode_channel: String,
+    policy_version: &'static str,
+    event_id: String,
+    attempts: Vec<crate::storage::NewProviderAttempt>,
+}
+
+impl Progress {
+    /// Rebuild the stashed attempt rows from the session as it stands now.
+    ///
+    /// Called after each provider stage *including when that stage failed*: the
+    /// attempt is settled by then, and the failing path is the one that needs it.
+    fn stash_failed_attempts(
+        &mut self,
+        session: Option<&RetrySession<'_>>,
+        wide_fingerprint: &RequestFingerprint,
+        rerank_fingerprint: Option<&str>,
+        clock: &EntryClock,
+    ) {
+        let Some(recording) = self.failed_recording.as_mut() else {
+            return;
+        };
+        if let Some(evidence) =
+            attempt_evidence(session, wide_fingerprint, rerank_fingerprint, clock)
+        {
+            recording.attempts = evidence.rows(&recording.event_id);
+        }
+    }
 }
 
 /// The admitted session and roster a full decision describes.
@@ -260,6 +305,22 @@ pub async fn execute_pipeline(
     let effects = args.gate.receipt();
     let mut progress = Progress::default();
     let result = rank_once(invocation, clock, cx, args, transport, &mut progress).await;
+    // A failing run publishes no decision, so nothing else would record what its
+    // attempts cost. Recording is optional and best effort: a store that cannot
+    // take the row does not change the failure the caller sees.
+    if let Err(error) = result.as_ref()
+        && let Some(recording) = progress.failed_recording.take()
+        && !recording.attempts.is_empty()
+    {
+        record_failed_attempts(
+            invocation,
+            cx,
+            &recording,
+            error.1,
+            clock.now().as_millis(),
+            &progress.metrics,
+        );
+    }
     // Release a led lease on every path. Followers then find the recorded
     // pair, or send themselves when this run recorded nothing.
     let mut completion_superseded = false;
@@ -2104,6 +2165,33 @@ async fn rank_once(
             None => {}
         }
     }
+    // Armed before any send. A run that fails after paying for an attempt unwinds
+    // past every recording site, so what an unavailable event needs is captured
+    // here, while the context that names it is still in scope.
+    progress.failed_recording = Some(FailureRecording {
+        ledger_dir: args.ledger_dir.clone(),
+        workspace_root: normalized_context.workspace_root.as_str().to_string(),
+        session_id: normalized_context
+            .session_id
+            .as_ref()
+            .map_or_else(|| "session-0".to_string(), |s| s.as_str().to_string()),
+        agent_branch: normalized_context
+            .branch_id
+            .as_ref()
+            .map_or_else(|| "main".to_string(), |b| b.as_str().to_string()),
+        mode_channel: mode_channel.to_string(),
+        policy_version: "ranking-v1",
+        event_id: normalized_context
+            .current_request
+            .event_id
+            .as_ref()
+            .map_or_else(
+                || derive_request_event_id(&normalized_context),
+                |e| e.as_str().to_string(),
+            ),
+        attempts: Vec::new(),
+    });
+
     let mut cached_rerank: Option<Response> = None;
     let wide_fresh = cached.is_none();
     let cached = cached.map(|(response, age_ms, rerank)| {
@@ -2179,7 +2267,7 @@ async fn rank_once(
                     )
                 })?,
             );
-            provider_stage(
+            let stage = provider_stage(
                 active,
                 RankingStage::Wide,
                 wide_builder.request(),
@@ -2191,7 +2279,11 @@ async fn rank_once(
                 cx,
                 clock,
             )
-            .await?
+            .await;
+            // Before propagating: this attempt has settled either way, and a send
+            // that failed is the one whose cost nothing else records.
+            progress.stash_failed_attempts(session.as_ref(), &wide_req_fp, None, clock);
+            stage?
         }
     };
 
@@ -2361,6 +2453,17 @@ async fn rank_once(
     // rerank pairs with the wide answer this session produced; a wide answer
     // from elsewhere is never paired with a fresh rerank.
     let rerank_fresh = cached_rerank.is_none();
+    // Computed before the send rather than after it: an attempt row names the
+    // request it served, and a rerank send that fails still made an attempt.
+    let rerank_fp = rerank_fresh.then(|| {
+        fingerprint(
+            RequestStage::Rerank,
+            &shortlist_digests(&shortlisted),
+            rerank_builder.bytes(),
+            rerank::RERANK_POLICY_VERSION,
+        )
+    });
+    let rerank_req_fp: Option<String> = rerank_fp.map(|fp| fp.to_hex());
     let rerank_response = match cached_rerank.take() {
         Some(response) => {
             progress.metrics.rerank_hit = true;
@@ -2381,7 +2484,7 @@ async fn rank_once(
                     "A cached wide answer cannot be paired with a fresh rerank",
                 ));
             };
-            provider_stage(
+            let stage = provider_stage(
                 active,
                 RankingStage::Rerank,
                 rerank_builder.request(),
@@ -2393,7 +2496,14 @@ async fn rank_once(
                 cx,
                 clock,
             )
-            .await?
+            .await;
+            progress.stash_failed_attempts(
+                session.as_ref(),
+                &wide_req_fp,
+                rerank_req_fp.as_deref(),
+                clock,
+            );
+            stage?
         }
     };
 
@@ -2405,18 +2515,8 @@ async fn rank_once(
         )
     })?;
 
-    // Held beyond the recording block below: an attempt row names the request its
-    // attempt served, and a rerank attempt exists only when the rerank was fresh.
-    let mut rerank_req_fp: Option<String> = None;
-    if rerank_fresh {
-        let rerank_fp = fingerprint(
-            RequestStage::Rerank,
-            &shortlist_digests(&shortlisted),
-            rerank_builder.bytes(),
-            rerank::RERANK_POLICY_VERSION,
-        );
-        rerank_req_fp = Some(rerank_fp.to_hex());
-        if !persistent::record(
+    if let Some(rerank_fp) = rerank_fp
+        && !persistent::record(
             &mut store,
             invocation,
             cx,
@@ -2428,9 +2528,9 @@ async fn rank_once(
                 active_model,
             ),
             progress.lease.as_ref(),
-        )? {
-            progress.cache_recording_failures += 1;
-        }
+        )?
+    {
+        progress.cache_recording_failures += 1;
     }
     progress.evaluated.rerank_returned = Some(rerank_response.returned_model.clone());
     progress.evaluated.choice_confidence = Some(rerank_outcome.choice_confidence);
@@ -3760,6 +3860,54 @@ pub(crate) fn derive_request_event_id(context: &NormalizedContext) -> String {
     hasher.update(context.current_request.text.as_str().as_bytes());
 
     format!("ev-{}", &hasher.finalize().to_hex()[..16])
+}
+
+/// Record an unavailable event owning the attempts a failed run already made.
+///
+/// The event carries no roster snapshot, because a run that failed mid-flight has
+/// no decision whose membership it could describe; `snapshot_id` is nullable for
+/// exactly this case. `reason` is the failure's own typed kind, never its message,
+/// so nothing free-form reaches the ledger.
+fn record_failed_attempts(
+    invocation: &ProcessInvocation,
+    cx: &Cx,
+    recording: &FailureRecording,
+    reason: &str,
+    elapsed_ms: u64,
+    metrics: &ExecutionMetrics,
+) {
+    let event = crate::storage::NewRankingEvent {
+        event_id: recording.event_id.clone(),
+        verified_delivery_key: None,
+        workspace_root: recording.workspace_root.clone(),
+        session_id: recording.session_id.clone(),
+        agent_branch: recording.agent_branch.clone(),
+        mode_channel: recording.mode_channel.clone(),
+        policy_version: recording.policy_version.to_string(),
+        schema_version: SCHEMA_VERSION as u32,
+        decision: crate::storage::DecisionKind::Unavailable,
+        reason: reason.to_string(),
+        exposure_state: crate::storage::ExposureState::Prepared,
+        elapsed_ms,
+        created_at_unix_ms: wall_clock_ms(),
+        input_tokens: (metrics.input_tokens > 0).then_some(metrics.input_tokens),
+        output_tokens: (metrics.output_tokens > 0).then_some(metrics.output_tokens),
+        snapshot_id: None,
+    };
+    let location = match recording.ledger_dir.as_deref() {
+        Some(dir) => crate::storage::LedgerLocation::Directory(dir.to_path_buf()),
+        None => crate::storage::LedgerLocation::Platform,
+    };
+    let _ = crate::storage::record_ranking_with_attempts(
+        invocation,
+        cx,
+        crate::storage::LedgerAccess::ExistingOnly,
+        location,
+        &event,
+        &[],
+        None,
+        &recording.attempts,
+    );
 }
 
 /// What a recorded event needs in order to attribute the provider cost it caused:
