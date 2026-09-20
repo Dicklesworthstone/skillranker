@@ -1,0 +1,603 @@
+//! Contract and verification tests for the observation ledger schema and repositories.
+//!
+//! Required by sr-roadmap-l1i.6.1:
+//! - Real SQLite schema, foreign keys, uniqueness, and readback
+//! - Store incarnation and data generation fencing
+//! - Distinct ranking and observation watermarks for session cursors
+//! - Privacy invariants: no skill bodies or secrets in roster snapshots
+//! - Headroom and store replacement protection
+
+use asupersync::Cx;
+use rusqlite::Connection;
+use skillranker::runtime::ProcessInvocation;
+use skillranker::storage::StoreError;
+use skillranker::storage::ledger::*;
+use std::fs;
+use std::os::unix::fs::DirBuilderExt;
+use std::path::PathBuf;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+fn test_invocation() -> (ProcessInvocation, Cx) {
+    let invocation = ProcessInvocation::enter().expect("process invocation");
+    let cx = invocation.request_cx().expect("request_cx");
+    (invocation, cx)
+}
+
+fn temp_ledger_dir(test_name: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!(
+        "sr-ledger-test-{}-{}-{}",
+        test_name,
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    fs::DirBuilder::new()
+        .mode(0o700)
+        .recursive(true)
+        .create(&dir)
+        .expect("temp dir create");
+    dir
+}
+
+#[test]
+fn ledger_initialization_creates_tables_and_metadata() {
+    let (inv, cx) = test_invocation();
+    let dir = temp_ledger_dir("init");
+
+    let open_res = open_ledger(
+        &inv,
+        &cx,
+        LedgerAccess::Initialize,
+        LedgerLocation::Directory(dir.clone()),
+    );
+    let store = match open_res.expect("open_ledger succeeds") {
+        LedgerOpen::Ready(s) => s,
+        other => panic!("expected Ready, got {:?}", other),
+    };
+
+    let stamp = store.stamp();
+    assert_eq!(stamp.schema_generation, 1);
+    assert_eq!(stamp.data_generation, 1);
+    assert_ne!(stamp.incarnation, [0u8; 16]);
+
+    let db_path = store.database_path();
+    assert!(db_path.exists());
+
+    // Inspect database directly to verify raw SQLite invariants
+    let conn = Connection::open(&db_path).expect("open raw sqlite");
+    let app_id: i64 = conn
+        .pragma_query_value(None, "application_id", |row| row.get(0))
+        .unwrap();
+    assert_eq!(app_id, LEDGER_APPLICATION_ID);
+
+    let user_ver: i64 = conn
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .unwrap();
+    assert_eq!(user_ver, LEDGER_SCHEMA_VERSION as i64);
+
+    let table_count: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM sqlite_schema WHERE type='table' AND name NOT GLOB 'sqlite_*'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(table_count, 11, "must have all 11 tables");
+
+    // ExistingOnly access succeeds
+    let existing_res = open_ledger(
+        &inv,
+        &cx,
+        LedgerAccess::ExistingOnly,
+        LedgerLocation::Directory(dir),
+    );
+    let store2 = match existing_res.expect("open existing") {
+        LedgerOpen::Ready(s) => s,
+        other => panic!("expected Ready, got {:?}", other),
+    };
+    assert_eq!(store2.stamp(), stamp);
+
+    assert!(inv.shutdown());
+}
+
+#[test]
+fn ledger_foreign_keys_and_uniqueness_enforced() {
+    let (inv, cx) = test_invocation();
+    let dir = temp_ledger_dir("fk-unique");
+
+    let mut store = match open_ledger(
+        &inv,
+        &cx,
+        LedgerAccess::Initialize,
+        LedgerLocation::Directory(dir),
+    )
+    .unwrap()
+    {
+        LedgerOpen::Ready(s) => *s,
+        _ => panic!("expected Ready"),
+    };
+    let stamp = store.stamp();
+    let clock = inv.clock();
+
+    let event1 = NewRankingEvent {
+        event_id: "evt-001".into(),
+        verified_delivery_key: Some("deliv-key-alpha".into()),
+        workspace_root: "/data/ws".into(),
+        session_id: "sess-1".into(),
+        agent_branch: "main".into(),
+        mode_channel: "hook".into(),
+        policy_version: "v1".into(),
+        schema_version: 1,
+        decision: DecisionKind::Ranked,
+        reason: "eligible".into(),
+        exposure_state: ExposureState::Emitted,
+        elapsed_ms: 120,
+        created_at_unix_ms: 1700000000,
+        input_tokens: Some(500),
+        output_tokens: Some(150),
+        snapshot_id: None,
+    };
+
+    let cand1 = NewRankingCandidate {
+        event_id: "evt-001".into(),
+        stage: CandidateStage::Wide,
+        skill_id: "s_rust".into(),
+        skill_version: "v1".into(),
+        raw_probability: Some(0.85),
+        normalized_probability: Some(0.85),
+        fit_score: Some(0.9),
+        rank_score: Some(1.2),
+        rank_position: Some(1),
+        excluded: false,
+        exclusion_reason: None,
+    };
+
+    // Valid ranking event and candidate record succeeds
+    store
+        .record_ranking_event(clock, &cx, &event1, &[cand1], None, stamp)
+        .expect("record ranking event");
+
+    // 1. Uniqueness check on verified_delivery_key:
+    // Attempting to record second event with duplicate verified_delivery_key fails
+    let event2 = NewRankingEvent {
+        event_id: "evt-002".into(),
+        verified_delivery_key: Some("deliv-key-alpha".into()), // DUPLICATE KEY
+        workspace_root: "/data/ws".into(),
+        session_id: "sess-1".into(),
+        agent_branch: "main".into(),
+        mode_channel: "hook".into(),
+        policy_version: "v1".into(),
+        schema_version: 1,
+        decision: DecisionKind::Ranked,
+        reason: "eligible".into(),
+        exposure_state: ExposureState::Emitted,
+        elapsed_ms: 100,
+        created_at_unix_ms: 1700000050,
+        input_tokens: Some(400),
+        output_tokens: Some(100),
+        snapshot_id: None,
+    };
+    let dup_res = store.record_ranking_event(clock, &cx, &event2, &[], None, stamp);
+    assert!(
+        dup_res.is_err(),
+        "duplicate verified_delivery_key must be rejected"
+    );
+
+    // 2. Foreign Key constraint check on ranking_candidates:
+    // Attempting to record candidate for non-existent event fails FK check
+    let cand_orphan = NewRankingCandidate {
+        event_id: "evt-nonexistent".into(),
+        stage: CandidateStage::Wide,
+        skill_id: "s_python".into(),
+        skill_version: "v1".into(),
+        raw_probability: Some(0.5),
+        normalized_probability: Some(0.5),
+        fit_score: Some(0.5),
+        rank_score: Some(0.5),
+        rank_position: Some(1),
+        excluded: false,
+        exclusion_reason: None,
+    };
+    let event_orphan = NewRankingEvent {
+        event_id: "evt-003".into(),
+        verified_delivery_key: None,
+        workspace_root: "/data/ws".into(),
+        session_id: "sess-1".into(),
+        agent_branch: "main".into(),
+        mode_channel: "hook".into(),
+        policy_version: "v1".into(),
+        schema_version: 1,
+        decision: DecisionKind::Ranked,
+        reason: "eligible".into(),
+        exposure_state: ExposureState::Emitted,
+        elapsed_ms: 100,
+        created_at_unix_ms: 1700000100,
+        input_tokens: None,
+        output_tokens: None,
+        snapshot_id: None,
+    };
+    let fk_cand_res =
+        store.record_ranking_event(clock, &cx, &event_orphan, &[cand_orphan], None, stamp);
+    assert!(
+        fk_cand_res.is_err(),
+        "orphan candidate must fail FK constraint"
+    );
+
+    // 3. Observations and Judgments
+    let obs1 = NewObservation {
+        observation_id: "obs-001".into(),
+        source_event_key: "tx-item-42".into(),
+        workspace_root: "/data/ws".into(),
+        session_id: "sess-1".into(),
+        agent_branch: "main".into(),
+        attributed_event_id: Some("evt-001".into()),
+        skill_id: "s_rust".into(),
+        evidence_state: EvidenceState::Loaded,
+        observed_at_unix_ms: 1700000200,
+    };
+    store
+        .record_observation(clock, &cx, &obs1, stamp)
+        .expect("record observation");
+
+    // Duplicate source_event_key must fail
+    let obs_dup = NewObservation {
+        observation_id: "obs-002".into(),
+        source_event_key: "tx-item-42".into(), // DUPLICATE KEY
+        workspace_root: "/data/ws".into(),
+        session_id: "sess-1".into(),
+        agent_branch: "main".into(),
+        attributed_event_id: Some("evt-001".into()),
+        skill_id: "s_rust".into(),
+        evidence_state: EvidenceState::Loaded,
+        observed_at_unix_ms: 1700000300,
+    };
+    let dup_obs_res = store.record_observation(clock, &cx, &obs_dup, stamp);
+    assert!(
+        dup_obs_res.is_err(),
+        "duplicate source_event_key must be rejected"
+    );
+
+    let jdg1 = NewJudgment {
+        judgment_id: "jdg-001".into(),
+        attributed_event_id: "evt-001".into(),
+        skill_id: "s_rust".into(),
+        label: JudgmentLabel::Useful,
+        label_version: 1,
+        provenance: "user_feedback".into(),
+        created_at_unix_ms: 1700000400,
+    };
+    store
+        .record_judgment(clock, &cx, &jdg1, stamp)
+        .expect("record judgment");
+
+    assert!(inv.shutdown());
+}
+
+#[test]
+fn ledger_session_cursors_distinct_watermarks() {
+    let (inv, cx) = test_invocation();
+    let dir = temp_ledger_dir("cursors");
+
+    let mut store = match open_ledger(
+        &inv,
+        &cx,
+        LedgerAccess::Initialize,
+        LedgerLocation::Directory(dir),
+    )
+    .unwrap()
+    {
+        LedgerOpen::Ready(s) => *s,
+        _ => panic!("expected Ready"),
+    };
+    let stamp = store.stamp();
+    let clock = inv.clock();
+
+    let ws = "/data/projects/skillranker";
+    let sess = "session-xyz";
+    let branch = "feature/p5";
+
+    // Initial read returns None
+    let init_rank = store
+        .get_session_cursor(clock, &cx, ws, sess, branch, CursorKind::Ranking)
+        .unwrap();
+    assert_eq!(init_rank, None);
+    let init_obs = store
+        .get_session_cursor(clock, &cx, ws, sess, branch, CursorKind::Observation)
+        .unwrap();
+    assert_eq!(init_obs, None);
+
+    // Record ranking cursor
+    let rank_cur = SessionCursor {
+        workspace_root: ws.into(),
+        session_id: sess.into(),
+        agent_branch: branch.into(),
+        cursor_kind: CursorKind::Ranking,
+        transcript_generation: 1,
+        last_complete_event_id: "msg-10".into(),
+        last_offset_bytes: 4096,
+        updated_at_unix_ms: 1700000000,
+    };
+    store
+        .update_session_cursor(clock, &cx, &rank_cur, stamp)
+        .unwrap();
+
+    // Verify ranking cursor is updated, observation cursor remains None
+    let read_rank = store
+        .get_session_cursor(clock, &cx, ws, sess, branch, CursorKind::Ranking)
+        .unwrap();
+    assert_eq!(read_rank, Some(rank_cur.clone()));
+    let read_obs = store
+        .get_session_cursor(clock, &cx, ws, sess, branch, CursorKind::Observation)
+        .unwrap();
+    assert_eq!(read_obs, None);
+
+    // Record observation cursor with distinct watermark
+    let obs_cur = SessionCursor {
+        workspace_root: ws.into(),
+        session_id: sess.into(),
+        agent_branch: branch.into(),
+        cursor_kind: CursorKind::Observation,
+        transcript_generation: 1,
+        last_complete_event_id: "msg-08".into(),
+        last_offset_bytes: 3200,
+        updated_at_unix_ms: 1700000010,
+    };
+    store
+        .update_session_cursor(clock, &cx, &obs_cur, stamp)
+        .unwrap();
+
+    // Verify both exist independently
+    let read_rank2 = store
+        .get_session_cursor(clock, &cx, ws, sess, branch, CursorKind::Ranking)
+        .unwrap()
+        .unwrap();
+    assert_eq!(read_rank2.last_offset_bytes, 4096);
+    let read_obs2 = store
+        .get_session_cursor(clock, &cx, ws, sess, branch, CursorKind::Observation)
+        .unwrap()
+        .unwrap();
+    assert_eq!(read_obs2.last_offset_bytes, 3200);
+
+    assert!(inv.shutdown());
+}
+
+#[test]
+fn ledger_store_incarnation_and_generation_fencing() {
+    let (inv, cx) = test_invocation();
+    let dir = temp_ledger_dir("fencing");
+
+    let mut store = match open_ledger(
+        &inv,
+        &cx,
+        LedgerAccess::Initialize,
+        LedgerLocation::Directory(dir),
+    )
+    .unwrap()
+    {
+        LedgerOpen::Ready(s) => *s,
+        _ => panic!("expected Ready"),
+    };
+    let initial_stamp = store.stamp();
+    let clock = inv.clock();
+
+    // 1. Mutation with wrong incarnation fails with StoreReplaced
+    let mut bad_incarnation = initial_stamp;
+    bad_incarnation.incarnation[0] ^= 0xFF;
+    let prop1 = NewFeedbackProposal {
+        proposal_id: "prop-1".into(),
+        workspace_root: "/data/ws".into(),
+        session_id: "sess-1".into(),
+        suggested_skill_reference: "new_tool".into(),
+        status: ProposalStatus::Unresolved,
+        notes: Some("suggested by user".into()),
+        created_at_unix_ms: 1700000000,
+    };
+    let err_replaced = store.record_feedback_proposal(clock, &cx, &prop1, bad_incarnation);
+    assert_eq!(err_replaced.unwrap_err(), StoreError::StoreReplaced);
+
+    // 2. Mutation with stale data generation fails with StaleGeneration
+    let mut stale_gen = initial_stamp;
+    stale_gen.data_generation = 999;
+    let err_stale = store.record_feedback_proposal(clock, &cx, &prop1, stale_gen);
+    assert_eq!(err_stale.unwrap_err(), StoreError::StaleGeneration);
+
+    // 3. Mutation with correct stamp succeeds
+    store
+        .record_feedback_proposal(clock, &cx, &prop1, initial_stamp)
+        .expect("valid stamp succeeds");
+
+    // 4. clear() advances data_generation and deletes records
+    let cleared_stamp = store
+        .clear(clock, &cx, initial_stamp)
+        .expect("clear succeeds");
+    assert_eq!(
+        cleared_stamp.data_generation,
+        initial_stamp.data_generation + 1
+    );
+
+    // 5. Subsequent write using the old initial_stamp fails with StaleGeneration
+    let prop2 = NewFeedbackProposal {
+        proposal_id: "prop-2".into(),
+        workspace_root: "/data/ws".into(),
+        session_id: "sess-1".into(),
+        suggested_skill_reference: "another_tool".into(),
+        status: ProposalStatus::Unresolved,
+        notes: None,
+        created_at_unix_ms: 1700000050,
+    };
+    let old_writer_res = store.record_feedback_proposal(clock, &cx, &prop2, initial_stamp);
+    assert_eq!(old_writer_res.unwrap_err(), StoreError::StaleGeneration);
+
+    // 6. Write with the new cleared_stamp succeeds
+    store
+        .record_feedback_proposal(clock, &cx, &prop2, cleared_stamp)
+        .expect("new stamp succeeds");
+
+    assert!(inv.shutdown());
+}
+
+#[test]
+fn ledger_provider_attempts_and_calibrations_lifecycle() {
+    let (inv, cx) = test_invocation();
+    let dir = temp_ledger_dir("attempts-cal");
+
+    let mut store = match open_ledger(
+        &inv,
+        &cx,
+        LedgerAccess::Initialize,
+        LedgerLocation::Directory(dir),
+    )
+    .unwrap()
+    {
+        LedgerOpen::Ready(s) => *s,
+        _ => panic!("expected Ready"),
+    };
+    let stamp = store.stamp();
+    let clock = inv.clock();
+
+    // Need a parent event for provider attempt
+    let event = NewRankingEvent {
+        event_id: "evt-parent".into(),
+        verified_delivery_key: None,
+        workspace_root: "/data/ws".into(),
+        session_id: "sess-1".into(),
+        agent_branch: "main".into(),
+        mode_channel: "hook".into(),
+        policy_version: "v1".into(),
+        schema_version: 1,
+        decision: DecisionKind::Ranked,
+        reason: "eligible".into(),
+        exposure_state: ExposureState::Generated,
+        elapsed_ms: 50,
+        created_at_unix_ms: 1700000000,
+        input_tokens: None,
+        output_tokens: None,
+        snapshot_id: None,
+    };
+    store
+        .record_ranking_event(clock, &cx, &event, &[], None, stamp)
+        .unwrap();
+
+    let attempt = NewProviderAttempt {
+        attempt_id: "att-001".into(),
+        owner_event_id: "evt-parent".into(),
+        stage: CandidateStage::Wide,
+        request_fingerprint: "req-blake3-abc".into(),
+        admitted_at_unix_ms: 1700000001,
+        sent_at_unix_ms: Some(1700000002),
+        completed_at_unix_ms: None,
+        status: AttemptStatus::Sent,
+        input_tokens: None,
+        output_tokens: None,
+        http_status: None,
+        error_kind: None,
+    };
+    store
+        .record_provider_attempt(clock, &cx, &attempt, stamp)
+        .unwrap();
+
+    // Update outcome
+    let outcome = ProviderAttemptOutcome {
+        status: AttemptStatus::Completed,
+        tokens: Some((1200, 350)),
+        http_status: Some(200),
+        error_kind: None,
+        completed_at_unix_ms: 1700000020,
+    };
+    store
+        .update_provider_attempt_outcome(clock, &cx, "att-001", &outcome, stamp)
+        .unwrap();
+
+    // Record calibration
+    let cal = NewCalibration {
+        calibration_id: "cal-001".into(),
+        dataset_fingerprint: "ds-blake3-123".into(),
+        split: DatasetSplit::Train,
+        objective: "log_loss".into(),
+        coefficients_json: r#"{"w_fit": 1.2, "w_prior": 0.1}"#.into(),
+        evaluation_report_id: "rep-001".into(),
+        created_at_unix_ms: 1700000100,
+    };
+    store.record_calibration(clock, &cx, &cal, stamp).unwrap();
+
+    assert!(inv.shutdown());
+}
+
+#[test]
+fn ledger_roster_snapshot_stores_membership_without_skill_bodies() {
+    let (inv, cx) = test_invocation();
+    let dir = temp_ledger_dir("roster-privacy");
+
+    let mut store = match open_ledger(
+        &inv,
+        &cx,
+        LedgerAccess::Initialize,
+        LedgerLocation::Directory(dir),
+    )
+    .unwrap()
+    {
+        LedgerOpen::Ready(s) => *s,
+        _ => panic!("expected Ready"),
+    };
+    let stamp = store.stamp();
+    let clock = inv.clock();
+
+    // Snapshot with structured members metadata, but NO skill bodies or full descriptions
+    let members_metadata = serde_json::json!([
+        {
+            "skill_id": "s_code_review",
+            "invocation_name": "review",
+            "content_hash": "blake3:abc123def456",
+            "source": "workspace",
+            "eligible": true,
+            "exclusion_reason": null
+        },
+        {
+            "skill_id": "s_deploy",
+            "invocation_name": "deploy",
+            "content_hash": "blake3:789xyz",
+            "source": "installed",
+            "eligible": false,
+            "exclusion_reason": "untrusted-source"
+        }
+    ]);
+
+    let snapshot = NewRosterSnapshot {
+        snapshot_id: "snap-alpha".into(),
+        workspace_root: "/data/ws".into(),
+        adapter: "claude_code".into(),
+        total_candidates: 2,
+        eligible_candidates: 1,
+        membership_coverage: MembershipCoverage::Complete,
+        members_json: serde_json::to_string(&members_metadata).unwrap(),
+        created_at_unix_ms: 1700000000,
+    };
+
+    store
+        .record_roster_snapshot(clock, &cx, &snapshot, stamp)
+        .unwrap();
+
+    // Read back raw database row and verify that forbidden text or bodies are not present
+    let conn = Connection::open(store.database_path()).unwrap();
+    let (stored_json,): (String,) = conn
+        .query_row(
+            "SELECT members_json FROM roster_snapshots WHERE snapshot_id = 'snap-alpha'",
+            [],
+            |row| Ok((row.get(0)?,)),
+        )
+        .unwrap();
+
+    let parsed: serde_json::Value = serde_json::from_str(&stored_json).unwrap();
+    let arr = parsed.as_array().expect("array of members");
+    assert_eq!(arr.len(), 2);
+    assert_eq!(arr[0]["skill_id"], "s_code_review");
+    assert_eq!(arr[0]["invocation_name"], "review");
+    assert_eq!(arr[0]["eligible"], true);
+    // Invariant: no "body" or "content" or "description" field stored in member metadata
+    assert!(arr[0].get("body").is_none());
+    assert!(arr[0].get("description").is_none());
+
+    assert!(inv.shutdown());
+}
