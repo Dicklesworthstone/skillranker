@@ -1316,6 +1316,30 @@ features = []
 status = "executed"
 
 [[boundaries]]
+id = "p5_ledger_exposure_lifecycle"
+owner_bead = "sr-roadmap-l1i.6.8"
+member_beads = ["sr-roadmap-l1i.6.8"]
+phase = "P5"
+title = "Record generated, prepared, emitted and acknowledged separately"
+unit_property_tests = [
+    "tests/ledger_exposure_lifecycle_contract.rs::prepare_before_stdout_and_emit_after_successful_write",
+    "tests/ledger_exposure_lifecycle_contract.rs::crash_or_failure_between_prepare_and_stdout_leaves_delivery_unknown",
+    "tests/ledger_exposure_lifecycle_contract.rs::empty_shadow_output_never_emits",
+    "tests/ledger_exposure_lifecycle_contract.rs::verified_acknowledgment_lifecycle_and_idempotency",
+    "tests/ledger_exposure_lifecycle_contract.rs::duplicate_delivery_key_across_different_events_rejected",
+    "tests/ledger_exposure_lifecycle_contract.rs::distinct_modes_and_channels_recorded",
+    "tests/ledger_exposure_lifecycle_contract.rs::disabled_or_missing_ledger_degrades_gracefully",
+    "tests/ledger_exposure_lifecycle_contract.rs::invalid_records_rejected",
+    "tests/ledger_exposure_lifecycle_contract.rs::cli_emission_lifecycle_e2e"
+]
+e2e_suite = "replay"
+e2e_cases = ["ledger-exposure-lifecycle"]
+assertion_ids = ["exposure_states_recorded_separately"]
+platforms = ["linux"]
+features = []
+status = "executed"
+
+[[boundaries]]
 id = "p5_offline_replay"
 owner_bead = "sr-roadmap-l1i.6.16"
 member_beads = ["sr-roadmap-l1i.6.16"]
@@ -1504,7 +1528,7 @@ status = "planned"
 [[boundaries]]
 id = "p5_acceptance_gate"
 owner_bead = "sr-roadmap-l1i.6.29"
-member_beads = ["sr-roadmap-l1i.6.29", "sr-roadmap-l1i.6.10", "sr-roadmap-l1i.6.11", "sr-roadmap-l1i.6.12", "sr-roadmap-l1i.6.13", "sr-roadmap-l1i.6.14", "sr-roadmap-l1i.6.15", "sr-roadmap-l1i.6.17", "sr-roadmap-l1i.6.18", "sr-roadmap-l1i.6.19", "sr-roadmap-l1i.6.2", "sr-roadmap-l1i.6.20", "sr-roadmap-l1i.6.21", "sr-roadmap-l1i.6.22", "sr-roadmap-l1i.6.23", "sr-roadmap-l1i.6.24", "sr-roadmap-l1i.6.25", "sr-roadmap-l1i.6.26", "sr-roadmap-l1i.6.27", "sr-roadmap-l1i.6.3", "sr-roadmap-l1i.6.7", "sr-roadmap-l1i.6.8", "sr-roadmap-l1i.6.9"]
+member_beads = ["sr-roadmap-l1i.6.29", "sr-roadmap-l1i.6.10", "sr-roadmap-l1i.6.11", "sr-roadmap-l1i.6.12", "sr-roadmap-l1i.6.13", "sr-roadmap-l1i.6.14", "sr-roadmap-l1i.6.15", "sr-roadmap-l1i.6.17", "sr-roadmap-l1i.6.18", "sr-roadmap-l1i.6.19", "sr-roadmap-l1i.6.2", "sr-roadmap-l1i.6.20", "sr-roadmap-l1i.6.21", "sr-roadmap-l1i.6.22", "sr-roadmap-l1i.6.23", "sr-roadmap-l1i.6.24", "sr-roadmap-l1i.6.25", "sr-roadmap-l1i.6.26", "sr-roadmap-l1i.6.27", "sr-roadmap-l1i.6.3", "sr-roadmap-l1i.6.7", "sr-roadmap-l1i.6.9"]
 phase = "P5"
 title = "Accept local evidence, faithful replay and bounded evaluation"
 unit_property_tests = ["tests/p5_gate.rs::all_p5_contracts_verified"]

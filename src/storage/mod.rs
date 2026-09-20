@@ -25,7 +25,8 @@ pub use ledger::{
     NewProviderAttempt, NewRankingCandidate, NewRankingEvent, NewRosterSnapshot,
     PairedCorrectionRequest, PendingMigration, ProposalStatus, PrunePreview, PruneReport,
     RetainedStats, SingleFeedbackRequest, SnapshotMember, format_unix_ms, init_ledger,
-    ledger_status, open_ledger, parse_cutoff_to_unix_ms, record_ranking, submit_feedback,
+    ledger_status, open_ledger, parse_cutoff_to_unix_ms, record_acknowledgment, record_emission,
+    record_ranking, submit_feedback,
 };
 
 use crate::blocking::{BlockingLeafKind, remaining_busy_wait, run_blocking_leaf};

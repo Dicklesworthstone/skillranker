@@ -492,11 +492,26 @@ fn command() -> Command {
 pub fn run(clock: EntryClock) -> u8 {
     let args: Vec<OsString> = std::env::args_os().collect();
     let wants_json = args.iter().any(|arg| arg == "--json") || !io::stdout().is_terminal();
+    let location = if let Some(dir) = try_extract_dir(&args) {
+        crate::storage::LedgerLocation::Directory(dir)
+    } else {
+        crate::storage::LedgerLocation::Platform
+    };
     match execute(&clock, args) {
-        Ok(output) => match io::stdout().lock().write_all(output.as_bytes()) {
-            Ok(()) => 0,
-            Err(_) => 1,
-        },
+        Ok(output) => {
+            let bytes_len = output.len();
+            match io::stdout().lock().write_all(output.as_bytes()) {
+                Ok(()) => {
+                    if bytes_len > 0 {
+                        if let Some(event_id) = try_extract_event_id(&output) {
+                            let _ = try_record_cli_emission(&clock, location, &event_id, bytes_len);
+                        }
+                    }
+                    0
+                }
+                Err(_) => 1,
+            }
+        }
         Err((code, kind, message)) => {
             if wants_json {
                 if message.trim_start().starts_with('{')
@@ -539,6 +554,62 @@ pub fn run(clock: EntryClock) -> u8 {
             code
         }
     }
+}
+
+fn try_extract_dir(args: &[OsString]) -> Option<PathBuf> {
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        if arg == "--dir" {
+            if let Some(next) = iter.next() {
+                return Some(PathBuf::from(next));
+            }
+        } else if let Some(s) = arg.to_str() {
+            if let Some(stripped) = s.strip_prefix("--dir=") {
+                return Some(PathBuf::from(stripped));
+            }
+        }
+    }
+    None
+}
+
+fn try_extract_event_id(output: &str) -> Option<String> {
+    let trimmed = output.trim();
+    if trimmed.starts_with('{') {
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(trimmed) {
+            if let Some(id) = val.get("event_id").and_then(|v| v.as_str()) {
+                return Some(id.to_string());
+            }
+            if let Some(local) = val.get("local_decision") {
+                if let Some(id) = local.get("event_id").and_then(|v| v.as_str()) {
+                    return Some(id.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+fn try_record_cli_emission(
+    clock: &EntryClock,
+    location: crate::storage::LedgerLocation,
+    event_id: &str,
+    bytes_written: usize,
+) -> bool {
+    let Ok(invocation) = crate::runtime::ProcessInvocation::from_clock(*clock) else {
+        return false;
+    };
+    let Ok(cx) = invocation.request_cx() else {
+        return false;
+    };
+    crate::storage::record_emission(
+        &invocation,
+        &cx,
+        crate::storage::LedgerAccess::ExistingOnly,
+        location,
+        event_id,
+        bytes_written,
+    )
+    .unwrap_or(false)
 }
 
 pub type Failure = (u8, &'static str, String);

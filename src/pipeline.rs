@@ -566,6 +566,13 @@ async fn rank_once(
     // The entry point already folded `--dry-run` into the gate.
     let gate = args.gate;
     let dry_run = gate.policy().flags().dry_run;
+    let mode_channel: &'static str = if dry_run {
+        "shadow"
+    } else if args.source_options.claude_hook {
+        "advisory-hook"
+    } else {
+        "cli"
+    };
     progress.evaluated.ledger_disabled = matches!(gate.ledger(), StoreAccess::Disabled(_));
     if args.save_case.is_some() {
         progress.capture = Some(CaseCapture::default());
@@ -1066,6 +1073,7 @@ async fn rank_once(
                 &normalized_context,
                 crate::storage::DecisionKind::Explicit,
                 "explicit-match",
+                mode_channel,
                 clock.now().as_millis(),
                 &progress.metrics,
                 &explicit_candidates,
@@ -1293,6 +1301,7 @@ async fn rank_once(
                     &normalized_context,
                     crate::storage::DecisionKind::Abstain,
                     reason.as_str(),
+                    mode_channel,
                     clock.now().as_millis(),
                     &progress.metrics,
                     &[],
@@ -1402,6 +1411,7 @@ async fn rank_once(
             &normalized_context,
             crate::storage::DecisionKind::Abstain,
             "no-shortlist-match",
+            mode_channel,
             clock.now().as_millis(),
             &progress.metrics,
             &[],
@@ -2092,6 +2102,7 @@ async fn rank_once(
                 &normalized_context,
                 crate::storage::DecisionKind::Abstain,
                 "low-need",
+                mode_channel,
                 clock.now().as_millis(),
                 &progress.metrics,
                 &[],
@@ -2290,6 +2301,7 @@ async fn rank_once(
                 choices_probability: choice
                     .normalized_probability(choice.choice())
                     .unwrap_or(0.0),
+                stated_confidence: Some(choice.confidence()),
                 fits,
                 distribution,
             });
@@ -2320,6 +2332,7 @@ async fn rank_once(
                     &normalized_context,
                     crate::storage::DecisionKind::Abstain,
                     reason.as_str(),
+                    mode_channel,
                     clock.now().as_millis(),
                     &progress.metrics,
                     &[],
@@ -2378,6 +2391,7 @@ async fn rank_once(
                     &normalized_context,
                     crate::storage::DecisionKind::Unavailable,
                     reason.as_str(),
+                    mode_channel,
                     clock.now().as_millis(),
                     &progress.metrics,
                     &[],
@@ -2486,6 +2500,7 @@ async fn rank_once(
         &normalized_context,
         crate::storage::DecisionKind::Ranked,
         "eligible-candidates",
+        mode_channel,
         clock.now().as_millis(),
         &progress.metrics,
         &ranking_candidates,
@@ -3510,6 +3525,7 @@ fn try_record_ledger(
     context: &NormalizedContext,
     decision: crate::storage::DecisionKind,
     reason: &str,
+    mode_channel: &str,
     elapsed_ms: u64,
     metrics: &ExecutionMetrics,
     candidates: &[crate::storage::NewRankingCandidate],
@@ -3614,12 +3630,12 @@ fn try_record_ledger(
             .as_ref()
             .map(|b| b.as_str().to_string())
             .unwrap_or_else(|| "main".to_string()),
-        mode_channel: context.harness.as_str().to_string(),
+        mode_channel: mode_channel.to_string(),
         policy_version: "ranking-v1".to_string(),
         schema_version: SCHEMA_VERSION as u32,
         decision,
         reason: reason.to_string(),
-        exposure_state: crate::storage::ExposureState::Generated,
+        exposure_state: crate::storage::ExposureState::Prepared,
         elapsed_ms,
         created_at_unix_ms: invocation.clock().now().as_millis() as u64,
         input_tokens: if metrics.input_tokens > 0 {

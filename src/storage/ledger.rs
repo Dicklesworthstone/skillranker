@@ -4199,6 +4199,156 @@ impl LedgerStore {
             self.stamp,
         ))
     }
+
+    pub fn record_emission(
+        &mut self,
+        clock: EntryClock,
+        cx: &Cx,
+        event_id: &str,
+        bytes_written: usize,
+        expected_stamp: LedgerStamp,
+    ) -> Result<(bool, LedgerStamp), StoreError> {
+        if self.read_only {
+            return Err(StoreError::Permissions);
+        }
+        check_work(clock, cx)?;
+        self.directory.verify_database_file(&self.file, clock, cx)?;
+        self.directory.admit_space()?;
+        refresh_busy_limit(&self.connection, clock, cx)?;
+
+        let tx = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        check_stamp(&tx, expected_stamp)?;
+
+        let row: Option<(String, String)> = tx
+            .query_row(
+                "SELECT mode_channel, exposure_state FROM ranking_events WHERE event_id = ?1",
+                [event_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+
+        let (mode_channel, current_state_str) = match row {
+            Some(r) => r,
+            None => return Err(StoreError::InvalidRecord),
+        };
+
+        // Shadow evaluations with zero bytes written are not exposure:
+        // never transition to emitted.
+        if mode_channel == "shadow" && bytes_written == 0 {
+            return Ok((false, self.stamp));
+        }
+
+        // If zero bytes written for any channel, no emission occurred.
+        if bytes_written == 0 {
+            return Ok((false, self.stamp));
+        }
+
+        let current_state = ExposureState::parse_str(&current_state_str).unwrap_or(ExposureState::Unknown);
+        if current_state == ExposureState::Emitted || current_state == ExposureState::Acknowledged {
+            return Ok((true, self.stamp));
+        }
+
+        tx.execute(
+            "UPDATE ranking_events SET exposure_state = ?1 WHERE event_id = ?2",
+            params![ExposureState::Emitted.as_str(), event_id],
+        )?;
+
+        let new_data_gen = expected_stamp
+            .data_generation
+            .checked_add(1)
+            .ok_or(StoreError::GenerationExhausted)?;
+
+        tx.execute(
+            "UPDATE store_meta SET data_generation = ?1 WHERE singleton = 1",
+            [new_data_gen as i64],
+        )?;
+
+        self.directory.verify_database_file(&self.file, clock, cx)?;
+        check_work(clock, cx)?;
+        tx.commit()?;
+
+        self.stamp.data_generation = new_data_gen;
+        Ok((true, self.stamp))
+    }
+
+    pub fn record_acknowledgment(
+        &mut self,
+        clock: EntryClock,
+        cx: &Cx,
+        event_id: &str,
+        verified_delivery_key: &str,
+        expected_stamp: LedgerStamp,
+    ) -> Result<(bool, LedgerStamp), StoreError> {
+        if self.read_only {
+            return Err(StoreError::Permissions);
+        }
+        if !bounded_metadata(verified_delivery_key, 256) {
+            return Err(StoreError::InvalidRecord);
+        }
+        check_work(clock, cx)?;
+        self.directory.verify_database_file(&self.file, clock, cx)?;
+        self.directory.admit_space()?;
+        refresh_busy_limit(&self.connection, clock, cx)?;
+
+        let tx = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        check_stamp(&tx, expected_stamp)?;
+
+        // Check for duplicate verified_delivery_key across different events
+        let existing_key: Option<String> = tx
+            .query_row(
+                "SELECT event_id FROM ranking_events WHERE verified_delivery_key = ?1",
+                [verified_delivery_key],
+                |r| r.get(0),
+            )
+            .optional()?;
+
+        if let Some(other_id) = existing_key {
+            if other_id != event_id {
+                // Reject duplicate verified delivery key across different events
+                return Err(StoreError::RecordConflict);
+            }
+            // Idempotent re-acknowledgment for same event
+            return Ok((true, self.stamp));
+        }
+
+        let current_state_str: Option<String> = tx
+            .query_row(
+                "SELECT exposure_state FROM ranking_events WHERE event_id = ?1",
+                [event_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+
+        if current_state_str.is_none() {
+            return Err(StoreError::InvalidRecord);
+        }
+
+        tx.execute(
+            "UPDATE ranking_events SET exposure_state = ?1, verified_delivery_key = ?2 WHERE event_id = ?3",
+            params![ExposureState::Acknowledged.as_str(), verified_delivery_key, event_id],
+        )?;
+
+        let new_data_gen = expected_stamp
+            .data_generation
+            .checked_add(1)
+            .ok_or(StoreError::GenerationExhausted)?;
+
+        tx.execute(
+            "UPDATE store_meta SET data_generation = ?1 WHERE singleton = 1",
+            [new_data_gen as i64],
+        )?;
+
+        self.directory.verify_database_file(&self.file, clock, cx)?;
+        check_work(clock, cx)?;
+        tx.commit()?;
+
+        self.stamp.data_generation = new_data_gen;
+        Ok((true, self.stamp))
+    }
 }
 
 pub fn submit_feedback(
@@ -4285,6 +4435,83 @@ pub fn record_ranking(
                 stamp,
             )?;
             Ok(true)
+        },
+    )
+    .map_err(StoreError::Runtime)?;
+    res.value
+}
+
+pub fn record_emission(
+    invocation: &ProcessInvocation,
+    cx: &Cx,
+    access: LedgerAccess,
+    location: LedgerLocation,
+    event_id: &str,
+    bytes_written: usize,
+) -> Result<bool, StoreError> {
+    if access == LedgerAccess::Disabled {
+        return Ok(false);
+    }
+    let clock = invocation.clock();
+    let child = cx.clone();
+    let event_id = event_id.to_string();
+    let res = run_blocking_leaf(
+        invocation,
+        cx,
+        BlockingLeafKind::Database,
+        false,
+        move || {
+            let mut store = match open_blocking(clock, &child, access, location)? {
+                LedgerOpen::Ready(store) => *store,
+                LedgerOpen::Disabled | LedgerOpen::Missing | LedgerOpen::ReadOnly(_) => {
+                    return Ok(false);
+                }
+            };
+            let stamp = store.stamp();
+            let (recorded, _) = store.record_emission(clock, &child, &event_id, bytes_written, stamp)?;
+            Ok(recorded)
+        },
+    )
+    .map_err(StoreError::Runtime)?;
+    res.value
+}
+
+pub fn record_acknowledgment(
+    invocation: &ProcessInvocation,
+    cx: &Cx,
+    access: LedgerAccess,
+    location: LedgerLocation,
+    event_id: &str,
+    verified_delivery_key: &str,
+) -> Result<bool, StoreError> {
+    if access == LedgerAccess::Disabled {
+        return Ok(false);
+    }
+    let clock = invocation.clock();
+    let child = cx.clone();
+    let event_id = event_id.to_string();
+    let verified_delivery_key = verified_delivery_key.to_string();
+    let res = run_blocking_leaf(
+        invocation,
+        cx,
+        BlockingLeafKind::Database,
+        false,
+        move || {
+            let mut store = match open_blocking(clock, &child, access, location)? {
+                LedgerOpen::Ready(store) => *store,
+                LedgerOpen::Disabled | LedgerOpen::Missing | LedgerOpen::ReadOnly(_) => {
+                    return Ok(false);
+                }
+            };
+            let stamp = store.stamp();
+            let (recorded, _) = store.record_acknowledgment(
+                clock,
+                &child,
+                &event_id,
+                &verified_delivery_key,
+                stamp,
+            )?;
+            Ok(recorded)
         },
     )
     .map_err(StoreError::Runtime)?;
