@@ -80,6 +80,16 @@ model identities remain separate from the requested alias; a missing immutable
 revision remains null. Persistence is `recorded`, `disabled`, or `unavailable`;
 recorded metadata does not prove harness delivery.
 
+Those three states describe what actually backed the run. `disabled` means an
+effect flag turned persistence off (`--no-cache`, `--no-ledger`, `--no-persist`
+or `--dry-run`). `recorded` means a qualified store backed this run's cache
+lookups and records. `unavailable` means persistence was permitted but no store
+could be used: no session identity to scope one, a directory the store refuses,
+a replaced store, or an unqualified engine. A run that wanted a cache and could
+not use one also carries the `cache-unavailable` warning, because an uncached
+run that says nothing is indistinguishable from a cached one and silently pays
+for every response twice. The warning names no path, mode or errno.
+
 ## Failure envelopes
 
 A failure before input admission may contain just version, unavailable decision,

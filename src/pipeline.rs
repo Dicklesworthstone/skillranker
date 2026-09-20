@@ -285,6 +285,7 @@ pub async fn execute_pipeline(
             doc,
             progress.cache_recording_failures,
             completion_unconfirmed,
+            progress.evaluated.store_refused,
         )
     });
     let result = result.and_then(|mut doc| {
@@ -389,6 +390,7 @@ pub async fn execute_pipeline(
                             doc,
                             progress.cache_recording_failures,
                             completion_unconfirmed,
+                            progress.evaluated.store_refused,
                         )
                     })
             }
@@ -402,8 +404,9 @@ fn with_storage_warnings(
     doc: OutputDocument,
     cache_recording_failures: u64,
     completion_unconfirmed: bool,
+    store_refused: bool,
 ) -> Result<OutputDocument, PipelineFailure> {
-    if cache_recording_failures == 0 && !completion_unconfirmed {
+    if cache_recording_failures == 0 && !completion_unconfirmed && !store_refused {
         return Ok(doc);
     }
     let mut value = doc.as_value().clone();
@@ -421,6 +424,11 @@ fn with_storage_warnings(
             "coordination-completion-unconfirmed",
             u64::from(completion_unconfirmed),
             "Optional lease completion could not be confirmed",
+        ),
+        (
+            "cache-unavailable",
+            u64::from(store_refused),
+            "Response cache unavailable; this run could not reuse or record responses",
         ),
     ] {
         if count == 0 {
@@ -719,12 +727,17 @@ async fn rank_once(
             // workspace. Without that it has no durable identity, and its cache
             // and lease namespace stays private to this run. A discovered
             // session must still be the one discovery chose.
+            // A relative path is resolved against this invocation's workspace,
+            // once, so reading and attribution agree. Reading the raw relative
+            // path while attributing the resolved one reported a transcript as
+            // "not a regular file" when it was simply named relatively.
+            let transcript_path = if path.as_path().is_absolute() {
+                path.as_path().to_path_buf()
+            } else {
+                args.workspace.join(path.as_path())
+            };
             let session = {
-                let absolute = if path.as_path().is_absolute() {
-                    path.as_path().to_path_buf()
-                } else {
-                    args.workspace.join(path.as_path())
-                };
+                let absolute = transcript_path.clone();
                 let workspace = args.workspace.clone();
                 run_blocking_leaf(
                     invocation,
@@ -747,7 +760,7 @@ async fn rank_once(
             }
             // Snapshot JSONL transcript
             let snapshot =
-                snapshot_jsonl(invocation, cx, path.as_path(), None, CursorKind::Ranking).map_err(
+                snapshot_jsonl(invocation, cx, &transcript_path, None, CursorKind::Ranking).map_err(
                     |e| {
                         failure(
                             7,
@@ -1442,7 +1455,22 @@ async fn rank_once(
     // scope them. Otherwise fingerprints are keyed with fresh randomness and
     // nothing outlives this invocation. An unusable store degrades to that.
     let mut store = match (&args.cache_dir, &normalized_context.session_id) {
-        (Some(dir), Some(_)) => persistent::Store::open(invocation, cx, clock, &gate, dir).await,
+        (Some(dir), Some(_)) => {
+            match persistent::Store::open(invocation, cx, clock, &gate, dir).await {
+                Ok(opened) => {
+                    progress.evaluated.store_backed = opened.is_some();
+                    progress.evaluated.store_disabled = opened.is_none();
+                    opened
+                }
+                // A refused store is a real condition the run must disclose:
+                // an ancestor a group can write to, a replaced directory, an
+                // unqualified engine. Ranking continues uncached.
+                Err(_) => {
+                    progress.evaluated.store_refused = true;
+                    None
+                }
+            }
+        }
         _ => None,
     };
     let cache_key = match &store {
@@ -2651,13 +2679,18 @@ mod persistent {
         /// Open the store, retrying briefly while another process holds its
         /// lock (two processes initializing it at once): an unopened store
         /// means no cache and no single flight for this run.
+        /// `Ok(Some)` opened the store, `Ok(None)` means an effect flag turned
+        /// it off, and `Err` keeps the reason it could not be used. Callers
+        /// disclose that reason: a silently missing cache is indistinguishable
+        /// from a correct refusal, and costs every later run a fresh pair.
         pub(super) async fn open(
             invocation: &ProcessInvocation,
             cx: &Cx,
             clock: &EntryClock,
             gate: &EffectGate,
             dir: &Path,
-        ) -> Option<Self> {
+        ) -> Result<Option<Self>, StoreError> {
+            let mut last = StoreError::Busy;
             for _ in 0..5 {
                 match gate.open_cache(
                     invocation,
@@ -2665,7 +2698,8 @@ mod persistent {
                     CacheAccess::Initialize,
                     CacheLocation::Directory(dir.to_path_buf()),
                 ) {
-                    Ok(CacheOpen::Ready(store)) => return Some(Self(*store)),
+                    Ok(CacheOpen::Ready(store)) => return Ok(Some(Self(*store))),
+                    Ok(_) => return Ok(None),
                     Err(StoreError::Busy)
                         if !cx.is_cancel_requested()
                             && clock.remaining_before_cleanup().as_millis() >= 1_000 =>
@@ -2676,10 +2710,13 @@ mod persistent {
                         )
                         .await;
                     }
-                    _ => return None,
+                    Err(error) => {
+                        last = error;
+                        break;
+                    }
                 }
             }
-            None
+            Err(last)
         }
         pub(super) const fn key(&self) -> CacheKey {
             self.0.fingerprint_key()
@@ -2802,14 +2839,16 @@ mod persistent {
     pub(super) enum Store {}
 
     impl Store {
+        /// No qualified store exists off Linux, so persistence is genuinely
+        /// unavailable rather than disabled by choice.
         pub(super) async fn open(
             _: &ProcessInvocation,
             _: &Cx,
             _: &EntryClock,
             _: &EffectGate,
             _: &Path,
-        ) -> Option<Self> {
-            None
+        ) -> Result<Option<Self>, StoreError> {
+            Err(StoreError::UnqualifiedEngine)
         }
         pub(super) const fn key(&self) -> CacheKey {
             match *self {}
@@ -3153,6 +3192,16 @@ struct Evaluated {
     /// `--no-persist` or `--dry-run`). Otherwise recording is unavailable:
     /// this build has no observation ledger yet.
     ledger_disabled: bool,
+    /// A qualified persistent store backed this run's cache lookups and
+    /// records. Reported as `recorded`.
+    store_backed: bool,
+    /// Persistence was permitted, but no store could be used: a refused
+    /// directory, a replaced store, or an unqualified engine. Disclosed as a
+    /// warning so an uncached run is never silent.
+    store_refused: bool,
+    /// An effect flag turned the response cache off, so nothing persisted by
+    /// choice rather than by failure.
+    store_disabled: bool,
     metrics: ExecutionMetrics,
     eligible: usize,
     wide: usize,
@@ -3172,9 +3221,15 @@ struct Evaluated {
 }
 
 impl Evaluated {
+    /// `disabled` when an effect flag turned persistence off, `recorded` when a
+    /// qualified store actually backed this run, `unavailable` otherwise. It
+    /// reported `unavailable` unconditionally before, which said nothing true
+    /// about a run whose cache was serving hits.
     fn persistence(&self) -> &'static str {
-        if self.ledger_disabled {
+        if self.ledger_disabled || self.store_disabled {
             "disabled"
+        } else if self.store_backed {
+            "recorded"
         } else {
             "unavailable"
         }
