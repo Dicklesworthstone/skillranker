@@ -1,10 +1,7 @@
 //! A command this build plans but has not implemented must say so.
 //!
-//! README documents `sr hook claude`, and `sr capabilities` correctly reports
-//! `hook` as planned for P6, but the parser has no such subcommand, so the
-//! invocation was refused as "Unsupported or conflicting arguments". A user
-//! following the documentation could not tell an unbuilt command from a typo.
-//! The refusal now names the phase and points at the published inventory.
+//! Planned commands name their phase and published inventory. The implemented
+//! Claude hook instead keeps its quiet failure boundary, even without input.
 use serde_json::Value;
 use std::process::Command;
 
@@ -20,7 +17,7 @@ fn run(args: &[&str]) -> (Option<i32>, Value) {
 
 #[test]
 fn a_planned_command_names_the_phase_it_waits_for() {
-    for (command, phase) in [("hook", "P6"), ("stats", "P5"), ("calibrate", "P8")] {
+    for (command, phase) in [("stats", "P5"), ("calibrate", "P8")] {
         let (code, value) = run(&[command, "--json"]);
         assert_eq!(code, Some(2), "{command}: {value}");
         assert_eq!(
@@ -36,12 +33,14 @@ fn a_planned_command_names_the_phase_it_waits_for() {
 }
 
 #[test]
-fn the_documented_hook_invocation_is_refused_with_its_phase() {
-    // The exact line README gives a reader.
-    let (code, value) = run(&["hook", "claude", "--json"]);
-    assert_eq!(code, Some(2), "{value}");
-    let message = value["error"]["message"].as_str().unwrap_or_default();
-    assert!(message.contains("P6"), "{message}");
+fn the_documented_hook_invocation_without_input_fails_quietly() {
+    let output = Command::new(env!("CARGO_BIN_EXE_sr"))
+        .env_clear()
+        .args(["hook", "claude", "--json"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(0));
+    assert!(output.stdout.is_empty(), "hook failures must remain silent");
 }
 
 #[test]
