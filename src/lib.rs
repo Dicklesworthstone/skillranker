@@ -19,6 +19,7 @@ pub mod output;
 pub mod pipeline;
 pub mod privacy;
 pub mod readiness;
+pub mod replay;
 pub mod roster;
 pub mod runtime;
 pub mod scoring;

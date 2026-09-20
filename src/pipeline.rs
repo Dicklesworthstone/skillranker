@@ -2208,12 +2208,10 @@ fn cache_entry(
 /// run continues uncached.
 #[cfg(target_os = "linux")]
 mod persistent {
-    use super::{BlockingLeafKind, run_blocking_leaf};
     use super::{EffectGate, ProcessInvocation, wall_clock_ms};
     use crate::cache::{
-        CacheKey, CachedResponseEntry, CoordinationKey, CoordinationPolicy, FreshnessStatus,
-        LeaderContext, LeaseAcquisition, LeaseCoordinator, PublishOutcome, RequestFingerprint,
-        RequestStage, SqliteLeaseCoordinator,
+        CacheKey, CachedResponseEntry, CoordinationKey, FreshnessStatus, LeaderContext,
+        LeaseAcquisition, PublishOutcome, RequestFingerprint, RequestStage,
     };
     use crate::runtime::EntryClock;
     use crate::storage::{CacheAccess, CacheLocation, CacheOpen, CacheStore, StoreError};
@@ -2221,25 +2219,24 @@ mod persistent {
     use std::path::Path;
     use std::time::Duration;
 
-    /// Single-flight leases live beside the cache store in its private
-    /// directory. They never hold response bodies.
-    pub(super) const LEASES_FILE: &str = "leases.sqlite3";
+    /// Leases and validated response rows share the qualified cache database.
+    pub(super) const LEASES_FILE: &str = crate::storage::CACHE_FILE;
 
-    /// Open the lease coordinator, creating its file owner-only first so
-    /// SQLite and its sidecars inherit private permissions.
-    fn coordinator(path: &Path) -> Option<SqliteLeaseCoordinator> {
-        use std::os::unix::fs::OpenOptionsExt;
-        match std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(path)
-        {
-            Ok(_) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-            Err(_) => return None,
+    fn coordinator(invocation: &ProcessInvocation, cx: &Cx, path: &Path) -> Option<CacheStore> {
+        if path.file_name()? != crate::storage::CACHE_FILE {
+            return None;
         }
-        SqliteLeaseCoordinator::open(path).ok()
+        match crate::storage::open_cache(
+            invocation,
+            cx,
+            CacheAccess::ExistingOnly,
+            CacheLocation::Directory(path.parent()?.to_owned()),
+        )
+        .ok()?
+        {
+            CacheOpen::Ready(store) => Some(*store),
+            CacheOpen::Disabled | CacheOpen::Missing => None,
+        }
     }
 
     /// Acquire the lease, retrying briefly: two processes opening the lease
@@ -2271,41 +2268,25 @@ mod persistent {
         path: &Path,
         key: CoordinationKey,
     ) -> Option<LeaseAcquisition> {
-        let path = path.to_path_buf();
-        run_blocking_leaf(
-            invocation,
-            cx,
-            BlockingLeafKind::Database,
-            false,
-            move || {
-                coordinator(&path)?
-                    .acquire(key, wall_clock_ms(), &CoordinationPolicy::default())
-                    .ok()
-            },
-        )
-        .ok()?
-        .value
+        coordinator(invocation, cx, path)?
+            .acquire_lease(invocation, cx, key, false)
+            .ok()
+            .map(|(_, result)| result)
     }
 
     /// True once the lease is gone, completed or expired. A failed read (for
     /// example SQLite busy) is not settlement: the caller keeps waiting within
     /// the lease and its budget rather than sending a duplicate evaluation.
     fn settled(invocation: &ProcessInvocation, cx: &Cx, path: &Path, key: CoordinationKey) -> bool {
-        let path = path.to_path_buf();
-        run_blocking_leaf(
-            invocation,
-            cx,
-            BlockingLeafKind::Database,
-            false,
-            move || match coordinator(&path).map(|c| c.check_lease(key)) {
-                Some(Ok(Some(lease))) => {
-                    lease.is_completed || wall_clock_ms() >= lease.expires_at_unix_ms
-                }
-                Some(Ok(None)) => true,
-                Some(Err(_)) | None => false,
-            },
-        )
-        .is_ok_and(|outcome| outcome.value)
+        match coordinator(invocation, cx, path)
+            .and_then(|store| store.lease(invocation, cx, key).ok())
+        {
+            Some((_, Some(lease))) => {
+                lease.is_completed || wall_clock_ms() >= lease.expires_at_unix_ms
+            }
+            Some((_, None)) => true,
+            None => false,
+        }
     }
 
     /// Wait for a leader's lease to settle, within the lease and while at
@@ -2337,20 +2318,10 @@ mod persistent {
         path: &Path,
         key: CoordinationKey,
     ) -> Option<LeaseAcquisition> {
-        let path = path.to_path_buf();
-        run_blocking_leaf(
-            invocation,
-            cx,
-            BlockingLeafKind::Database,
-            false,
-            move || {
-                coordinator(&path)?
-                    .force_reacquire(key, wall_clock_ms(), &CoordinationPolicy::default())
-                    .ok()
-            },
-        )
-        .ok()?
-        .value
+        coordinator(invocation, cx, path)?
+            .acquire_lease(invocation, cx, key, true)
+            .ok()
+            .map(|(_, result)| result)
     }
 
     pub(super) fn complete(
@@ -2359,26 +2330,10 @@ mod persistent {
         path: &Path,
         leader: &LeaderContext,
     ) -> Option<PublishOutcome> {
-        let path = path.to_path_buf();
-        let leader = leader.clone();
-        run_blocking_leaf(
-            invocation,
-            cx,
-            BlockingLeafKind::Database,
-            false,
-            move || {
-                coordinator(&path)?
-                    .complete(
-                        leader.key,
-                        leader.owner_token,
-                        leader.fencing_generation,
-                        wall_clock_ms(),
-                    )
-                    .ok()
-            },
-        )
-        .ok()
-        .and_then(|outcome| outcome.value)
+        coordinator(invocation, cx, path)?
+            .complete_lease(invocation, cx, leader.clone())
+            .ok()
+            .map(|(_, result)| result)
     }
 
     pub(super) struct Store(CacheStore);
