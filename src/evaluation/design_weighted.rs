@@ -26,17 +26,43 @@ use std::fmt;
 #[derive(Clone, Debug, PartialEq)]
 pub enum DesignWeightedError {
     InvalidAlpha(f64),
-    AlphaBudgetExceeded { allocated: f64, budget: f64 },
-    InvalidLoss { value: f64 },
+    AlphaBudgetExceeded {
+        allocated: f64,
+        budget: f64,
+    },
+    InvalidLoss {
+        value: f64,
+    },
     EmptyFrame,
-    EmptyStratum { stratum: String },
-    ZeroSampleSize { stratum: String },
-    SampleExceedsPopulation { stratum: String, sample: usize, population: usize },
-    NonFiniteWeight { stratum: String, weight: f64 },
-    InconsistentWeights { sum: f64 },
-    UnknownStratum { stratum: String },
-    InconsistentSampleCount { stratum: String, expected: usize, actual: usize },
-    MissingAllocation { stratum: String },
+    EmptyStratum {
+        stratum: String,
+    },
+    ZeroSampleSize {
+        stratum: String,
+    },
+    SampleExceedsPopulation {
+        stratum: String,
+        sample: usize,
+        population: usize,
+    },
+    NonFiniteWeight {
+        stratum: String,
+        weight: f64,
+    },
+    InconsistentWeights {
+        sum: f64,
+    },
+    UnknownStratum {
+        stratum: String,
+    },
+    InconsistentSampleCount {
+        stratum: String,
+        expected: usize,
+        actual: usize,
+    },
+    MissingAllocation {
+        stratum: String,
+    },
 }
 
 impl fmt::Display for DesignWeightedError {
@@ -75,7 +101,10 @@ impl fmt::Display for DesignWeightedError {
                 write!(f, "stratum '{stratum}' weight must be finite, got {weight}")
             }
             Self::InconsistentWeights { sum } => {
-                write!(f, "stratum weights sum {sum} must equal 1.0 within numerical tolerance")
+                write!(
+                    f,
+                    "stratum weights sum {sum} must equal 1.0 within numerical tolerance"
+                )
             }
             Self::UnknownStratum { stratum } => {
                 write!(f, "case references unknown stratum '{stratum}'")
@@ -112,10 +141,10 @@ pub enum SampledCaseLoss {
 impl SampledCaseLoss {
     /// Validates that an observed loss is finite and in $[0.0, 1.0]$.
     pub fn validate(&self) -> Result<(), DesignWeightedError> {
-        if let Self::Observed(v) = *self {
-            if !v.is_finite() || !(0.0..=1.0).contains(&v) {
-                return Err(DesignWeightedError::InvalidLoss { value: v });
-            }
+        if let Self::Observed(v) = *self
+            && (!v.is_finite() || !(0.0..=1.0).contains(&v))
+        {
+            return Err(DesignWeightedError::InvalidLoss { value: v });
         }
         Ok(())
     }
@@ -314,7 +343,7 @@ impl MultiEndpointAlphaAllocation {
     ) -> Result<Self, DesignWeightedError> {
         validate_alpha(total_alpha)?;
         let mut sum = 0.0;
-        for (&ref _name, &alpha_m) in &allocations {
+        for &alpha_m in allocations.values() {
             validate_alpha(alpha_m)?;
             sum += alpha_m;
         }
@@ -540,9 +569,7 @@ pub fn compute_design_weighted_loss(
         );
     }
 
-    let r_hat_observed = if all_strata_have_observed && total_missing_labels == 0 {
-        Some(r_hat_observed_acc)
-    } else if all_strata_have_observed {
+    let r_hat_observed = if all_strata_have_observed {
         Some(r_hat_observed_acc)
     } else {
         None
