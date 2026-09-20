@@ -24,6 +24,6 @@ pub mod replay;
 pub mod roster;
 pub mod runtime;
 pub mod scoring;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub mod storage;
 pub mod subprocess;

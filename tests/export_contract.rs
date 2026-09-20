@@ -1,4 +1,4 @@
-#![cfg(target_os = "linux")]
+#![cfg(any(target_os = "linux", target_os = "macos"))]
 
 use skillranker::storage::export::{ExportConfig, ExportError, export_private_atomic};
 use std::fs::{self, DirBuilder};

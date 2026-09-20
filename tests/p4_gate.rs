@@ -1,4 +1,4 @@
-#![cfg(target_os = "linux")]
+#![cfg(any(target_os = "linux", target_os = "macos"))]
 //! Phase P4 Acceptance Gate: Useful Core CLI, Pure Ranking, and Exact Cache.
 //!
 //! Satisfies contract boundary `p4_core_cli_acceptance` (sr-roadmap-l1i.5.21)

@@ -13,7 +13,7 @@
 //! 9. Zero duplicate attempt charges: Follower incurs 0 new requests, 0 new tokens; missing usage remains unknown.
 //! 10. Private bounded SQLite: Qualified engine checked, open with NOFOLLOW, WAL, and defensive pragmas.
 
-#![cfg(target_os = "linux")]
+#![cfg(any(target_os = "linux", target_os = "macos"))]
 
 use rusqlite::Connection;
 use skillranker::cache::{

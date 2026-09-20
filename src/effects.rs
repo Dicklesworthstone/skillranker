@@ -150,7 +150,7 @@ impl EffectGate {
     }
 
     /// Cache access for a caller that would otherwise request `requested`.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub const fn cache_access(
         self,
         requested: crate::storage::CacheAccess,
@@ -163,7 +163,7 @@ impl EffectGate {
 
     /// Open the response cache through this gate. A disabled cache returns
     /// before any path resolution, engine inspection or file access.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub fn open_cache(
         self,
         invocation: &crate::runtime::ProcessInvocation,

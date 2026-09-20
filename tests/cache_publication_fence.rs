@@ -1,4 +1,4 @@
-#![cfg(target_os = "linux")]
+#![cfg(any(target_os = "linux", target_os = "macos"))]
 //! Real lease and production cache stores; no model or storage doubles.
 use skillranker::cache::{
     CachedResponseEntry, CoordinationKey, LeaderContext, LeaseAcquisition, RequestFingerprint,

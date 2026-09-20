@@ -2558,11 +2558,11 @@ fn cache_entry(
     }
 }
 
-/// The persistent exact response cache. Only Linux has the qualified store;
+/// The persistent exact response cache. Linux and macOS use the qualified store;
 /// elsewhere every run keys fingerprints with fresh randomness and caches
 /// nothing. Store failures never fail ranking: the store is dropped and the
 /// run continues uncached.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod persistent {
     use super::{EffectGate, ProcessInvocation, wall_clock_ms};
     use crate::cache::{
@@ -2804,7 +2804,7 @@ mod persistent {
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 mod persistent {
     use super::{EffectGate, ProcessInvocation};
     use crate::cache::{

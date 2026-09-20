@@ -170,6 +170,7 @@ pub fn export_private_atomic(
             .map_err(ExportError::Io)?
             .join(parent)
     };
+    let parent_path = super::platform::storage_path(parent_path);
     let directory = open_destination_directory(&parent_path)?;
     match fstatat(&directory, name, AtFlags::AT_SYMLINK_NOFOLLOW) {
         Ok(_) => return Err(ExportError::TargetAlreadyExists(target_path.to_owned())),
@@ -235,6 +236,7 @@ fn validate_directory(stat: &FileStat, leaf: bool) -> Result<(), ExportError> {
 }
 
 fn open_destination_directory(path: &Path) -> Result<File, ExportError> {
+    let path = super::platform::storage_path(path.to_owned());
     if !path.is_absolute() || path.as_os_str().len() > 4096 {
         return Err(ExportError::InvalidDirectory(
             "destination path exceeds bounds".into(),

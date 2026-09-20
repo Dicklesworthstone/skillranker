@@ -1,4 +1,4 @@
-#![cfg(target_os = "linux")]
+#![cfg(any(target_os = "linux", target_os = "macos"))]
 //! The central effect gate against real boundaries, for every flag combination:
 //! cache files on disk, a cass child process, provider sockets, configuration
 //! reads and explicit resolution. Each prohibited effect has an observed

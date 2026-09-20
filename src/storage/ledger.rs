@@ -1,4 +1,4 @@
-//! Qualified Linux observation ledger storage.
+//! Qualified local observation ledger storage.
 //!
 //! Stores execution events, session cursors, roster snapshots, candidate scoring,
 //! provider attempts, observations, judgments, feedback proposals, and calibrations
@@ -6,6 +6,7 @@
 //!
 //! Every mutation is fenced by store incarnation, schema generation, and data generation.
 
+use super::platform::{DirectoryIdentity, local_filesystem, storage_path};
 use crate::blocking::{BlockingLeafKind, remaining_busy_wait, run_blocking_leaf};
 use crate::runtime::{EntryClock, ProcessInvocation};
 use crate::storage::{EngineIdentity, StoreError, check_work, linked_engine};
@@ -13,9 +14,7 @@ use asupersync::Cx;
 use nix::errno::Errno;
 use nix::fcntl::{AtFlags, OFlag, open, openat};
 use nix::sys::stat::{FileStat, Mode, SFlag, fstat, fstatat, mkdirat};
-use nix::sys::statfs::{
-    BTRFS_SUPER_MAGIC, EXT4_SUPER_MAGIC, FsType, TMPFS_MAGIC, XFS_SUPER_MAGIC, fstatfs,
-};
+use nix::sys::statfs::fstatfs;
 use nix::sys::statvfs::fstatvfs;
 use rusqlite::{
     Connection, ErrorCode, OpenFlags, OptionalExtension, TransactionBehavior, config::DbConfig,
@@ -1368,13 +1367,6 @@ fn trusted_ancestor(stat: &FileStat, uid: u32, leaf: bool) -> Result<(), StoreEr
     Ok(())
 }
 
-fn local_filesystem(kind: FsType) -> bool {
-    matches!(
-        kind,
-        EXT4_SUPER_MAGIC | BTRFS_SUPER_MAGIC | XFS_SUPER_MAGIC | TMPFS_MAGIC
-    )
-}
-
 fn recording_capacity(bytes: u64, available: u128) -> Result<(), StoreError> {
     if bytes > LEDGER_QUOTA_BYTES - LEDGER_MAINTENANCE_RESERVE_BYTES - LEDGER_MUTATION_RESERVE_BYTES
     {
@@ -1389,7 +1381,7 @@ fn recording_capacity(bytes: u64, available: u128) -> Result<(), StoreError> {
 pub(crate) struct PrivateLedgerDirectory {
     pub path: PathBuf,
     handle: File,
-    identity: (u64, u64),
+    identity: DirectoryIdentity,
     simulated_available_disk_bytes: Option<u64>,
 }
 
@@ -1400,6 +1392,7 @@ impl PrivateLedgerDirectory {
         clock: EntryClock,
         cx: &Cx,
     ) -> Result<Self, StoreError> {
+        let path = storage_path(path);
         if !path.is_absolute() || path.as_os_str().len() > 4096 {
             return Err(StoreError::UnsafePath);
         }
@@ -1422,7 +1415,7 @@ impl PrivateLedgerDirectory {
             let name = component.as_os_str();
             let opened = match openat(&handle, name, flags, Mode::empty()) {
                 Err(Errno::ENOENT) if create => {
-                    if !local_filesystem(fstatfs(&handle).map_err(io_error)?.filesystem_type()) {
+                    if !local_filesystem(&fstatfs(&handle).map_err(io_error)?) {
                         return Err(StoreError::UnsupportedFilesystem);
                     }
                     match mkdirat(&handle, name, Mode::from_bits_truncate(0o700)) {
@@ -1591,7 +1584,7 @@ impl PrivateLedgerDirectory {
     }
 
     pub fn admit_space(&self) -> Result<(), StoreError> {
-        if !local_filesystem(fstatfs(&self.handle).map_err(io_error)?.filesystem_type()) {
+        if !local_filesystem(&fstatfs(&self.handle).map_err(io_error)?) {
             return Err(StoreError::UnsupportedFilesystem);
         }
         let bytes = self.inspect_files()?;

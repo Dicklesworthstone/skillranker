@@ -2045,7 +2045,7 @@ fn snapshot_failure(error: crate::roster::snapshot::SnapshotError) -> Failure {
 }
 
 /// Export an owner-only snapshot without replacing any existing file.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn export_snapshot(
     snapshot: &crate::roster::snapshot::Snapshot,
     target: &Path,
@@ -2079,7 +2079,7 @@ fn export_snapshot(
     Ok(format!("{receipt}\n"))
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn export_snapshot(
     _snapshot: &crate::roster::snapshot::Snapshot,
     _target: &Path,

@@ -1,4 +1,4 @@
-#![cfg(target_os = "linux")]
+#![cfg(any(target_os = "linux", target_os = "macos"))]
 //! P2 acceptance gate: every eligible output of discovery, resolution and
 //! retrieval maps to a currently authorized local record. Each admitted option
 //! names a file inside a documented root whose present bytes hash to the

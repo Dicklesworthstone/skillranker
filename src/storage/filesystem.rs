@@ -1,5 +1,6 @@
 //! Private, local cache directory admission. All opens walk trusted descriptors.
 
+use super::platform::{DirectoryIdentity, local_filesystem, storage_path};
 use super::{
     CACHE_FILE, CACHE_QUOTA_BYTES, CacheCapacityReport, MAINTENANCE_RESERVE_BYTES,
     MUTATION_RESERVE_BYTES, StoreError, check_work,
@@ -9,9 +10,7 @@ use asupersync::Cx;
 use nix::errno::Errno;
 use nix::fcntl::{AtFlags, OFlag, open, openat};
 use nix::sys::stat::{FileStat, Mode, SFlag, fstat, fstatat, mkdirat};
-use nix::sys::statfs::{
-    BTRFS_SUPER_MAGIC, EXT4_SUPER_MAGIC, FsType, TMPFS_MAGIC, XFS_SUPER_MAGIC, fstatfs,
-};
+use nix::sys::statfs::fstatfs;
 use nix::sys::statvfs::fstatvfs;
 use std::collections::BTreeSet;
 use std::fs::File;
@@ -20,7 +19,7 @@ use std::path::{Component, Path, PathBuf};
 pub(super) struct PrivateDirectory {
     pub path: PathBuf,
     handle: File,
-    identity: (u64, u64),
+    identity: DirectoryIdentity,
 }
 
 fn io_error(error: Errno) -> StoreError {
@@ -60,13 +59,6 @@ fn trusted_ancestor(stat: &FileStat, uid: u32, leaf: bool) -> Result<(), StoreEr
     Ok(())
 }
 
-fn local_filesystem(kind: FsType) -> bool {
-    matches!(
-        kind,
-        EXT4_SUPER_MAGIC | BTRFS_SUPER_MAGIC | XFS_SUPER_MAGIC | TMPFS_MAGIC
-    )
-}
-
 fn recording_capacity(bytes: u64, available: u128) -> Result<(), StoreError> {
     if bytes > CACHE_QUOTA_BYTES - MAINTENANCE_RESERVE_BYTES - MUTATION_RESERVE_BYTES {
         return Err(StoreError::Quota);
@@ -84,6 +76,7 @@ impl PrivateDirectory {
         clock: EntryClock,
         cx: &Cx,
     ) -> Result<Self, StoreError> {
+        let path = storage_path(path);
         // Bound path parsing before collecting components or making syscalls.
         if !path.is_absolute() || path.as_os_str().len() > 4096 {
             return Err(StoreError::UnsafePath);
@@ -107,7 +100,7 @@ impl PrivateDirectory {
             let name = component.as_os_str();
             let opened = match openat(&handle, name, flags, Mode::empty()) {
                 Err(Errno::ENOENT) if create => {
-                    if !local_filesystem(fstatfs(&handle).map_err(io_error)?.filesystem_type()) {
+                    if !local_filesystem(&fstatfs(&handle).map_err(io_error)?) {
                         return Err(StoreError::UnsupportedFilesystem);
                     }
                     match mkdirat(&handle, name, Mode::from_bits_truncate(0o700)) {
@@ -248,7 +241,7 @@ impl PrivateDirectory {
     }
 
     pub fn admit_space(&self) -> Result<(), StoreError> {
-        if !local_filesystem(fstatfs(&self.handle).map_err(io_error)?.filesystem_type()) {
+        if !local_filesystem(&fstatfs(&self.handle).map_err(io_error)?) {
             return Err(StoreError::UnsupportedFilesystem);
         }
         let bytes = self.inspect_files()?;
@@ -337,23 +330,5 @@ mod tests {
             recording_capacity(0, required - 1),
             Err(StoreError::InsufficientSpace)
         );
-    }
-    #[test]
-    fn only_qualified_local_filesystems_are_admitted() {
-        for kind in [
-            EXT4_SUPER_MAGIC,
-            BTRFS_SUPER_MAGIC,
-            XFS_SUPER_MAGIC,
-            TMPFS_MAGIC,
-        ] {
-            assert!(local_filesystem(kind));
-        }
-        for kind in [
-            nix::sys::statfs::NFS_SUPER_MAGIC,
-            nix::sys::statfs::FUSE_SUPER_MAGIC,
-            FsType(0),
-        ] {
-            assert!(!local_filesystem(kind));
-        }
     }
 }

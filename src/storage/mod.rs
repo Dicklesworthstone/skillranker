@@ -1,4 +1,4 @@
-//! Qualified Linux cache storage. Ledger and allowance stores are separate.
+//! Qualified local cache storage. Ledger and allowance stores are separate.
 //!
 //! Disk work runs on the invocation's bounded blocking pool. SQLite progress
 //! cancellation and busy limits bound cooperative work; they cannot interrupt
@@ -6,6 +6,7 @@
 
 pub mod export;
 mod filesystem;
+mod platform;
 pub mod ledger;
 
 pub use export::{
