@@ -62,9 +62,15 @@ fn temp_workspace(name: &str) -> PathBuf {
         .recursive(true)
         .create(&root)
         .unwrap();
-    fs::create_dir_all(root.join("home")).unwrap();
-    fs::create_dir_all(root.join("config")).unwrap();
-    fs::create_dir_all(root.join("workspace/.claude/skills")).unwrap();
+    // These are successful private-export fixtures. Do not let a worker's
+    // umask 002 turn their ancestors into group-writable directories.
+    for relative in ["home", "config", "workspace/.claude/skills"] {
+        fs::DirBuilder::new()
+            .mode(0o700)
+            .recursive(true)
+            .create(root.join(relative))
+            .unwrap();
+    }
     root
 }
 
