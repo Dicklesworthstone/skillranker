@@ -32,6 +32,14 @@ after three short-deadline failures in a concurrent run. Physical Intel hardware
 and HFS+ storage have not been exercised. No signed multi-platform release is
 claimed.
 
+The native macOS validation at `6b5d17c` passed 1,001 tests with zero failures
+and 10 explicitly ignored cases. The same source snapshot passed 129 focused
+Linux portability tests with one ignored case. Native all-target checking passed;
+strict Clippy passed after the integration lint fixes through `34cb1fe`.
+The later portable SQLite qualification change at `8523ab6` passed 88 native
+library, coordination, and storage tests with two ignored cases. These results
+describe those revisions, not every subsequent change to `main`.
+
 ## Acquisition and verification
 
 An explicit `--version` wins. Otherwise the online path resolves the latest
