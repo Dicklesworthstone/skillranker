@@ -1206,14 +1206,21 @@ member_beads = ["sr-roadmap-l1i.6.1"]
 phase = "P5"
 title = "Implement observation ledger schema and repositories"
 unit_property_tests = [
-    "tests/storage_contract.rs::observation_ledger_schema"
+    "tests/ledger_schema_contract.rs::ledger_initialization_creates_tables_and_metadata",
+    "tests/ledger_schema_contract.rs::ledger_foreign_keys_and_uniqueness_enforced",
+    "tests/ledger_schema_contract.rs::ledger_session_cursors_distinct_watermarks",
+    "tests/ledger_schema_contract.rs::ledger_roster_snapshot_stores_membership_without_skill_bodies",
+    "tests/ledger_schema_contract.rs::ledger_provider_attempts_and_calibrations_lifecycle",
+    "tests/ledger_schema_contract.rs::ledger_store_incarnation_and_generation_fencing",
+    "tests/ledger_schema_contract.rs::ledger_handle_rejects_same_directory_database_replacement",
+    "tests/ledger_schema_contract.rs::ledger_handle_uses_current_context_after_opener_cancel_or_expiry"
 ]
 e2e_suite = "replay"
 e2e_cases = ["ledger-schema", "ledger-repositories"]
 assertion_ids = ["storage_intact"]
 platforms = ["linux"]
 features = []
-status = "planned"
+status = "executed"
 
 [[boundaries]]
 id = "p5_offline_replay"
