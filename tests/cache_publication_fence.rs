@@ -11,7 +11,7 @@ use skillranker::storage::{
 };
 use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 fn now() -> u64 {
     u64::try_from(

@@ -60,14 +60,20 @@ directory (`$XDG_CACHE_HOME/sr` or `~/.cache/sr`).
 - **Recording:** fresh answers are recorded after local evaluation, with receipt
   time as wall-clock milliseconds and the ten-minute TTL.
 - **Single flight:** on a miss, one process per exact request (namespace plus
-  wide request fingerprint) sends. It holds a fenced lease in `leases.sqlite3`
-  beside the store; the lease file is owner-only and never holds response
-  bodies. Another process with the same request waits for that lease, keeping
-  at least a second of its own budget, and is then served the recorded pair
-  with zero usage. If the leader recorded nothing, the follower sends itself.
-  The leader releases its lease on every path. `--no-cache` and `--no-persist`
-  disable cross-process sharing.
-- **Failure:** an unusable store never fails ranking; the run continues uncached.
+  wide request fingerprint) sends. Its lease and response rows share the
+  qualified `cache.sqlite3`. Ownership, generation, completion status, and
+  expiry are checked inside the response-write transaction, preventing a
+  superseded leader from overwriting a successor's response. Another process
+  waits within its remaining budget and can consume the exact recorded pair
+  with zero new usage. A missing or partial pair requires reacquiring leadership
+  before sending; an active follower cannot bypass its leader near timeout.
+  No transaction spans HTTP. Completion is a later bounded metadata operation;
+  a crash can leave an incomplete lease until expiry. `--no-cache` and
+  `--no-persist` disable cross-process sharing.
+- **Failure:** an unusable optional store permits uncached ranking. Recording
+  failures and unconfirmed lease completion preserve valid answers with bounded
+  warnings. Confirmed lease supersession withholds the result. Incompatible
+  older caches are preserved without automatic migration or deletion.
 
 ## Verification
 

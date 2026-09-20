@@ -150,7 +150,7 @@ fn repeated_initialization_preserves_identity_generation_and_private_wal_files()
             .unwrap(),
         "wal"
     );
-    // Schema v2 holds exactly the metadata, key and response tables.
+    // Schema v3 holds exactly metadata, key, responses and ownership leases.
     let mut tables = observer
         .prepare("SELECT name FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY name")
         .unwrap()
@@ -161,7 +161,12 @@ fn repeated_initialization_preserves_identity_generation_and_private_wal_files()
     tables.sort();
     assert_eq!(
         tables,
-        ["sr_cache_key", "sr_cache_meta", "sr_cache_response"]
+        [
+            "sr_cache_key",
+            "sr_cache_meta",
+            "sr_cache_response",
+            "sr_coordination_leases"
+        ]
     );
     assert!(!format!("{second:?}").contains(path.to_str().unwrap()));
 }

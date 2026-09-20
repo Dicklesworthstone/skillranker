@@ -1,12 +1,11 @@
 //! Tests for replay case validation, safe import, and policy comparison (sr-roadmap-l1i.6.14, sr-roadmap-l1i.6.16).
 
 use serde_json::json;
-use skillranker::output::{GateStatus, OutputDocument, RunStatus, SCHEMA_VERSION};
+use skillranker::output::{CliExit, GateStatus, RunStatus, SCHEMA_VERSION};
 use skillranker::replay::{
-    CandidateFitItem, CapturedCandidate, CapturedLoadedReference, CapturedLocalEvidence,
-    CapturedRequest, CapturedScoringProfile, ChoiceDistributionItem, RecordedRerankChoice,
-    RecordedResponses, RecordedWideChoice, ReplayCase, ReplayManifest, ReplayPolicy,
-    execute_replay,
+    CandidateFitItem, CapturedCandidate, CapturedLocalEvidence, CapturedRequest,
+    CapturedScoringProfile, ChoiceDistributionItem, RecordedRerankChoice, RecordedResponses,
+    RecordedWideChoice, ReplayCase, ReplayManifest, ReplayPolicy, execute_replay,
 };
 use std::fs;
 use std::os::unix::fs::DirBuilderExt;
@@ -30,6 +29,25 @@ fn temp_replay_dir(name: &str) -> PathBuf {
     dir
 }
 
+fn ranked_decision_fixture() -> serde_json::Value {
+    let mut v: serde_json::Value =
+        serde_json::from_str(include_str!("fixtures/output-ranked.v1.json")).unwrap();
+    v["skills"][0]["skill_id"] = json!("s_triage");
+    v["skills"][0]["name"] = json!("rust-test-triage");
+    v["skills"][0]["invocation_name"] = json!("rust-test-triage");
+    v["skills"][1]["skill_id"] = json!("s_review");
+    v["skills"][1]["name"] = json!("rust-code-review");
+    v["skills"][1]["invocation_name"] = json!("rust-code-review");
+    v
+}
+
+fn abstain_decision_fixture(reason: &str) -> serde_json::Value {
+    let mut v: serde_json::Value =
+        serde_json::from_str(include_str!("fixtures/output-abstain.v1.json")).unwrap();
+    v["reason"] = json!(reason);
+    v
+}
+
 fn sample_ranked_case() -> ReplayCase {
     ReplayCase {
         schema_version: SCHEMA_VERSION,
@@ -49,7 +67,8 @@ fn sample_ranked_case() -> ReplayCase {
                 CapturedCandidate {
                     skill_id: "s_triage".into(),
                     invocation_name: "rust-test-triage".into(),
-                    content_hash: "0000000000000000000000000000000000000000000000000000000000000001".into(),
+                    content_hash:
+                        "0000000000000000000000000000000000000000000000000000000000000001".into(),
                     source: "workspace".into(),
                     usage_kind: "workflow".into(),
                     description: Some("Triage failing rust tests".into()),
@@ -58,7 +77,8 @@ fn sample_ranked_case() -> ReplayCase {
                 CapturedCandidate {
                     skill_id: "s_review".into(),
                     invocation_name: "rust-code-review".into(),
-                    content_hash: "0000000000000000000000000000000000000000000000000000000000000002".into(),
+                    content_hash:
+                        "0000000000000000000000000000000000000000000000000000000000000002".into(),
                     source: "workspace".into(),
                     usage_kind: "workflow".into(),
                     description: Some("Review rust code".into()),
@@ -128,38 +148,7 @@ fn sample_ranked_case() -> ReplayCase {
                 top_k: 5,
             },
         },
-        historical_decision: json!({
-            "schema_version": SCHEMA_VERSION,
-            "event_id": "event-historical-001",
-            "decision": "ranked",
-            "reason": "eligible-candidates",
-            "harness": "claude_code",
-            "context_quality": "complete",
-            "quality": {
-                "prompt_complete": true,
-                "visible_roster_complete": true,
-                "attribution_quality": "exact"
-            },
-            "skills": [
-                {
-                    "skill_id": "s_triage",
-                    "invocation_name": "rust-test-triage",
-                    "content_hash": "0000000000000000000000000000000000000000000000000000000000000001",
-                    "utility": 0.85,
-                    "normalized_score": 0.80,
-                    "rerank_probability": 0.80,
-                    "fit": 0.90
-                }
-            ],
-            "scoring": {
-                "omitted_mass": 0.20,
-                "weights": {
-                    "fit": 1.0,
-                    "prior": 0.0,
-                    "phase": 0.0
-                }
-            }
-        }),
+        historical_decision: ranked_decision_fixture(),
     }
 }
 
@@ -174,27 +163,13 @@ fn replay_case_validates_and_roundtrips() {
 
 #[test]
 fn replay_case_rejects_duplicate_json_keys() {
-    let duplicate_json = r#"{
-        "schema_version": 1,
-        "schema_version": 1,
-        "case_id": "case-dup",
-        "created_at_unix_ms": 1,
-        "manifest": {"evidence_origin": "recorded", "adapter": "claude", "stages_recorded": []},
-        "captured_request": {"candidate_options": []},
-        "recorded_responses": {},
-        "local_evidence": {
-            "as_of_unix_ms": 1,
-            "scoring_profile": {"gate_threshold": 0.3, "fit_threshold": 0.3, "w_fit": 1.0, "w_prior": 0.0, "w_phase": 0.0, "top_k": 5}
-        },
-        "historical_decision": {
-            "schema_version": 1,
-            "decision": "abstain",
-            "reason": "low-fit",
-            "harness": "claude",
-            "context_quality": "complete",
-            "quality": {"prompt_complete": true, "visible_roster_complete": true, "attribution_quality": "exact"}
-        }
-    }"#;
+    let case = sample_ranked_case();
+    let json_str = serde_json::to_string(&case).unwrap();
+    let duplicate_json = json_str.replacen(
+        "\"schema_version\":1,",
+        "\"schema_version\":1,\"schema_version\":1,",
+        1,
+    );
     assert!(ReplayCase::from_json_bytes(duplicate_json.as_bytes()).is_err());
 }
 
@@ -216,12 +191,7 @@ fn replay_case_rejects_option_map_mismatch() {
 #[test]
 fn replay_case_rejects_distribution_not_summing_to_one() {
     let mut case = sample_ranked_case();
-    case.recorded_responses
-        .wide
-        .as_mut()
-        .unwrap()
-        .distribution[0]
-        .probability = 0.10; // Sum becomes 0.25, far from 1.0
+    case.recorded_responses.wide.as_mut().unwrap().distribution[0].probability = 0.10; // Sum becomes 0.25, far from 1.0
     assert!(case.validate().is_err());
 }
 
@@ -235,9 +205,9 @@ fn replay_executes_identical_ranked_decision() {
     assert_eq!(outcome.recomputed_decision.as_deref(), Some("ranked"));
 
     // Verify OutputDocument contract
-    assert_eq!(outcome.document.schema_version(), 1);
-    assert_eq!(outcome.document.actionable(), false);
-    assert_eq!(outcome.document.exit_code(), skillranker::output::CliExit::Success);
+    assert_eq!(outcome.document.as_value()["schema_version"], 1);
+    assert_eq!(outcome.document.as_value()["actionable"], false);
+    assert_eq!(outcome.document.exit_code(), CliExit::Success);
 }
 
 #[test]
@@ -272,19 +242,7 @@ fn replay_low_gate_abstention_without_rerank_is_complete() {
     // Low gate score, historical decision was abstain, no rerank response recorded
     case.recorded_responses.wide.as_mut().unwrap().gate_score = Some(0.15);
     case.recorded_responses.rerank = None;
-    case.historical_decision = json!({
-        "schema_version": SCHEMA_VERSION,
-        "event_id": "event-abstain-001",
-        "decision": "abstain",
-        "reason": "low-fit",
-        "harness": "claude_code",
-        "context_quality": "complete",
-        "quality": {
-            "prompt_complete": true,
-            "visible_roster_complete": true,
-            "attribution_quality": "exact"
-        }
-    });
+    case.historical_decision = abstain_decision_fixture("low-fit");
 
     // Replay with default policy: correctly reproduces the low-gate abstention
     let outcome = execute_replay(&case, None).expect("replay execution");
@@ -302,7 +260,12 @@ fn replay_low_gate_abstention_without_rerank_is_complete() {
     assert_eq!(outcome.run_status, RunStatus::Partial);
     assert_eq!(outcome.gate_status, GateStatus::NotEstablished);
     assert!(outcome.recomputed_decision.is_none());
-    assert!(outcome.explanation.unwrap().contains("missing recorded rerank"));
+    assert!(
+        outcome
+            .explanation
+            .unwrap()
+            .contains("missing recorded rerank")
+    );
 }
 
 #[test]
@@ -321,7 +284,8 @@ fn replay_save_and_load_enforces_owner_only_and_no_clobber() {
     let case = sample_ranked_case();
 
     // First save succeeds
-    case.save_to_file(&target).expect("initial save must succeed");
+    case.save_to_file(&target)
+        .expect("initial save must succeed");
     assert!(target.exists());
 
     // Second save must fail due to atomic no-clobber guarantee
