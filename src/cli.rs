@@ -308,11 +308,7 @@ fn command() -> Command {
                         .short('h')
                         .action(ArgAction::SetTrue),
                 )
-                .arg(
-                    Arg::new("json")
-                        .long("json")
-                        .action(ArgAction::SetTrue),
-                )
+                .arg(Arg::new("json").long("json").action(ArgAction::SetTrue))
                 .subcommand(
                     Command::new("init")
                         .disable_help_flag(true)
@@ -322,11 +318,7 @@ fn command() -> Command {
                                 .short('h')
                                 .action(ArgAction::SetTrue),
                         )
-                        .arg(
-                            Arg::new("json")
-                                .long("json")
-                                .action(ArgAction::SetTrue),
-                        )
+                        .arg(Arg::new("json").long("json").action(ArgAction::SetTrue))
                         .arg(
                             Arg::new("dir")
                                 .long("dir")
@@ -349,11 +341,7 @@ fn command() -> Command {
                                 .help("Apply migrations after backup")
                                 .action(ArgAction::SetTrue),
                         )
-                        .arg(
-                            Arg::new("json")
-                                .long("json")
-                                .action(ArgAction::SetTrue),
-                        )
+                        .arg(Arg::new("json").long("json").action(ArgAction::SetTrue))
                         .arg(
                             Arg::new("dir")
                                 .long("dir")
@@ -370,11 +358,7 @@ fn command() -> Command {
                                 .short('h')
                                 .action(ArgAction::SetTrue),
                         )
-                        .arg(
-                            Arg::new("json")
-                                .long("json")
-                                .action(ArgAction::SetTrue),
-                        )
+                        .arg(Arg::new("json").long("json").action(ArgAction::SetTrue))
                         .arg(
                             Arg::new("dir")
                                 .long("dir")
@@ -403,11 +387,7 @@ fn command() -> Command {
                                 .help("Apply the retention cleanup")
                                 .action(ArgAction::SetTrue),
                         )
-                        .arg(
-                            Arg::new("json")
-                                .long("json")
-                                .action(ArgAction::SetTrue),
-                        )
+                        .arg(Arg::new("json").long("json").action(ArgAction::SetTrue))
                         .arg(
                             Arg::new("dir")
                                 .long("dir")
@@ -430,11 +410,7 @@ fn command() -> Command {
                                 .help("Apply clearing all history")
                                 .action(ArgAction::SetTrue),
                         )
-                        .arg(
-                            Arg::new("json")
-                                .long("json")
-                                .action(ArgAction::SetTrue),
-                        )
+                        .arg(Arg::new("json").long("json").action(ArgAction::SetTrue))
                         .arg(
                             Arg::new("dir")
                                 .long("dir")
@@ -658,9 +634,14 @@ fn ledger_command(
 
     let outcome: Result<String, Failure> = match sub_name {
         "init" => {
-            let report = crate::storage::init_ledger(&invocation, &cx, location).map_err(|err| {
-                (9u8, "storage-failure", format!("Failed to initialize ledger: {err}"))
-            })?;
+            let report =
+                crate::storage::init_ledger(&invocation, &cx, location).map_err(|err| {
+                    (
+                        9u8,
+                        "storage-failure",
+                        format!("Failed to initialize ledger: {err}"),
+                    )
+                })?;
             if wants_json {
                 serde_json::to_string_pretty(&report)
                     .map(|s| format!("{s}\n"))
@@ -692,7 +673,11 @@ fn ledger_command(
                     location,
                 )
                 .map_err(|err| {
-                    (9u8, "storage-failure", format!("Failed to open ledger for migration: {err}"))
+                    (
+                        9u8,
+                        "storage-failure",
+                        format!("Failed to open ledger for migration: {err}"),
+                    )
                 })?;
 
                 let mut store = match open_res {
@@ -720,9 +705,9 @@ fn ledger_command(
                     }
                 };
 
-                let report = store.migrate_apply(invocation.clock(), &cx).map_err(|err| {
-                    (9u8, "storage-failure", format!("Migration failed: {err}"))
-                })?;
+                let report = store
+                    .migrate_apply(invocation.clock(), &cx)
+                    .map_err(|err| (9u8, "storage-failure", format!("Migration failed: {err}")))?;
 
                 if wants_json {
                     serde_json::to_string_pretty(&report)
@@ -746,7 +731,11 @@ fn ledger_command(
                     location,
                 )
                 .map_err(|err| {
-                    (9u8, "storage-failure", format!("Failed to open ledger for preview: {err}"))
+                    (
+                        9u8,
+                        "storage-failure",
+                        format!("Failed to open ledger for preview: {err}"),
+                    )
                 })?;
 
                 let store = match open_res {
@@ -769,7 +758,11 @@ fn ledger_command(
                 };
 
                 let preview = store.migrate_preview().map_err(|err| {
-                    (9u8, "storage-failure", format!("Migration preview failed: {err}"))
+                    (
+                        9u8,
+                        "storage-failure",
+                        format!("Migration preview failed: {err}"),
+                    )
                 })?;
 
                 if wants_json {
@@ -799,9 +792,14 @@ fn ledger_command(
             }
         }
         "status" => {
-            let status_report = crate::storage::ledger_status(&invocation, &cx, location).map_err(|err| {
-                (9u8, "storage-failure", format!("Failed to inspect ledger status: {err}"))
-            })?;
+            let status_report =
+                crate::storage::ledger_status(&invocation, &cx, location).map_err(|err| {
+                    (
+                        9u8,
+                        "storage-failure",
+                        format!("Failed to inspect ledger status: {err}"),
+                    )
+                })?;
             if wants_json {
                 serde_json::to_string_pretty(&status_report)
                     .map(|s| format!("{s}\n"))
@@ -811,7 +809,10 @@ fn ledger_command(
                     "Ledger Status: {}\nPath: {}\nSchema Version: {}\nTarget Version: {}\nRead Only: {}\n",
                     status_report.status,
                     status_report.database_path.display(),
-                    status_report.schema_version.map(|v| v.to_string()).unwrap_or_else(|| "none".into()),
+                    status_report
+                        .schema_version
+                        .map(|v| v.to_string())
+                        .unwrap_or_else(|| "none".into()),
                     status_report.target_version,
                     status_report.is_read_only
                 ))
@@ -834,7 +835,11 @@ fn ledger_command(
                     location,
                 )
                 .map_err(|err| {
-                    (9u8, "storage-failure", format!("Failed to open ledger for prune: {err}"))
+                    (
+                        9u8,
+                        "storage-failure",
+                        format!("Failed to open ledger for prune: {err}"),
+                    )
                 })?;
 
                 let mut store = match open_res {
@@ -866,7 +871,11 @@ fn ledger_command(
                 let report = store
                     .prune_apply(cutoff_ms, invocation.clock(), &cx, stamp)
                     .map_err(|err| {
-                        (9u8, "storage-failure", format!("Failed to apply prune: {err}"))
+                        (
+                            9u8,
+                            "storage-failure",
+                            format!("Failed to apply prune: {err}"),
+                        )
                     })?;
 
                 if wants_json {
@@ -896,7 +905,11 @@ fn ledger_command(
                     location,
                 )
                 .map_err(|err| {
-                    (9u8, "storage-failure", format!("Failed to open ledger for prune preview: {err}"))
+                    (
+                        9u8,
+                        "storage-failure",
+                        format!("Failed to open ledger for prune preview: {err}"),
+                    )
                 })?;
 
                 let store = match open_res {
@@ -919,7 +932,11 @@ fn ledger_command(
                 };
 
                 let preview = store.prune_preview(cutoff_ms).map_err(|err| {
-                    (9u8, "storage-failure", format!("Failed to preview prune: {err}"))
+                    (
+                        9u8,
+                        "storage-failure",
+                        format!("Failed to preview prune: {err}"),
+                    )
                 })?;
 
                 if wants_json {
@@ -952,7 +969,11 @@ fn ledger_command(
                     location,
                 )
                 .map_err(|err| {
-                    (9u8, "storage-failure", format!("Failed to open ledger for clear: {err}"))
+                    (
+                        9u8,
+                        "storage-failure",
+                        format!("Failed to open ledger for clear: {err}"),
+                    )
                 })?;
 
                 let mut store = match open_res {
@@ -984,7 +1005,11 @@ fn ledger_command(
                 let report = store
                     .clear_apply(invocation.clock(), &cx, stamp)
                     .map_err(|err| {
-                        (9u8, "storage-failure", format!("Failed to clear ledger: {err}"))
+                        (
+                            9u8,
+                            "storage-failure",
+                            format!("Failed to clear ledger: {err}"),
+                        )
                     })?;
 
                 if wants_json {
@@ -994,8 +1019,7 @@ fn ledger_command(
                 } else {
                     Ok(format!(
                         "Cleared all historical records ({} total records removed).\nNew data generation: {}\n",
-                        report.records_cleared,
-                        report.stamp_after.data_generation
+                        report.records_cleared, report.stamp_after.data_generation
                     ))
                 }
             } else {
@@ -1006,7 +1030,11 @@ fn ledger_command(
                     location,
                 )
                 .map_err(|err| {
-                    (9u8, "storage-failure", format!("Failed to open ledger for clear preview: {err}"))
+                    (
+                        9u8,
+                        "storage-failure",
+                        format!("Failed to open ledger for clear preview: {err}"),
+                    )
                 })?;
 
                 let store = match open_res {
@@ -1029,7 +1057,11 @@ fn ledger_command(
                 };
 
                 let preview = store.clear_preview().map_err(|err| {
-                    (9u8, "storage-failure", format!("Failed to preview clear: {err}"))
+                    (
+                        9u8,
+                        "storage-failure",
+                        format!("Failed to preview clear: {err}"),
+                    )
                 })?;
 
                 if wants_json {
@@ -1775,8 +1807,12 @@ fn readiness(
                         let debt = store.cleanup_debt(now_ms).ok();
                         crate::readiness::LedgerCheck::ReadOnly { cleanup_debt: debt }
                     }
-                    Ok(crate::storage::LedgerOpen::Missing) => crate::readiness::LedgerCheck::NotAvailable,
-                    Ok(crate::storage::LedgerOpen::Disabled) => crate::readiness::LedgerCheck::NotAvailable,
+                    Ok(crate::storage::LedgerOpen::Missing) => {
+                        crate::readiness::LedgerCheck::NotAvailable
+                    }
+                    Ok(crate::storage::LedgerOpen::Disabled) => {
+                        crate::readiness::LedgerCheck::NotAvailable
+                    }
                     Err(_) => crate::readiness::LedgerCheck::NotAvailable,
                 }
             } else {

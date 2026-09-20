@@ -137,6 +137,18 @@ class InstallerTests(unittest.TestCase):
         self.run_install(archive, "--cosign-key", str(key), success=False)
         self.assertFalse((self.dest / "sr").exists())
 
+    def test_optional_shell_failure_preserves_successful_install(self):
+        target = self.home / "managed-shell-config"
+        target.write_text("# externally managed shell configuration\n")
+        (self.home / ".bashrc").symlink_to(target)
+        p = self.run_install(self.archive(), "--easy-mode", "--no-configure")
+        self.assertIn(b"Binary installed; optional configuration failed", p.stderr)
+        self.assertTrue((self.home / ".bashrc").is_symlink())
+        self.assertEqual(target.read_text(), "# externally managed shell configuration\n")
+        version = subprocess.run([str(self.dest / "sr"), "--version"],
+                                 capture_output=True, check=True, timeout=10)
+        self.assertEqual(version.stdout.strip(), b"sr 0.1.0")
+
     def test_oversized_archive_and_ambiguous_checksum_are_rejected(self):
         archive = self.root / "oversized.tar.gz"
         with archive.open("wb") as f:

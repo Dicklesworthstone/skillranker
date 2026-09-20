@@ -369,7 +369,7 @@ ok "Installed $NEW_VERSION at $DEST/sr"
 
 if [[ "$CONFIGURE" == 1 || "$EASY" == 1 ]]; then
     info 'Inspecting installed agent directories and shell integration'
-    python3 - "$TEMP" "$DEST" "$CONFIGURE" "$EASY" "$QUIET" <<'PY'
+    if ! python3 - "$TEMP" "$DEST" "$CONFIGURE" "$EASY" "$QUIET" <<'PY'
 import json, os, pathlib, shlex, shutil, sys, time
 stage, dest = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
 configure, easy, quiet = (x == '1' for x in sys.argv[3:])
@@ -447,6 +447,9 @@ if str(dest) not in os.environ.get('PATH', '').split(os.pathsep):
         report('PATH configured; open a new shell. External concurrent shell-rc edits are unsupported.')
     else: report('Add to your shell configuration: '+line)
 PY
+    then
+        err 'Binary installed; optional configuration failed. Configure your shell manually; diagnostics are above.'
+    fi
 fi
 draw_box 'SkillRanker installation complete' "Binary: $DEST/sr" "Previous binary backup: $BACKUP" \
     'Next: sr doctor --json; obtain your own key at console.typesafe.ai' \

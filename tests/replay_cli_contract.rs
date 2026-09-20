@@ -412,7 +412,7 @@ fn replay_is_strictly_isolated_from_ambient_environment() {
         .env("TYPESAFE_ENDPOINT", "http://127.0.0.1:9999/unreachable")
         .env("SR_TIMEOUT_MS", "1")
         .current_dir(root.join("workspace"))
-        .args(&["replay", "case.json", "--json"])
+        .args(["replay", "case.json", "--json"])
         .output()
         .unwrap();
 

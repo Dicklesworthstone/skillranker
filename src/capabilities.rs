@@ -16,8 +16,15 @@ use serde_json::{Value, json};
 
 pub const CAPABILITIES_SCHEMA: &str = "sr.capabilities.v1";
 
-pub const IMPLEMENTED_COMMANDS: &[&str] =
-    &["capabilities", "demo", "doctor", "ledger", "rank", "replay", "roster"];
+pub const IMPLEMENTED_COMMANDS: &[&str] = &[
+    "capabilities",
+    "demo",
+    "doctor",
+    "ledger",
+    "rank",
+    "replay",
+    "roster",
+];
 
 /// Accepted by the parser for conflict checking, but refused with
 /// `invalid-usage` until their phase ships.
