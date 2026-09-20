@@ -12,7 +12,7 @@ use std::ffi::OsString;
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
-const HELP: &str = "SkillRanker — powered by TypeSafe.ai Jev\n\nUsage: sr [rank] [--context FILE | --transcript FILE --harness NAME | --session PATH | --latest]\n                 [--roster FILE] [--require-skill ID] [--dry-run [--shortlist-ids ID,...]]\n                 [--offline | --allow-network] [--json | --table]\n                 [--top N] [--shortlist M] [--gate FLOAT] [--fits FLOAT]\n                 [--explain] [--why-not ID] [--cursor TOKEN] [--no-tools] [--no-cache]\n                 [--save-case FILE]\n       sr doctor [--json | --table] [--offline | --allow-network]\n       sr doctor --config [--json | --table] [--top N] [--shortlist N]\n       sr roster [--json] [--limit N] [--cursor TOKEN]\n       sr roster --snapshot FILE | --diff FILE\n       sr capabilities [--json]\n       sr demo --case <useful|none|explicit|unavailable> [--json | --table]\n       sr replay FILE [--policy FILE] [--compare-policy FILE] [--json | --table]\n       sr feedback <EVENT_ID> --skill ID [--instead ID] [--verdict <useful|harmful>] [--reason CODE] [--provenance TEXT] [--expected-version GEN] [--dir DIR] [--json]\n       sr ledger <init|migrate|status|prune|clear> [--before TIME] [--apply] [--json]\n       sr observe [--context FILE | --transcript FILE --harness NAME | --session PATH] [--branch NAME] [--roster FILE] [--dir DIR] [--json]\n       sr hook <claude> [--shadow] [--offline | --allow-network] [--dir DIR]\n       sr --help | --version\n\nRank the next step of an agent session using TypeSafe Jev.\nRequires your own TypeSafe API key (TYPESAFE_API_KEY) and network consent (--allow-network).\n";
+const HELP: &str = "SkillRanker — powered by TypeSafe.ai Jev\n\nUsage: sr [rank] [--context FILE | --transcript FILE --harness NAME | --session PATH | --latest]\n                 [--roster FILE] [--require-skill ID] [--dry-run [--shortlist-ids ID,...]]\n                 [--offline | --allow-network] [--json | --table]\n                 [--top N] [--shortlist M] [--gate FLOAT] [--fits FLOAT]\n                 [--explain] [--why-not ID] [--cursor TOKEN] [--no-tools] [--no-cache]\n                 [--save-case FILE]\n       sr doctor [--json | --table] [--offline | --allow-network]\n       sr doctor --config [--json | --table] [--top N] [--shortlist N]\n       sr roster [--json] [--limit N] [--cursor TOKEN]\n       sr roster --snapshot FILE | --diff FILE\n       sr capabilities [--json]\n       sr demo --case <useful|none|explicit|unavailable> [--json | --table]\n       sr replay FILE [--policy FILE] [--compare-policy FILE] [--json | --table]\n       sr feedback <EVENT_ID> --skill ID [--instead ID] [--verdict <useful|harmful>] [--reason CODE] [--provenance TEXT] [--expected-version GEN] [--dir DIR] [--json]\n       sr ledger <init|migrate|status|prune|clear> [--before TIME] [--apply] [--json]\n       sr observe [--context FILE | --transcript FILE --harness NAME | --session PATH] [--branch NAME] [--roster FILE] [--dir DIR] [--json]\n       sr hook <claude> [--shadow] [--offline | --allow-network] [--dir DIR]\n       sr install-hook <claude> [--settings FILE] [--target-dir DIR] [--apply] [--json]\n       sr uninstall-hook <claude> [--settings FILE] [--target-dir DIR] [--apply] [--json]\n       sr --help | --version\n\nRank the next step of an agent session using TypeSafe Jev.\nRequires your own TypeSafe API key (TYPESAFE_API_KEY) and network consent (--allow-network).\n";
 
 const FEEDBACK_HELP: &str = "sr feedback <EVENT_ID> --skill ID [--instead ID] [--verdict <useful|harmful>] [--reason CODE] [--provenance TEXT] [--expected-version GEN] [--dir DIR] [--json]\n\nRecord explicit feedback or paired corrective labels for a historical ranking event.\n";
 
@@ -602,6 +602,78 @@ fn command() -> Command {
                         ),
                 ),
         )
+        .subcommand(
+            Command::new("install-hook")
+                .disable_help_flag(true)
+                .arg(
+                    Arg::new("help")
+                        .long("help")
+                        .short('h')
+                        .action(ArgAction::SetTrue),
+                )
+                .subcommand(
+                    Command::new("claude")
+                        .disable_help_flag(true)
+                        .arg(
+                            Arg::new("help")
+                                .long("help")
+                                .short('h')
+                                .action(ArgAction::SetTrue),
+                        )
+                        .arg(Arg::new("apply").long("apply").action(ArgAction::SetTrue))
+                        .arg(
+                            Arg::new("settings-file")
+                                .long("settings-file")
+                                .action(ArgAction::Set),
+                        )
+                        .arg(
+                            Arg::new("timeout-secs")
+                                .long("timeout-secs")
+                                .action(ArgAction::Set),
+                        )
+                        .arg(
+                            Arg::new("binary-path")
+                                .long("binary-path")
+                                .action(ArgAction::Set),
+                        ),
+                ),
+        )
+        .subcommand(
+            Command::new("uninstall-hook")
+                .disable_help_flag(true)
+                .arg(
+                    Arg::new("help")
+                        .long("help")
+                        .short('h')
+                        .action(ArgAction::SetTrue),
+                )
+                .subcommand(
+                    Command::new("claude")
+                        .disable_help_flag(true)
+                        .arg(
+                            Arg::new("help")
+                                .long("help")
+                                .short('h')
+                                .action(ArgAction::SetTrue),
+                        )
+                        .arg(Arg::new("apply").long("apply").action(ArgAction::SetTrue))
+                        .arg(
+                            Arg::new("settings-file")
+                                .long("settings-file")
+                                .action(ArgAction::Set),
+                        )
+                        .arg(
+                            Arg::new("timeout-secs")
+                                .long("timeout-secs")
+                                .action(ArgAction::Set),
+                        )
+                        .arg(
+                            Arg::new("binary-path")
+                                .long("binary-path")
+                                .action(ArgAction::Set),
+                        ),
+                ),
+        )
 }
 
 fn is_hook_claude_invocation(args: &[OsString]) -> bool {
@@ -901,6 +973,18 @@ fn execute(clock: &EntryClock, mut args: Vec<OsString>) -> Result<String, Failur
             return hook_claude_command(clock, claude_matches);
         }
         return Err((2, "invalid-usage", "Use sr hook claude".into()));
+    }
+    if let Some(("install-hook", install_matches)) = matches.subcommand() {
+        if install_matches.get_flag("help") && install_matches.subcommand().is_none() {
+            return Ok(HELP.into());
+        }
+        return install_hook_command(clock, install_matches);
+    }
+    if let Some(("uninstall-hook", uninstall_matches)) = matches.subcommand() {
+        if uninstall_matches.get_flag("help") && uninstall_matches.subcommand().is_none() {
+            return Ok(HELP.into());
+        }
+        return uninstall_hook_command(clock, uninstall_matches);
     }
     // Bare `sr` ranks once, as documented.
     rank_command(clock, None)
@@ -2588,6 +2672,16 @@ fn hook_claude_command(clock: &EntryClock, m: &clap::ArgMatches) -> Result<Strin
                     resolved.effective().timeout_ms()
                 })
         });
+    let installed_budget_ms = 3000u64;
+    let timeout_ms = if timeout_ms > installed_budget_ms {
+        let _ = writeln!(
+            io::stderr().lock(),
+            "sr: configured timeout ({timeout_ms}ms) exceeds installed hook budget ({installed_budget_ms}ms); clamped to installed budget"
+        );
+        installed_budget_ms
+    } else {
+        timeout_ms
+    };
     let clock = &DurationMillis::new("timeout_ms", timeout_ms, crate::config::MAX_TIMEOUT_MS)
         .map_err(crate::runtime::RuntimeError::from)
         .and_then(|total| clock.with_total(total))
@@ -2683,6 +2777,160 @@ fn hook_claude_command(clock: &EntryClock, m: &clap::ArgMatches) -> Result<Strin
     }
 
     Ok(String::new())
+}
+
+fn install_hook_command(clock: &EntryClock, m: &clap::ArgMatches) -> Result<String, Failure> {
+    timely(clock)?;
+    let Some(("claude", claude_matches)) = m.subcommand() else {
+        return Err((
+            2,
+            "invalid-usage",
+            "Supported harness is 'claude'; e.g. sr install-hook claude [--apply]".into(),
+        ));
+    };
+
+    if claude_matches.get_flag("help") {
+        return Ok(HELP.into());
+    }
+
+    let apply = claude_matches.get_flag("apply");
+    let settings_file = claude_matches
+        .get_one::<String>("settings-file")
+        .map(PathBuf::from);
+    let binary_path = claude_matches
+        .get_one::<String>("binary-path")
+        .map(PathBuf::from);
+    let timeout_secs = claude_matches
+        .get_one::<String>("timeout-secs")
+        .and_then(|s| s.parse::<u32>().ok())
+        .unwrap_or(crate::installer::DEFAULT_HOOK_TIMEOUT_SECS);
+
+    let workspace = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let user_root = user_config_root().unwrap_or(None);
+    let mut sources = ConfigSources::default();
+    for (name, value) in std::env::vars_os() {
+        if name.as_encoded_bytes().starts_with(b"SR_")
+            || name == "TYPESAFE_API_KEY"
+            || name == "TYPESAFE_ENDPOINT"
+        {
+            if sources.environment.len() < MAX_LAYER_ENTRIES {
+                sources.environment.push((name, value));
+            }
+        }
+    }
+    let config_files = ConfigFiles::new(workspace, user_root);
+    let effective_mode = config_files
+        .load(clock, sources)
+        .map(|c| c.effective().hook_mode())
+        .unwrap_or(crate::config::HookMode::Shadow);
+
+    let options = crate::installer::InstallOptions {
+        apply,
+        harness: crate::installer::HookHarness::Claude,
+        settings_file,
+        timeout_secs,
+        binary_path,
+        effective_mode,
+    };
+
+    match crate::installer::install_hook(&options) {
+        Ok(crate::installer::InstallOutcome::Preview { diff, message }) => {
+            Ok(format!("{diff}\n{message}\n"))
+        }
+        Ok(crate::installer::InstallOutcome::Applied {
+            backup_path,
+            message,
+        }) => Ok(format!(
+            "{message}\n(Backup created at {})\n",
+            backup_path.display()
+        )),
+        Ok(crate::installer::InstallOutcome::AlreadyInstalled { message }) => {
+            Ok(format!("{message}\n"))
+        }
+        Ok(crate::installer::InstallOutcome::Conflict { message }) => {
+            Err((2, "invalid-usage", message))
+        }
+        Err(crate::installer::InstallerError::MalformedSettings(msg)) => {
+            Err((7, "malformed-input", msg))
+        }
+        Err(crate::installer::InstallerError::EnterpriseRestricted(msg)) => {
+            Err((2, "invalid-usage", msg))
+        }
+        Err(crate::installer::InstallerError::ExternalModificationDetected(msg)) => {
+            Err((2, "invalid-usage", msg))
+        }
+        Err(crate::installer::InstallerError::LockBusy(msg)) => Err((2, "invalid-usage", msg)),
+        Err(crate::installer::InstallerError::InvalidUsage(msg)) => Err((2, "invalid-usage", msg)),
+        Err(crate::installer::InstallerError::Io(err)) => {
+            Err((9, "storage-failure", err.to_string()))
+        }
+    }
+}
+
+fn uninstall_hook_command(clock: &EntryClock, m: &clap::ArgMatches) -> Result<String, Failure> {
+    timely(clock)?;
+    let Some(("claude", claude_matches)) = m.subcommand() else {
+        return Err((
+            2,
+            "invalid-usage",
+            "Supported harness is 'claude'; e.g. sr uninstall-hook claude [--apply]".into(),
+        ));
+    };
+
+    if claude_matches.get_flag("help") {
+        return Ok(HELP.into());
+    }
+
+    let apply = claude_matches.get_flag("apply");
+    let settings_file = claude_matches
+        .get_one::<String>("settings-file")
+        .map(PathBuf::from);
+    let binary_path = claude_matches
+        .get_one::<String>("binary-path")
+        .map(PathBuf::from);
+    let timeout_secs = claude_matches
+        .get_one::<String>("timeout-secs")
+        .and_then(|s| s.parse::<u32>().ok())
+        .unwrap_or(crate::installer::DEFAULT_HOOK_TIMEOUT_SECS);
+
+    match crate::installer::uninstall_hook(
+        crate::installer::HookHarness::Claude,
+        settings_file,
+        binary_path,
+        timeout_secs,
+        apply,
+    ) {
+        Ok(crate::installer::UninstallOutcome::Preview { diff, message }) => {
+            Ok(format!("{diff}\n{message}\n"))
+        }
+        Ok(crate::installer::UninstallOutcome::Applied {
+            backup_path,
+            message,
+        }) => Ok(format!(
+            "{message}\n(Backup created at {})\n",
+            backup_path.display()
+        )),
+        Ok(crate::installer::UninstallOutcome::NotInstalled { message }) => {
+            Ok(format!("{message}\n"))
+        }
+        Ok(crate::installer::UninstallOutcome::Conflict { message }) => {
+            Err((2, "invalid-usage", message))
+        }
+        Err(crate::installer::InstallerError::MalformedSettings(msg)) => {
+            Err((7, "malformed-input", msg))
+        }
+        Err(crate::installer::InstallerError::EnterpriseRestricted(msg)) => {
+            Err((2, "invalid-usage", msg))
+        }
+        Err(crate::installer::InstallerError::ExternalModificationDetected(msg)) => {
+            Err((2, "invalid-usage", msg))
+        }
+        Err(crate::installer::InstallerError::LockBusy(msg)) => Err((2, "invalid-usage", msg)),
+        Err(crate::installer::InstallerError::InvalidUsage(msg)) => Err((2, "invalid-usage", msg)),
+        Err(crate::installer::InstallerError::Io(err)) => {
+            Err((9, "storage-failure", err.to_string()))
+        }
+    }
 }
 
 /// Fixed invocation paths for bounded initial reads and consequential rereads.

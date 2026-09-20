@@ -14,6 +14,7 @@ pub mod effects;
 pub mod eligibility;
 pub mod evaluation;
 pub mod identity;
+pub mod installer;
 pub mod jev;
 pub mod limits;
 pub mod output;

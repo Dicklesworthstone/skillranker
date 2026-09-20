@@ -22,11 +22,13 @@ pub const IMPLEMENTED_COMMANDS: &[&str] = &[
     "doctor",
     "feedback",
     "hook",
+    "install-hook",
     "ledger",
     "observe",
     "rank",
     "replay",
     "roster",
+    "uninstall-hook",
 ];
 
 /// Accepted by the parser for conflict checking, but refused with
