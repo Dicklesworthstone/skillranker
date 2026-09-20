@@ -17,6 +17,366 @@ use std::os::unix::fs::DirBuilderExt;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+fn snapshot_fixture() -> NewRosterSnapshot {
+    NewRosterSnapshot {
+        snapshot_id: "snapshot-1".into(),
+        workspace_root: "/data/workspace".into(),
+        adapter: "claude_code".into(),
+        total_candidates: 1,
+        eligible_candidates: 1,
+        membership_coverage: MembershipCoverage::Complete,
+        members_json: serde_json::json!([{
+            "skill_id": "review", "invocation_name": "review",
+            "content_hash": "revision-1", "source": "workspace",
+            "eligible": true, "exclusion_reason": null
+        }])
+        .to_string(),
+        created_at_unix_ms: 1,
+    }
+}
+
+fn event_fixture(id: &str) -> NewRankingEvent {
+    NewRankingEvent {
+        event_id: id.into(),
+        verified_delivery_key: None,
+        workspace_root: "/data/workspace".into(),
+        session_id: "session".into(),
+        agent_branch: "main".into(),
+        mode_channel: "cli".into(),
+        policy_version: "v1".into(),
+        schema_version: 1,
+        decision: DecisionKind::Ranked,
+        reason: "eligible".into(),
+        exposure_state: ExposureState::Generated,
+        elapsed_ms: 1,
+        created_at_unix_ms: 1,
+        input_tokens: None,
+        output_tokens: None,
+        snapshot_id: Some("snapshot-1".into()),
+    }
+}
+
+fn open_test_store(inv: &ProcessInvocation, cx: &Cx, name: &str) -> LedgerStore {
+    match open_ledger(
+        inv,
+        cx,
+        LedgerAccess::Initialize,
+        LedgerLocation::Directory(temp_ledger_dir(name)),
+    )
+    .unwrap()
+    {
+        LedgerOpen::Ready(store) => *store,
+        LedgerOpen::Disabled => panic!("ledger unexpectedly disabled"),
+    }
+}
+
+#[test]
+fn ledger_snapshot_rejects_unvalidated_metadata_before_persistence() {
+    let (inv, cx) = test_invocation();
+    let mut store = open_test_store(&inv, &cx, "snapshot-invalid");
+    let stamp = store.stamp();
+    let valid = snapshot_fixture();
+    let mut forbidden = serde_json::from_str::<serde_json::Value>(&valid.members_json).unwrap();
+    forbidden[0]["body"] = "PRIVATE_BODY_SENTINEL".into();
+    let duplicate =
+        valid
+            .members_json
+            .replacen("\"skill_id\":", "\"skill_id\":\"other\",\"skill_id\":", 1);
+    let mut duplicate_members =
+        serde_json::from_str::<Vec<serde_json::Value>>(&valid.members_json).unwrap();
+    duplicate_members.push(duplicate_members[0].clone());
+    for bad in [
+        "not json".into(),
+        forbidden.to_string(),
+        duplicate,
+        serde_json::to_string(&duplicate_members).unwrap(),
+        "[[]]".into(),
+        " ".repeat(2 * 1024 * 1024 + 1),
+    ] {
+        let snapshot = NewRosterSnapshot {
+            members_json: bad,
+            ..valid.clone()
+        };
+        assert!(
+            store
+                .record_roster_snapshot(inv.clock(), &cx, &snapshot, stamp)
+                .is_err()
+        );
+    }
+    let conn = Connection::open(store.database_path()).unwrap();
+    assert_eq!(
+        conn.query_row("SELECT count(*) FROM roster_snapshots", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    store
+        .record_roster_snapshot(inv.clock(), &cx, &valid, stamp)
+        .unwrap();
+    assert!(inv.shutdown());
+}
+
+#[test]
+fn ledger_snapshot_reuse_requires_identical_membership_and_scope() {
+    let (inv, cx) = test_invocation();
+    let mut store = open_test_store(&inv, &cx, "snapshot-conflict");
+    let stamp = store.stamp();
+    let snapshot = snapshot_fixture();
+    store
+        .record_roster_snapshot(inv.clock(), &cx, &snapshot, stamp)
+        .unwrap();
+    // A later observation of the same snapshot is legitimate deduplication.
+    let repeated = NewRosterSnapshot {
+        created_at_unix_ms: 2,
+        ..snapshot.clone()
+    };
+    store
+        .record_roster_snapshot(inv.clock(), &cx, &repeated, stamp)
+        .unwrap();
+    for changed in [
+        NewRosterSnapshot {
+            workspace_root: "/another/workspace".into(),
+            ..snapshot.clone()
+        },
+        NewRosterSnapshot {
+            adapter: "another-adapter".into(),
+            ..snapshot.clone()
+        },
+        NewRosterSnapshot {
+            members_json: snapshot.members_json.replace("revision-1", "revision-2"),
+            ..snapshot.clone()
+        },
+        NewRosterSnapshot {
+            membership_coverage: MembershipCoverage::Partial,
+            ..snapshot.clone()
+        },
+    ] {
+        assert!(
+            store
+                .record_roster_snapshot(inv.clock(), &cx, &changed, stamp)
+                .is_err()
+        );
+        assert!(
+            store
+                .record_ranking_event(
+                    inv.clock(),
+                    &cx,
+                    &event_fixture("event-conflict"),
+                    &[],
+                    Some(&changed),
+                    stamp
+                )
+                .is_err()
+        );
+    }
+    let conn = Connection::open(store.database_path()).unwrap();
+    assert_eq!(
+        conn.query_row("SELECT count(*) FROM ranking_events", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    let stored: String = conn
+        .query_row("SELECT members_json FROM roster_snapshots", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert!(stored.contains("revision-1"));
+    store
+        .record_ranking_event(
+            inv.clock(),
+            &cx,
+            &event_fixture("event-valid"),
+            &[],
+            Some(&snapshot),
+            stamp,
+        )
+        .unwrap();
+    assert!(inv.shutdown());
+}
+
+#[test]
+fn ledger_snapshot_counts_and_event_scope_must_match_evidence() {
+    let (inv, cx) = test_invocation();
+    let mut store = open_test_store(&inv, &cx, "snapshot-counts");
+    let stamp = store.stamp();
+    let valid = snapshot_fixture();
+    for bad in [
+        NewRosterSnapshot {
+            total_candidates: 2,
+            ..valid.clone()
+        },
+        NewRosterSnapshot {
+            eligible_candidates: 0,
+            ..valid.clone()
+        },
+        NewRosterSnapshot {
+            total_candidates: u64::MAX,
+            ..valid.clone()
+        },
+    ] {
+        assert!(
+            store
+                .record_roster_snapshot(inv.clock(), &cx, &bad, stamp)
+                .is_err()
+        );
+    }
+    store
+        .record_roster_snapshot(inv.clock(), &cx, &valid, stamp)
+        .unwrap();
+    let other = NewRankingEvent {
+        workspace_root: "/other/workspace".into(),
+        ..event_fixture("event-other")
+    };
+    assert!(
+        store
+            .record_ranking_event(inv.clock(), &cx, &other, &[], None, stamp)
+            .is_err()
+    );
+    let wrong_id = NewRankingEvent {
+        snapshot_id: None,
+        ..event_fixture("event-no-snapshot")
+    };
+    assert!(
+        store
+            .record_ranking_event(inv.clock(), &cx, &wrong_id, &[], Some(&valid), stamp)
+            .is_err()
+    );
+    let conn = Connection::open(store.database_path()).unwrap();
+    assert_eq!(
+        conn.query_row("SELECT count(*) FROM ranking_events", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    store
+        .record_ranking_event(
+            inv.clock(),
+            &cx,
+            &event_fixture("event-valid"),
+            &[],
+            None,
+            stamp,
+        )
+        .unwrap();
+    assert!(inv.shutdown());
+}
+
+#[test]
+fn ledger_snapshot_preserves_full_roster_and_rejects_overflow() {
+    let (inv, cx) = test_invocation();
+    let mut store = open_test_store(&inv, &cx, "snapshot-full");
+    let stamp = store.stamp();
+    let valid = snapshot_fixture();
+    let member = serde_json::from_str::<Vec<serde_json::Value>>(&valid.members_json)
+        .unwrap()
+        .remove(0);
+    let members: Vec<_> = (0..10_000)
+        .map(|index| {
+            let mut value = member.clone();
+            value["skill_id"] = format!("skill-{index}").into();
+            value
+        })
+        .collect();
+    let full = NewRosterSnapshot {
+        total_candidates: 10_000,
+        eligible_candidates: 10_000,
+        members_json: serde_json::to_string(&members).unwrap(),
+        ..valid
+    };
+    store
+        .record_roster_snapshot(inv.clock(), &cx, &full, stamp)
+        .unwrap();
+    let conn = Connection::open(store.database_path()).unwrap();
+    let recorded: String = conn
+        .query_row("SELECT members_json FROM roster_snapshots", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(
+        serde_json::from_str::<Vec<serde_json::Value>>(&recorded)
+            .unwrap()
+            .len(),
+        10_000
+    );
+    let overflow = NewRosterSnapshot {
+        snapshot_id: "overflow".into(),
+        total_candidates: 10_001,
+        eligible_candidates: 10_001,
+        ..full.clone()
+    };
+    assert!(
+        store
+            .record_roster_snapshot(inv.clock(), &cx, &overflow, stamp)
+            .is_err()
+    );
+    // Membership order and JSON formatting do not create different evidence.
+    let mut reversed = members;
+    reversed.reverse();
+    let equivalent = NewRosterSnapshot {
+        members_json: serde_json::to_string_pretty(&reversed).unwrap(),
+        ..full
+    };
+    store
+        .record_roster_snapshot(inv.clock(), &cx, &equivalent, stamp)
+        .unwrap();
+    assert!(inv.shutdown());
+}
+
+#[test]
+fn ledger_event_cannot_attach_candidates_to_another_existing_event() {
+    let (inv, cx) = test_invocation();
+    let mut store = open_test_store(&inv, &cx, "candidate-owner");
+    let stamp = store.stamp();
+    let first = NewRankingEvent {
+        snapshot_id: None,
+        ..event_fixture("first")
+    };
+    store
+        .record_ranking_event(inv.clock(), &cx, &first, &[], None, stamp)
+        .unwrap();
+    let second = NewRankingEvent {
+        snapshot_id: None,
+        ..event_fixture("second")
+    };
+    let mut candidate = NewRankingCandidate {
+        event_id: "first".into(),
+        stage: CandidateStage::Wide,
+        skill_id: "review".into(),
+        skill_version: "revision-1".into(),
+        raw_probability: Some(0.8),
+        normalized_probability: Some(0.8),
+        fit_score: None,
+        rank_score: None,
+        rank_position: None,
+        excluded: false,
+        exclusion_reason: None,
+    };
+    assert!(
+        store
+            .record_ranking_event(inv.clock(), &cx, &second, &[candidate.clone()], None, stamp)
+            .is_err()
+    );
+    let conn = Connection::open(store.database_path()).unwrap();
+    assert_eq!(
+        conn.query_row("SELECT count(*) FROM ranking_events", [], |row| row
+            .get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        conn.query_row("SELECT count(*) FROM ranking_candidates", [], |row| row
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    candidate.event_id = "second".into();
+    store
+        .record_ranking_event(inv.clock(), &cx, &second, &[candidate], None, stamp)
+        .unwrap();
+    assert!(inv.shutdown());
+}
+
 fn test_invocation() -> (ProcessInvocation, Cx) {
     let invocation = ProcessInvocation::enter().expect("process invocation");
     let cx = invocation.request_cx().expect("request_cx");
@@ -24,7 +384,9 @@ fn test_invocation() -> (ProcessInvocation, Cx) {
 }
 
 fn temp_ledger_dir(test_name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!(
+    // RCH's TMPDIR can have ancestors owned by a different user. Exercise
+    // storage under Linux's root-owned sticky /tmp without relaxing checks.
+    let dir = PathBuf::from("/tmp").join(format!(
         "sr-ledger-test-{}-{}-{}",
         test_name,
         std::process::id(),

@@ -129,6 +129,8 @@ pub enum StoreError {
     Io,
     Busy,
     Corrupt,
+    InvalidRecord,
+    RecordConflict,
     WrongStore,
     IncompatibleSchema,
     NewerSchema { version: i64 },
@@ -154,6 +156,8 @@ impl fmt::Display for StoreError {
             Self::Io => "cache filesystem operation failed",
             Self::Busy => "cache lock wait exhausted its bounded allowance",
             Self::Corrupt => "cache database could not be read safely",
+            Self::InvalidRecord => "storage record does not satisfy its bounded metadata contract",
+            Self::RecordConflict => "stored identity is already bound to different metadata",
             Self::WrongStore => "database is not a SkillRanker cache",
             Self::IncompatibleSchema => "cache schema is incompatible",
             Self::NewerSchema { .. } => {
