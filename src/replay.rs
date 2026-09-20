@@ -141,6 +141,11 @@ pub struct CapturedCandidate {
     pub content_hash: String,
     pub source: String,
     pub usage_kind: String,
+    /// The visibility label the live decision reported for this candidate, so a
+    /// replayed recommendation keeps the caveat that a harness's precedence is
+    /// unverified. Absent in cases captured before this field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub visibility: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -624,6 +629,25 @@ pub fn execute_replay(
             }
         };
 
+        // A case captured before `stated_confidence` existed cannot reproduce the
+        // decision's `choice_confidence`, and a ranked decision must carry one.
+        // Report that honestly instead of recomputing a ranking whose confidence
+        // is either absent or a different quantity wearing the same name.
+        if rerank.stated_confidence.is_none() {
+            return build_outcome(
+                case,
+                RunStatus::Partial,
+                GateStatus::NotEstablished,
+                &hist_decision_str,
+                None,
+                None,
+                Some(
+                    "case predates recorded provider confidence; recomputing a ranked decision would have to invent it"
+                        .into(),
+                ),
+            );
+        }
+
         // Step 3: Candidate eligibility on shortlist
         let snoozes: BTreeSet<&str> = case
             .local_evidence
@@ -661,6 +685,7 @@ pub fn execute_replay(
             skill_id: &'a str,
             invocation_name: &'a str,
             content_hash: &'a str,
+            visibility: Option<&'a str>,
             rerank_prob: f64,
             fit: f64,
         }
@@ -684,6 +709,7 @@ pub fn execute_replay(
                 skill_id: id,
                 invocation_name: &candidate.invocation_name,
                 content_hash: &candidate.content_hash,
+                visibility: candidate.visibility.as_deref(),
                 rerank_prob: prob,
                 fit,
             });
@@ -757,9 +783,17 @@ pub fn execute_replay(
                 "rerank_probability": candidate.rerank_prob,
                 "wide_probability": wide_prob,
                 "fits": candidate.fit,
-                "path": format!(".claude/skills/{}/SKILL.md", candidate.invocation_name),
+                // Null, not a guess. A case does not record where a skill
+                // lived, and `.claude/skills/<name>/SKILL.md` would state a
+                // location never observed.
+                "path": Value::Null,
                 "content_hash": candidate.content_hash,
             }));
+            if let Some(visibility) = candidate.visibility {
+                if let Some(entry) = ranked_skills.last_mut().and_then(Value::as_object_mut) {
+                    entry.insert("visibility".into(), Value::from(visibility));
+                }
+            }
         }
 
         let recomputed =

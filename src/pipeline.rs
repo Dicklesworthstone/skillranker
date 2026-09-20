@@ -1154,25 +1154,29 @@ async fn rank_once(
                 let mut candidate_options = Vec::with_capacity(skills.len());
                 for s in &skills {
                     let sk = roster.skills().iter().find(|sk| sk.record().id == s.id);
-                    let (content_hash, source, usage_kind, desc) = if let Some(sk) = sk {
-                        let rec = sk.record();
-                        (
-                            rec.source_content.as_str().to_string(),
-                            rec.source.as_str().to_string(),
-                            rec.usage_kind.as_str().to_string(),
-                            Some(rec.description_full.as_str().to_string()),
-                        )
-                    } else {
-                        (
-                            "0".repeat(64),
-                            "workspace".to_string(),
-                            "workflow".to_string(),
-                            None,
-                        )
-                    };
+                    let (content_hash, source, usage_kind, desc, visibility) =
+                        if let Some(sk) = sk {
+                            let rec = sk.record();
+                            (
+                                rec.source_content.as_str().to_string(),
+                                rec.source.as_str().to_string(),
+                                rec.usage_kind.as_str().to_string(),
+                                Some(rec.description_full.as_str().to_string()),
+                                Some(visibility_label(&rec.visibility).to_owned()),
+                            )
+                        } else {
+                            (
+                                "0".repeat(64),
+                                "workspace".to_string(),
+                                "workflow".to_string(),
+                                None,
+                                None,
+                            )
+                        };
                     candidate_options.push(CapturedCandidate {
                         skill_id: s.id.as_str().to_string(),
                         invocation_name: s.invocation.as_str().to_string(),
+                        visibility,
                         content_hash,
                         source,
                         usage_kind,
@@ -1706,6 +1710,7 @@ async fn rank_once(
             candidate_options.push(CapturedCandidate {
                 skill_id: s.binding.id.as_str().to_string(),
                 invocation_name: s.binding.invocation.as_str().to_string(),
+                visibility: Some(visibility_label(&s.record.visibility).to_owned()),
                 content_hash: s.record.source_content.as_str().to_string(),
                 source: s.record.source.as_str().to_string(),
                 usage_kind: s.record.usage_kind.as_str().to_string(),
@@ -3580,6 +3585,7 @@ fn dominant_phase(phase: &BTreeMap<String, f64>) -> Option<&str> {
         .map(|(p, _)| p.as_str())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn try_record_ledger(
     invocation: &ProcessInvocation,
     cx: &Cx,
@@ -3669,7 +3675,7 @@ fn try_record_ledger(
             crate::storage::MembershipCoverage::Complete
         },
         members_json,
-        created_at_unix_ms: invocation.clock().now().as_millis() as u64,
+        created_at_unix_ms: invocation.clock().now().as_millis(),
     };
 
     let event_id = context
@@ -3700,7 +3706,7 @@ fn try_record_ledger(
         reason: reason.to_string(),
         exposure_state: crate::storage::ExposureState::Prepared,
         elapsed_ms,
-        created_at_unix_ms: invocation.clock().now().as_millis() as u64,
+        created_at_unix_ms: invocation.clock().now().as_millis(),
         input_tokens: if metrics.input_tokens > 0 {
             Some(metrics.input_tokens)
         } else {
