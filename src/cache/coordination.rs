@@ -638,7 +638,8 @@ fn open_qualified_connection_with_budget(
 ) -> Result<Connection, CoordinationError> {
     let normalized = crate::storage::storage_path(path.to_path_buf());
     let path = normalized.as_path();
-    crate::storage::linked_engine().map_err(|e| CoordinationError::StorageError(e.to_string()))?;
+    crate::sqlite_engine::linked_engine()
+        .map_err(|e| CoordinationError::StorageError(e.to_string()))?;
     validate_sqlite_path(path)?;
 
     let flags = OpenFlags::SQLITE_OPEN_READ_WRITE
