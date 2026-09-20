@@ -225,6 +225,7 @@ pub enum LedgerOpen {
 pub struct LedgerStore {
     connection: Connection,
     directory: PrivateLedgerDirectory,
+    file: File,
     stamp: LedgerStamp,
     engine: EngineIdentity,
 }
@@ -986,6 +987,27 @@ impl PrivateLedgerDirectory {
         self.path.join(LEDGER_FILE)
     }
 
+    fn verify_database_file(
+        &self,
+        file: &File,
+        clock: EntryClock,
+        cx: &Cx,
+    ) -> Result<(), StoreError> {
+        self.revalidate(clock, cx)?;
+        let held = fstat(file).map_err(io_error)?;
+        let current = match fstatat(&self.handle, LEDGER_FILE, AtFlags::AT_SYMLINK_NOFOLLOW) {
+            Ok(stat) => stat,
+            Err(Errno::ENOENT) => return Err(StoreError::StoreReplaced),
+            Err(error) => return Err(io_error(error)),
+        };
+        if (held.st_dev, held.st_ino) != (current.st_dev, current.st_ino) {
+            return Err(StoreError::StoreReplaced);
+        }
+        let uid = nix::unistd::geteuid().as_raw();
+        owned_regular(&held, uid)?;
+        owned_regular(&current, uid)
+    }
+
     pub fn revalidate(&self, clock: EntryClock, cx: &Cx) -> Result<(), StoreError> {
         let flags = OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC;
         let mut fd = open(Path::new("/"), flags, Mode::empty()).map_err(io_error)?;
@@ -1083,16 +1105,18 @@ fn refresh_busy_limit(
         remaining_busy_wait(&clock, Duration::from_millis(MAX_BUSY_WAIT_MS))
             .map_err(StoreError::Runtime)?,
     )?;
-    Ok(())
-}
-
-fn configure(connection: &Connection, clock: EntryClock, cx: &Cx) -> Result<(), StoreError> {
-    refresh_busy_limit(connection, clock, cx)?;
+    // A repository handle may outlive the invocation that opened it. Every
+    // operation must replace both the busy limit and the progress context.
     let child = cx.clone();
     connection.progress_handler(
         100,
         Some(move || child.is_cancel_requested() || clock.admit_new_work().is_err()),
     )?;
+    Ok(())
+}
+
+fn configure(connection: &Connection, clock: EntryClock, cx: &Cx) -> Result<(), StoreError> {
+    refresh_busy_limit(connection, clock, cx)?;
     connection.set_limit(Limit::SQLITE_LIMIT_LENGTH, 2 * 1024 * 1024)?;
     connection.set_limit(Limit::SQLITE_LIMIT_SQL_LENGTH, 64 * 1024)?;
     connection.set_limit(Limit::SQLITE_LIMIT_ATTACHED, 0)?;
@@ -1259,16 +1283,18 @@ fn open_blocking(
             OpenFlags::empty()
         };
     let mut connection = Connection::open_with_flags(&database_path, flags)?;
-    drop(file);
+    directory.verify_database_file(&file, clock, cx)?;
     if access == LedgerAccess::Initialize {
         initialize(&mut connection, clock, cx)?;
     } else {
         configure(&connection, clock, cx)?;
     }
     let stamp = read_stamp(&connection)?;
+    directory.verify_database_file(&file, clock, cx)?;
     Ok(LedgerOpen::Ready(Box::new(LedgerStore {
         connection,
         directory,
+        file,
         stamp,
         engine,
     })))
@@ -1321,7 +1347,7 @@ impl LedgerStore {
         expected_stamp: LedgerStamp,
     ) -> Result<LedgerStamp, StoreError> {
         check_work(clock, cx)?;
-        self.directory.revalidate(clock, cx)?;
+        self.directory.verify_database_file(&self.file, clock, cx)?;
         self.directory.admit_space()?;
         refresh_busy_limit(&self.connection, clock, cx)?;
 
@@ -1351,6 +1377,8 @@ impl LedgerStore {
         tx.execute("DELETE FROM feedback_proposals", [])?;
         tx.execute("DELETE FROM calibrations", [])?;
 
+        self.directory.verify_database_file(&self.file, clock, cx)?;
+        check_work(clock, cx)?;
         tx.commit()?;
 
         self.stamp.data_generation = new_data_gen;
@@ -1367,7 +1395,7 @@ impl LedgerStore {
         check_work(clock, cx)?;
         let members_json = validated_snapshot(snapshot)?;
         check_work(clock, cx)?;
-        self.directory.revalidate(clock, cx)?;
+        self.directory.verify_database_file(&self.file, clock, cx)?;
         self.directory.admit_space()?;
         refresh_busy_limit(&self.connection, clock, cx)?;
 
@@ -1377,6 +1405,8 @@ impl LedgerStore {
         check_stamp(&tx, expected_stamp)?;
 
         insert_snapshot(&tx, snapshot, &members_json)?;
+        check_work(clock, cx)?;
+        self.directory.verify_database_file(&self.file, clock, cx)?;
         check_work(clock, cx)?;
         tx.commit()?;
         Ok(())
@@ -1404,7 +1434,7 @@ impl LedgerStore {
         }
         let members_json = snapshot.map(validated_snapshot).transpose()?;
         check_work(clock, cx)?;
-        self.directory.revalidate(clock, cx)?;
+        self.directory.verify_database_file(&self.file, clock, cx)?;
         self.directory.admit_space()?;
         refresh_busy_limit(&self.connection, clock, cx)?;
 
@@ -1476,6 +1506,8 @@ impl LedgerStore {
             )?;
         }
         check_work(clock, cx)?;
+        self.directory.verify_database_file(&self.file, clock, cx)?;
+        check_work(clock, cx)?;
         tx.commit()?;
         Ok(())
     }
@@ -1488,7 +1520,7 @@ impl LedgerStore {
         expected_stamp: LedgerStamp,
     ) -> Result<(), StoreError> {
         check_work(clock, cx)?;
-        self.directory.revalidate(clock, cx)?;
+        self.directory.verify_database_file(&self.file, clock, cx)?;
         self.directory.admit_space()?;
         refresh_busy_limit(&self.connection, clock, cx)?;
 
@@ -1519,6 +1551,8 @@ impl LedgerStore {
             ],
         )?;
 
+        self.directory.verify_database_file(&self.file, clock, cx)?;
+        check_work(clock, cx)?;
         tx.commit()?;
         Ok(())
     }
@@ -1533,6 +1567,7 @@ impl LedgerStore {
         kind: CursorKind,
     ) -> Result<Option<SessionCursor>, StoreError> {
         check_work(clock, cx)?;
+        self.directory.verify_database_file(&self.file, clock, cx)?;
         refresh_busy_limit(&self.connection, clock, cx)?;
 
         let cursor = self
@@ -1564,6 +1599,8 @@ impl LedgerStore {
             )
             .optional()?;
 
+        self.directory.verify_database_file(&self.file, clock, cx)?;
+        check_work(clock, cx)?;
         Ok(cursor)
     }
 
@@ -1575,7 +1612,7 @@ impl LedgerStore {
         expected_stamp: LedgerStamp,
     ) -> Result<(), StoreError> {
         check_work(clock, cx)?;
-        self.directory.revalidate(clock, cx)?;
+        self.directory.verify_database_file(&self.file, clock, cx)?;
         self.directory.admit_space()?;
         refresh_busy_limit(&self.connection, clock, cx)?;
 
@@ -1606,6 +1643,8 @@ impl LedgerStore {
             ],
         )?;
 
+        self.directory.verify_database_file(&self.file, clock, cx)?;
+        check_work(clock, cx)?;
         tx.commit()?;
         Ok(())
     }
@@ -1619,7 +1658,7 @@ impl LedgerStore {
         expected_stamp: LedgerStamp,
     ) -> Result<(), StoreError> {
         check_work(clock, cx)?;
-        self.directory.revalidate(clock, cx)?;
+        self.directory.verify_database_file(&self.file, clock, cx)?;
         self.directory.admit_space()?;
         refresh_busy_limit(&self.connection, clock, cx)?;
 
@@ -1655,6 +1694,8 @@ impl LedgerStore {
             return Err(StoreError::Missing);
         }
 
+        self.directory.verify_database_file(&self.file, clock, cx)?;
+        check_work(clock, cx)?;
         tx.commit()?;
         Ok(())
     }
@@ -1667,7 +1708,7 @@ impl LedgerStore {
         expected_stamp: LedgerStamp,
     ) -> Result<(), StoreError> {
         check_work(clock, cx)?;
-        self.directory.revalidate(clock, cx)?;
+        self.directory.verify_database_file(&self.file, clock, cx)?;
         self.directory.admit_space()?;
         refresh_busy_limit(&self.connection, clock, cx)?;
 
@@ -1694,6 +1735,8 @@ impl LedgerStore {
             ],
         )?;
 
+        self.directory.verify_database_file(&self.file, clock, cx)?;
+        check_work(clock, cx)?;
         tx.commit()?;
         Ok(())
     }
@@ -1706,7 +1749,7 @@ impl LedgerStore {
         expected_stamp: LedgerStamp,
     ) -> Result<(), StoreError> {
         check_work(clock, cx)?;
-        self.directory.revalidate(clock, cx)?;
+        self.directory.verify_database_file(&self.file, clock, cx)?;
         self.directory.admit_space()?;
         refresh_busy_limit(&self.connection, clock, cx)?;
 
@@ -1730,6 +1773,8 @@ impl LedgerStore {
             ],
         )?;
 
+        self.directory.verify_database_file(&self.file, clock, cx)?;
+        check_work(clock, cx)?;
         tx.commit()?;
         Ok(())
     }
@@ -1742,7 +1787,7 @@ impl LedgerStore {
         expected_stamp: LedgerStamp,
     ) -> Result<(), StoreError> {
         check_work(clock, cx)?;
-        self.directory.revalidate(clock, cx)?;
+        self.directory.verify_database_file(&self.file, clock, cx)?;
         self.directory.admit_space()?;
         refresh_busy_limit(&self.connection, clock, cx)?;
 
@@ -1766,6 +1811,8 @@ impl LedgerStore {
             ],
         )?;
 
+        self.directory.verify_database_file(&self.file, clock, cx)?;
+        check_work(clock, cx)?;
         tx.commit()?;
         Ok(())
     }
@@ -1778,7 +1825,7 @@ impl LedgerStore {
         expected_stamp: LedgerStamp,
     ) -> Result<(), StoreError> {
         check_work(clock, cx)?;
-        self.directory.revalidate(clock, cx)?;
+        self.directory.verify_database_file(&self.file, clock, cx)?;
         self.directory.admit_space()?;
         refresh_busy_limit(&self.connection, clock, cx)?;
 
@@ -1802,6 +1849,8 @@ impl LedgerStore {
             ],
         )?;
 
+        self.directory.verify_database_file(&self.file, clock, cx)?;
+        check_work(clock, cx)?;
         tx.commit()?;
         Ok(())
     }
