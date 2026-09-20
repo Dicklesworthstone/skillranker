@@ -292,6 +292,45 @@ fn offline_ranking_without_a_cached_result_is_a_cache_miss() {
 }
 
 #[test]
+fn empty_roster_explains_excluded_records_without_disclosing_paths() {
+    let f = Fixture::new();
+    f.context("context.json", "ok");
+    for name in ["alpha", "beta"] {
+        std::fs::write(
+            f.workspace()
+                .join(".claude/skills")
+                .join(name)
+                .join("SKILL.md"),
+            "---\nname: first\nname: duplicate\n---\nprivate-body-canary\n",
+        )
+        .unwrap();
+    }
+    let output = f.run(&[
+        "rank",
+        "--context",
+        "context.json",
+        "--offline",
+        "--no-persist",
+        "--json",
+    ]);
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(output.status.code(), Some(5), "{value}");
+    assert_eq!(value["error"]["kind"], "empty-roster");
+    let hint = value["error"]["hint"].as_str().unwrap();
+    assert!(hint.contains("sr roster --json"), "{value}");
+    assert!(hint.contains("malformed-metadata (2)"), "{value}");
+    let serialized = value.to_string();
+    assert!(
+        !serialized.contains(f.root.to_str().unwrap()),
+        "local path leaked"
+    );
+    assert!(
+        !serialized.contains("private-body-canary"),
+        "skill body leaked"
+    );
+}
+
+#[test]
 fn mixed_personal_root_keeps_explicit_project_skill_resolvable() {
     let f = Fixture::new();
     f.context("context.json", "ok");

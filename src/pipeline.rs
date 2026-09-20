@@ -760,15 +760,14 @@ async fn rank_once(
             }
             // Snapshot JSONL transcript
             let snapshot =
-                snapshot_jsonl(invocation, cx, &transcript_path, None, CursorKind::Ranking).map_err(
-                    |e| {
+                snapshot_jsonl(invocation, cx, &transcript_path, None, CursorKind::Ranking)
+                    .map_err(|e| {
                         failure(
                             7,
                             "malformed-input",
                             format!("Transcript snapshot failed: {e}"),
                         )
-                    },
-                )?;
+                    })?;
 
             transcript_windowed = snapshot.truncated_history;
             transcript_gaps = snapshot.incomplete_tail
@@ -1211,10 +1210,30 @@ async fn rank_once(
     }
 
     if initial_advisory.is_empty() {
+        // Reuse bounded, stable diagnostic codes; source paths and skill text
+        // must not become part of this error, including on malformed input.
+        let (warnings, _) = roster_warnings(&roster, None);
+        let causes = warnings
+            .iter()
+            .filter_map(|warning| {
+                Some(format!(
+                    "{} ({})",
+                    warning.get("kind")?.as_str()?,
+                    warning.get("count")?.as_u64()?
+                ))
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let mut hint = "Run sr roster --json to inspect excluded records, visibility, and source causes. Check the selected harness and skill roots.".to_owned();
+        if !causes.is_empty() {
+            hint.push_str(" Observed causes: ");
+            hint.push_str(&causes);
+            hint.push('.');
+        }
         let doc = OutputDocument::failure_with_details(
             ErrorKind::EmptyRoster,
-            "No eligible skills found in roster",
-            "Check skill directory paths or frontmatter syntax.",
+            "No skills in the observed roster could be admitted",
+            &hint,
             false,
         );
         return Ok(doc);
