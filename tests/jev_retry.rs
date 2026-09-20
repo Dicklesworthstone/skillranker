@@ -22,6 +22,7 @@ use std::future::{Future, poll_fn};
 use std::io::{BufRead, BufReader};
 use std::net::TcpListener;
 use std::process::{Child, ChildStdout, Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::task::Poll;
 use std::time::{Duration, SystemTime};
 
@@ -101,13 +102,16 @@ struct Server {
 }
 impl Server {
     fn new(steps: &[&str]) -> Self {
+        // Concurrent fixtures can observe the same wall-clock tick on Darwin.
+        static NEXT_DIRECTORY: AtomicU64 = AtomicU64::new(0);
         let directory = std::env::temp_dir().join(format!(
-            "sr-retry-{}-{}",
+            "sr-retry-{}-{}-{}",
             std::process::id(),
             SystemTime::now()
                 .duration_since(SystemTime::UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+            NEXT_DIRECTORY.fetch_add(1, Ordering::Relaxed)
         ));
         std::fs::create_dir(&directory).unwrap();
         for (name, bytes) in [
