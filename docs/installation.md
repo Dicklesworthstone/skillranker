@@ -37,7 +37,8 @@ and 10 explicitly ignored cases. The same source snapshot passed 129 focused
 Linux portability tests with one ignored case. Native all-target checking passed;
 strict Clippy passed after the integration lint fixes through `34cb1fe`.
 The later portable SQLite qualification change at `8523ab6` passed 88 native
-library, coordination, and storage tests with two ignored cases. These results
+library, coordination, and storage tests with two ignored cases, plus all 27
+Claude hook, advisory-output, and hook install/uninstall tests. These results
 describe those revisions, not every subsequent change to `main`.
 
 ## Acquisition and verification

@@ -1500,7 +1500,9 @@ fn observe_command(clock: &EntryClock, matches: &clap::ArgMatches) -> Result<Str
         active_branch,
     );
 
-    let now_ms = clock.now().as_millis();
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64);
     let mut new_observations = Vec::with_capacity(raw_observations.len());
     for obs in &raw_observations {
         let state = match obs.state {
