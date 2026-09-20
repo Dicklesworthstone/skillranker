@@ -38,7 +38,8 @@ Usage: bash install.sh [options]
 Requires Bash, Python 3, install, and sha256sum or shasum. Online acquisition
 also needs curl; source builds need Git, Rust and the pinned toolchain.
 RCH is used when installed; remote failure never falls back to a local build.
-Linux release targets use musl; macOS targets use the native architecture.
+Installation requires Linux; macOS storage support is not implemented.
+Linux release targets use musl.
 No releases available? The online installer builds main from source.
 
 TypeSafe.ai account and YOUR API key are required for fresh ranking:
@@ -152,11 +153,11 @@ PY
 
 draw_box 'SkillRanker installer' 'Session-specific skill advice powered by TypeSafe.ai Jev'
 OS=$(uname -s); ARCH=$(uname -m); TARGET=''
+[[ "$OS" == Linux ]] || die 'SkillRanker currently requires Linux; macOS and other platforms need a qualified storage port. Use a Linux host or VM. No files installed.'
 case "$ARCH" in amd64) ARCH=x86_64 ;; arm64) ARCH=aarch64 ;; esac
 case "$OS/$ARCH" in
     Linux/x86_64|Linux/aarch64) TARGET="$ARCH-unknown-linux-musl" ;;
-    Darwin/x86_64|Darwin/aarch64) TARGET="$ARCH-apple-darwin" ;;
-    *) [[ -z "$OFFLINE" ]] || die 'Offline archives support Linux/macOS x86_64/aarch64'; FROM_SOURCE=1 ;;
+    *) [[ -z "$OFFLINE" ]] || die 'Offline archives support Linux x86_64/aarch64'; FROM_SOURCE=1 ;;
 esac
 if [[ "$OS" == Linux && -r /proc/version ]] && grep -qi microsoft /proc/version; then
     warn 'WSL detected; install into the Linux home and use the Linux agent environment.'

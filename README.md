@@ -20,10 +20,9 @@ Sign up at the [TypeSafe console](https://console.typesafe.ai) to get your own k
 ![Output](https://img.shields.io/badge/output-JSON%20%7C%20hooks%20%7C%20TUI-00897b)
 
 ```bash
+sr capabilities --json   # Check implemented commands and integrations in your build
 sr demo --case useful     # Inspect an offline fixture before connecting a session
 sr rank --allow-network   # Rank skills for the selected session
-sr hook claude           # Run the Claude Code prompt-hook integration
-sr tui                   # Inspect rankings in an inline terminal display
 ```
 
 </div>
@@ -180,6 +179,10 @@ or override the agent's governing instructions.
 
 ## Installation
 
+Install on **Linux**. Native macOS installation is not supported; use a Linux
+host or VM. Run `sr capabilities --json` after installation to check command
+and integration availability in your build.
+
 ### Installer
 
 The installer selects a release for your platform, verifies its SHA256 checksum,
@@ -264,7 +267,7 @@ alone do not enable remote transmission.
 | [cass](https://github.com/Dicklesworthstone/coding_agent_session_search) | Optional archive discovery and access across coding-agent formats |
 
 `sr` does not require `ms`, a local inference server, or an embedding model.
-The primary local platform scope is Linux and macOS. Consult
+The supported local platform is Linux. Consult
 `sr capabilities --json` for the adapters, events, and optional features in a build.
 
 ## Quick Start

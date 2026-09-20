@@ -1,5 +1,10 @@
 # Installing SkillRanker
 
+Installation requires Linux. The storage implementation uses Linux filesystem
+safety boundaries; native macOS builds are not supported. On macOS, use a Linux
+host or VM. The installer rejects unsupported systems before downloads, builds,
+or destination writes.
+
 Use `bash install.sh --help` for the complete option list. The installer writes
 `sr` to `~/.local/bin` by default; `--dest DIR` selects another directory. It
 requires Bash and Python 3, standard POSIX utilities, and either `sha256sum` or
@@ -15,8 +20,8 @@ bash install.sh --version v0.1.0 --dest "$HOME/.local/bin" --verify
 The version example selects that release if it exists; it does not establish
 that the tag or its assets have been published. At the initial installer
 verification, the repository had no public releases. The source and offline
-paths were exercised on Linux x86_64. The macOS and Linux aarch64 selection
-rules are implemented, but those platforms have not been executed in this
+paths were exercised on Linux x86_64. Linux aarch64 selection
+is implemented, but that platform has not been executed in this
 installer verification. No signed multi-platform release is claimed.
 
 ## Acquisition and verification
@@ -34,10 +39,10 @@ Release archives use these names, in preference order, under the same tag:
 2. `skillranker-TARGET.tar.gz`
 3. `skillranker-OS-ARCH.tar.gz`
 
-Linux selects `x86_64-unknown-linux-musl` or `aarch64-unknown-linux-musl`;
-macOS selects the corresponding `apple-darwin` target. Source builds use the
+Linux selects `x86_64-unknown-linux-musl` or `aarch64-unknown-linux-musl`.
+Source builds use the
 native Rust target and are not represented as portable musl release artifacts.
-Other platforms use source fallback. WSL uses the Linux path.
+Other Linux architectures use source fallback. WSL uses the Linux path.
 
 Every downloaded or offline archive needs its adjacent `.sha256` file, or an
 explicit `--sha256 HEX` from a trusted source. The sidecar contains exactly

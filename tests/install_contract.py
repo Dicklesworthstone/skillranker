@@ -137,6 +137,20 @@ class InstallerTests(unittest.TestCase):
         self.run_install(archive, "--cosign-key", str(key), success=False)
         self.assertFalse((self.dest / "sr").exists())
 
+    def test_unsupported_platform_stops_before_acquisition_or_writes(self):
+        uname = self.root / "tools/uname"
+        for platform in ("Darwin", "FreeBSD"):
+            uname.write_text(f"#!/bin/sh\ncase \"$1\" in -s) echo {platform};; -m) echo arm64;; esac\n")
+            uname.chmod(0o755)
+            for mode in ([], ["--from-source"], ["--offline", str(self.archive())]):
+                p = subprocess.run(["bash", str(INSTALLER), "--dest", str(self.dest),
+                                    "--keep-temp", *mode], env=self.env,
+                                   capture_output=True, timeout=10)
+                self.assertNotEqual(p.returncode, 0)
+                self.assertIn(b"requires Linux", p.stderr)
+                self.assertNotIn(b"unexpected-network-or-build", p.stderr)
+                self.assertFalse(self.dest.exists())
+
     def test_optional_shell_failure_preserves_successful_install(self):
         target = self.home / "managed-shell-config"
         target.write_text("# externally managed shell configuration\n")
