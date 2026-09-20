@@ -790,10 +790,33 @@ pub fn draw_stratified_sample_with_rule(
 /// 7. No duplicate family IDs among selected cases.
 /// 8. Stratum populations and sample sizes match declared counts.
 /// 9. Stratum and entry inclusion probabilities match design status and mathematical definitions.
+///
+/// This checks internal consistency against the frame, not authenticity of a
+/// caller's claimed entropy source. An unkeyed manifest digest cannot establish
+/// that a seed was drawn independently or before outcomes were observed.
 pub fn verify_manifest_against_frame(
     manifest: &FrozenSampleManifest,
     cases: &[EvaluationCaseRecord],
 ) -> Result<(), EvaluationError> {
+    let invalid = |message: &str| EvaluationError::ManifestVerificationFailure(message.into());
+    if manifest.schema_version != SCHEMA_VERSION {
+        return Err(invalid("unsupported sampling manifest schema version"));
+    }
+    if manifest.estimand_weighting != EstimandWeighting::FamilyWeighted {
+        return Err(invalid(
+            "only family-weighted sampling manifests are supported",
+        ));
+    }
+    if manifest.design_status == DesignStatus::StratifiedProbabilitySample
+        && !matches!(
+            manifest.randomization_provenance,
+            RandomizationProvenance::OsRandom { .. }
+        )
+    {
+        return Err(invalid(
+            "probability sample design requires recorded OS random provenance",
+        ));
+    }
     if manifest.sampling_algorithm_version != SAMPLING_VERSION {
         return Err(EvaluationError::ManifestVerificationFailure(format!(
             "manifest sampling algorithm version '{}' does not match engine version '{}'",
@@ -811,6 +834,11 @@ pub fn verify_manifest_against_frame(
     }
 
     let reps = select_family_representatives(cases, manifest.split, manifest.representative_rule)?;
+    if reps.is_empty() {
+        return Err(invalid(
+            "sampling manifest requires a nonempty family frame",
+        ));
+    }
 
     let actual_frame_digest = compute_frame_digest(&reps);
     if actual_frame_digest != manifest.frame_digest {
@@ -846,6 +874,11 @@ pub fn verify_manifest_against_frame(
     }
 
     for (stratum_key, alloc) in &manifest.strata {
+        if alloc.stratum_key != *stratum_key {
+            return Err(invalid(
+                "stratum allocation identity differs from its map key",
+            ));
+        }
         let Some(actual_cases) = actual_strata_cases.get(stratum_key) else {
             return Err(EvaluationError::ManifestVerificationFailure(format!(
                 "stratum '{stratum_key}' declared in manifest not present in frame"
@@ -858,11 +891,23 @@ pub fn verify_manifest_against_frame(
                 actual_cases.len()
             )));
         }
+        if alloc.sample_size == 0 {
+            return Err(invalid(
+                "every represented stratum requires a positive sample size",
+            ));
+        }
         if alloc.sample_size > alloc.population_size {
             return Err(EvaluationError::ManifestVerificationFailure(format!(
                 "stratum '{stratum_key}' sample size ({}) exceeds population ({})",
                 alloc.sample_size, alloc.population_size
             )));
+        }
+
+        let expected_weight = actual_cases.len() as f64 / reps.len() as f64;
+        if !alloc.weight.is_finite() || (alloc.weight - expected_weight).abs() > 1e-12 {
+            return Err(invalid(
+                "stratum weight does not match its share of the family frame",
+            ));
         }
 
         match manifest.design_status {
@@ -880,7 +925,10 @@ pub fn verify_manifest_against_frame(
                     )));
                 };
                 let expected_prob = (alloc.sample_size as f64) / (alloc.population_size as f64);
-                if (prob - expected_prob).abs() > 1e-12 {
+                if !prob.is_finite()
+                    || !(0.0..=1.0).contains(&prob)
+                    || (prob - expected_prob).abs() > 1e-12
+                {
                     return Err(EvaluationError::ManifestVerificationFailure(format!(
                         "stratum '{stratum_key}' inclusion probability mismatch: declared {prob}, expected {expected_prob}"
                     )));
@@ -895,7 +943,12 @@ pub fn verify_manifest_against_frame(
     let mut seen_families: BTreeSet<&str> = BTreeSet::new();
     let mut observed_strata_counts: BTreeMap<&str, usize> = BTreeMap::new();
 
-    for entry in &manifest.selected_cases {
+    for (index, entry) in manifest.selected_cases.iter().enumerate() {
+        if entry.sample_order != index + 1 {
+            return Err(invalid(
+                "sample order must match the one-based entry sequence",
+            ));
+        }
         let fam = entry.case_key.family_id.as_str();
         if !seen_families.insert(fam) {
             return Err(EvaluationError::ManifestVerificationFailure(format!(
@@ -947,7 +1000,10 @@ pub fn verify_manifest_against_frame(
                         fam, entry.case_key.case_id
                     )));
                 };
-                if Some(entry_prob) != stratum_alloc.inclusion_probability {
+                if !entry_prob.is_finite()
+                    || !(0.0..=1.0).contains(&entry_prob)
+                    || Some(entry_prob) != stratum_alloc.inclusion_probability
+                {
                     return Err(EvaluationError::ManifestVerificationFailure(format!(
                         "entry '{}:{}' inclusion probability ({entry_prob}) does not match stratum ({:?})",
                         fam, entry.case_key.case_id, stratum_alloc.inclusion_probability
