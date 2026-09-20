@@ -225,7 +225,8 @@ fn absent_only_init_creates_schema_and_reinit_is_idempotent_without_reset() {
             .open(&bad_db_path)
             .unwrap();
         let conn = Connection::open(&bad_db_path).unwrap();
-        conn.pragma_update(None, "application_id", 0x12345678).unwrap();
+        conn.pragma_update(None, "application_id", 0x12345678)
+            .unwrap();
     }
     let bad_init = init_ledger(&invocation, &cx, LedgerLocation::Directory(bad_dir.clone()));
     assert!(matches!(bad_init, Err(StoreError::WrongStore)));
@@ -360,10 +361,7 @@ fn migration_preview_then_apply_creates_wal_inclusive_backup_and_coordinates_gen
     assert_eq!(preview.target_version, LEDGER_TARGET_SCHEMA_VERSION);
     assert_eq!(preview.pending_migrations.len(), 1);
     assert_eq!(preview.pending_migrations[0].version, 2);
-    assert_eq!(
-        preview.pending_migrations[0].name,
-        "v2-add-audit-log"
-    );
+    assert_eq!(preview.pending_migrations[0].name, "v2-add-audit-log");
     assert!(!preview.pending_migrations[0].checksum.is_empty());
     assert!(preview.required_headroom_bytes > 0);
 
@@ -371,10 +369,7 @@ fn migration_preview_then_apply_creates_wal_inclusive_backup_and_coordinates_gen
     let report = store.migrate_apply(invocation.clock(), &cx).unwrap();
     assert_eq!(report.from_version, 1);
     assert_eq!(report.to_version, 2);
-    assert_eq!(
-        report.applied_migrations,
-        vec!["v2-add-audit-log"]
-    );
+    assert_eq!(report.applied_migrations, vec!["v2-add-audit-log"]);
     assert!(report.backup_bytes > 0);
     assert!(report.backup_path.exists());
 
@@ -387,11 +382,7 @@ fn migration_preview_then_apply_creates_wal_inclusive_backup_and_coordinates_gen
     );
 
     // Verify new table / index from v2 migration exists
-    let v2_check: i64 = store
-        .migrate_preview()
-        .unwrap()
-        .pending_migrations
-        .len() as i64;
+    let v2_check: i64 = store.migrate_preview().unwrap().pending_migrations.len() as i64;
     assert_eq!(v2_check, 0); // No pending migrations left
 
     // 5. Verify WAL data survived in the backup file!

@@ -48,7 +48,11 @@ fn temp_private_dir(prefix: &str) -> PathBuf {
     dir
 }
 
-fn make_snapshot(id: &str, members: &[SnapshotMember], coverage: MembershipCoverage) -> NewRosterSnapshot {
+fn make_snapshot(
+    id: &str,
+    members: &[SnapshotMember],
+    coverage: MembershipCoverage,
+) -> NewRosterSnapshot {
     let members_json = serde_json::to_string(members).expect("serialize members");
     let eligible_count = members.iter().filter(|m| m.eligible).count() as u64;
     NewRosterSnapshot {
@@ -84,7 +88,13 @@ fn make_event(event_id: &str, snapshot_id: Option<&str>) -> NewRankingEvent {
     }
 }
 
-fn make_candidate(event_id: &str, skill_id: &str, rank: u32, excluded: bool, reason: Option<&str>) -> NewRankingCandidate {
+fn make_candidate(
+    event_id: &str,
+    skill_id: &str,
+    rank: u32,
+    excluded: bool,
+    reason: Option<&str>,
+) -> NewRankingCandidate {
     NewRankingCandidate {
         event_id: event_id.into(),
         stage: CandidateStage::Rerank,
@@ -162,7 +172,10 @@ fn unchanged_roster_snapshot_deduplication() {
     let snap_count: i64 = conn
         .query_row("SELECT count(*) FROM roster_snapshots", [], |r| r.get(0))
         .expect("count snapshots");
-    assert_eq!(snap_count, 1, "identical snapshots must be deduplicated to 1 row");
+    assert_eq!(
+        snap_count, 1,
+        "identical snapshots must be deduplicated to 1 row"
+    );
 
     let event_count: i64 = conn
         .query_row("SELECT count(*) FROM ranking_events", [], |r| r.get(0))
@@ -179,8 +192,14 @@ fn unchanged_roster_snapshot_deduplication() {
         .collect::<Result<Vec<_>, _>>()
         .expect("collect rows");
     assert_eq!(rows.len(), 2);
-    assert_eq!(rows[0], ("ev-dedup-1".into(), Some("snap-shared-v1".into())));
-    assert_eq!(rows[1], ("ev-dedup-2".into(), Some("snap-shared-v1".into())));
+    assert_eq!(
+        rows[0],
+        ("ev-dedup-1".into(), Some("snap-shared-v1".into()))
+    );
+    assert_eq!(
+        rows[1],
+        ("ev-dedup-2".into(), Some("snap-shared-v1".into()))
+    );
 }
 
 #[test]
@@ -457,12 +476,22 @@ fn ineligible_alternative_aborts_transaction_zero_judgments() {
     let jdg_count: i64 = conn
         .query_row("SELECT count(*) FROM judgments", [], |r| r.get(0))
         .expect("count judgments");
-    assert_eq!(jdg_count, 0, "ZERO judgments must be committed when alternative is ineligible");
+    assert_eq!(
+        jdg_count, 0,
+        "ZERO judgments must be committed when alternative is ineligible"
+    );
 
     let current_gen: i64 = conn
-        .query_row("SELECT data_generation FROM store_meta WHERE singleton = 1", [], |r| r.get(0))
+        .query_row(
+            "SELECT data_generation FROM store_meta WHERE singleton = 1",
+            [],
+            |r| r.get(0),
+        )
         .expect("query gen");
-    assert_eq!(current_gen as u64, initial_gen, "data_generation must not advance on rejected transaction");
+    assert_eq!(
+        current_gen as u64, initial_gen,
+        "data_generation must not advance on rejected transaction"
+    );
 }
 
 #[test]
@@ -539,7 +568,10 @@ fn absent_alternative_records_prospective_proposal() {
     let jdg_count: i64 = conn
         .query_row("SELECT count(*) FROM judgments", [], |r| r.get(0))
         .expect("count judgments");
-    assert_eq!(jdg_count, 0, "ZERO judgments must be committed for absent alternative");
+    assert_eq!(
+        jdg_count, 0,
+        "ZERO judgments must be committed for absent alternative"
+    );
 
     let prop_rows: Vec<(String, String, String, String, String)> = conn
         .prepare("SELECT proposal_id, workspace_root, session_id, suggested_skill_reference, status FROM feedback_proposals")
@@ -632,7 +664,10 @@ fn outside_shortlist_eligible_alternative_accepted() {
     let count: i64 = conn
         .query_row("SELECT count(*) FROM judgments", [], |r| r.get(0))
         .expect("count");
-    assert_eq!(count, 2, "both judgments committed for outside-shortlist alternative");
+    assert_eq!(
+        count, 2,
+        "both judgments committed for outside-shortlist alternative"
+    );
 }
 
 #[test]
@@ -690,7 +725,14 @@ fn missing_snapshot_fails_closed() {
     let cand2 = make_candidate("ev-partial-snap", "skill-a", 1, false, None);
 
     store
-        .record_ranking_event(inv.clock(), &cx, &event_partial, &[cand2], Some(&snap_partial), stamp1)
+        .record_ranking_event(
+            inv.clock(),
+            &cx,
+            &event_partial,
+            &[cand2],
+            Some(&snap_partial),
+            stamp1,
+        )
         .expect("record event with partial snapshot");
 
     let stamp2 = store.stamp();
@@ -1065,7 +1107,8 @@ fn cli_feedback_command_e2e() {
         .output()
         .expect("run feedback CLI");
     assert_eq!(out_inelig.status.code(), Some(2));
-    let val_err: serde_json::Value = serde_json::from_slice(&out_inelig.stdout).expect("parse err json");
+    let val_err: serde_json::Value =
+        serde_json::from_slice(&out_inelig.stdout).expect("parse err json");
     assert_eq!(val_err["decision"], "unavailable");
     assert!(
         val_err["error"]["message"]
@@ -1090,10 +1133,16 @@ fn cli_feedback_command_e2e() {
         .output()
         .expect("run feedback CLI");
     assert_eq!(out_absent.status.code(), Some(0));
-    let val_prop: serde_json::Value = serde_json::from_slice(&out_absent.stdout).expect("parse prop json");
+    let val_prop: serde_json::Value =
+        serde_json::from_slice(&out_absent.stdout).expect("parse prop json");
     assert_eq!(val_prop["status"], "prospective-proposal");
     assert_eq!(val_prop["alternative_skill_id"], "nonexistent-skill");
-    assert!(val_prop["proposal_id"].as_str().unwrap().starts_with("prop-"));
+    assert!(
+        val_prop["proposal_id"]
+            .as_str()
+            .unwrap()
+            .starts_with("prop-")
+    );
 
     // 4. Single feedback via CLI
     let out_single = Command::new(bin)
@@ -1111,7 +1160,8 @@ fn cli_feedback_command_e2e() {
         .output()
         .expect("run feedback CLI");
     assert_eq!(out_single.status.code(), Some(0));
-    let val_single: serde_json::Value = serde_json::from_slice(&out_single.stdout).expect("parse single json");
+    let val_single: serde_json::Value =
+        serde_json::from_slice(&out_single.stdout).expect("parse single json");
     assert_eq!(val_single["status"], "single-judgment");
     assert_eq!(val_single["skill_id"], "skill-cli-2");
     assert_eq!(val_single["verdict"], "useful");
@@ -1160,12 +1210,9 @@ fn cli_feedback_command_e2e() {
     let val_neither: serde_json::Value =
         serde_json::from_slice(&out_neither.stdout).expect("parse neither json");
     assert_eq!(val_neither["error"]["kind"], "invalid-usage");
-    assert!(
-        val_neither["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("Must specify either --instead for paired correction or --verdict for single feedback")
-    );
+    assert!(val_neither["error"]["message"].as_str().unwrap().contains(
+        "Must specify either --instead for paired correction or --verdict for single feedback"
+    ));
 }
 
 #[test]
@@ -1256,7 +1303,10 @@ fn invalid_alternative_leaves_existing_original_untouched() {
         .expect("query judgment");
     assert_eq!(label, "useful", "original label must remain untouched");
     assert_eq!(ver, 1, "original version must remain 1");
-    assert_eq!(prov, "initial-assessor", "original provenance must remain untouched");
+    assert_eq!(
+        prov, "initial-assessor",
+        "original provenance must remain untouched"
+    );
 
     let total_jdgs: i64 = conn
         .query_row("SELECT count(*) FROM judgments", [], |r| r.get(0))
@@ -1264,9 +1314,16 @@ fn invalid_alternative_leaves_existing_original_untouched() {
     assert_eq!(total_jdgs, 1, "no new judgments created");
 
     let current_gen: i64 = conn
-        .query_row("SELECT data_generation FROM store_meta WHERE singleton = 1", [], |r| r.get(0))
+        .query_row(
+            "SELECT data_generation FROM store_meta WHERE singleton = 1",
+            [],
+            |r| r.get(0),
+        )
         .expect("query gen");
-    assert_eq!(current_gen as u64, expected_gen, "data_generation must remain untouched on abort");
+    assert_eq!(
+        current_gen as u64, expected_gen,
+        "data_generation must remain untouched on abort"
+    );
 }
 
 #[test]
@@ -1527,5 +1584,8 @@ fn multiple_acceptable_alternatives_stay_partial() {
             |r| r.get(0),
         )
         .expect("count skill-4");
-    assert_eq!(skill4_count, 0, "skill-4 remains unjudged; acceptable set stays partial");
+    assert_eq!(
+        skill4_count, 0,
+        "skill-4 remains unjudged; acceptable set stays partial"
+    );
 }

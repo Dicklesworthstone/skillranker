@@ -977,12 +977,11 @@ async fn rank_once(
     if normalized_context.current_request.event_id.is_none() {
         let derived = derive_request_event_id(&normalized_context);
         if let Ok(id) = crate::identity::EventId::new(&derived) {
-            if let Some(last_ev) = normalized_context.events.last_mut() {
-                if last_ev.event_id.is_none()
-                    && last_ev.text == normalized_context.current_request.text
-                {
-                    last_ev.event_id = Some(id.clone());
-                }
+            if let Some(last_ev) = normalized_context.events.last_mut()
+                && last_ev.event_id.is_none()
+                && last_ev.text == normalized_context.current_request.text
+            {
+                last_ev.event_id = Some(id.clone());
             }
             normalized_context.current_request.event_id = Some(id);
         }
@@ -3726,10 +3725,7 @@ pub(crate) fn derive_request_event_id(context: &NormalizedContext) -> String {
     }
     hasher.update(b"\n");
 
-    let prior_count = prior_events
-        .iter()
-        .filter(|e| e.event_id.is_some())
-        .count();
+    let prior_count = prior_events.iter().filter(|e| e.event_id.is_some()).count();
     hasher.update(&prior_count.to_le_bytes());
     hasher.update(b"\n");
     hasher.update(context.current_request.text.as_str().as_bytes());

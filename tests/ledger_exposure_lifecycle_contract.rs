@@ -48,11 +48,7 @@ fn temp_private_dir(prefix: &str) -> PathBuf {
     dir
 }
 
-fn make_test_event(
-    event_id: &str,
-    mode_channel: &str,
-    state: ExposureState,
-) -> NewRankingEvent {
+fn make_test_event(event_id: &str, mode_channel: &str, state: ExposureState) -> NewRankingEvent {
     NewRankingEvent {
         event_id: event_id.into(),
         verified_delivery_key: None,
@@ -128,7 +124,11 @@ fn prepare_before_stdout_and_emit_after_successful_write() {
     assert!(key_db.is_none());
 
     let gen_before: i64 = conn
-        .query_row("SELECT data_generation FROM store_meta WHERE singleton = 1", [], |r| r.get(0))
+        .query_row(
+            "SELECT data_generation FROM store_meta WHERE singleton = 1",
+            [],
+            |r| r.get(0),
+        )
         .expect("query gen");
 
     // 2. Successful stdout write of 256 bytes transitions to emitted
@@ -151,8 +151,15 @@ fn prepare_before_stdout_and_emit_after_successful_write() {
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .expect("query event after emission");
-    assert_eq!(state_db2, "emitted", "must transition to emitted after stdout write");
-    assert_eq!(gen_after, gen_before + 1, "data generation must advance on emission");
+    assert_eq!(
+        state_db2, "emitted",
+        "must transition to emitted after stdout write"
+    );
+    assert_eq!(
+        gen_after,
+        gen_before + 1,
+        "data generation must advance on emission"
+    );
 
     // 3. Repeating emission is idempotent
     let emitted_again = record_emission(
@@ -331,7 +338,11 @@ fn verified_acknowledgment_lifecycle_and_idempotency() {
     let db_path = dir.join(LEDGER_FILE);
     let conn = Connection::open(&db_path).expect("open db");
     let gen_before: i64 = conn
-        .query_row("SELECT data_generation FROM store_meta WHERE singleton = 1", [], |r| r.get(0))
+        .query_row(
+            "SELECT data_generation FROM store_meta WHERE singleton = 1",
+            [],
+            |r| r.get(0),
+        )
         .expect("query gen");
 
     // Record verified harness acknowledgment
@@ -357,7 +368,11 @@ fn verified_acknowledgment_lifecycle_and_idempotency() {
         .expect("query event after ack");
     assert_eq!(state_db, "acknowledged");
     assert_eq!(key_db.as_deref(), Some(delivery_key));
-    assert_eq!(gen_after, gen_before + 1, "generation must advance on acknowledgment");
+    assert_eq!(
+        gen_after,
+        gen_before + 1,
+        "generation must advance on acknowledgment"
+    );
 
     // Idempotent re-acknowledgment with the same key
     let acked_again = record_acknowledgment(
@@ -447,7 +462,10 @@ fn duplicate_delivery_key_across_different_events_rejected() {
         )
         .expect("query event 2");
     assert_eq!(state_db, "emitted");
-    assert!(key_db.is_none(), "event 2 must not adopt the duplicate delivery key");
+    assert!(
+        key_db.is_none(),
+        "event 2 must not adopt the duplicate delivery key"
+    );
 }
 
 /// 6. Explicit recording of distinct modes and channels: shadow, advisory-hook, cli, tui.
@@ -489,7 +507,10 @@ fn distinct_modes_and_channels_recorded() {
                 |r| r.get(0),
             )
             .expect("query channel");
-        assert_eq!(recorded_channel, *expected_channel, "mode_channel must match");
+        assert_eq!(
+            recorded_channel, *expected_channel,
+            "mode_channel must match"
+        );
     }
 }
 

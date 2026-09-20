@@ -353,10 +353,12 @@ pub fn generate_uninstall_diff(settings_path: &Path, entry: &Value) -> String {
     diff
 }
 
+/// Parsed settings, plus the exact bytes and content hash they were read from when
+/// the file existed. An absent file yields an empty object and no byte evidence.
+type ParsedSettings = (Value, Option<Vec<u8>>, Option<ContentHash>);
+
 /// Reads and validates `settings.json`, enforcing bounded size and duplicate-key rejection.
-fn read_and_parse_settings(
-    path: &Path,
-) -> Result<(Value, Option<Vec<u8>>, Option<ContentHash>), InstallerError> {
+fn read_and_parse_settings(path: &Path) -> Result<ParsedSettings, InstallerError> {
     if !path.exists() {
         return Ok((Value::Object(Map::new()), None, None));
     }

@@ -183,10 +183,26 @@ fn a_store_refused_for_a_shared_writable_ancestor_is_disclosed() {
         !cache_dir(&f.home()).join("cache.sqlite3").exists(),
         "no store is created under a shared-writable ancestor"
     );
-    // The disclosure carries no path, mode or errno.
+    // The disclosure carries no path, mode or errno. A path is long enough that its
+    // absence can be checked over the whole document, but a mode is three digits:
+    // scanning everything for "775" also scans content-addressed digests, and a hex
+    // digest containing those digits is not a leaked mode. So the mode and errno are
+    // checked against the text a reader actually sees.
     let text = serde_json::to_string(&value).unwrap();
     assert!(!text.contains(f.root.to_str().unwrap()), "{value}");
-    assert!(!text.contains("775") && !text.contains("EACCES"), "{value}");
+    let mut prose = String::new();
+    for warning in value["warnings"].as_array().into_iter().flatten() {
+        prose.push_str(warning["message"].as_str().unwrap_or_default());
+        prose.push('\n');
+    }
+    for field in ["message", "hint"] {
+        prose.push_str(value["error"][field].as_str().unwrap_or_default());
+        prose.push('\n');
+    }
+    assert!(
+        !prose.contains("775") && !prose.contains("EACCES"),
+        "{value}"
+    );
 }
 
 #[test]

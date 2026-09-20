@@ -2848,13 +2848,12 @@ fn install_hook_command(clock: &EntryClock, m: &clap::ArgMatches) -> Result<Stri
     let user_root = user_config_root().unwrap_or(None);
     let mut sources = ConfigSources::default();
     for (name, value) in std::env::vars_os() {
-        if name.as_encoded_bytes().starts_with(b"SR_")
+        if (name.as_encoded_bytes().starts_with(b"SR_")
             || name == "TYPESAFE_API_KEY"
-            || name == "TYPESAFE_ENDPOINT"
+            || name == "TYPESAFE_ENDPOINT")
+            && sources.environment.len() < MAX_LAYER_ENTRIES
         {
-            if sources.environment.len() < MAX_LAYER_ENTRIES {
-                sources.environment.push((name, value));
-            }
+            sources.environment.push((name, value));
         }
     }
     let config_files = ConfigFiles::new(workspace, user_root);

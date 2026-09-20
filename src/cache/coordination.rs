@@ -1881,11 +1881,7 @@ impl SqliteLeaseCoordinator {
         let generation = u64::try_from(gen_i64).map_err(|_| invalid_lease_record())?;
         let acquired = u64::try_from(acq).map_err(|_| invalid_lease_record())?;
         let expires = u64::try_from(exp).map_err(|_| invalid_lease_record())?;
-        if generation == 0
-            || expires < acquired
-            || !matches!(comp, 0 | 1)
-            || att.len() > 128
-        {
+        if generation == 0 || expires < acquired || !matches!(comp, 0 | 1) || att.len() > 128 {
             return Err(invalid_lease_record());
         }
         Ok(Some(LeaseRecord {

@@ -542,10 +542,7 @@ fn shadow_hook_unique_events_across_turns_and_unix_timestamps() {
         "cwd": fixture.workspace(),
     });
 
-    let out1 = fixture.run_hook(
-        &serde_json::to_vec(&payload_turn1).unwrap(),
-        &["--shadow"],
-    );
+    let out1 = fixture.run_hook(&serde_json::to_vec(&payload_turn1).unwrap(), &["--shadow"]);
     let stderr1 = String::from_utf8_lossy(&out1.stderr);
     assert_eq!(out1.status.code(), Some(0));
     assert!(out1.stdout.is_empty());
@@ -556,7 +553,10 @@ fn shadow_hook_unique_events_across_turns_and_unix_timestamps() {
     let count: i64 = conn
         .query_row("SELECT count(*) FROM ranking_events", [], |r| r.get(0))
         .unwrap_or_else(|e| panic!("count events error: {e}, stderr was: {stderr1}"));
-    assert_eq!(count, 1, "exactly 1 event after turn 1, stderr was: {stderr1}");
+    assert_eq!(
+        count, 1,
+        "exactly 1 event after turn 1, stderr was: {stderr1}"
+    );
 
     let (ev1_id, ev1_created_at): (String, i64) = conn
         .query_row(
@@ -579,11 +579,9 @@ fn shadow_hook_unique_events_across_turns_and_unix_timestamps() {
     );
 
     let snapshot_created_at: i64 = conn
-        .query_row(
-            "SELECT created_at_unix_ms FROM roster_snapshots",
-            [],
-            |r| r.get(0),
-        )
+        .query_row("SELECT created_at_unix_ms FROM roster_snapshots", [], |r| {
+            r.get(0)
+        })
         .expect("query snapshot created_at");
     assert!(
         snapshot_created_at > 1_700_000_000_000,
@@ -591,10 +589,7 @@ fn shadow_hook_unique_events_across_turns_and_unix_timestamps() {
     );
 
     // 2. Retry / duplicate delivery of Turn 1
-    let out1_retry = fixture.run_hook(
-        &serde_json::to_vec(&payload_turn1).unwrap(),
-        &["--shadow"],
-    );
+    let out1_retry = fixture.run_hook(&serde_json::to_vec(&payload_turn1).unwrap(), &["--shadow"]);
     assert_eq!(out1_retry.status.code(), Some(0));
     assert!(out1_retry.stdout.is_empty());
 
@@ -628,10 +623,7 @@ fn shadow_hook_unique_events_across_turns_and_unix_timestamps() {
         "cwd": fixture.workspace(),
     });
 
-    let out2 = fixture.run_hook(
-        &serde_json::to_vec(&payload_turn2).unwrap(),
-        &["--shadow"],
-    );
+    let out2 = fixture.run_hook(&serde_json::to_vec(&payload_turn2).unwrap(), &["--shadow"]);
     assert_eq!(out2.status.code(), Some(0));
     assert!(out2.stdout.is_empty());
 
