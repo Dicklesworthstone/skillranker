@@ -12,6 +12,7 @@ pub mod context;
 pub mod demo;
 pub mod effects;
 pub mod eligibility;
+pub mod evaluation;
 pub mod identity;
 pub mod jev;
 pub mod limits;
