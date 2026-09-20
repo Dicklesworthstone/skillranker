@@ -166,6 +166,40 @@ pub struct LeaseRecord {
     pub is_completed: bool,
 }
 
+// SQLite stores signed integers. Memory and persistent leases use the same
+// admitted domain so switching backends cannot wrap timestamps or fence IDs.
+fn lease_expiry(now: u64, ttl: u64) -> Result<u64, CoordinationError> {
+    now.checked_add(ttl)
+        .filter(|expiry| ttl != 0 && *expiry <= i64::MAX as u64)
+        .ok_or(CoordinationError::InvalidTimestamp)
+}
+
+fn next_lease_generation(
+    current: FencingGeneration,
+) -> Result<FencingGeneration, CoordinationError> {
+    current
+        .as_u64()
+        .checked_add(1)
+        .filter(|next| current.as_u64() != 0 && *next <= i64::MAX as u64)
+        .map(FencingGeneration)
+        .ok_or_else(|| {
+            CoordinationError::StorageError("coordination fence generation exhausted".into())
+        })
+}
+
+fn invalid_lease_record() -> CoordinationError {
+    CoordinationError::StorageError("coordination lease contains invalid metadata".into())
+}
+
+impl LeaseRecord {
+    fn check_time(&self, now: u64) -> Result<(), CoordinationError> {
+        if now < self.acquired_at_unix_ms || now > i64::MAX as u64 {
+            return Err(CoordinationError::InvalidTimestamp);
+        }
+        Ok(())
+    }
+}
+
 /// Policy governing single-flight lease coordination.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CoordinationPolicy {
@@ -313,7 +347,7 @@ impl MemoryCoordinator {
 
     /// Atomically verifies lease ownership/fencing before executing the publication closure and marking the lease completed.
     ///
-    /// If the leader was superseded or expired, `publish` is NEVER invoked and `PublishOutcome::Superseded` is returned.
+    /// If the leader was superseded, expired or already completed, `publish` is NEVER invoked and `PublishOutcome::Superseded` is returned.
     pub fn complete_and_publish<F>(
         &self,
         key: CoordinationKey,
@@ -337,7 +371,11 @@ impl MemoryCoordinator {
             });
         };
 
-        if existing.owner_token != owner_token || existing.fencing_generation != generation {
+        existing.check_time(now_unix_ms)?;
+        if existing.is_completed
+            || existing.owner_token != owner_token
+            || existing.fencing_generation != generation
+        {
             return Ok(PublishOutcome::Superseded {
                 expected_generation: generation,
                 current_generation: Some(existing.fencing_generation),
@@ -369,12 +407,14 @@ impl LeaseCoordinator for MemoryCoordinator {
         now_unix_ms: u64,
         policy: &CoordinationPolicy,
     ) -> Result<LeaseAcquisition, CoordinationError> {
+        let admitted_expiry = lease_expiry(now_unix_ms, policy.lease_ttl_ms)?;
         let mut map = self
             .leases
             .write()
             .map_err(|_| CoordinationError::LockPoisoned)?;
 
         if let Some(existing) = map.get_mut(&key) {
+            existing.check_time(now_unix_ms)?;
             // First check if lease is unexpired
             if now_unix_ms < existing.expires_at_unix_ms {
                 if existing.is_completed {
@@ -388,10 +428,10 @@ impl LeaseCoordinator for MemoryCoordinator {
             }
 
             // Existing lease expired; successor reacquires with bumped generation
-            let new_gen = existing.fencing_generation.next();
+            let new_gen = next_lease_generation(existing.fencing_generation)?;
             let new_token = OwnerToken::generate()
                 .map_err(|e| CoordinationError::StorageError(e.to_string()))?;
-            let expires_at = now_unix_ms.saturating_add(policy.lease_ttl_ms);
+            let expires_at = admitted_expiry;
             let attempt_id = format!("att-inmem-{}", new_gen.as_u64());
 
             *existing = LeaseRecord {
@@ -416,7 +456,7 @@ impl LeaseCoordinator for MemoryCoordinator {
         let token =
             OwnerToken::generate().map_err(|e| CoordinationError::StorageError(e.to_string()))?;
         let fence_gen = FencingGeneration::initial();
-        let expires_at = now_unix_ms.saturating_add(policy.lease_ttl_ms);
+        let expires_at = admitted_expiry;
         let attempt_id = format!("att-inmem-{}", fence_gen.as_u64());
 
         map.insert(
@@ -446,12 +486,14 @@ impl LeaseCoordinator for MemoryCoordinator {
         now_unix_ms: u64,
         policy: &CoordinationPolicy,
     ) -> Result<LeaseAcquisition, CoordinationError> {
+        let admitted_expiry = lease_expiry(now_unix_ms, policy.lease_ttl_ms)?;
         let mut map = self
             .leases
             .write()
             .map_err(|_| CoordinationError::LockPoisoned)?;
 
         if let Some(existing) = map.get_mut(&key) {
+            existing.check_time(now_unix_ms)?;
             // If another leader already reacquired to refresh and is currently unexpired, follow them
             if !existing.is_completed && now_unix_ms < existing.expires_at_unix_ms {
                 return Ok(LeaseAcquisition::Following(FollowerContext {
@@ -461,10 +503,10 @@ impl LeaseCoordinator for MemoryCoordinator {
                 }));
             }
 
-            let new_gen = existing.fencing_generation.next();
+            let new_gen = next_lease_generation(existing.fencing_generation)?;
             let new_token = OwnerToken::generate()
                 .map_err(|e| CoordinationError::StorageError(e.to_string()))?;
-            let expires_at = now_unix_ms.saturating_add(policy.lease_ttl_ms);
+            let expires_at = admitted_expiry;
             let attempt_id = format!("att-inmem-{}", new_gen.as_u64());
 
             *existing = LeaseRecord {
@@ -489,7 +531,7 @@ impl LeaseCoordinator for MemoryCoordinator {
         let token =
             OwnerToken::generate().map_err(|e| CoordinationError::StorageError(e.to_string()))?;
         let fence_gen = FencingGeneration::initial();
-        let expires_at = now_unix_ms.saturating_add(policy.lease_ttl_ms);
+        let expires_at = admitted_expiry;
         let attempt_id = format!("att-inmem-{}", fence_gen.as_u64());
 
         map.insert(
@@ -767,7 +809,7 @@ impl SqliteLeaseCoordinator {
     /// Atomically verifies lease ownership/fencing, optionally publishes response bytes into `sr_response_cache`,
     /// and marks the lease completed within a single immediate SQLite transaction.
     ///
-    /// If the leader was superseded or expired, `sr_response_cache` is NEVER modified and `PublishOutcome::Superseded` is returned.
+    /// If the leader was superseded, expired or already completed, `sr_response_cache` is NEVER modified and `PublishOutcome::Superseded` is returned.
     pub fn complete_and_publish(
         &self,
         key: CoordinationKey,
@@ -1552,19 +1594,13 @@ impl SqliteLeaseCoordinator {
         now_unix_ms: u64,
         policy: &CoordinationPolicy,
     ) -> Result<LeaseAcquisition, CoordinationError> {
-        let row: Option<(Vec<u8>, i64, i64, i64, String, i64)> = tx
-            .query_row(
-                "SELECT owner_token, fencing_generation, acquired_at_unix_ms, expires_at_unix_ms, attempt_id, is_completed
-                 FROM sr_coordination_leases WHERE coordination_key = ?1",
-                params![key.as_bytes()],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
-            )
-            .optional()?;
-
-        if let Some((_raw_token, gen_i64, _acq, exp_i64, _att, completed_i64)) = row {
-            let cur_fence_gen = FencingGeneration(gen_i64 as u64);
-            let expires_at = exp_i64 as u64;
-            let is_completed = completed_i64 == 1;
+        let admitted_expiry = lease_expiry(now_unix_ms, policy.lease_ttl_ms)?;
+        let row = Self::check_lease_on_connection(tx, key)?;
+        if let Some(existing) = row {
+            existing.check_time(now_unix_ms)?;
+            let cur_fence_gen = existing.fencing_generation;
+            let expires_at = existing.expires_at_unix_ms;
+            let is_completed = existing.is_completed;
 
             if now_unix_ms < expires_at {
                 if is_completed {
@@ -1578,10 +1614,10 @@ impl SqliteLeaseCoordinator {
             }
 
             // Expired lease -> successor reacquires with bumped fencing generation
-            let new_gen = cur_fence_gen.next();
+            let new_gen = next_lease_generation(cur_fence_gen)?;
             let new_token = OwnerToken::generate()
                 .map_err(|e| CoordinationError::StorageError(e.to_string()))?;
-            let new_expires_at = now_unix_ms.saturating_add(policy.lease_ttl_ms);
+            let new_expires_at = admitted_expiry;
             let new_attempt_id = format!("att-proc-{}", new_gen.as_u64());
 
             tx.execute(
@@ -1616,7 +1652,7 @@ impl SqliteLeaseCoordinator {
         let new_token =
             OwnerToken::generate().map_err(|e| CoordinationError::StorageError(e.to_string()))?;
         let init_gen = FencingGeneration::initial();
-        let new_expires_at = now_unix_ms.saturating_add(policy.lease_ttl_ms);
+        let new_expires_at = admitted_expiry;
         let new_attempt_id = format!("att-proc-{}", init_gen.as_u64());
 
         tx.execute(
@@ -1650,19 +1686,13 @@ impl SqliteLeaseCoordinator {
         now_unix_ms: u64,
         policy: &CoordinationPolicy,
     ) -> Result<LeaseAcquisition, CoordinationError> {
-        let row: Option<(Vec<u8>, i64, i64, i64, String, i64)> = tx
-            .query_row(
-                "SELECT owner_token, fencing_generation, acquired_at_unix_ms, expires_at_unix_ms, attempt_id, is_completed
-                 FROM sr_coordination_leases WHERE coordination_key = ?1",
-                params![key.as_bytes()],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
-            )
-            .optional()?;
-
-        if let Some((_raw_token, gen_i64, _acq, exp_i64, _att, completed_i64)) = row {
-            let cur_fence_gen = FencingGeneration(gen_i64 as u64);
-            let expires_at = exp_i64 as u64;
-            let is_completed = completed_i64 == 1;
+        let admitted_expiry = lease_expiry(now_unix_ms, policy.lease_ttl_ms)?;
+        let row = Self::check_lease_on_connection(tx, key)?;
+        if let Some(existing) = row {
+            existing.check_time(now_unix_ms)?;
+            let cur_fence_gen = existing.fencing_generation;
+            let expires_at = existing.expires_at_unix_ms;
+            let is_completed = existing.is_completed;
 
             // If another leader already reacquired to refresh and is currently unexpired, follow them
             if !is_completed && now_unix_ms < expires_at {
@@ -1673,10 +1703,10 @@ impl SqliteLeaseCoordinator {
                 }));
             }
 
-            let new_gen = cur_fence_gen.next();
+            let new_gen = next_lease_generation(cur_fence_gen)?;
             let new_token = OwnerToken::generate()
                 .map_err(|e| CoordinationError::StorageError(e.to_string()))?;
-            let new_expires_at = now_unix_ms.saturating_add(policy.lease_ttl_ms);
+            let new_expires_at = admitted_expiry;
             let new_attempt_id = format!("att-proc-{}", new_gen.as_u64());
 
             tx.execute(
@@ -1710,7 +1740,7 @@ impl SqliteLeaseCoordinator {
         let new_token =
             OwnerToken::generate().map_err(|e| CoordinationError::StorageError(e.to_string()))?;
         let init_gen = FencingGeneration::initial();
-        let new_expires_at = now_unix_ms.saturating_add(policy.lease_ttl_ms);
+        let new_expires_at = admitted_expiry;
         let new_attempt_id = format!("att-proc-{}", init_gen.as_u64());
 
         tx.execute(
@@ -1743,24 +1773,15 @@ impl SqliteLeaseCoordinator {
         leader: &LeaderContext,
         now: u64,
     ) -> Result<bool, CoordinationError> {
-        let row: Option<(Vec<u8>, i64, i64, i64, i64)> = tx
-            .query_row(
-                "SELECT owner_token, fencing_generation, expires_at_unix_ms, is_completed, acquired_at_unix_ms \
-                 FROM sr_coordination_leases WHERE coordination_key=?1",
-                params![leader.key.as_bytes()],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
-            )
-            .optional()?;
-        Ok(
-            row.is_some_and(|(token, generation, expiry, completed, acquired)| {
-                token.as_slice() == leader.owner_token.as_bytes()
-                    && u64::try_from(generation).ok() == Some(leader.fencing_generation.as_u64())
-                    && u64::try_from(expiry).ok() == Some(leader.lease_expires_at_unix_ms)
-                    && completed == 0
-                    && u64::try_from(acquired).is_ok_and(|acquired| now >= acquired)
-                    && now < leader.lease_expires_at_unix_ms
-            }),
-        )
+        let row = Self::check_lease_on_connection(tx, leader.key)?;
+        Ok(row.is_some_and(|record| {
+            !record.is_completed
+                && record.owner_token == leader.owner_token
+                && record.fencing_generation == leader.fencing_generation
+                && record.expires_at_unix_ms == leader.lease_expires_at_unix_ms
+                && now >= record.acquired_at_unix_ms
+                && now < record.expires_at_unix_ms
+        }))
     }
 }
 
@@ -1773,36 +1794,23 @@ impl SqliteLeaseCoordinator {
         now_unix_ms: u64,
         cache_entry: Option<(&CacheKey, &CacheNamespace, &CachedResponseEntry)>,
     ) -> Result<PublishOutcome, CoordinationError> {
-        let row: Option<(Vec<u8>, i64, i64, i64)> = tx
-            .query_row(
-                "SELECT owner_token, fencing_generation, expires_at_unix_ms, is_completed
-                 FROM sr_coordination_leases WHERE coordination_key = ?1",
-                params![key.as_bytes()],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-            )
-            .optional()?;
-
-        let Some((cur_token, cur_gen_i64, exp_i64, _completed)) = row else {
+        let Some(record) = Self::check_lease_on_connection(tx, key)? else {
             return Ok(PublishOutcome::Superseded {
                 expected_generation: generation,
                 current_generation: None,
             });
         };
-
-        let cur_gen = FencingGeneration(cur_gen_i64 as u64);
-        let expires_at = exp_i64 as u64;
-
-        if cur_token.as_slice() != owner_token.as_bytes() || cur_gen != generation {
+        record.check_time(now_unix_ms)?;
+        // Completion is single-use. Replaying a successful publication must
+        // never overwrite its response, even with the same token and fence.
+        if record.is_completed
+            || record.owner_token != owner_token
+            || record.fencing_generation != generation
+            || now_unix_ms >= record.expires_at_unix_ms
+        {
             return Ok(PublishOutcome::Superseded {
                 expected_generation: generation,
-                current_generation: Some(cur_gen),
-            });
-        }
-
-        if now_unix_ms >= expires_at {
-            return Ok(PublishOutcome::Superseded {
-                expected_generation: generation,
-                current_generation: Some(cur_gen),
+                current_generation: Some(record.fencing_generation),
             });
         }
 
@@ -1869,18 +1877,28 @@ impl SqliteLeaseCoordinator {
             return Ok(None);
         };
 
-        let mut token_arr = [0u8; 16];
-        if token_bytes.len() == 16 {
-            token_arr.copy_from_slice(&token_bytes);
+        let token_arr: [u8; 16] = token_bytes.try_into().map_err(|_| invalid_lease_record())?;
+        let generation = u64::try_from(gen_i64).map_err(|_| invalid_lease_record())?;
+        let acquired = u64::try_from(acq).map_err(|_| invalid_lease_record())?;
+        let expires = u64::try_from(exp).map_err(|_| invalid_lease_record())?;
+        if generation == 0
+            || expires < acquired
+            || !matches!(comp, 0 | 1)
+            || att.len() > 128
+        {
+            return Err(invalid_lease_record());
         }
-
         Ok(Some(LeaseRecord {
             owner_token: OwnerToken::from_bytes(token_arr),
-            fencing_generation: FencingGeneration(gen_i64 as u64),
-            acquired_at_unix_ms: acq as u64,
-            expires_at_unix_ms: exp as u64,
+            fencing_generation: FencingGeneration(generation),
+            acquired_at_unix_ms: acquired,
+            expires_at_unix_ms: expires,
             attempt_id: att,
             is_completed: comp == 1,
         }))
     }
 }
+
+#[cfg(test)]
+#[path = "coordination/integrity_tests.rs"]
+mod integrity_tests;
