@@ -64,6 +64,31 @@ fn runtime_construction_requires_remaining_work_time() {
 }
 
 #[test]
+fn a_context_is_refused_once_the_work_window_has_closed() {
+    // The failure mode behind sr-5n0b. `from_clock` admits work *before* it builds,
+    // so a build that stalls past the budget still returns `Ok`, and the refusal
+    // lands on the next `request_cx` instead. A caller that unwraps there sees a
+    // panic with nothing at all wrong in the boundary it meant to test, which is
+    // how five subprocess cases came to fail before ever spawning a child.
+    let clock = EntryClock::capture_with(
+        DurationMillis::new("total", 60, 3_000).unwrap(),
+        DurationMillis::new("cleanup", 20, 3_000).unwrap(),
+    )
+    .unwrap();
+    let invocation = ProcessInvocation::from_clock(clock).unwrap();
+    // Past the 40 ms work window either way: if construction already spent it, the
+    // refusal is what this asserts; if it did not, the sleep closes it.
+    thread::sleep(Duration::from_millis(45));
+    assert!(
+        invocation.request_cx().is_err(),
+        "a closed work window must not yield a context"
+    );
+    // Cleanup remains available after the work window closes.
+    let _ = invocation.request_cleanup_cx();
+    let _ = invocation.shutdown();
+}
+
+#[test]
 fn new_work_stops_in_cleanup_reserve_but_prior_results_may_emit() {
     let deadline = deadline();
     let start = deadline.start();

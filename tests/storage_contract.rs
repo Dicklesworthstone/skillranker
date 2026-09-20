@@ -434,13 +434,27 @@ fn cancellation_prevents_initialization_and_generation_writes() {
 fn expired_work_window_does_not_create_a_directory() {
     let parent = private_tree("deadline");
     let path = parent.join("absent");
-    let clock = EntryClock::capture_with(
-        DurationMillis::new("total", 60, 3000).unwrap(),
-        DurationMillis::new("cleanup", 20, 3000).unwrap(),
-    )
-    .unwrap();
-    let invocation = ProcessInvocation::from_clock(clock).unwrap();
-    let cx = invocation.request_cx().unwrap();
+    // A 60 ms total against a 20 ms reserve leaves a 40 ms work budget, which
+    // construction spends from; on a loaded shared worker it can spend all of it,
+    // and the case then dies in `request_cx` with nothing wrong in the store
+    // boundary it tests (sr-5n0b). Retry with a fresh clock rather than widen the
+    // window, since the window is what makes the refusal below meaningful.
+    let mut live = None;
+    for _ in 0..16 {
+        let clock = EntryClock::capture_with(
+            DurationMillis::new("total", 60, 3000).unwrap(),
+            DurationMillis::new("cleanup", 20, 3000).unwrap(),
+        )
+        .unwrap();
+        let invocation = ProcessInvocation::from_clock(clock).unwrap();
+        if let Ok(cx) = invocation.request_cx() {
+            live = Some((invocation, cx));
+            break;
+        }
+        let _ = invocation.shutdown();
+    }
+    let (invocation, cx) =
+        live.expect("no attempt in 16 left work budget after constructing a runtime");
     std::thread::sleep(Duration::from_millis(65));
     assert!(
         open_cache(

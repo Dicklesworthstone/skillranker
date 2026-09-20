@@ -41,15 +41,39 @@ fn symlinked_executable_resolves_inside_trusted_root_only() {
     assert!(TrustedExecutable::resolve(&canonical, &[root]).is_ok());
     std::fs::remove_dir_all(&temp).unwrap();
 }
+/// An invocation whose work budget survived its own construction.
+///
+/// 400 ms total against a 200 ms reserve leaves a 200 ms work budget, and that is
+/// the budget these cases are about: it is what forces a sleeping child to be
+/// killed. Construction spends from it, and `from_clock` admits work before it
+/// builds, so a build that stalls past the budget still returns `Ok` and every
+/// case here then dies in `request_cx` before a child exists (sr-5n0b). That is an
+/// environment report wearing the costume of a subprocess failure.
+///
+/// Retrying with a fresh clock keeps the budget exactly as tight as the assertions
+/// need, and throws a starved attempt away instead of reporting it. If no attempt
+/// wins, the panic says so rather than blaming the boundary under test.
 fn invocation() -> ProcessInvocation {
-    ProcessInvocation::from_clock(
-        EntryClock::capture_with(
-            DurationMillis::new("total", 400, 3000).unwrap(),
-            DurationMillis::new("cleanup", 200, 3000).unwrap(),
+    for attempt in 1..=16 {
+        let invocation = ProcessInvocation::from_clock(
+            EntryClock::capture_with(
+                DurationMillis::new("total", 400, 3000).unwrap(),
+                DurationMillis::new("cleanup", 200, 3000).unwrap(),
+            )
+            .unwrap(),
         )
-        .unwrap(),
-    )
-    .unwrap()
+        .unwrap();
+        if invocation.request_cx().is_ok() {
+            return invocation;
+        }
+        eprintln!("sr-5n0b: construction spent the 200ms work budget; retry {attempt}");
+        let _ = invocation.shutdown();
+    }
+    panic!(
+        "no attempt in 16 left any of the 200ms work budget after constructing a runtime; \
+         this host is too loaded to run these cases, and nothing here is evidence about \
+         subprocess behaviour"
+    );
 }
 #[test]
 fn sleeping_child_is_killed_and_reaped_before_two_seconds() {
