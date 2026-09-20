@@ -12,7 +12,7 @@ use std::ffi::OsString;
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
-const HELP: &str = "SkillRanker — powered by TypeSafe.ai Jev\n\nUsage: sr [rank] [--context FILE | --transcript FILE --harness NAME | --session PATH | --latest]\n                 [--roster FILE] [--require-skill ID] [--dry-run [--shortlist-ids ID,...]]\n                 [--offline | --allow-network] [--json | --table]\n                 [--top N] [--shortlist M] [--gate FLOAT] [--fits FLOAT]\n                 [--explain] [--why-not ID] [--cursor TOKEN] [--no-tools] [--no-cache]\n                 [--save-case FILE]\n       sr doctor [--json | --table] [--offline | --allow-network]\n       sr doctor --config [--json | --table] [--top N] [--shortlist N]\n       sr roster [--json] [--limit N] [--cursor TOKEN]\n       sr roster --snapshot FILE | --diff FILE\n       sr capabilities [--json]\n       sr demo --case <useful|none|explicit|unavailable> [--json | --table]\n       sr replay FILE [--policy FILE] [--compare-policy FILE] [--json | --table]\n       sr feedback <EVENT_ID> --skill ID [--instead ID] [--verdict <useful|harmful>] [--reason CODE] [--provenance TEXT] [--expected-version GEN] [--dir DIR] [--json]\n       sr ledger <init|migrate|status|prune|clear> [--before TIME] [--apply] [--json]\n       sr observe [--context FILE | --transcript FILE --harness NAME | --session PATH] [--branch NAME] [--roster FILE] [--dir DIR] [--json]\n       sr --help | --version\n\nRank the next step of an agent session using TypeSafe Jev.\nRequires your own TypeSafe API key (TYPESAFE_API_KEY) and network consent (--allow-network).\n";
+const HELP: &str = "SkillRanker — powered by TypeSafe.ai Jev\n\nUsage: sr [rank] [--context FILE | --transcript FILE --harness NAME | --session PATH | --latest]\n                 [--roster FILE] [--require-skill ID] [--dry-run [--shortlist-ids ID,...]]\n                 [--offline | --allow-network] [--json | --table]\n                 [--top N] [--shortlist M] [--gate FLOAT] [--fits FLOAT]\n                 [--explain] [--why-not ID] [--cursor TOKEN] [--no-tools] [--no-cache]\n                 [--save-case FILE]\n       sr doctor [--json | --table] [--offline | --allow-network]\n       sr doctor --config [--json | --table] [--top N] [--shortlist N]\n       sr roster [--json] [--limit N] [--cursor TOKEN]\n       sr roster --snapshot FILE | --diff FILE\n       sr capabilities [--json]\n       sr demo --case <useful|none|explicit|unavailable> [--json | --table]\n       sr replay FILE [--policy FILE] [--compare-policy FILE] [--json | --table]\n       sr feedback <EVENT_ID> --skill ID [--instead ID] [--verdict <useful|harmful>] [--reason CODE] [--provenance TEXT] [--expected-version GEN] [--dir DIR] [--json]\n       sr ledger <init|migrate|status|prune|clear> [--before TIME] [--apply] [--json]\n       sr observe [--context FILE | --transcript FILE --harness NAME | --session PATH] [--branch NAME] [--roster FILE] [--dir DIR] [--json]\n       sr hook <claude> [--shadow] [--offline | --allow-network] [--dir DIR]\n       sr --help | --version\n\nRank the next step of an agent session using TypeSafe Jev.\nRequires your own TypeSafe API key (TYPESAFE_API_KEY) and network consent (--allow-network).\n";
 
 const FEEDBACK_HELP: &str = "sr feedback <EVENT_ID> --skill ID [--instead ID] [--verdict <useful|harmful>] [--reason CODE] [--provenance TEXT] [--expected-version GEN] [--dir DIR] [--json]\n\nRecord explicit feedback or paired corrective labels for a historical ranking event.\n";
 
@@ -523,26 +523,10 @@ fn command() -> Command {
                         .action(ArgAction::Set)
                         .conflicts_with_all(["context", "transcript", "harness"]),
                 )
-                .arg(
-                    Arg::new("branch")
-                        .long("branch")
-                        .action(ArgAction::Set),
-                )
-                .arg(
-                    Arg::new("roster")
-                        .long("roster")
-                        .action(ArgAction::Set),
-                )
-                .arg(
-                    Arg::new("dir")
-                        .long("dir")
-                        .action(ArgAction::Set),
-                )
-                .arg(
-                    Arg::new("json")
-                        .long("json")
-                        .action(ArgAction::SetTrue),
-                )
+                .arg(Arg::new("branch").long("branch").action(ArgAction::Set))
+                .arg(Arg::new("roster").long("roster").action(ArgAction::Set))
+                .arg(Arg::new("dir").long("dir").action(ArgAction::Set))
+                .arg(Arg::new("json").long("json").action(ArgAction::SetTrue))
                 .arg(
                     Arg::new("no-ledger")
                         .long("no-ledger")
@@ -554,11 +538,95 @@ fn command() -> Command {
                         .action(ArgAction::SetTrue),
                 ),
         )
+        .subcommand(
+            Command::new("hook")
+                .disable_help_flag(true)
+                .arg(
+                    Arg::new("help")
+                        .long("help")
+                        .short('h')
+                        .action(ArgAction::SetTrue),
+                )
+                .subcommand(
+                    Command::new("claude")
+                        .disable_help_flag(true)
+                        .arg(
+                            Arg::new("help")
+                                .long("help")
+                                .short('h')
+                                .action(ArgAction::SetTrue),
+                        )
+                        .arg(Arg::new("shadow").long("shadow").action(ArgAction::SetTrue))
+                        .arg(Arg::new("dir").long("dir").action(ArgAction::Set))
+                        .arg(
+                            Arg::new("workspace")
+                                .long("workspace")
+                                .action(ArgAction::Set),
+                        )
+                        .arg(
+                            Arg::new("user-config-root")
+                                .long("user-config-root")
+                                .action(ArgAction::Set),
+                        )
+                        .arg(
+                            Arg::new("allow-network")
+                                .long("allow-network")
+                                .conflicts_with("offline")
+                                .action(ArgAction::SetTrue),
+                        )
+                        .arg(
+                            Arg::new("offline")
+                                .long("offline")
+                                .conflicts_with("allow-network")
+                                .action(ArgAction::SetTrue),
+                        )
+                        .arg(
+                            Arg::new("no-cache")
+                                .long("no-cache")
+                                .action(ArgAction::SetTrue),
+                        )
+                        .arg(
+                            Arg::new("no-ledger")
+                                .long("no-ledger")
+                                .action(ArgAction::SetTrue),
+                        )
+                        .arg(
+                            Arg::new("no-persist")
+                                .long("no-persist")
+                                .action(ArgAction::SetTrue),
+                        )
+                        .arg(
+                            Arg::new("timeout-ms")
+                                .long("timeout-ms")
+                                .action(ArgAction::Set),
+                        ),
+                ),
+        )
+}
+
+fn is_hook_claude_invocation(args: &[OsString]) -> bool {
+    let mut iter = args.iter().skip(1);
+    while let Some(arg) = iter.next() {
+        if let Some(s) = arg.to_str() {
+            if s.starts_with('-') {
+                continue;
+            }
+            if s == "hook" {
+                if let Some(sub) = iter.next() {
+                    return sub.to_str() == Some("claude");
+                }
+            }
+            break;
+        }
+    }
+    false
 }
 
 /// Exit and streams are deliberately separate; diagnostics never echo clap/TOML input.
 pub fn run(clock: EntryClock) -> u8 {
     let args: Vec<OsString> = std::env::args_os().collect();
+    let is_hook_claude = is_hook_claude_invocation(&args);
+    let is_help = args.iter().any(|arg| arg == "--help" || arg == "-h");
     let wants_json = args.iter().any(|arg| arg == "--json") || !io::stdout().is_terminal();
     let location = if let Some(dir) = try_extract_dir(&args) {
         crate::storage::LedgerLocation::Directory(dir)
@@ -567,21 +635,28 @@ pub fn run(clock: EntryClock) -> u8 {
     };
     match execute(&clock, args) {
         Ok(output) => {
-            let bytes_len = output.len();
-            match io::stdout().lock().write_all(output.as_bytes()) {
-                Ok(()) => {
-                    if bytes_len > 0
-                        && let Some(event_id) = try_extract_event_id(&output)
-                    {
-                        let _ = try_record_cli_emission(&clock, location, &event_id, bytes_len);
+            if is_hook_claude && !is_help {
+                0
+            } else {
+                let bytes_len = output.len();
+                match io::stdout().lock().write_all(output.as_bytes()) {
+                    Ok(()) => {
+                        if bytes_len > 0
+                            && let Some(event_id) = try_extract_event_id(&output)
+                        {
+                            let _ = try_record_cli_emission(&clock, location, &event_id, bytes_len);
+                        }
+                        0
                     }
-                    0
+                    Err(_) => 1,
                 }
-                Err(_) => 1,
             }
         }
         Err((code, kind, message)) => {
-            if wants_json {
+            if is_hook_claude {
+                let _ = writeln!(io::stderr().lock(), "sr: {message}");
+                return 0;
+            } else if wants_json {
                 if message.trim_start().starts_with('{')
                     && crate::output::OutputDocument::from_json(message.as_bytes()).is_ok()
                 {
@@ -815,6 +890,18 @@ fn execute(clock: &EntryClock, mut args: Vec<OsString>) -> Result<String, Failur
         }
         return observe_command(clock, observe_matches);
     }
+    if let Some(("hook", hook_matches)) = matches.subcommand() {
+        if hook_matches.get_flag("help") && hook_matches.subcommand().is_none() {
+            return Ok(HELP.into());
+        }
+        if let Some(("claude", claude_matches)) = hook_matches.subcommand() {
+            if claude_matches.get_flag("help") {
+                return Ok(HELP.into());
+            }
+            return hook_claude_command(clock, claude_matches);
+        }
+        return Err((2, "invalid-usage", "Use sr hook claude".into()));
+    }
     // Bare `sr` ranks once, as documented.
     rank_command(clock, None)
 }
@@ -833,11 +920,21 @@ fn feedback_command(
     let event_id = feedback_matches
         .get_one::<String>("event_id")
         .or_else(|| feedback_matches.get_one::<String>("event"))
-        .ok_or_else(|| (2u8, "invalid-arguments", "Missing event ID for feedback".into()))?;
+        .ok_or_else(|| {
+            (
+                2u8,
+                "invalid-arguments",
+                "Missing event ID for feedback".into(),
+            )
+        })?;
 
-    let skill_id = feedback_matches
-        .get_one::<String>("skill")
-        .ok_or_else(|| (2u8, "invalid-arguments", "Missing original skill ID (--skill)".into()))?;
+    let skill_id = feedback_matches.get_one::<String>("skill").ok_or_else(|| {
+        (
+            2u8,
+            "invalid-arguments",
+            "Missing original skill ID (--skill)".into(),
+        )
+    })?;
 
     let instead = feedback_matches.get_one::<String>("instead");
     let verdict = feedback_matches.get_one::<String>("verdict");
@@ -846,7 +943,8 @@ fn feedback_command(
         return Err((
             2u8,
             "invalid-arguments",
-            "Must specify either --instead for paired correction or --verdict for single feedback".into(),
+            "Must specify either --instead for paired correction or --verdict for single feedback"
+                .into(),
         ));
     }
     if instead.is_some() && verdict.is_some() {
@@ -857,13 +955,22 @@ fn feedback_command(
         ));
     }
 
-    let reason = feedback_matches.get_one::<String>("reason").map(|s| s.to_string());
-    let provenance = feedback_matches.get_one::<String>("provenance").map(|s| s.to_string());
+    let reason = feedback_matches
+        .get_one::<String>("reason")
+        .map(|s| s.to_string());
+    let provenance = feedback_matches
+        .get_one::<String>("provenance")
+        .map(|s| s.to_string());
     let expected_version = feedback_matches
         .get_one::<String>("expected-version")
         .map(|s| {
-            s.parse::<u32>()
-                .map_err(|_| (2u8, "invalid-arguments", "Invalid expected version number".into()))
+            s.parse::<u32>().map_err(|_| {
+                (
+                    2u8,
+                    "invalid-arguments",
+                    "Invalid expected version number".into(),
+                )
+            })
         })
         .transpose()?;
 
@@ -905,42 +1012,64 @@ fn feedback_command(
         })
     };
 
-    let outcome = crate::storage::submit_feedback(&invocation, &cx, location, req)
-        .map_err(|err| match err {
-            crate::storage::FeedbackError::MissingSnapshot => {
-                (10u8, "missing-snapshot", "Roster snapshot missing or incomplete for event".into())
-            }
+    let outcome = crate::storage::submit_feedback(&invocation, &cx, location, req).map_err(
+        |err| match err {
+            crate::storage::FeedbackError::MissingSnapshot => (
+                10u8,
+                "missing-snapshot",
+                "Roster snapshot missing or incomplete for event".into(),
+            ),
             crate::storage::FeedbackError::IneligibleAlternative { skill_id, reason } => {
                 let r = reason.as_deref().unwrap_or("ineligible");
-                (2u8, "ineligible-alternative", format!("Alternative skill '{skill_id}' is ineligible: {r}"))
+                (
+                    2u8,
+                    "ineligible-alternative",
+                    format!("Alternative skill '{skill_id}' is ineligible: {r}"),
+                )
             }
-            crate::storage::FeedbackError::RevisionConflict { expected, actual } => {
-                (11u8, "revision-conflict", format!("Ledger revision conflict: expected {expected}, actual {actual}"))
-            }
-            crate::storage::FeedbackError::IdenticalSkills => {
-                (2u8, "invalid-arguments", "Original and alternative skill IDs must be distinct".into())
-            }
+            crate::storage::FeedbackError::RevisionConflict { expected, actual } => (
+                11u8,
+                "revision-conflict",
+                format!("Ledger revision conflict: expected {expected}, actual {actual}"),
+            ),
+            crate::storage::FeedbackError::IdenticalSkills => (
+                2u8,
+                "invalid-arguments",
+                "Original and alternative skill IDs must be distinct".into(),
+            ),
             crate::storage::FeedbackError::InvalidSkillId(msg) => {
                 (2u8, "invalid-arguments", format!("Invalid skill ID: {msg}"))
             }
-            crate::storage::FeedbackError::OriginalSkillNotFound(id) => {
-                (2u8, "skill-not-found", format!("Original skill '{id}' not found in event or roster snapshot"))
-            }
-            crate::storage::FeedbackError::EventNotFound(id) => {
-                (2u8, "event-not-found", format!("Ranking event '{id}' not found in ledger"))
-            }
+            crate::storage::FeedbackError::OriginalSkillNotFound(id) => (
+                2u8,
+                "skill-not-found",
+                format!("Original skill '{id}' not found in event or roster snapshot"),
+            ),
+            crate::storage::FeedbackError::EventNotFound(id) => (
+                2u8,
+                "event-not-found",
+                format!("Ranking event '{id}' not found in ledger"),
+            ),
             crate::storage::FeedbackError::StaleStamp => {
                 (11u8, "revision-conflict", "Ledger stamp is stale".into())
             }
-            crate::storage::FeedbackError::Store(err) => {
-                (9u8, "storage-failure", format!("Ledger storage error: {err}"))
-            }
-        })?;
+            crate::storage::FeedbackError::Store(err) => (
+                9u8,
+                "storage-failure",
+                format!("Ledger storage error: {err}"),
+            ),
+        },
+    )?;
 
     let wants_json = feedback_matches.get_flag("json");
     if wants_json {
-        let json_val = serde_json::to_string_pretty(&outcome)
-            .map_err(|_| (9u8, "serialization-failure", "Failed to serialize outcome".into()))?;
+        let json_val = serde_json::to_string_pretty(&outcome).map_err(|_| {
+            (
+                9u8,
+                "serialization-failure",
+                "Failed to serialize outcome".into(),
+            )
+        })?;
         Ok(format!("{json_val}\n"))
     } else {
         match outcome {
@@ -974,17 +1103,15 @@ fn feedback_command(
     }
 }
 
-fn observe_command(
-    clock: &EntryClock,
-    matches: &clap::ArgMatches,
-) -> Result<String, Failure> {
+fn observe_command(clock: &EntryClock, matches: &clap::ArgMatches) -> Result<String, Failure> {
     timely(clock)?;
 
     if matches.get_flag("no-ledger") || matches.get_flag("no-persist") {
         return Err((
             2u8,
             "invalid-usage",
-            "sr observe requires ledger persistence; --no-ledger and --no-persist are rejected".into(),
+            "sr observe requires ledger persistence; --no-ledger and --no-persist are rejected"
+                .into(),
         ));
     }
 
@@ -1023,7 +1150,11 @@ fn observe_command(
     let (normalized_context, bytes_scanned) = if let Some(context_path) = context_file {
         let path = PathBuf::from(context_path);
         let bytes = std::fs::read(&path).map_err(|e| {
-            (7u8, "malformed-input", format!("Failed to read context file: {e}"))
+            (
+                7u8,
+                "malformed-input",
+                format!("Failed to read context file: {e}"),
+            )
         })?;
         if bytes.len() > crate::limits::NORMALIZED_CONTEXT_JSON_BYTES.max() {
             return Err((
@@ -1034,14 +1165,22 @@ fn observe_command(
         }
         let bytes_len = bytes.len() as u64;
         let ctx = crate::context::parse_normalized_context(&bytes).map_err(|e| {
-            (7u8, "malformed-input", format!("Invalid normalized context: {e}"))
+            (
+                7u8,
+                "malformed-input",
+                format!("Invalid normalized context: {e}"),
+            )
         })?;
         (ctx, bytes_len)
     } else if let (Some(transcript_str), Some(harness_str)) = (transcript_file, harness_opt) {
         let harness_id = crate::identity::HarnessId::new(harness_str)
             .map_err(|_| (2u8, "invalid-arguments", "Invalid harness ID".into()))?;
         let path = PathBuf::from(transcript_str);
-        let transcript_path = if path.is_absolute() { path } else { workspace.join(path) };
+        let transcript_path = if path.is_absolute() {
+            path
+        } else {
+            workspace.join(path)
+        };
         let session = {
             let absolute = transcript_path.clone();
             let ws = workspace.clone();
@@ -1063,14 +1202,19 @@ fn observe_command(
             crate::context::jsonl::CursorKind::Observation,
         )
         .map_err(|e| {
-            (7u8, "malformed-input", format!("Transcript snapshot failed: {e}"))
+            (
+                7u8,
+                "malformed-input",
+                format!("Transcript snapshot failed: {e}"),
+            )
         })?;
         let bytes_scanned = snapshot.cursor.byte_offset;
         let events = snapshot.events;
         let current = events.iter().rev().find(|e| {
             e.role == crate::context::Role::User && e.kind == crate::context::EventKind::Message
         });
-        let current_req_text = current.map_or_else(|| crate::context::PrivateText::new(""), |e| e.text.clone());
+        let current_req_text =
+            current.map_or_else(|| crate::context::PrivateText::new(""), |e| e.text.clone());
         let current_event_id = current.and_then(|e| e.event_id.clone());
         let ctx = crate::context::NormalizedContext {
             schema_version: 1,
@@ -1119,16 +1263,23 @@ fn observe_command(
             .or_else(|| normalized_context.branch_id.clone()),
         target_agent_id: normalized_context.agent_id.clone(),
     };
-    let resolved_branch = crate::context::branch::resolve_active_branch(&normalized_context.events, &branch_target);
+    let resolved_branch =
+        crate::context::branch::resolve_active_branch(&normalized_context.events, &branch_target);
     let active_branch = resolved_branch.active_branch();
     let agent_branch = matches
         .get_one::<String>("branch")
         .cloned()
-        .or_else(|| active_branch.and_then(|b| b.branch_id.as_ref()).map(|b| b.as_str().to_string()))
+        .or_else(|| {
+            active_branch
+                .and_then(|b| b.branch_id.as_ref())
+                .map(|b| b.as_str().to_string())
+        })
         .unwrap_or_else(|| "main".to_string());
 
     // Resolve roster
-    let home = std::env::var_os("HOME").filter(|p| !p.is_empty()).map(PathBuf::from);
+    let home = std::env::var_os("HOME")
+        .filter(|p| !p.is_empty())
+        .map(PathBuf::from);
     let plan = crate::roster::discovery::claude_code_plan_with_roots(
         &workspace,
         home.as_deref(),
@@ -1137,22 +1288,46 @@ fn observe_command(
         },
         &[],
     )
-    .map_err(|_| (5u8, "unusable-roster", "Failed to create roster source plan".into()))?;
+    .map_err(|_| {
+        (
+            5u8,
+            "unusable-roster",
+            "Failed to create roster source plan".into(),
+        )
+    })?;
     let overrides = std::collections::BTreeMap::new();
     let roster = match matches.get_one::<String>("roster") {
         Some(roster_path) => {
             let path = PathBuf::from(roster_path);
-            let path = if path.is_absolute() { path } else { workspace.join(path) };
+            let path = if path.is_absolute() {
+                path
+            } else {
+                workspace.join(path)
+            };
             let bytes = crate::roster::import::read_roster_file(&path).map_err(|e| {
-                (7u8, "malformed-input", format!("Failed to read roster file: {e:?}"))
+                (
+                    7u8,
+                    "malformed-input",
+                    format!("Failed to read roster file: {e:?}"),
+                )
             })?;
-            crate::roster::import::import_authorized(&bytes, &plan, &overrides, &cx, clock).map_err(|e| {
-                (7u8, "malformed-input", format!("Failed to import roster: {e:?}"))
-            })?
+            crate::roster::import::import_authorized(&bytes, &plan, &overrides, &cx, clock)
+                .map_err(|e| {
+                    (
+                        7u8,
+                        "malformed-input",
+                        format!("Failed to import roster: {e:?}"),
+                    )
+                })?
         }
-        None => crate::roster::resolution::resolve_claude_plan(&plan, &overrides, &cx, clock).map_err(|error| {
-            (5u8, "unusable-roster", format!("Failed to resolve roster: {error:?}"))
-        })?,
+        None => crate::roster::resolution::resolve_claude_plan(&plan, &overrides, &cx, clock)
+            .map_err(|error| {
+                (
+                    5u8,
+                    "unusable-roster",
+                    format!("Failed to resolve roster: {error:?}"),
+                )
+            })?,
     };
 
     let evidence_resolver = crate::pipeline::skill_evidence_resolver_from_roster(&roster);
@@ -1168,23 +1343,40 @@ fn observe_command(
         crate::storage::CursorKind::Observation,
     )
     .map_err(|err| match err {
-        crate::storage::StoreError::Missing => {
-            (9u8, "storage-failure", "Ledger store is missing; run sr ledger init first".into())
-        }
-        crate::storage::StoreError::Permissions => {
-            (9u8, "storage-failure", "Ledger store is disabled or read-only".into())
-        }
-        e => (9u8, "storage-failure", format!("Failed to read session cursor: {e}")),
+        crate::storage::StoreError::Missing => (
+            9u8,
+            "storage-failure",
+            "Ledger store is missing; run sr ledger init first".into(),
+        ),
+        crate::storage::StoreError::Permissions => (
+            9u8,
+            "storage-failure",
+            "Ledger store is disabled or read-only".into(),
+        ),
+        e => (
+            9u8,
+            "storage-failure",
+            format!("Failed to read session cursor: {e}"),
+        ),
     })?;
 
     let (expected_cursor_gen, next_generation) = match &existing_cursor {
-        Some(cur) => (Some(cur.transcript_generation), cur.transcript_generation + 1),
+        Some(cur) => (
+            Some(cur.transcript_generation),
+            cur.transcript_generation + 1,
+        ),
         None => (Some(0), 1),
     };
 
     let session_identity = normalized_context
         .session_identity(Some(workspace_id))
-        .map_err(|e| (7u8, "malformed-input", format!("Invalid session identity: {e:?}")))?;
+        .map_err(|e| {
+            (
+                7u8,
+                "malformed-input",
+                format!("Invalid session identity: {e:?}"),
+            )
+        })?;
 
     let raw_observations = crate::context::tool::extract_load_observations(
         &normalized_context.events,
@@ -1204,8 +1396,19 @@ fn observe_command(
             | crate::context::LoadState::Unobservable => crate::storage::EvidenceState::Censored,
         };
         let event_id_str = obs.event_id.as_ref().map_or("event-0", |e| e.as_str());
-        let source_event_key = format!("{}:{}:{}:{}", session_id, agent_branch, event_id_str, obs.skill_id.as_str());
-        let observation_id = format!("obs-{}-{}-{}", session_id, event_id_str, obs.skill_id.as_str());
+        let source_event_key = format!(
+            "{}:{}:{}:{}",
+            session_id,
+            agent_branch,
+            event_id_str,
+            obs.skill_id.as_str()
+        );
+        let observation_id = format!(
+            "obs-{}-{}-{}",
+            session_id,
+            event_id_str,
+            obs.skill_id.as_str()
+        );
         new_observations.push(crate::storage::NewObservation {
             observation_id,
             source_event_key,
@@ -1247,16 +1450,26 @@ fn observe_command(
         expected_cursor_gen,
     )
     .map_err(|err| match err {
-        crate::storage::StoreError::RecordConflict => {
-            (11u8, "revision-conflict", "Concurrent transcript observation or cursor conflict".into())
-        }
-        crate::storage::StoreError::Missing => {
-            (9u8, "storage-failure", "Ledger store is missing; run sr ledger init first".into())
-        }
-        crate::storage::StoreError::Permissions => {
-            (9u8, "storage-failure", "Ledger store is disabled or read-only".into())
-        }
-        e => (9u8, "storage-failure", format!("Failed to record observations: {e}")),
+        crate::storage::StoreError::RecordConflict => (
+            11u8,
+            "revision-conflict",
+            "Concurrent transcript observation or cursor conflict".into(),
+        ),
+        crate::storage::StoreError::Missing => (
+            9u8,
+            "storage-failure",
+            "Ledger store is missing; run sr ledger init first".into(),
+        ),
+        crate::storage::StoreError::Permissions => (
+            9u8,
+            "storage-failure",
+            "Ledger store is disabled or read-only".into(),
+        ),
+        e => (
+            9u8,
+            "storage-failure",
+            format!("Failed to record observations: {e}"),
+        ),
     })?;
 
     let out = if matches.get_flag("json") || !io::stdout().is_terminal() {
@@ -2047,7 +2260,7 @@ fn rank_command(
         .map(PathBuf::from);
     // The persistent response cache lives in the platform cache directory
     // ($XDG_CACHE_HOME/sr or ~/.cache/sr); effect flags may still disable it.
-    let cache_dir = directories::BaseDirs::new().map(|dirs| dirs.cache_dir().join("sr"));
+    let cache_dir = user_cache_root()?;
 
     let stdin_supplied = is_stdin_supplied();
     let context = rank_matches
@@ -2264,6 +2477,133 @@ fn user_config_root() -> Result<Option<PathBuf>, Failure> {
         }
         None => Ok(None),
     }
+}
+
+fn user_cache_root() -> Result<Option<PathBuf>, Failure> {
+    if let Some(path) = std::env::var_os("XDG_CACHE_HOME").filter(|p| !p.is_empty()) {
+        let path = PathBuf::from(path);
+        if !path.is_absolute() {
+            return Err(invalid("User cache directory must be absolute"));
+        }
+        return Ok(Some(path.join("sr")));
+    }
+    match directories::BaseDirs::new() {
+        Some(dirs) => Ok(Some(dirs.cache_dir().join("sr"))),
+        None => Ok(None),
+    }
+}
+
+fn hook_claude_command(clock: &EntryClock, m: &clap::ArgMatches) -> Result<String, Failure> {
+    timely(clock)?;
+    let offline = m.get_flag("offline");
+    let allow_network = m.get_flag("allow-network");
+    let no_cache = m.get_flag("no-cache");
+    let no_ledger = m.get_flag("no-ledger");
+    let no_persist = m.get_flag("no-persist");
+
+    let flags = crate::privacy::EffectFlags {
+        offline,
+        allow_network,
+        dry_run: false,
+        no_cache,
+        no_ledger,
+        no_persist,
+        save_case: false,
+    };
+    let gate = crate::effects::EffectGate::new(flags, crate::effects::Scope::Rank).map_err(
+        |conflicts| {
+            let first = conflicts
+                .first()
+                .expect("from_flags reports at least one conflict on error");
+            (2u8, "invalid-usage", first.to_string())
+        },
+    )?;
+
+    let mut sources = ConfigSources::default();
+    for (name, value) in std::env::vars_os() {
+        if name.as_encoded_bytes().starts_with(b"SR_")
+            || name == "TYPESAFE_API_KEY"
+            || name == "TYPESAFE_ENDPOINT"
+        {
+            if sources.environment.len() == MAX_LAYER_ENTRIES {
+                return Err(invalid("Too many environment settings"));
+            }
+            sources.environment.push((name, value));
+        }
+    }
+
+    let workspace = if let Some(w) = m.get_one::<String>("workspace") {
+        PathBuf::from(w)
+    } else {
+        std::env::current_dir().map_err(|_| invalid("Workspace is unavailable"))?
+    };
+    let user_root = user_config_root()?;
+    let home = std::env::var_os("HOME")
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from);
+    let cache_dir = user_cache_root()?;
+
+    let source_options = crate::context::source::SourceOptions {
+        stdin_supplied: true,
+        claude_hook: true,
+        context: None,
+        transcript: None,
+        harness: Some(crate::identity::HarnessId::new("claude_code").unwrap()),
+        cass_session: None,
+        latest: false,
+    };
+
+    let args = crate::pipeline::RankArgs {
+        workspace: workspace.clone(),
+        user_config_root: user_root.clone(),
+        home,
+        cache_dir,
+        sources: sources.clone(),
+        gate,
+        source_options,
+        require_skills: Vec::new(),
+        shortlist_ids: Vec::new(),
+        roster_file: None,
+        explain: false,
+        why_not: None,
+        cursor: None,
+        output_json: true,
+        output_table: false,
+        dry_run: false,
+        save_case: None,
+    };
+
+    let timeout_ms = m
+        .get_one::<String>("timeout-ms")
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or_else(|| {
+            ConfigFiles::new(args.workspace.clone(), args.user_config_root.clone())
+                .load(clock, args.sources.clone())
+                .map_or(clock.deadline().total().as_millis(), |resolved| {
+                    resolved.effective().timeout_ms()
+                })
+        });
+    let clock = &DurationMillis::new("timeout_ms", timeout_ms, crate::config::MAX_TIMEOUT_MS)
+        .map_err(crate::runtime::RuntimeError::from)
+        .and_then(|total| clock.with_total(total))
+        .map_err(|_| invalid("Invalid ranking deadline"))?;
+    timely(clock)?;
+    let invocation = crate::runtime::ProcessInvocation::from_clock(*clock)
+        .map_err(|_| (6u8, "timeout", "Local runtime unavailable".into()))?;
+    let outcome = invocation
+        .request_cx()
+        .map_err(|_| (6u8, "timeout", "Local runtime unavailable".into()))
+        .and_then(|cx| {
+            invocation.runtime().block_on(async {
+                crate::pipeline::execute_pipeline(&invocation, &cx, args, None).await
+            })
+        });
+    let completed_in_time = timely(clock);
+    let _output_doc = finish_invocation(invocation, outcome)?;
+    completed_in_time?;
+
+    // In shadow mode (the default in P6), the hook emits zero stdout and returns 0.
+    Ok(String::new())
 }
 
 /// Fixed invocation paths for bounded initial reads and consequential rereads.

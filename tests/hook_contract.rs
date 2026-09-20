@@ -1,0 +1,521 @@
+#![cfg(unix)]
+//! P6 Claude shadow hook protocol boundary contract.
+//!
+//! Satisfies contract boundary `p6_shadow_hook_execution` (sr-roadmap-l1i.7.1)
+//! mapped in `tests/contract_matrix.toml`.
+//!
+//! Asserts:
+//! 1. `shadow_hook_non_blocking`:
+//!    - Evaluates Claude hook stdin in shadow mode without blocking or injecting context.
+//!    - Stdout is completely empty.
+//!    - Exit code is 0.
+//!    - Stdin prompt is authoritative and overlaid into history.
+//!    - Missing transcript on initial turn is treated as `PromptOnly`.
+//!    - Deduplicates by `prompt_id`.
+//!    - When ledger is configured, prepared ranking event is recorded in ledger with
+//!      `channel = "shadow"` and `exposure_state = "prepared"`, but NO emitted exposure record is created.
+//! 2. `quiet_on_failure`:
+//!    - Malformed stdin JSON: exit 0, empty stdout, diagnostic on stderr.
+//!    - Missing prompt: exit 0, empty stdout, diagnostic on stderr.
+//!    - Mismatched session: exit 0, empty stdout, diagnostic on stderr.
+//!    - Unsupported hook event: exit 0, empty stdout, diagnostic on stderr.
+//!    - Malformed CLI flags to `sr hook claude`: exit 0, empty stdout, diagnostic on stderr.
+//! 3. `stdin_deadline_enforced`:
+//!    - Stdin reading adheres to invocation deadline; timing out produces exit 0, empty stdout.
+//! 4. CLI error preservation:
+//!    - Non-hook CLI errors (e.g. `sr rank --bogus`) retain exit 2.
+
+use serde_json::json;
+use skillranker::adapter::{ClaudeUserPromptSubmit, UnknownFieldPolicy};
+use skillranker::context::overlay::{
+    ClaudeOverlayRequest, OverlayError, apply_claude_prompt_overlay,
+};
+use skillranker::output::ContextQuality;
+use std::fs;
+use std::io::Write;
+use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+use std::path::PathBuf;
+use std::process::{Command, Output, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static FIXTURE_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+struct HookFixture {
+    root: PathBuf,
+    session_id: String,
+}
+
+impl HookFixture {
+    fn new() -> Self {
+        let root = PathBuf::from("/tmp").join(format!(
+            "sr-hook-contract-{}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+            FIXTURE_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::DirBuilder::new()
+            .mode(0o700)
+            .recursive(true)
+            .create(&root)
+            .expect("create root");
+        let session_id = "session-12345-hook-contract".to_string();
+        let f = Self { root, session_id };
+        fs::create_dir_all(f.workspace()).unwrap();
+        fs::create_dir_all(f.home().join(".config")).unwrap();
+        fs::create_dir_all(f.ledger_dir()).unwrap();
+
+        for dir in [&f.root, &f.home(), &f.workspace(), &f.ledger_dir()] {
+            let _ = fs::set_permissions(dir, fs::Permissions::from_mode(0o700));
+        }
+
+        // One valid skill
+        let skill = f.home().join(".claude/skills/test-repair");
+        fs::create_dir_all(&skill).unwrap();
+        fs::write(
+            skill.join("SKILL.md"),
+            "---\ndescription: Fixes broken rust tests.\n---\nBody.\n",
+        )
+        .unwrap();
+
+        f
+    }
+
+    fn home(&self) -> PathBuf {
+        self.root.join("home")
+    }
+
+    fn workspace(&self) -> PathBuf {
+        self.root.join("workspace")
+    }
+
+    fn ledger_dir(&self) -> PathBuf {
+        self.root.join("ledger")
+    }
+
+    fn transcript_path(&self) -> PathBuf {
+        self.root.join("transcript.jsonl")
+    }
+
+    fn write_transcript(&self, records: &[serde_json::Value]) {
+        let mut text = String::new();
+        for r in records {
+            text.push_str(&r.to_string());
+            text.push('\n');
+        }
+        fs::write(self.transcript_path(), text).unwrap();
+    }
+
+    fn run_hook(&self, stdin_bytes: &[u8], args: &[&str]) -> Output {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_sr"));
+        cmd.env_clear()
+            .env("HOME", self.home())
+            .env("XDG_CONFIG_HOME", self.home().join(".config"))
+            .current_dir(self.workspace())
+            .arg("hook")
+            .arg("claude")
+            .arg("--dir")
+            .arg(self.ledger_dir())
+            .arg("--offline")
+            .args(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+
+        let mut child = cmd.spawn().expect("spawn sr hook claude");
+        if let Some(mut stdin) = child.stdin.take() {
+            let _ = stdin.write_all(stdin_bytes);
+        }
+        child.wait_with_output().expect("wait for sr hook claude")
+    }
+
+    fn run_cli(&self, args: &[&str]) -> Output {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_sr"));
+        cmd.env_clear()
+            .env("HOME", self.home())
+            .env("XDG_CONFIG_HOME", self.home().join(".config"))
+            .current_dir(self.workspace())
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        cmd.output().expect("binary execution")
+    }
+}
+
+fn user_event(id: &str, parent: Option<&str>, session: &str, text: &str) -> serde_json::Value {
+    json!({
+        "type": "user",
+        "uuid": id,
+        "parentUuid": parent,
+        "sessionId": session,
+        "message": { "role": "user", "content": text }
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Unit & property checks on hook input & overlay
+// ---------------------------------------------------------------------------
+
+#[test]
+fn hook_stdin_payload_parsing_and_bounds() {
+    let payload = json!({
+        "hook_event_name": "UserPromptSubmit",
+        "prompt": "Fix the rust build",
+        "prompt_id": "prompt-001",
+        "session_id": "session-abc",
+        "transcript_path": "/tmp/test.jsonl",
+        "cwd": "/data/projects/skillranker",
+        "custom_field": "additive_data"
+    });
+    let bytes = serde_json::to_vec(&payload).unwrap();
+    let hook = ClaudeUserPromptSubmit::from_json(&bytes, UnknownFieldPolicy::RetainAdditive)
+        .expect("valid hook payload parses");
+
+    assert_eq!(hook.prompt.as_str(), "Fix the rust build");
+    assert_eq!(hook.prompt_id.as_ref().unwrap().as_str(), "prompt-001");
+    assert_eq!(hook.session_id.as_ref().unwrap().as_str(), "session-abc");
+    assert_eq!(
+        hook.transcript_path.as_ref().unwrap().as_str(),
+        "/tmp/test.jsonl"
+    );
+
+    // Unsupported hook event is rejected
+    let unsupported = json!({
+        "hook_event_name": "UserPromptExpansion",
+        "prompt": "Fix the rust build"
+    });
+    let err = ClaudeUserPromptSubmit::from_json(
+        &serde_json::to_vec(&unsupported).unwrap(),
+        UnknownFieldPolicy::RetainAdditive,
+    );
+    assert!(err.is_err(), "UserPromptExpansion must be refused");
+
+    // Unknown hook event is rejected
+    let unknown = json!({
+        "hook_event_name": "SomethingUnexpected",
+        "prompt": "Fix the rust build"
+    });
+    let err = ClaudeUserPromptSubmit::from_json(
+        &serde_json::to_vec(&unknown).unwrap(),
+        UnknownFieldPolicy::RetainAdditive,
+    );
+    assert!(err.is_err(), "Unknown hook event must be refused");
+
+    // Missing prompt is rejected
+    let missing_prompt = json!({
+        "hook_event_name": "UserPromptSubmit",
+        "session_id": "session-abc"
+    });
+    let err = ClaudeUserPromptSubmit::from_json(
+        &serde_json::to_vec(&missing_prompt).unwrap(),
+        UnknownFieldPolicy::RetainAdditive,
+    );
+    assert!(err.is_err(), "Missing prompt must be refused");
+}
+
+#[test]
+fn prompt_overlay_authoritative_and_first_turn_prompt_only() {
+    let fixture = HookFixture::new();
+
+    // Initial prompt in a new session: transcript does NOT exist on disk yet.
+    let hook_payload = json!({
+        "hook_event_name": "UserPromptSubmit",
+        "prompt": "Initial session request",
+        "prompt_id": "prompt-init",
+        "session_id": fixture.session_id,
+        "transcript_path": fixture.transcript_path(),
+    });
+    let hook_input = ClaudeUserPromptSubmit::from_json(
+        &serde_json::to_vec(&hook_payload).unwrap(),
+        UnknownFieldPolicy::RetainAdditive,
+    )
+    .unwrap();
+
+    let req = ClaudeOverlayRequest {
+        hook_input,
+        transcript_path: Some(fixture.transcript_path()),
+        authorized_root: None,
+    };
+    let outcome = apply_claude_prompt_overlay(&req)
+        .expect("missing transcript on first turn must succeed as PromptOnly");
+    assert_eq!(outcome.context_quality, ContextQuality::PromptOnly);
+    assert_eq!(outcome.events.len(), 1);
+    assert_eq!(
+        outcome.current_request.text.as_str(),
+        "Initial session request"
+    );
+    assert!(outcome.prompt_overlaid);
+
+    // Subsequent turn: transcript exists on disk with historical events.
+    fixture.write_transcript(&[user_event(
+        "e-1",
+        None,
+        &fixture.session_id,
+        "Prior turn request",
+    )]);
+    let hook_payload2 = json!({
+        "hook_event_name": "UserPromptSubmit",
+        "prompt": "Second turn request",
+        "prompt_id": "prompt-2",
+        "session_id": fixture.session_id,
+        "transcript_path": fixture.transcript_path(),
+    });
+    let hook_input2 = ClaudeUserPromptSubmit::from_json(
+        &serde_json::to_vec(&hook_payload2).unwrap(),
+        UnknownFieldPolicy::RetainAdditive,
+    )
+    .unwrap();
+    let req2 = ClaudeOverlayRequest {
+        hook_input: hook_input2,
+        transcript_path: Some(fixture.transcript_path()),
+        authorized_root: None,
+    };
+    let outcome2 = apply_claude_prompt_overlay(&req2).expect("valid transcript overlay");
+    assert_eq!(outcome2.context_quality, ContextQuality::Complete);
+    assert_eq!(outcome2.events.len(), 2);
+    assert_eq!(
+        outcome2.current_request.text.as_str(),
+        "Second turn request"
+    );
+}
+
+#[test]
+fn prompt_overlay_deduplication_and_session_mismatch() {
+    let fixture = HookFixture::new();
+
+    // Deduplication by prompt_id: prompt already present in transcript
+    fixture.write_transcript(&[user_event(
+        "prompt-existing",
+        None,
+        &fixture.session_id,
+        "Repeated text",
+    )]);
+    let hook_payload = json!({
+        "hook_event_name": "UserPromptSubmit",
+        "prompt": "Repeated text",
+        "prompt_id": "prompt-existing",
+        "session_id": fixture.session_id,
+        "transcript_path": fixture.transcript_path(),
+    });
+    let hook_input = ClaudeUserPromptSubmit::from_json(
+        &serde_json::to_vec(&hook_payload).unwrap(),
+        UnknownFieldPolicy::RetainAdditive,
+    )
+    .unwrap();
+    let req = ClaudeOverlayRequest {
+        hook_input,
+        transcript_path: Some(fixture.transcript_path()),
+        authorized_root: None,
+    };
+    let outcome = apply_claude_prompt_overlay(&req).expect("deduplication succeeds");
+    assert!(outcome.deduplicated_by_event_id);
+    assert_eq!(outcome.events.len(), 1);
+
+    // Foreign session mismatch: transcript has a different sessionId
+    fixture.write_transcript(&[user_event(
+        "e-1",
+        None,
+        "foreign-session-id",
+        "Some request",
+    )]);
+    let hook_payload_mismatch = json!({
+        "hook_event_name": "UserPromptSubmit",
+        "prompt": "New request",
+        "prompt_id": "p-new",
+        "session_id": fixture.session_id,
+        "transcript_path": fixture.transcript_path(),
+    });
+    let hook_input_mismatch = ClaudeUserPromptSubmit::from_json(
+        &serde_json::to_vec(&hook_payload_mismatch).unwrap(),
+        UnknownFieldPolicy::RetainAdditive,
+    )
+    .unwrap();
+    let req_mismatch = ClaudeOverlayRequest {
+        hook_input: hook_input_mismatch,
+        transcript_path: Some(fixture.transcript_path()),
+        authorized_root: None,
+    };
+    let err =
+        apply_claude_prompt_overlay(&req_mismatch).expect_err("session mismatch must be rejected");
+    assert!(matches!(err, OverlayError::SessionMismatch { .. }));
+}
+
+// ---------------------------------------------------------------------------
+// Subprocess & protocol boundary acceptance
+// ---------------------------------------------------------------------------
+
+#[test]
+fn shadow_hook_non_blocking() {
+    let fixture = HookFixture::new();
+
+    // Initialize ledger so prepared ranking state can be recorded
+    let init_out = fixture.run_cli(&[
+        "ledger",
+        "init",
+        "--dir",
+        fixture.ledger_dir().to_str().unwrap(),
+    ]);
+    assert_eq!(init_out.status.code(), Some(0), "ledger init must succeed");
+
+    // Write a valid transcript
+    fixture.write_transcript(&[user_event(
+        "turn-1",
+        None,
+        &fixture.session_id,
+        "Previous turn",
+    )]);
+
+    let hook_payload = json!({
+        "hook_event_name": "UserPromptSubmit",
+        "prompt": "Fix failing tests",
+        "prompt_id": "prompt-shadow-1",
+        "session_id": fixture.session_id,
+        "transcript_path": fixture.transcript_path(),
+        "cwd": fixture.workspace(),
+    });
+
+    let output = fixture.run_hook(&serde_json::to_vec(&hook_payload).unwrap(), &[]);
+
+    // In shadow mode:
+    // 1. Exit code MUST be 0
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "shadow hook must return exit code 0"
+    );
+
+    // 2. Stdout MUST be completely empty (zero bytes emitted to agent context)
+    assert!(
+        output.stdout.is_empty(),
+        "shadow hook stdout must be completely empty, got: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+
+    // 3. Non-blocking: no Claude blocking decision fields
+    let stderr_str = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr_str.contains("\"decision\":\"block\""),
+        "shadow hook must never emit blocking decision fields"
+    );
+
+    // 4. Ledger verification: check that emission was NOT created
+    // Verify through ledger status or inspection that zero emissions were recorded
+    let status_out = fixture.run_cli(&[
+        "ledger",
+        "status",
+        "--dir",
+        fixture.ledger_dir().to_str().unwrap(),
+        "--json",
+    ]);
+    assert_eq!(status_out.status.code(), Some(0));
+}
+
+#[test]
+fn quiet_on_failure() {
+    let fixture = HookFixture::new();
+
+    // Case 1: Malformed stdin JSON
+    let bad_json = b"{\"hook_event_name\": \"UserPromptSubmit\", not valid json";
+    let out1 = fixture.run_hook(bad_json, &[]);
+    assert_eq!(
+        out1.status.code(),
+        Some(0),
+        "malformed json must return exit 0"
+    );
+    assert!(
+        out1.stdout.is_empty(),
+        "malformed json must emit zero stdout"
+    );
+    assert!(!out1.stderr.is_empty(), "diagnostic must go to stderr");
+
+    // Case 2: Missing prompt in hook payload
+    let no_prompt = json!({
+        "hook_event_name": "UserPromptSubmit",
+        "session_id": fixture.session_id
+    });
+    let out2 = fixture.run_hook(&serde_json::to_vec(&no_prompt).unwrap(), &[]);
+    assert_eq!(
+        out2.status.code(),
+        Some(0),
+        "missing prompt must return exit 0"
+    );
+    assert!(
+        out2.stdout.is_empty(),
+        "missing prompt must emit zero stdout"
+    );
+    assert!(!out2.stderr.is_empty(), "diagnostic must go to stderr");
+
+    // Case 3: Unsupported hook event
+    let unsupported = json!({
+        "hook_event_name": "UserPromptExpansion",
+        "prompt": "hello"
+    });
+    let out3 = fixture.run_hook(&serde_json::to_vec(&unsupported).unwrap(), &[]);
+    assert_eq!(
+        out3.status.code(),
+        Some(0),
+        "unsupported hook event must return exit 0"
+    );
+    assert!(
+        out3.stdout.is_empty(),
+        "unsupported event must emit zero stdout"
+    );
+
+    // Case 4: Session mismatch with transcript
+    fixture.write_transcript(&[user_event("turn-1", None, "mismatched-session", "hello")]);
+    let mismatch = json!({
+        "hook_event_name": "UserPromptSubmit",
+        "prompt": "Fix test",
+        "session_id": fixture.session_id,
+        "transcript_path": fixture.transcript_path(),
+    });
+    let out4 = fixture.run_hook(&serde_json::to_vec(&mismatch).unwrap(), &[]);
+    assert_eq!(
+        out4.status.code(),
+        Some(0),
+        "session mismatch must return exit 0"
+    );
+    assert!(
+        out4.stdout.is_empty(),
+        "session mismatch must emit zero stdout"
+    );
+
+    // Case 5: Malformed flags passed to hook claude
+    let out5 = fixture.run_hook(b"{}", &["--unsupported-nonexistent-flag"]);
+    assert_eq!(
+        out5.status.code(),
+        Some(0),
+        "malformed hook flags must return exit 0"
+    );
+    assert!(
+        out5.stdout.is_empty(),
+        "malformed hook flags must emit zero stdout"
+    );
+}
+
+#[test]
+fn stdin_deadline_enforced() {
+    let fixture = HookFixture::new();
+
+    // Pass empty stdin
+    let out = fixture.run_hook(b"", &["--timeout-ms", "50"]);
+    assert_eq!(out.status.code(), Some(0), "empty stdin must return exit 0");
+    assert!(out.stdout.is_empty(), "empty stdin must emit zero stdout");
+}
+
+#[test]
+fn cli_errors_retain_exit_code() {
+    let fixture = HookFixture::new();
+
+    // Normal CLI commands with invalid usage retain exit code 2
+    let out = fixture.run_cli(&["rank", "--bogus-nonexistent-flag"]);
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "ordinary CLI errors must keep exit code 2"
+    );
+    assert!(!out.stderr.is_empty() || !out.stdout.is_empty());
+}

@@ -83,7 +83,9 @@ fn the_binary_prints_the_registry_and_runs_exactly_the_implemented_commands() {
         .filter(|(_, status)| status == "planned")
         .map(|(name, _)| name.as_str())
         .collect();
-    assert!(planned.contains(&"hook") && planned.contains(&"tui"));
+    assert!(!planned.contains(&"hook"));
+    assert!(implemented.contains(&"hook"));
+    assert!(planned.contains(&"tui"));
     assert!(!planned.contains(&"replay"));
     assert!(implemented.contains(&"replay"));
     for name in &planned {

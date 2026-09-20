@@ -23,11 +23,11 @@ use crate::config::{
 use crate::context::anchor::resolve_task_anchor;
 use crate::context::branch::{SkillUsageKind, resolve_active_branch};
 use crate::context::jsonl::{CursorKind, snapshot_jsonl};
-use crate::context::tool::{SimpleSkillResolver, SkillMatch, extract_loaded_skill_records};
 use crate::context::render::{RenderContextOptions, render_context_and_receipt};
 use crate::context::source::{
     SelectionOutcome, SelectionReason, SourceError, SourceOptions, SourceTarget,
 };
+use crate::context::tool::{SimpleSkillResolver, SkillMatch, extract_loaded_skill_records};
 use crate::context::{CurrentRequest, NormalizedContext, PrivateText, parse_normalized_context};
 use crate::effects::EffectGate;
 use crate::eligibility::{Eligible, Evaluation, LoadedState, Verdict, admit, after_rerank};
@@ -583,9 +583,7 @@ pub(crate) fn skill_evidence_resolver_from_roster(roster: &ResolvedRoster) -> Si
         }
 
         let path_str = match &record.target {
-            crate::roster::LoadTarget::File(p) => {
-                Some(p.as_path().to_string_lossy().to_string())
-            }
+            crate::roster::LoadTarget::File(p) => Some(p.as_path().to_string_lossy().to_string()),
             _ => None,
         };
         if let Some(p) = path_str {
@@ -619,13 +617,6 @@ async fn rank_once(
     // The entry point already folded `--dry-run` into the gate.
     let gate = args.gate;
     let dry_run = gate.policy().flags().dry_run;
-    let mode_channel: &'static str = if dry_run {
-        "shadow"
-    } else if args.source_options.claude_hook {
-        "advisory-hook"
-    } else {
-        "cli"
-    };
     progress.evaluated.ledger_disabled = matches!(gate.ledger(), StoreAccess::Disabled(_));
     if args.save_case.is_some() {
         progress.capture = Some(CaseCapture::default());
@@ -637,6 +628,16 @@ async fn rank_once(
     let mut current_receipt = resolved_config.receipt(gate.policy());
 
     let effective = resolved_config.effective();
+    let mode_channel: &'static str = if dry_run {
+        "shadow"
+    } else if args.source_options.claude_hook {
+        match effective.hook_mode() {
+            crate::config::HookMode::Shadow => "shadow",
+            crate::config::HookMode::Advisory => "advisory-hook",
+        }
+    } else {
+        "cli"
+    };
     let top = effective.top() as usize;
     let shortlist = effective.shortlist() as usize;
     let gate_threshold = effective.gate();
@@ -868,11 +869,88 @@ async fn rank_once(
             }
         }
         SourceTarget::ClaudeHookStdin => {
-            return Err(failure(
-                2,
-                "unsupported-source-mode",
-                "Use sr hook claude for hook protocol stdin mode",
-            ));
+            let limit = crate::limits::HOOK_STDIN_BYTES.max();
+            let mut bytes = Vec::new();
+            crate::runtime::read_stdin_platform_before_cleanup(clock, limit, &mut bytes).map_err(
+                |error| match error {
+                    crate::runtime::RuntimeError::StdinTimeout => {
+                        failure(6, "timeout", "Hook stdin reached the ranking deadline")
+                    }
+                    crate::runtime::RuntimeError::Deadline(
+                        crate::limits::LimitError::AboveLimit { .. },
+                    ) => failure(7, "oversized-input", "Hook payload on stdin exceeds 1 MiB"),
+                    crate::runtime::RuntimeError::UnboundedLeaf => failure(
+                        7,
+                        "unsupported-input",
+                        "Bounded stdin is unavailable on this platform",
+                    ),
+                    _ => failure(
+                        7,
+                        "malformed-input",
+                        "Failed to read hook payload from stdin",
+                    ),
+                },
+            )?;
+            let hook_input = crate::adapter::ClaudeUserPromptSubmit::from_json(
+                &bytes,
+                crate::adapter::UnknownFieldPolicy::RetainAdditive,
+            )
+            .map_err(|e| failure(7, "malformed-input", format!("Invalid hook input: {e}")))?;
+            let overlay_request = crate::context::overlay::ClaudeOverlayRequest {
+                hook_input,
+                transcript_path: None,
+                authorized_root: None,
+            };
+            let overlay = crate::context::overlay::apply_claude_prompt_overlay_before(
+                &overlay_request,
+                clock,
+            )
+            .map_err(|e| match e {
+                crate::context::overlay::OverlayError::Deadline => {
+                    failure(6, "timeout", "Transcript overlay deadline exhausted")
+                }
+                crate::context::overlay::OverlayError::MissingPrompt => failure(
+                    7,
+                    "malformed-input",
+                    "Hook stdin payload is missing prompt text",
+                ),
+                crate::context::overlay::OverlayError::SessionMismatch { .. }
+                | crate::context::overlay::OverlayError::CrossSessionReadForbidden => failure(
+                    3,
+                    "missing-session",
+                    "Transcript session does not match hook session",
+                ),
+                crate::context::overlay::OverlayError::AmbiguousBranch => failure(
+                    7,
+                    "ambiguous-branch",
+                    "Transcript branch cannot be resolved",
+                ),
+                _ => failure(
+                    7,
+                    "malformed-input",
+                    format!("Claude prompt overlay failed: {e}"),
+                ),
+            })?;
+            transcript_gaps = overlay.context_quality == crate::output::ContextQuality::Partial;
+            transcript_windowed = overlay
+                .active_branch
+                .as_ref()
+                .is_some_and(|b| b.ancestor_chain_truncated);
+
+            NormalizedContext {
+                schema_version: 1,
+                harness: HarnessId::new("claude_code").unwrap(),
+                producer_id: None,
+                workspace_root: PrivateText::new(args.workspace.to_string_lossy()),
+                session_id: overlay.session_id,
+                agent_id: None,
+                branch_id: overlay.branch_id,
+                context_epoch: None,
+                current_request: overlay.current_request,
+                events: overlay.events,
+                explicit_skill_references: Vec::new(),
+                supplied_loads: Vec::new(),
+            }
         }
         SourceTarget::CassSession(path) => {
             cass_source::read(
@@ -1154,25 +1232,25 @@ async fn rank_once(
                 let mut candidate_options = Vec::with_capacity(skills.len());
                 for s in &skills {
                     let sk = roster.skills().iter().find(|sk| sk.record().id == s.id);
-                    let (content_hash, source, usage_kind, desc, visibility) =
-                        if let Some(sk) = sk {
-                            let rec = sk.record();
-                            (
-                                rec.source_content.as_str().to_string(),
-                                rec.source.as_str().to_string(),
-                                rec.usage_kind.as_str().to_string(),
-                                Some(rec.description_full.as_str().to_string()),
-                                Some(visibility_label(&rec.visibility).to_owned()),
-                            )
-                        } else {
-                            (
-                                "0".repeat(64),
-                                "workspace".to_string(),
-                                "workflow".to_string(),
-                                None,
-                                None,
-                            )
-                        };
+                    let (content_hash, source, usage_kind, desc, visibility) = if let Some(sk) = sk
+                    {
+                        let rec = sk.record();
+                        (
+                            rec.source_content.as_str().to_string(),
+                            rec.source.as_str().to_string(),
+                            rec.usage_kind.as_str().to_string(),
+                            Some(rec.description_full.as_str().to_string()),
+                            Some(visibility_label(&rec.visibility).to_owned()),
+                        )
+                    } else {
+                        (
+                            "0".repeat(64),
+                            "workspace".to_string(),
+                            "workflow".to_string(),
+                            None,
+                            None,
+                        )
+                    };
                     candidate_options.push(CapturedCandidate {
                         skill_id: s.id.as_str().to_string(),
                         invocation_name: s.invocation.as_str().to_string(),
@@ -1672,12 +1750,13 @@ async fn rank_once(
             crate::cache::SourceKind::Native
         }
     });
-    if let SourceTarget::ClaudeTranscript(_) = source_selection.target()
-        && let (Ok(adapter), Ok(version)) = (
-            crate::identity::AdapterId::new(crate::adapter::CLAUDE_CODE_ID),
-            crate::identity::AdapterVersion::new(crate::adapter::CONTRACT_VERSION.to_string()),
-        )
-    {
+    if matches!(
+        source_selection.target(),
+        SourceTarget::ClaudeTranscript(_) | SourceTarget::ClaudeHookStdin
+    ) && let (Ok(adapter), Ok(version)) = (
+        crate::identity::AdapterId::new(crate::adapter::CLAUDE_CODE_ID),
+        crate::identity::AdapterVersion::new(crate::adapter::CONTRACT_VERSION.to_string()),
+    ) {
         cache_ns = cache_ns.with_adapter(adapter, version);
     }
     if let Some(id) = &normalized_context.producer_id {
@@ -3623,12 +3702,8 @@ fn try_record_ledger(
                                 crate::roster::Visibility::Shadowed { .. } => {
                                     "shadowed".to_string()
                                 }
-                                crate::roster::Visibility::Ambiguous => {
-                                    "ambiguous".to_string()
-                                }
-                                crate::roster::Visibility::Unverified => {
-                                    "unverified".to_string()
-                                }
+                                crate::roster::Visibility::Ambiguous => "ambiguous".to_string(),
+                                crate::roster::Visibility::Unverified => "unverified".to_string(),
                                 _ => "ineligible".to_string(),
                             }
                         }

@@ -1432,7 +1432,7 @@ e2e_cases = ["quiet-on-failure", "stdin-deadline-enforced"]
 assertion_ids = ["non_blocking_hook"]
 platforms = ["linux"]
 features = []
-status = "planned"
+status = "executed"
 
 # ==============================================================================
 # Phase P7: Measured Advisory Rollout and Release
