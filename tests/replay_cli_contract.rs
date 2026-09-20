@@ -65,6 +65,13 @@ fn ranked_decision_fixture() -> Value {
     v
 }
 
+fn abstain_decision_fixture(reason: &str) -> Value {
+    let mut v: Value =
+        serde_json::from_str(include_str!("fixtures/output-abstain.v1.json")).unwrap();
+    v["reason"] = json!(reason);
+    v
+}
+
 fn sample_ranked_case() -> ReplayCase {
     ReplayCase {
         schema_version: SCHEMA_VERSION,
@@ -341,4 +348,77 @@ fn replay_rejects_non_owner_only_permissions() {
     assert_ne!(output.status.code(), Some(0));
     let val: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(val["decision"], "unavailable");
+}
+
+#[test]
+fn replay_low_gate_lowering_without_rerank_reports_partial_and_not_established() {
+    let root = temp_workspace("low-gate-partial");
+    let mut case = sample_ranked_case();
+    case.recorded_responses.wide.as_mut().unwrap().gate_score = Some(0.15);
+    case.recorded_responses.rerank = None;
+    case.historical_decision = abstain_decision_fixture("low-fit");
+
+    let case_path = root.join("workspace/case.json");
+    write_case_file(&case_path, &case);
+
+    // 1. Default policy replay: reproduces historical abstention as complete + passed gate
+    let output = run_sr(&root, &["replay", "case.json", "--json"]);
+    assert_eq!(output.status.code(), Some(0));
+    let val: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(val["run_status"], "complete");
+    assert_eq!(val["gate_status"], "passed");
+    assert_eq!(val["historical"]["decision"], "abstain");
+    assert_eq!(val["recomputed"]["decision"], "abstain");
+
+    // 2. Lowered gate threshold: requires rerank response that was not recorded
+    let policy_path = root.join("workspace/lower_gate_policy.json");
+    write_policy_file(&policy_path, r#"{"gate_threshold": 0.10}"#);
+
+    let output = run_sr(
+        &root,
+        &[
+            "replay",
+            "case.json",
+            "--policy",
+            "lower_gate_policy.json",
+            "--json",
+        ],
+    );
+    assert_eq!(output.status.code(), Some(0));
+    let val: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(val["run_status"], "partial");
+    assert_eq!(val["gate_status"], "not-established");
+    assert!(val.get("recomputed").is_none());
+}
+
+#[test]
+fn replay_is_strictly_isolated_from_ambient_environment() {
+    let root = temp_workspace("ambient-isolation");
+    let case = sample_ranked_case();
+    let case_path = root.join("workspace/case.json");
+    write_case_file(&case_path, &case);
+
+    // Run 1: clean run
+    let output1 = run_sr(&root, &["replay", "case.json", "--json"]);
+    assert_eq!(output1.status.code(), Some(0));
+    let val1: Value = serde_json::from_slice(&output1.stdout).unwrap();
+
+    // Run 2: poisoned environment with invalid API key, dead endpoint, dead deadline, nonexistent config/home
+    let output2 = Command::new(env!("CARGO_BIN_EXE_sr"))
+        .env_clear()
+        .env("HOME", "/nonexistent/home")
+        .env("XDG_CONFIG_HOME", "/nonexistent/config")
+        .env("TYPESAFE_API_KEY", "poisoned_invalid_mock_credential")
+        .env("TYPESAFE_ENDPOINT", "http://127.0.0.1:9999/unreachable")
+        .env("SR_TIMEOUT_MS", "1")
+        .current_dir(root.join("workspace"))
+        .args(&["replay", "case.json", "--json"])
+        .output()
+        .unwrap();
+
+    assert_eq!(output2.status.code(), Some(0));
+    let val2: Value = serde_json::from_slice(&output2.stdout).unwrap();
+
+    // The recomputed output must be identical regardless of ambient poisoning
+    assert_eq!(val1, val2);
 }
