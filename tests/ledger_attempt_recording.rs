@@ -145,6 +145,70 @@ impl Fixture {
         std::fs::write(&path, existing).unwrap();
     }
 
+    /// Appends a `tool_use` record, as Claude writes one when the agent loads a skill.
+    /// Separate from `append_tool_result` on purpose: the whole point of the joint case is
+    /// that an ingestion pass can land between the two.
+    fn append_tool_use(&self, session: &str, invocation: &str, n: u8) {
+        self.append_record(
+            session,
+            n,
+            json!({
+                "type": "assistant",
+                "message": {"role": "assistant", "content": [{
+                    "type": "tool_use",
+                    "id": "toolu-joint-1",
+                    "name": "Skill",
+                    "input": {"skill": invocation},
+                }]},
+            }),
+        );
+    }
+
+    /// Appends the matching `tool_result`, which is what turns an attempt into a load.
+    fn append_tool_result(&self, session: &str, n: u8) {
+        self.append_record(
+            session,
+            n,
+            json!({
+                "type": "user",
+                "message": {"role": "user", "content": [{
+                    "type": "tool_result",
+                    "tool_use_id": "toolu-joint-1",
+                    "content": "skill body",
+                    "is_error": false,
+                }]},
+            }),
+        );
+    }
+
+    fn append_record(&self, session: &str, n: u8, mut record: Value) {
+        let workspace = std::fs::canonicalize(self.workspace()).unwrap();
+        let workspace_str = workspace.to_str().unwrap();
+        let object = record.as_object_mut().unwrap();
+        object.insert("uuid".into(), json!(format!("{session}-{n}")));
+        object.insert("parentUuid".into(), json!(format!("{session}-{}", n - 1)));
+        object.insert("cwd".into(), json!(workspace_str));
+        object.insert("sessionId".into(), json!(session));
+        object.insert("timestamp".into(), json!("2026-09-19T10:06:00Z"));
+        let path = self
+            .root
+            .join("home/.claude/projects")
+            .join(workspace_str.replace('/', "-"))
+            .join(format!("{session}.jsonl"));
+        let mut existing = std::fs::read_to_string(&path).unwrap();
+        existing.push_str(&record.to_string());
+        existing.push('\n');
+        std::fs::write(&path, existing).unwrap();
+    }
+
+    fn transcript(&self, session: &str) -> PathBuf {
+        let workspace = std::fs::canonicalize(self.workspace()).unwrap();
+        self.root
+            .join("home/.claude/projects")
+            .join(workspace.to_str().unwrap().replace('/', "-"))
+            .join(format!("{session}.jsonl"))
+    }
+
     fn command(&self, port: u16, args: &[&str]) -> Command {
         let ca = self.root.join("fixture-ca.pem");
         std::fs::write(&ca, include_bytes!("fixtures/jev-tls/ca.pem")).unwrap();
@@ -248,6 +312,18 @@ impl Fixture {
             })
             .unwrap()
             .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+    }
+
+    fn observation_states(&self) -> Vec<String> {
+        let conn = rusqlite::Connection::open(self.ledger_db()).unwrap();
+        let mut statement = conn
+            .prepare("SELECT evidence_state FROM observations ORDER BY observed_at_unix_ms")
+            .unwrap();
+        statement
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<Vec<String>, _>>()
             .unwrap()
     }
 
@@ -860,4 +936,186 @@ fn an_invocation_killed_after_its_request_reached_the_wire_owns_that_attempt() {
     assert_eq!(events[0].1, "unavailable", "{events:#?}");
     assert_eq!(events[0].3, "in-flight", "{events:#?}");
     assert_eq!(attempt.owner_event_id, events[0].0, "{attempts:#?}");
+}
+
+/// The documented adoption loop, end to end, in the order a person actually performs it.
+///
+/// This is the joint acceptance case for sr-oufi and sr-an94. Neither bead's own tests
+/// establish it, because each fixes one half of one row: sr-an94 makes the load count as a
+/// load when its result arrives in a later ingestion pass, and sr-oufi makes the judgment
+/// key on the same identity the candidates and observations use. Before both, this single
+/// assertion failed twice over -- two rows for one skill, and the load recorded as an
+/// attempt -- and either fix alone still leaves it failing.
+///
+/// Every step is the real command over the real seam: a ranking against the loopback TLS
+/// provider, two `sr observe` passes over a transcript that grows between them, a judgment
+/// supplied by the invocation name a person reads in the ranking output, and the report.
+#[test]
+fn the_documented_adoption_loop_reports_one_skill_as_one_row() {
+    let f = Fixture::new();
+    f.claude_session("adoption-loop", TASK);
+    f.ledger_init();
+
+    let provider = Provider::start(&f, "useful");
+    let ranked = f.rank(provider.port);
+    provider.finish();
+    assert!(
+        ranked.status.success(),
+        "rank failed: {}",
+        String::from_utf8_lossy(&ranked.stderr)
+    );
+    let document: Value = serde_json::from_slice(&ranked.stdout).unwrap();
+    assert_eq!(document["decision"], "ranked");
+    let event_id = document["event_id"]
+        .as_str()
+        .expect("a recorded event")
+        .to_owned();
+    let top = &document["skills"][0];
+    let stable_id = top["skill_id"]
+        .as_str()
+        .expect("a stable skill id")
+        .to_owned();
+    let invocation = top["invocation_name"]
+        .as_str()
+        .expect("the name a person reads in the output")
+        .to_owned();
+    assert_ne!(
+        stable_id, invocation,
+        "this case is only meaningful while the two identities differ"
+    );
+
+    // The agent loads the skill. The tool_use is written first, and an observation pass
+    // lands before its result -- the ordinary case for a periodic observe or a per-turn hook.
+    let transcript = f.transcript("adoption-loop");
+    let transcript_str = transcript.to_str().unwrap();
+    f.append_tool_use("adoption-loop", &invocation, 3);
+    let first = f
+        .command(
+            1,
+            &[
+                "observe",
+                "--transcript",
+                transcript_str,
+                "--harness",
+                "claude_code",
+                "--json",
+            ],
+        )
+        .output()
+        .unwrap();
+    assert!(
+        first.status.success(),
+        "first observe: {}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    assert_eq!(
+        f.observation_states(),
+        vec!["attempted".to_string()],
+        "an unpaired tool_use is an attempt, which is the correct first reading"
+    );
+
+    // The result arrives, and a later pass reads it.
+    f.append_tool_result("adoption-loop", 4);
+    let second = f
+        .command(
+            1,
+            &[
+                "observe",
+                "--transcript",
+                transcript_str,
+                "--harness",
+                "claude_code",
+                "--json",
+            ],
+        )
+        .output()
+        .unwrap();
+    assert!(
+        second.status.success(),
+        "second observe: {}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+    assert_eq!(
+        f.observation_states(),
+        vec!["loaded".to_string()],
+        "sr-an94: the confirmation must complete the observation already recorded"
+    );
+
+    // The person judges the suggestion by the name they read, not by an opaque id.
+    let feedback = f
+        .command(
+            1,
+            &[
+                "feedback",
+                &event_id,
+                "--skill",
+                &invocation,
+                "--verdict",
+                "useful",
+                "--json",
+            ],
+        )
+        .output()
+        .unwrap();
+    assert!(
+        feedback.status.success(),
+        "feedback: {}",
+        String::from_utf8_lossy(&feedback.stderr)
+    );
+
+    // The report a reader actually looks at.
+    let stats = f
+        .command(1, &["stats", "--by-skill", "--json"])
+        .output()
+        .unwrap();
+    assert!(
+        stats.status.success(),
+        "stats: {}",
+        String::from_utf8_lossy(&stats.stderr)
+    );
+    let report: Value = serde_json::from_slice(&stats.stdout).unwrap();
+    let rows = report["by_skill"].as_array().expect("--by-skill cohort");
+    let named: Vec<&str> = rows
+        .iter()
+        .filter_map(|row| row["skill_id"].as_str())
+        .collect();
+    // Every candidate of the ranking legitimately gets a row, so the cohort is not expected to
+    // hold exactly one. What must be true is that THIS skill holds exactly one row with all
+    // three figures on it, and that the invocation name never becomes a key of its own.
+    assert!(
+        !named.contains(&invocation.as_str()),
+        "the supplied invocation name must not appear as a skill key; saw {named:?}"
+    );
+    let mine: Vec<&Value> = rows
+        .iter()
+        .filter(|row| row["skill_id"].as_str() == Some(stable_id.as_str()))
+        .collect();
+    assert_eq!(
+        mine.len(),
+        1,
+        "the recommended, loaded and judged skill must occupy exactly one row; saw {named:?}"
+    );
+    let row = mine[0];
+    assert_eq!(
+        row["top1_recommendations"].as_u64(),
+        Some(1),
+        "the recommendation belongs on this row: {row}"
+    );
+    assert_eq!(
+        row["observed_loads"].as_u64(),
+        Some(1),
+        "sr-an94: the split-pass load must count as a load on the same row: {row}"
+    );
+    assert_eq!(
+        row["judged_useful"].as_u64(),
+        Some(1),
+        "sr-oufi: the judgment supplied by name must land on the same row: {row}"
+    );
+    for other in rows
+        .iter()
+        .filter(|row| row["skill_id"].as_str() != Some(stable_id.as_str()))
+    {
+        assert_eq!(other["judged_useful"].as_u64(), Some(0), "other: {other}");
+        assert_eq!(other["observed_loads"].as_u64(), Some(0), "other: {other}");
+    }
 }
