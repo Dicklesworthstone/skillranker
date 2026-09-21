@@ -1,6 +1,8 @@
 //! Local identity, collision and invocation resolution over authorized skill bytes.
 //! Inputs carrying harness visibility must come from a trusted adapter, never YAML.
 
+mod discovery_scope;
+
 use super::discovery::{Diagnostic, DiscoveryPlan, SourceKind};
 use super::{
     DisplayName, InvocationKind, InvocationName, InvocationRestrictions, LoadTarget, SkillAlias,
@@ -452,7 +454,6 @@ pub fn resolve_claude_plan(
     let mut diagnostics = Vec::new();
     let mut total = 0usize;
     let mut withheld_names = BTreeSet::new();
-    let mut global_withhold = false;
     for (index, candidate) in discovery.candidates().iter().enumerate() {
         budget(cx, clock)?;
         let Some(invocation) = claude_invocation(candidate.kind(), candidate.relative()) else {
@@ -465,8 +466,8 @@ pub fn resolve_claude_plan(
         let remaining = DISCOVERY_PARSED_BYTES.max().saturating_sub(total);
         if remaining == 0 {
             diagnostics.push((index, ResolutionError::Limit));
-            global_withhold = true;
-            break;
+            withheld_names.insert(invocation.as_str().to_owned());
+            continue;
         }
         let limit = ResourceLimit::try_new(
             "roster_read",
@@ -522,28 +523,34 @@ pub fn resolve_claude_plan(
             }
         }
     }
-    // An omitted candidate might be the actual winner of a callable name.
-    // Root-level failures (unreadable roots or walk limits) leave possible
-    // supported names unknown, so they still withhold authority globally.
-    // Otherwise, withhold authority only for the specific invocation names the
-    // failed candidate could have claimed, keeping the remaining valid records advisory.
-    let discovery_withhold = discovery.diagnostics().iter().any(|d| {
+    // Partial discovery is not proof of a complete roster, but neither is it
+    // proof that every observed name has an unknown competitor. Verify each
+    // name's exact direct-layout slot in every supported root before retaining
+    // its authority. This never admits a skipped file or follows directory links.
+    let discovery_needs_proof = discovery.diagnostics().iter().any(|d| {
         !matches!(
             d,
             Diagnostic::RootMissing(_) | Diagnostic::SourceNotEnumerated(_)
         )
     });
-    if global_withhold || discovery_withhold {
-        for entry in &mut entries {
+    if discovery_needs_proof {
+        let proof = discovery_scope::prove_names(plan, &entries, &withheld_names, cx, clock)?;
+        if !proof.limited.is_empty() {
+            for (index, candidate) in discovery.candidates().iter().enumerate() {
+                budget(cx, clock)?;
+                if claude_invocation(candidate.kind(), candidate.relative())
+                    .is_some_and(|name| proof.limited.contains(name.as_str()))
+                {
+                    diagnostics.push((index, ResolutionError::Limit));
+                }
+            }
+        }
+        withheld_names.extend(proof.withheld);
+    }
+    for entry in &mut entries {
+        if withheld_names.contains(entry.binding.invocation.as_str()) {
             entry.binding.visibility = Visibility::Unverified;
             entry.record.visibility = Visibility::Unverified;
-        }
-    } else if !withheld_names.is_empty() {
-        for entry in &mut entries {
-            if withheld_names.contains(entry.binding.invocation.as_str()) {
-                entry.binding.visibility = Visibility::Unverified;
-                entry.record.visibility = Visibility::Unverified;
-            }
         }
     }
     let mut roster = ResolvedRoster::resolve(
