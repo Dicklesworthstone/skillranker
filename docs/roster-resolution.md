@@ -50,26 +50,62 @@ restrict-only inputs. See the [Claude skill contract](https://code.claude.com/do
 
 Nested, plugin, managed, synced, and legacy-command discovery are not implemented
 here. Unsupported layouts and parsing/read failures produce bounded diagnostics
-and partial coverage. Unreadable roots and walk limits withhold invocation
-authority globally because they can hide supported competing names. An unsupported
-layout has no callable name under this adapter's direct-layout contract: it stays
-excluded without revoking authority from unrelated valid skills. Ordinary notes
-and marker files do not become skill candidates.
-For per-file metadata or read errors where the callable name is known from the
-supported `<name>/SKILL.md` layout, authority is withheld specifically for the
-invocation names the failed candidates could claim (preventing shadowed winners),
-continuing past individual file errors so remaining valid records stay inspectable
-and advisory. Declared unenumerated sources remain separately disclosed by discovery;
-a caller's verified visibility assertion must cover the actual session before
-using any advice. This is an adapter API, not proof of conformance with a running
-Claude installation.
+and partial coverage. An unsupported layout has no callable name under this
+adapter's direct-layout contract: it stays excluded without revoking authority
+from unrelated valid skills. Ordinary notes and marker files do not become skill
+candidates. Partial coverage is never evidence that no skill exists.
+
+### Discovery gaps and per-name authority
+
+A skipped directory link or an exhausted walk/byte bound does **not** automatically
+make every resolved entry unverified. Nor is a readable singleton automatically a
+winner: an omitted definition in another root could shadow it. When discovery has
+such a gap, resolution checks the exact `<name>/SKILL.md` slot for every observed
+name in every supported root. A slot is accounted for only when it is absent and
+has no captured binding, or it matches the physical identity of the binding
+already read and parsed at that **source and declared path**. An unseen file is
+not admitted by this check, even if it aliases a file observed elsewhere.
+
+These probes use the pinned authorized root descriptors and never descend
+symlinked skill directories. Unknown/unreadable slots, directory links, dangling
+file links, and changed or unobserved files withhold only their invocation names.
+An entirely unreadable supported root still withholds every name because none of
+its slots can be proved absent. A valid file symlink already admitted by the
+authorized reader can retain its binding; a skipped link does not acquire one.
+Manual-only/forbidden winners, precedence, deduplication, and option-map checks
+are unchanged. A proof never upgrades an adapter's unverified visibility.
+
+The original discovery diagnostics and partial-coverage flag remain present,
+including `symlinked-directory-skipped`, `entry-limit`, and `byte-limit`. They
+remain source-level and path-free. Proofs are local, metadata-only, deterministic
+by invocation name, and capped at 10,000 name/root probes per resolution pass.
+Exhaustion adds per-candidate `Limit` diagnostics and withholds only names whose
+proof did not finish; completed names retain their authority. This separate
+verification bound does not increase the 10,000-entry discovery ceiling, read
+skipped skill contents, or continue the stopped enumeration.
+
+Per-file metadata/read failures and exhaustion of the cumulative parse allowance
+also withhold the failed candidates' known names rather than revoking previously
+resolved unrelated entries. Declared unenumerated sources remain separately
+disclosed by discovery; a caller's verified visibility assertion must cover the
+actual session before using any advice. This is an adapter API, not proof of
+conformance with a running Claude installation. Explicit roster import retains
+its separate all-or-nothing validation contract and does not gain directory-link
+support from this change.
 
 Limits are 10,000 inputs, 256 KiB per file, and 32 MiB cumulative read/parse bytes.
-Cancellation and the invocation deadline are checked around filesystem work and
-through resolution. Blocking filesystem syscalls remain cooperative; they are
-not forcibly interruptible. This capture does not replace mandatory pre-publication
-roster/content revalidation, which is a separate integration boundary.
+Cancellation and the invocation deadline are checked around filesystem work,
+between name/root probes, and through resolution. Blocking filesystem syscalls
+remain cooperative; they are not forcibly interruptible. These metadata probes
+do not replace mandatory pre-publication roster/content revalidation. That
+boundary builds a fresh plan and repeats resolution, so a newly hidden competitor
+can invalidate advice even when the number of discovery diagnostics is unchanged.
+No scan freezes files for a later harness load.
 
 Tests in `tests/roster_resolution.rs` exercise real files, hard links, content
 rewrites, collisions, restrictions, local option maps, and privacy-safe debug
-output. They establish local resolution behavior, not live Jev or hook readiness.
+output. `tests/roster_discovery_gaps.rs` adds the issue #4 symlink regression,
+actual discovery/parse ceilings, unseen competing names, and publication checks.
+The resolver's internal proof tests cover missing/changed slots, dangling links,
+and deterministic proof-budget exhaustion. These establish local contracts, not
+live Jev or hook readiness.
