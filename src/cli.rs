@@ -4185,6 +4185,88 @@ mod invocation_cleanup_tests {
 #[cfg(test)]
 mod documented_flag_tests {
     #[test]
+    fn readme_flag_tables_and_prose_have_known_flag_inventory() {
+        let app = super::command();
+        let readme = include_str!("../README.md");
+        let flag_pattern = regex::Regex::new(r"--[a-z][a-z0-9-]*").unwrap();
+        let mut known = std::collections::BTreeSet::new();
+        fn collect(command: &clap::Command, known: &mut std::collections::BTreeSet<String>) {
+            known.extend(
+                command
+                    .get_arguments()
+                    .filter_map(|arg| arg.get_long().map(str::to_owned)),
+            );
+            for child in command.get_subcommands() {
+                collect(child, known);
+            }
+        }
+        collect(&app, &mut known);
+        // These belong to whole commands whose absence is already published.
+        for (owner, flags) in [
+            ("calibrate", &["evaluation", "rollback"][..]),
+            ("budget", &["max-attempts", "window"][..]),
+            ("snooze", &["all", "clear", "for"][..]),
+        ] {
+            if crate::capabilities::planned_command_phase(owner).is_some() {
+                known.extend(flags.iter().map(|flag| (*flag).to_owned()));
+            }
+        }
+        // Cargo and install.sh options in installation prose are not sr flags.
+        let external = [
+            "bin",
+            "path",
+            "release",
+            "locked",
+            "features",
+            "source",
+            "verify",
+            "easy-mode",
+            "no-configure",
+        ];
+        let mut checked = 0;
+        for flag in flag_pattern.find_iter(readme) {
+            let name = &flag.as_str()[2..];
+            assert!(
+                known.contains(name) || external.contains(&name),
+                "README documents unclassified flag --{name}"
+            );
+            checked += 1;
+        }
+        assert!(
+            checked > 50,
+            "README flag inventory must not pass vacuously"
+        );
+        // Tables have an explicit command scope, unlike incidental prose mentions.
+        let mut scope = "rank";
+        let mut rows = 0;
+        for line in readme.lines() {
+            if line.starts_with('#') {
+                scope = if line == "### Evaluation controls" {
+                    "eval"
+                } else {
+                    "rank"
+                };
+            }
+            if line.starts_with("| `--") {
+                let flag = flag_pattern
+                    .find(line)
+                    .unwrap()
+                    .as_str()
+                    .trim_start_matches("--");
+                assert!(
+                    app.find_subcommand(scope)
+                        .unwrap()
+                        .get_arguments()
+                        .any(|arg| arg.get_long() == Some(flag)),
+                    "{scope} table contains unknown --{flag}"
+                );
+                rows += 1;
+            }
+        }
+        assert!(rows > 20);
+    }
+
+    #[test]
     fn readme_command_examples_use_implemented_or_registered_planned_flags() {
         let app = super::command();
         let mut invocation = String::new();
@@ -4203,8 +4285,10 @@ mod documented_flag_tests {
             let words: Vec<_> = invocation.split_whitespace().collect();
             let name = words[1];
             if crate::capabilities::planned_command_phase(name).is_none() {
-                let parser = if name.starts_with('-') {
+                let parser = if matches!(name, "--help" | "--version" | "-h" | "-V") {
                     &app
+                } else if name.starts_with('-') {
+                    app.find_subcommand("rank").unwrap()
                 } else {
                     app.find_subcommand(name)
                         .expect("documented command must exist")
