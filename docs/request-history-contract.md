@@ -29,3 +29,24 @@ This selection grants no network, read, load, or persistence authority and does
 not modify the input envelope. `tests/task_history_scope.rs` checks parent order,
 sibling directives and boundaries, qualified flat histories, current-prompt
 authority, ambiguous/malformed graphs, and the actual offline CLI explicit path.
+
+## Provider disclosure
+
+Both public render entry points use the same selected history before redaction,
+argument summarization, essential-tool checks, and message/scalar windowing.
+Sibling volume cannot evict active context from the window, and sibling bodies
+cannot enter the provider request. The existing payload implementation is retained
+unchanged in the private `render::payload` module; public types and helper paths
+remain re-exported from `context::render`.
+
+Excluded history and tool records are counted in their disclosure categories,
+without exposing names, scope IDs, arguments, or bodies. Counts include exclusions
+before the profile's own omissions, without double counting. Excluding a known
+sibling is not a gap in the active history. Missing active ancestry is a gap:
+its payload and receipt are marked partial (never overriding insufficient), and
+the receipt byte count is recomputed from the final inspected payload.
+
+`tests/render_history_scope.rs` checks both APIs and both disclosure profiles,
+permuted input, foreign reused IDs, receipt totals, incomplete/ambiguous history,
+and the actual production dry-run request. These tests do not establish live
+provider quality, a new native adapter contract, or new load evidence.
