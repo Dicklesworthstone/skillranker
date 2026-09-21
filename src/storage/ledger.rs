@@ -662,6 +662,10 @@ pub struct ProviderMetrics {
     /// another turn paid for. Their usefulness is real and their cost is not theirs, so they
     /// are counted apart rather than folded into a ratio that would read as free.
     pub judged_turns_served_from_cache: u64,
+    /// Judged-cohort attempts whose usage the provider never reported, counted by the same
+    /// predicate as `unknown_usage_attempts`. While this is above zero the cohort's token total
+    /// is a lower bound: those attempts were paid for and contribute nothing to the sum.
+    pub judged_cohort_unknown_usage_attempts: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -3355,15 +3359,22 @@ impl LedgerStore {
         // two reviewers, or a revised label — would report twice the tokens it spent
         // without a single extra token having been spent. What a turn cost is a
         // property of the turn, not of how many times anyone judged it.
-        let (judged_cohort_tokens, judged_cohort_attempts): (i64, i64) = self.connection.query_row(
-            "SELECT coalesce(sum(coalesce(a.input_tokens, 0) + coalesce(a.output_tokens, 0)), 0), count(*) \
+        // The third column uses the same predicate as `unknown_usage_attempts` above, so the
+        // cohort figure and the window figure mean the same thing by construction.
+        let (judged_cohort_tokens, judged_cohort_attempts, judged_cohort_unknown_usage): (
+            i64,
+            i64,
+            i64,
+        ) = self.connection.query_row(
+            "SELECT coalesce(sum(coalesce(a.input_tokens, 0) + coalesce(a.output_tokens, 0)), 0), count(*), \
+             coalesce(sum(CASE WHEN a.input_tokens IS NULL OR a.output_tokens IS NULL OR a.status != 'completed' THEN 1 ELSE 0 END), 0) \
              FROM provider_attempts a WHERE a.owner_event_id IN ( \
                SELECT DISTINCT j.attributed_event_id FROM judgments j \
                JOIN ranking_events e ON j.attributed_event_id = e.event_id \
                WHERE e.created_at_unix_ms >= ?1 AND e.created_at_unix_ms <= ?2 \
              )",
             [since_unix_ms, as_of_unix_ms],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )?;
 
         // Judged turns that owned no attempt of their own: served from a response another turn
@@ -3393,10 +3404,21 @@ impl LedgerStore {
                 "not estimable (judged cohort owns no provider attempt; {judged_turns_served_from_cache} judged turn(s) reused a response paid for elsewhere)"
             )
         } else {
+            // An attempt whose usage the provider never reported contributes nothing to the token
+            // sum because nothing is known, not because nothing was spent. The figure is then a
+            // lower bound, and a lower bound presented as a measurement is the same mistake as a
+            // zero presented as one — so it says which it is.
             format!(
-                "pricing configuration absent; {} attempts / {} tokens per useful suggestion across judged cohort{}",
+                "pricing configuration absent; {} attempts / {} tokens per useful suggestion across judged cohort{}{}",
                 (judged_cohort_attempts as f64 / useful as f64).round() as u64,
                 (judged_cohort_tokens as f64 / useful as f64).round() as u64,
+                if judged_cohort_unknown_usage > 0 {
+                    format!(
+                        "; a lower bound, because {judged_cohort_unknown_usage} of those attempts reported no usage"
+                    )
+                } else {
+                    String::new()
+                },
                 if judged_turns_served_from_cache > 0 {
                     format!(
                         "; excludes {judged_turns_served_from_cache} judged turn(s) that reused a response paid for elsewhere"
@@ -3426,6 +3448,7 @@ impl LedgerStore {
             cost_per_useful_suggestion,
             tokens_per_useful_suggestion,
             judged_turns_served_from_cache: judged_turns_served_from_cache as u64,
+            judged_cohort_unknown_usage_attempts: judged_cohort_unknown_usage as u64,
         };
 
         // 6. By Skill (optional)

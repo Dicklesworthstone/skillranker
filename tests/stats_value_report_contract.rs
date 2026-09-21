@@ -1405,3 +1405,90 @@ fn the_tui_and_advisory_channels_keep_their_own_denominators() {
         .sum();
     assert_eq!(summed, report.turns.total_evaluated, "{:#?}", report.turns);
 }
+
+#[test]
+fn a_judged_attempt_with_unknown_usage_is_not_silently_costed_at_zero() {
+    // 6.13's acceptance asks that no paid attempt be silently omitted. An attempt whose usage the
+    // provider never reported is still a paid attempt: it contributes nothing to the token sum
+    // because nothing is known, not because nothing was spent. The ratio built from that sum is
+    // therefore a lower bound, and this case establishes whether the report says so.
+    let (inv, cx) = test_invocation();
+    let (location, mut store) = ready_store("unknownusage", &inv, &cx);
+    let base = 1_700_000_000_000u64;
+
+    let stamp = store.stamp();
+    store
+        .record_roster_snapshot(inv.clock(), &cx, &snapshot_fixture("snap-1", base), stamp)
+        .expect("snapshot");
+
+    let event = event_fixture(
+        "ev-1",
+        "cli",
+        DecisionKind::Ranked,
+        ExposureState::Emitted,
+        400,
+        base + 100,
+    );
+    // One attempt reported its usage; the other completed without reporting any.
+    let known = attempt_fixture(
+        "att-known",
+        "ev-1",
+        Some(90),
+        Some(10),
+        AttemptStatus::Completed,
+        base + 100,
+    );
+    let silent = attempt_fixture(
+        "att-silent",
+        "ev-1",
+        None,
+        None,
+        AttemptStatus::Completed,
+        base + 110,
+    );
+    let stamp = store.stamp();
+    store
+        .record_ranking_event_with_attempts(
+            inv.clock(),
+            &cx,
+            &event,
+            &[],
+            None,
+            &[known, silent],
+            stamp,
+        )
+        .expect("event");
+    let stamp = store.stamp();
+    store
+        .record_judgment(
+            inv.clock(),
+            &cx,
+            &judgment_fixture("j-1", "ev-1", "review", JudgmentLabel::Useful, base + 300),
+            stamp,
+        )
+        .expect("judgment");
+
+    let report = ledger_stats(&inv, &cx, location, base as i64 - 1, false).expect("ledger_stats");
+
+    // Both attempts are counted and one of them reported nothing.
+    assert_eq!(report.provider.total_attempts, 2, "{:#?}", report.provider);
+    assert_eq!(
+        report.provider.known_total_tokens, 100,
+        "{:#?}",
+        report.provider
+    );
+    assert_eq!(
+        report.provider.unknown_usage_attempts, 1,
+        "an attempt that reported no usage was not counted as such: {:#?}",
+        report.provider
+    );
+
+    // The ratio is computed from 100 known tokens over two attempts, one of whose cost is
+    // unknown. Saying "50 tokens per useful suggestion" without that qualification presents a
+    // lower bound as a measurement.
+    let text = &report.provider.cost_per_useful_suggestion;
+    assert!(
+        text.contains("unknown") || text.contains("lower bound"),
+        "the cost figure omits an attempt whose usage is unknown without saying so: {text}"
+    );
+}

@@ -261,7 +261,11 @@ attempt whose settlement was never observed is `unknown`, not failed. `cache_ser
 and `cache_hit_rate` cover only finished turns: a turn killed before admitting an attempt
 has no attempt rows either, and counting its absence as reuse would inflate the rate.
 `cost_per_useful_suggestion` is a string that either carries a figure or says why it
-cannot, and it is computed over the judged cohort's own attempts only. A turn served from a
+cannot, and it is computed over the judged cohort's own attempts only. Where the cohort holds
+attempts whose usage the provider never reported, `judged_cohort_unknown_usage_attempts` counts
+them and the figure says it is a lower bound: those attempts were paid for and contribute nothing
+to the sum, because nothing about their cost is known. A floor presented as a measurement is the
+same error as a zero presented as one. A turn served from a
 response another turn paid for owns no attempt, so `judged_turns_served_from_cache` counts how
 many judged turns were in that position: where a figure is still computable it names them as
 excluded, and where every judged turn reused a response the figure is declined rather than

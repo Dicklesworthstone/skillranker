@@ -2002,6 +2002,14 @@ fn format_stats_report(report: &crate::storage::StatsValueReport) -> String {
         "Cost per useful suggestion: {}",
         report.provider.cost_per_useful_suggestion
     );
+    if report.provider.judged_cohort_unknown_usage_attempts > 0 {
+        // The token figure above is a floor, not a measurement, while this is above zero.
+        let _ = writeln!(
+            out,
+            "  a lower bound: {} judged attempt(s) reported no usage",
+            report.provider.judged_cohort_unknown_usage_attempts
+        );
+    }
     if report.provider.judged_turns_served_from_cache > 0 {
         // Said next to the figure, because a cost per useful suggestion computed over turns
         // that reused someone else's answer reads lower than the work actually cost.
