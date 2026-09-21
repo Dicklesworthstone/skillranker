@@ -22,7 +22,7 @@ use nix::sys::stat::{Mode, SFlag, fstatat};
 use std::collections::VecDeque;
 use std::ffi::{OsStr, OsString};
 use std::fmt;
-use std::os::fd::AsFd;
+use std::os::fd::{AsFd, BorrowedFd};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
@@ -221,21 +221,42 @@ impl DiscoveryPlan {
     }
 
     pub fn discover_with(&self, limits: DiscoveryLimits) -> Discovery {
+        self.discover_with_checkpoint(limits, || Ok::<(), std::convert::Infallible>(()))
+            .unwrap_or_else(|never| match never {})
+    }
+
+    /// The bounded pass with caller-owned deadline/cancellation admission.
+    /// Checks run before and after filesystem work and before returning even
+    /// an empty result. A failed check returns its error, never a usable partial
+    /// snapshot. Blocking syscalls are not forcibly interruptible.
+    pub fn discover_with_checkpoint<E>(
+        &self,
+        limits: DiscoveryLimits,
+        mut checkpoint: impl FnMut() -> Result<(), E>,
+    ) -> Result<Discovery, E> {
+        checkpoint()?;
         let mut discovery = Discovery::default();
         for source in &self.missing {
+            checkpoint()?;
             discovery
                 .diagnostics
                 .push(Diagnostic::RootMissing(source.clone()));
         }
         for source in &self.unenumerated {
+            checkpoint()?;
             discovery
                 .diagnostics
                 .push(Diagnostic::SourceNotEnumerated(source.clone()));
             discovery.partial = true;
         }
         for planned in &self.roots {
-            discovery.walk_root(planned, limits);
+            checkpoint()?;
+            if discovery.stopped {
+                break;
+            }
+            discovery.walk_root(planned, limits, &mut checkpoint)?;
         }
+        checkpoint()?;
         discovery.candidates.sort_by(|left, right| {
             right
                 .priority
@@ -243,7 +264,8 @@ impl DiscoveryPlan {
                 .then_with(|| left.source.as_str().cmp(right.source.as_str()))
                 .then_with(|| left.relative.cmp(&right.relative))
         });
-        discovery
+        checkpoint()?;
+        Ok(discovery)
     }
 }
 
@@ -388,6 +410,8 @@ pub struct Discovery {
     entries_examined: usize,
     bytes_examined: u64,
     partial: bool,
+    // Entry/byte ceilings apply to the entire pass, not one root at a time.
+    stopped: bool,
 }
 
 impl Discovery {
@@ -414,28 +438,56 @@ impl Discovery {
         self.diagnostics.push(diagnostic);
     }
 
-    fn walk_root(&mut self, planned: &PlannedRoot, limits: DiscoveryLimits) {
+    fn stop(&mut self, diagnostic: Diagnostic) {
+        self.stopped = true;
+        self.note(diagnostic);
+    }
+
+    // A failed readdir need not advance its stream. Abandon that directory
+    // after one error rather than retrying forever outside the entry budget.
+    fn next_entry<T>(
+        &mut self,
+        next: Option<Result<T, Errno>>,
+        source: &SourceId,
+    ) -> Option<T> {
+        match next {
+            Some(Ok(entry)) => Some(entry),
+            Some(Err(_)) => {
+                self.note(Diagnostic::EntryUnreadable(source.clone()));
+                None
+            }
+            None => None,
+        }
+    }
+
+    fn walk_root<E>(
+        &mut self,
+        planned: &PlannedRoot,
+        limits: DiscoveryLimits,
+        checkpoint: &mut impl FnMut() -> Result<(), E>,
+    ) -> Result<(), E> {
+        checkpoint()?;
         let Some(root) = planned.root.as_ref() else {
             self.note(Diagnostic::RootUnreadable(planned.spec.source.clone()));
-            return;
+            return Ok(());
         };
         // Queue names, not open sibling directories: macOS commonly permits
         // only 256 descriptors. Reopen each component from the pinned root
         // with NOFOLLOW so a queued directory replaced by a symlink is refused.
         let mut queue = VecDeque::from([(PathBuf::new(), 0usize)]);
         while let Some((relative, depth)) = queue.pop_front() {
+            checkpoint()?;
             let flags = OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC;
-            // Open a fresh directory stream relative to the pinned descriptor.
-            // dup() shares both the position and filesystem iteration state:
-            // another scan can consume it, and rewinding at the end of a pass
-            // may freeze a directory index before later entries are added.
-            // Reopening "." preserves root identity without reusing that state
-            // or following a replacement at the root's original pathname.
+            // A fresh stream relative to the pinned root avoids shared dup()
+            // positions and stale directory indexes across repeated scans.
             let mut directory = openat(root.as_fd(), ".", flags, Mode::empty());
+            checkpoint()?;
             for component in relative.components() {
+                checkpoint()?;
                 directory = directory.and_then(|parent| {
                     openat(&parent, component.as_os_str(), flags, Mode::empty())
                 });
+                checkpoint()?;
             }
             let directory = match directory {
                 Ok(directory) => directory,
@@ -450,42 +502,55 @@ impl Discovery {
                     continue;
                 }
             };
-            // Dir owns the descriptor it lists, so hand it a duplicate and
-            // keep ours for opening children.
+            // Keep this directory pinned for candidate metadata as well as
+            // enumeration. Re-resolving its path could follow a replaced parent.
+            checkpoint()?;
             let listing = directory
                 .as_fd()
                 .try_clone_to_owned()
                 .ok()
                 .and_then(|fd| Dir::from_fd(fd).ok());
+            checkpoint()?;
             let Some(mut listing) = listing else {
                 self.note(Diagnostic::DirectoryUnreadable(planned.spec.source.clone()));
                 continue;
             };
-            for entry in listing.iter() {
-                let Ok(entry) = entry else {
-                    self.note(Diagnostic::EntryUnreadable(planned.spec.source.clone()));
-                    continue;
+            let mut iterator = listing.iter();
+            loop {
+                checkpoint()?;
+                let entry = self.next_entry(iterator.next(), &planned.spec.source);
+                checkpoint()?;
+                let Some(entry) = entry else {
+                    break;
                 };
                 let name = OsStr::from_bytes(entry.file_name().to_bytes());
                 if name == OsStr::new(".") || name == OsStr::new("..") {
                     continue;
                 }
-                self.entries_examined += 1;
+                // At most one overflow sentinel is examined for the whole
+                // pass; the sentinel is never admitted as a candidate.
+                self.entries_examined = self.entries_examined.saturating_add(1);
                 if limits.entries.check(self.entries_examined).is_err() {
-                    self.note(Diagnostic::EntryLimitReached);
-                    return;
+                    self.stop(Diagnostic::EntryLimitReached);
+                    return Ok(());
                 }
                 let kind = match entry.file_type() {
                     Some(kind) => kind,
-                    // Some filesystems omit d_type; ask the filesystem instead.
-                    None => match fstatat(&directory, name, AtFlags::AT_SYMLINK_NOFOLLOW) {
-                        Ok(stat) => sflag_to_type(stat.st_mode),
-                        Err(_) => {
-                            self.note(Diagnostic::EntryUnreadable(planned.spec.source.clone()));
-                            continue;
+                    // Some filesystems omit d_type; ask the pinned directory.
+                    None => {
+                        checkpoint()?;
+                        let stat = fstatat(&directory, name, AtFlags::AT_SYMLINK_NOFOLLOW);
+                        checkpoint()?;
+                        match stat {
+                            Ok(stat) => sflag_to_type(stat.st_mode),
+                            Err(_) => {
+                                self.note(Diagnostic::EntryUnreadable(planned.spec.source.clone()));
+                                continue;
+                            }
                         }
-                    },
+                    }
                 };
+                checkpoint()?;
                 match kind {
                     Type::Directory => {
                         if depth + 1 > limits.depth {
@@ -495,11 +560,12 @@ impl Discovery {
                         queue.push_back((relative.join(name), depth + 1));
                     }
                     Type::Symlink => {
-                        // A link may name a directory or a skill file; only the
-                        // file case is a candidate, and the authorized read
-                        // still decides whether its target is in a root.
+                        // Only file links can be candidates. The authorized
+                        // read still checks containment before reading bytes.
                         if name == planned.spec.skill_file {
-                            self.push_candidate(planned, &relative, name, true, limits);
+                            self.push_candidate(
+                                planned, directory.as_fd(), &relative, name, true, limits,
+                            );
                         } else {
                             self.note(Diagnostic::SymlinkedDirectorySkipped(
                                 planned.spec.source.clone(),
@@ -507,20 +573,20 @@ impl Discovery {
                         }
                     }
                     Type::File if name == planned.spec.skill_file => {
-                        self.push_candidate(planned, &relative, name, false, limits);
+                        self.push_candidate(
+                            planned, directory.as_fd(), &relative, name, false, limits,
+                        );
                     }
                     _ => {}
                 }
-                if self.partial
-                    && matches!(
-                        self.diagnostics.last(),
-                        Some(Diagnostic::EntryLimitReached | Diagnostic::ByteLimitReached)
-                    )
-                {
-                    return;
+                checkpoint()?;
+                if self.stopped {
+                    return Ok(());
                 }
             }
         }
+        checkpoint()?;
+        Ok(())
     }
 
     // `dev_t`/`ino_t` widths differ by platform: the casts below are identity
@@ -529,6 +595,7 @@ impl Discovery {
     fn push_candidate(
         &mut self,
         planned: &PlannedRoot,
+        directory: BorrowedFd<'_>,
         relative: &Path,
         name: &OsStr,
         via_symlink: bool,
@@ -545,7 +612,7 @@ impl Discovery {
             AtFlags::AT_SYMLINK_NOFOLLOW
         };
         let full = relative.join(name);
-        let Ok(stat) = fstatat(root.as_fd(), full.as_os_str(), flags) else {
+        let Ok(stat) = fstatat(directory, name, flags) else {
             self.note(Diagnostic::EntryUnreadable(planned.spec.source.clone()));
             return;
         };
@@ -555,7 +622,7 @@ impl Discovery {
         let size = stat.st_size.max(0) as u64;
         let next = self.bytes_examined.saturating_add(size);
         if usize::try_from(next).map_or(true, |total| limits.bytes.check(total).is_err()) {
-            self.note(Diagnostic::ByteLimitReached);
+            self.stop(Diagnostic::ByteLimitReached);
             return;
         }
         self.bytes_examined = next;
@@ -713,3 +780,6 @@ pub fn claude_code_plan_with_roots(
     }
     Ok(plan)
 }
+
+#[cfg(test)]
+mod tests;
