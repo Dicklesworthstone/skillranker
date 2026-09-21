@@ -425,7 +425,13 @@ impl Discovery {
         let mut queue = VecDeque::from([(PathBuf::new(), 0usize)]);
         while let Some((relative, depth)) = queue.pop_front() {
             let flags = OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC;
-            let mut directory = root.as_fd().try_clone_to_owned().map_err(|_| Errno::EBADF);
+            // Open a fresh directory stream relative to the pinned descriptor.
+            // dup() shares both the position and filesystem iteration state:
+            // another scan can consume it, and rewinding at the end of a pass
+            // may freeze a directory index before later entries are added.
+            // Reopening "." preserves root identity without reusing that state
+            // or following a replacement at the root's original pathname.
+            let mut directory = openat(root.as_fd(), ".", flags, Mode::empty());
             for component in relative.components() {
                 directory = directory.and_then(|parent| {
                     openat(&parent, component.as_os_str(), flags, Mode::empty())

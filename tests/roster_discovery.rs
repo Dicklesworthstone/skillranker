@@ -448,3 +448,45 @@ fn generic_roots_keep_unverified_visibility_and_diagnostics_stay_private() {
         );
     }
 }
+
+#[test]
+fn repeated_plan_observes_new_entries_and_renamed_skills() {
+    let tree = temp_tree("repeat");
+    write(&tree.join("first/SKILL.md"), "first");
+    let plan = plan_with(vec![(spec("repeat", SourceKind::Project, 1), tree.clone())]);
+    assert_eq!(relatives(&plan.discover()), ["first/SKILL.md"]);
+
+    // Changes after a completed scan must appear through the SAME pinned root.
+    write(&tree.join("second/SKILL.md"), "second");
+    assert_eq!(
+        relatives(&plan.discover()),
+        ["first/SKILL.md", "second/SKILL.md"]
+    );
+    fs::rename(tree.join("first"), tree.join("renamed")).unwrap();
+    write(&tree.join("third/SKILL.md"), "third");
+    assert_eq!(
+        relatives(&plan.discover()),
+        ["renamed/SKILL.md", "second/SKILL.md", "third/SKILL.md"]
+    );
+}
+
+#[test]
+fn discovery_is_independent_of_another_reader_of_the_pinned_root() {
+    use nix::dir::Dir;
+
+    let tree = temp_tree("independent-stream");
+    write(&tree.join("first/SKILL.md"), "first");
+    let plan = plan_with(vec![(spec("independent", SourceKind::Project, 1), tree)]);
+    let root = plan.roots()[0].root().unwrap();
+    let mut other = Dir::from_fd(root.as_fd().try_clone_to_owned().unwrap()).unwrap();
+    let mut reading = other.iter();
+    // Exhaust another reader without dropping it (which would rewind the root).
+    for entry in reading.by_ref() {
+        entry.unwrap();
+    }
+    let observed = plan.discover();
+    assert_eq!(relatives(&observed), ["first/SKILL.md"]);
+    assert!(!observed.is_partial(), "{:?}", observed.diagnostics());
+    drop(reading);
+    assert_eq!(relatives(&plan.discover()), ["first/SKILL.md"]);
+}
