@@ -33,9 +33,41 @@ pub const IMPLEMENTED_COMMANDS: &[&str] = &[
     "uninstall-hook",
 ];
 
-/// Accepted by the parser for conflict checking, but refused with
-/// `invalid-usage` until their phase ships.
-pub const PLANNED_RANK_FLAGS: &[(&str, PhaseGate)] = &[];
+/// Documented flags recognized only to explain their unavailable capability.
+/// Scope is part of identity: rank's implemented `--explain` is not eval's.
+pub struct PlannedFlag {
+    pub command: &'static str,
+    pub flag: &'static str,
+    pub phase: PhaseGate,
+    pub takes_value: bool,
+}
+
+pub const PLANNED_FLAGS: &[PlannedFlag] = &[
+    PlannedFlag {
+        command: "doctor",
+        flag: "descriptions",
+        phase: PhaseGate::P9,
+        takes_value: false,
+    },
+    PlannedFlag {
+        command: "eval",
+        flag: "sample-size",
+        phase: PhaseGate::P5,
+        takes_value: true,
+    },
+    PlannedFlag {
+        command: "eval",
+        flag: "seed",
+        phase: PhaseGate::P5,
+        takes_value: true,
+    },
+    PlannedFlag {
+        command: "eval",
+        flag: "explain",
+        phase: PhaseGate::P5,
+        takes_value: false,
+    },
+];
 
 /// The phase a named command is planned for, when this build does not implement
 /// it yet. `None` for an implemented command or an unknown name.
@@ -70,7 +102,7 @@ const fn unit_name(unit: LimitUnit) -> &'static str {
     }
 }
 
-fn phase_name(phase: PhaseGate) -> &'static str {
+pub(crate) fn phase_name(phase: PhaseGate) -> &'static str {
     match phase {
         PhaseGate::P0 => "p0",
         PhaseGate::P1 => "p1",
@@ -106,13 +138,13 @@ pub fn registry() -> Value {
             "earliest_phase": phase_name(command.earliest_phase),
         }));
     }
-    let planned_flags: Vec<Value> = PLANNED_RANK_FLAGS
+    let planned_flags: Vec<Value> = PLANNED_FLAGS
         .iter()
-        .map(|(flag, phase)| {
+        .map(|entry| {
             json!({
-                "command": "rank",
-                "flag": format!("--{flag}"),
-                "earliest_phase": phase_name(*phase),
+                "command": entry.command,
+                "flag": format!("--{}", entry.flag),
+                "earliest_phase": phase_name(entry.phase),
             })
         })
         .collect();

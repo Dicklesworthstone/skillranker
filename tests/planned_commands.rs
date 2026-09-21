@@ -82,3 +82,65 @@ fn an_implemented_command_is_never_reported_as_planned() {
         assert_eq!(code, Some(0), "{command} is implemented");
     }
 }
+
+#[test]
+fn planned_flags_name_their_phase_before_reading_inputs() {
+    for (args, phase, flag) in [
+        (
+            vec!["doctor", "--descriptions", "--json"],
+            "P9",
+            "--descriptions",
+        ),
+        (
+            vec![
+                "eval",
+                "--dataset",
+                "/missing",
+                "--sample-size",
+                "10",
+                "--json",
+            ],
+            "P5",
+            "--sample-size",
+        ),
+        (
+            vec!["eval", "--dataset", "/missing", "--seed=42", "--json"],
+            "P5",
+            "--seed",
+        ),
+        (
+            vec!["eval", "--dataset", "/missing", "--explain", "--json"],
+            "P5",
+            "--explain",
+        ),
+    ] {
+        let (code, value) = run(&args);
+        assert_eq!(code, Some(2), "{value}");
+        let message = value["error"]["message"].as_str().unwrap();
+        assert!(
+            message.contains(phase)
+                && message.contains(flag)
+                && message.contains("sr capabilities"),
+            "{message}"
+        );
+    }
+}
+
+#[test]
+fn planned_flag_spelling_is_not_a_global_argument_scan() {
+    for args in [
+        vec!["rank", "--descriptions", "--json"],
+        vec!["eval", "--dataset", "/missing", "--explan", "--json"],
+        vec!["eval", "--dataset=--explain", "--json"],
+        vec!["eval", "--dataset", "/missing", "--seed", "--json"],
+    ] {
+        let (_, value) = run(&args);
+        assert!(
+            !value["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("planned for phase"),
+            "{value}"
+        );
+    }
+}

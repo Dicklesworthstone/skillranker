@@ -12,9 +12,9 @@ use std::ffi::OsString;
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
-const HELP: &str = "SkillRanker — powered by TypeSafe.ai Jev\n\nUsage: sr [rank] [--context FILE | --transcript FILE --harness NAME | --session PATH | --latest]\n                 [--roster FILE] [--require-skill ID] [--dry-run [--shortlist-ids ID,...]]\n                 [--offline | --allow-network] [--json | --table]\n                 [--top N] [--shortlist M] [--gate FLOAT] [--fits FLOAT]\n                 [--explain] [--why-not ID] [--cursor TOKEN] [--no-tools] [--no-cache]\n                 [--save-case FILE]\n       sr doctor [--json | --table] [--offline | --allow-network]\n       sr doctor --config [--json | --table] [--top N] [--shortlist N]\n       sr roster [--json] [--limit N] [--cursor TOKEN]\n       sr roster --snapshot FILE | --diff FILE\n       sr capabilities [--json]\n       sr demo --case <useful|none|explicit|unavailable> [--json | --table]\n       sr replay FILE [--policy FILE] [--compare-policy FILE] [--json | --table]\n       sr eval --dataset FILE [--online] [--allow-network] [--max-requests N] [--max-runtime-ms MS] [--timeout-ms MS] [--policy FILE] [--compare-policy FILE] [--explain] [--json | --table]\n       sr feedback <EVENT_ID> --skill ID [--instead ID] [--verdict <useful|not-useful|unknown>] [--reason CODE] [--provenance TEXT] [--expected-version GEN] [--dir DIR] [--json]\n       sr ledger <init|migrate|status|prune|clear> [--before TIME] [--apply] [--json]\n       sr observe [--context FILE | --transcript FILE --harness NAME | --session PATH] [--branch NAME] [--roster FILE] [--dir DIR] [--json]\n       sr stats [--since DURATION] [--by-skill] [--dir DIR] [--json | --table]\n       sr hook <claude> [--shadow] [--offline | --allow-network] [--dir DIR]\n       sr install-hook <claude> [--settings FILE] [--target-dir DIR] [--apply] [--json]\n       sr uninstall-hook <claude> [--settings FILE] [--target-dir DIR] [--apply] [--json]\n       sr --help | --version\n\nRank the next step of an agent session using TypeSafe Jev.\nRequires your own TypeSafe API key (TYPESAFE_API_KEY) and network consent (--allow-network).\n";
+const HELP: &str = "SkillRanker — powered by TypeSafe.ai Jev\n\nUsage: sr [rank] [--context FILE | --transcript FILE --harness NAME | --session PATH | --latest]\n                 [--roster FILE] [--require-skill ID] [--dry-run [--shortlist-ids ID,...]]\n                 [--offline | --allow-network] [--json | --table]\n                 [--top N] [--shortlist M] [--gate FLOAT] [--fits FLOAT]\n                 [--explain] [--why-not ID] [--cursor TOKEN] [--no-tools] [--no-cache]\n                 [--save-case FILE]\n       sr doctor [--json | --table] [--offline | --allow-network]\n       sr doctor --config [--json | --table] [--top N] [--shortlist N]\n       sr roster [--json] [--limit N] [--cursor TOKEN]\n       sr roster --snapshot FILE | --diff FILE\n       sr capabilities [--json]\n       sr demo --case <useful|none|explicit|unavailable> [--json | --table]\n       sr replay FILE [--policy FILE] [--compare-policy FILE] [--json | --table]\n       sr eval --dataset FILE [--online] [--allow-network] [--max-requests N] [--max-runtime-ms MS] [--timeout-ms MS] [--policy FILE] [--compare-policy FILE] [--json | --table]\n       sr feedback <EVENT_ID> --skill ID [--instead ID] [--verdict <useful|not-useful|unknown>] [--reason CODE] [--provenance TEXT] [--expected-version GEN] [--dir DIR] [--json]\n       sr ledger <init|migrate|status|prune|clear> [--before TIME] [--apply] [--json]\n       sr observe [--context FILE | --transcript FILE --harness NAME | --session PATH] [--branch NAME] [--roster FILE] [--dir DIR] [--json]\n       sr stats [--since DURATION] [--by-skill] [--dir DIR] [--json | --table]\n       sr hook <claude> [--shadow] [--offline | --allow-network] [--dir DIR]\n       sr install-hook <claude> [--settings FILE] [--target-dir DIR] [--apply] [--json]\n       sr uninstall-hook <claude> [--settings FILE] [--target-dir DIR] [--apply] [--json]\n       sr --help | --version\n\nRank the next step of an agent session using TypeSafe Jev.\nRequires your own TypeSafe API key (TYPESAFE_API_KEY) and network consent (--allow-network).\n";
 
-const EVAL_HELP: &str = "sr eval --dataset FILE [--online] [--allow-network] [--max-requests N] [--max-runtime-ms MS] [--timeout-ms MS] [--policy FILE] [--compare-policy FILE] [--explain] [--json | --table]\n\nEvaluate recorded or synthetic replay batches against local or comparison policies with bounded runtime and explicit accounting.\n";
+const EVAL_HELP: &str = "sr eval --dataset FILE [--online] [--allow-network] [--max-requests N] [--max-runtime-ms MS] [--timeout-ms MS] [--policy FILE] [--compare-policy FILE] [--json | --table]\n\nEvaluate recorded or synthetic replay batches against local or comparison policies with bounded runtime and explicit accounting.\n";
 
 const STATS_HELP: &str = "sr stats [--since DURATION] [--by-skill] [--dir DIR] [--json | --table]\n\nReport observation and operational metrics across honest cohorts (evaluations, suggestions, abstentions, latency, loads, judgments, tokens, and cost).\n";
 
@@ -194,7 +194,7 @@ fn command() -> Command {
         }
     }
 
-    Command::new("sr")
+    let mut app = Command::new("sr")
         .disable_help_flag(true)
         .disable_help_subcommand(true)
         .arg(
@@ -371,12 +371,6 @@ fn command() -> Command {
                         .value_name("FILE")
                         .help("Path to a comparison policy file")
                         .action(ArgAction::Set),
-                )
-                .arg(
-                    Arg::new("explain")
-                        .long("explain")
-                        .help("Include mathematical explanation cards in report")
-                        .action(ArgAction::SetTrue),
                 )
                 .arg(
                     Arg::new("json")
@@ -792,7 +786,19 @@ fn command() -> Command {
                         .action(ArgAction::SetTrue),
                 )
                 .arg(Arg::new("table").long("table").action(ArgAction::SetTrue)),
-        )
+        );
+    for planned in crate::capabilities::PLANNED_FLAGS {
+        app = app.mut_subcommand(planned.command, |command| {
+            command.arg(Arg::new(planned.flag).long(planned.flag).hide(true).action(
+                if planned.takes_value {
+                    ArgAction::Set
+                } else {
+                    ArgAction::SetTrue
+                },
+            ))
+        });
+    }
+    app
 }
 
 fn is_hook_claude_invocation(args: &[OsString]) -> bool {
@@ -1024,6 +1030,26 @@ fn execute(clock: &EntryClock, mut args: Vec<OsString>) -> Result<String, Failur
             2,
             "invalid-usage",
             "Top-level flags cannot accompany a command".into(),
+        ));
+    }
+    // Use parsed argument identity, not a raw argv scan: values may themselves
+    // look like flags, and the same flag can be implemented on another command.
+    if let Some((name, subcommand)) = matches.subcommand()
+        && !subcommand.get_flag("help")
+        && let Some(planned) = crate::capabilities::PLANNED_FLAGS.iter().find(|entry| {
+            entry.command == name
+                && subcommand.value_source(entry.flag)
+                    == Some(clap::parser::ValueSource::CommandLine)
+        })
+    {
+        return Err((
+            2,
+            "invalid-usage",
+            format!(
+                "This build does not implement {name} --{}; it is planned for phase {}. Run sr capabilities for flag status.",
+                planned.flag,
+                crate::capabilities::phase_name(planned.phase).to_uppercase()
+            ),
         ));
     }
     if let Some(("roster", roster)) = matches.subcommand() {

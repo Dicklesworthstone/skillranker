@@ -121,9 +121,11 @@ fn help_names_implemented_commands_and_no_planned_ones() {
     assert!(help.contains("--save-case"));
     for flag in registry()["planned_flags"].as_array().unwrap() {
         let flag_str = flag["flag"].as_str().unwrap();
+        let command = flag["command"].as_str().unwrap();
+        let command_help = String::from_utf8(run(&root, &[command, "--help"]).stdout).unwrap();
         assert!(
-            !help.contains(flag_str),
-            "help advertises planned flag {flag_str}"
+            !command_help.contains(flag_str),
+            "{command} help advertises {flag_str}"
         );
     }
 }
@@ -132,7 +134,17 @@ fn help_names_implemented_commands_and_no_planned_ones() {
 fn planned_flags_contract() {
     let root = home();
     let planned_flags = registry()["planned_flags"].as_array().unwrap().clone();
-    assert_eq!(planned_flags.len(), 0);
+    assert_eq!(planned_flags.len(), 4);
+    for (command, flag, phase) in [
+        ("doctor", "--descriptions", "p9"),
+        ("eval", "--sample-size", "p5"),
+        ("eval", "--seed", "p5"),
+        ("eval", "--explain", "p5"),
+    ] {
+        assert!(planned_flags.iter().any(|entry| entry["command"] == command
+            && entry["flag"] == flag
+            && entry["earliest_phase"] == phase));
+    }
     // Conflicts are still reported as conflicts.
     let conflict = run(
         &root,
