@@ -6,7 +6,6 @@
 use crate::evaluation::{EvaluationError, EvaluationMetrics, read_bounded_line};
 use crate::limits::{
     DEFAULT_EVAL_BATCH_RUNTIME_MS, EVALUATION_CASE_RECORDS, EVALUATION_DATASET_BYTES,
-    EVALUATION_DATASET_DEPTH,
 };
 use crate::output::{GateStatus, OutputDocument, RunStatus, SCHEMA_VERSION};
 use crate::replay::{ReplayCase, ReplayPolicy, execute_replay_comparison};
