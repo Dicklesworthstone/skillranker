@@ -31,6 +31,23 @@ use std::path::Path;
 // Identity validation and attribution changed: rebuild prior cursor state.
 pub const PARSER_VERSION: u32 = 2;
 
+/// How far an observation read rewinds behind its own watermark.
+///
+/// A pass that sees a tool invocation without its result records an attempted load, which is
+/// the correct reading of that evidence. The result usually lands in the next records, so a
+/// read that began exactly at the watermark would never see the invocation again and the
+/// attempt could never be completed — the load would stay `attempted` for good, and adoption
+/// would read low for precisely the skills an agent used. Rewinding a bounded window lets the
+/// pair be re-read together; the observation write is idempotent on `source_event_key`, so
+/// re-reading costs nothing but the parse.
+///
+/// This window IS the pending state: nothing is retained between passes, so the bound is also
+/// the expiry. A pair separated by more than this many bytes is not re-paired and its row stays
+/// `attempted`, which undercounts rather than invents. One transcript record is bounded at
+/// 256 KiB, so this holds several maximal records, and it is charged against the same
+/// OBSERVATION_DELTA_BYTES budget as the new bytes.
+pub const OBSERVATION_REPAIR_OVERLAP_BYTES: u64 = 1024 * 1024;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CursorKind {
     Ranking,
@@ -200,7 +217,20 @@ fn read_snapshot(
                 && cursor.kind == kind
                 && snapshot_len >= cursor.byte_offset =>
         {
-            (cursor.byte_offset, false, false)
+            match kind {
+                // An observation read resumes at its watermark, minus a bounded rewind so a
+                // tool invocation recorded by an earlier pass can be re-paired with a result
+                // that has only just arrived (sr-jgez, and the mechanism sr-an94's upgrade
+                // depends on). Starting mid-file means the first partial record is skipped,
+                // which is what align_to_record does.
+                CursorKind::Observation => {
+                    let start = cursor
+                        .byte_offset
+                        .saturating_sub(OBSERVATION_REPAIR_OVERLAP_BYTES);
+                    (start, false, start > 0)
+                }
+                CursorKind::Ranking => (cursor.byte_offset, false, false),
+            }
         }
         previous => {
             let rebuilt = previous.is_some();
@@ -214,11 +244,81 @@ fn read_snapshot(
         }
     };
 
-    let available = snapshot_len.saturating_sub(start);
-    let to_read = available.min(cap);
+    let snapshot = read_window(
+        &mut file,
+        ReadWindow {
+            identity,
+            kind,
+            snapshot_len,
+            cap,
+            start,
+            align_to_record,
+            generation: generation_after(previous, rebuilt),
+            last_event_id: if rebuilt {
+                None
+            } else {
+                previous.and_then(|c| c.last_event_id.clone())
+            },
+            rebuilt: rebuilt && previous.is_some(),
+        },
+    )?;
+
+    // A resumed observation read has to prove the watermark still describes THIS transcript, and
+    // it cannot do that by inode: the ledger persists an offset, a generation and the id of the
+    // last complete record, not (dev, ino), so the caller can only supply the identity of the file
+    // it just opened. Content is the available proof. The record the watermark names must be
+    // inside the window -- the rewind above guarantees it is, for a file that was appended to --
+    // and if it is absent the transcript was replaced, rewritten or compacted, so the watermark
+    // describes bytes that no longer mean what they meant. Re-read from the beginning rather than
+    // trust an offset into a different file, and mark the read rebuilt so the generation advances
+    // (sr-jgez).
+    if kind == CursorKind::Observation
+        && !rebuilt
+        && start > 0
+        && let Some(cursor) = previous
+        && let Some(expected) = cursor.last_event_id.as_ref()
+        && !snapshot
+            .events
+            .iter()
+            .any(|event| event.event_id.as_ref() == Some(expected))
+    {
+        return read_window(
+            &mut file,
+            ReadWindow {
+                identity,
+                kind,
+                snapshot_len,
+                cap,
+                start: 0,
+                align_to_record: false,
+                generation: cursor.generation.saturating_add(1).max(1),
+                last_event_id: None,
+                rebuilt: true,
+            },
+        );
+    }
+    Ok(snapshot)
+}
+
+/// One bounded read of a window and the parse of what it held.
+struct ReadWindow {
+    identity: FileIdentity,
+    kind: CursorKind,
+    snapshot_len: u64,
+    cap: u64,
+    start: u64,
+    align_to_record: bool,
+    generation: u64,
+    last_event_id: Option<EventId>,
+    rebuilt: bool,
+}
+
+fn read_window(file: &mut File, window: ReadWindow) -> Result<JsonlSnapshot, JsonlError> {
+    let available = window.snapshot_len.saturating_sub(window.start);
+    let to_read = available.min(window.cap);
     let unread_backlog = available > to_read;
     if to_read > 0 {
-        file.seek(SeekFrom::Start(start))
+        file.seek(SeekFrom::Start(window.start))
             .map_err(|_| JsonlError::Io)?;
     }
     let mut buf = vec![0_u8; to_read as usize];
@@ -226,20 +326,16 @@ fn read_snapshot(
 
     parse_window(
         &buf,
-        start,
-        align_to_record,
+        window.start,
+        window.align_to_record,
         WindowContext {
-            identity,
-            kind,
-            generation: generation_after(previous, rebuilt),
-            last_event_id: if rebuilt {
-                None
-            } else {
-                previous.and_then(|c| c.last_event_id.clone())
-            },
-            truncated_history: start > 0,
+            identity: window.identity,
+            kind: window.kind,
+            generation: window.generation,
+            last_event_id: window.last_event_id,
+            truncated_history: window.start > 0,
             unread_backlog,
-            rebuilt: rebuilt && previous.is_some(),
+            rebuilt: window.rebuilt,
         },
     )
 }

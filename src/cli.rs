@@ -1391,6 +1391,9 @@ fn observe_command(clock: &EntryClock, matches: &clap::ArgMatches) -> Result<Str
     let workspace_id = crate::identity::WorkspaceId::new(workspace.to_string_lossy().as_ref())
         .map_err(|_| invalid("Invalid workspace root path"))?;
 
+    // Set by whichever ingestion path runs, so the command can say that it did not reach the end
+    // of its input instead of implying it did.
+    let mut unread_backlog = false;
     let (normalized_context, bytes_scanned) = if let Some(context_path) = context_file {
         let path = PathBuf::from(context_path);
         let bytes = std::fs::read(&path).map_err(|e| {
@@ -1445,11 +1448,59 @@ fn observe_command(clock: &EntryClock, matches: &clap::ArgMatches) -> Result<Str
             .ok()
             .and_then(|outcome| outcome.value)
         };
+        // Resume where the previous observation pass stopped. Passing None here -- which is what
+        // this call did -- meant the read always started at byte 0 and the window, bounded by
+        // OBSERVATION_DELTA_BYTES or 2,000 records, never advanced: a session longer than that
+        // window had everything past it silently unobserved forever, however many times `observe`
+        // ran (sr-jgez).
+        //
+        // The ledger cannot persist the transcript's (dev, ino), so the identity below is the file
+        // as it is right now and the reader proves the watermark by CONTENT instead: the record the
+        // watermark names must still be inside the window, or the read falls back to the beginning.
+        //
+        // The branch is the explicit --branch, or "main". A native Claude transcript carries no
+        // branch id of its own, and the cursor namespace needs a branch before the context has been
+        // parsed, so this is the honest approximation available at this point. Guessing wrong costs
+        // a resume, never correctness: an unmatched cursor row simply yields None and the read
+        // starts at the beginning, exactly as it always did.
+        let resume = session.as_ref().and_then(|session_id| {
+            let branch = matches
+                .get_one::<String>("branch")
+                .cloned()
+                .unwrap_or_else(|| "main".to_string());
+            let key = format!(
+                "native:{}:{}",
+                harness_opt.map_or("", |h| h.as_str()),
+                session_id.as_str()
+            );
+            let stored = crate::storage::get_session_cursor(
+                &invocation,
+                &cx,
+                crate::storage::LedgerAccess::ExistingOnly,
+                location.clone(),
+                workspace.to_string_lossy().as_ref(),
+                &key,
+                &branch,
+                crate::storage::CursorKind::Observation,
+            )
+            .ok()
+            .flatten()?;
+            let meta = std::fs::metadata(&transcript_path).ok()?;
+            Some(crate::context::jsonl::JsonlCursor {
+                kind: crate::context::jsonl::CursorKind::Observation,
+                identity: crate::context::jsonl::FileIdentity::from_metadata(&meta),
+                generation: stored.transcript_generation,
+                byte_offset: stored.last_offset_bytes,
+                last_event_id: crate::identity::EventId::new(stored.last_complete_event_id.clone())
+                    .ok(),
+                parser_version: crate::context::jsonl::PARSER_VERSION,
+            })
+        });
         let snapshot = crate::context::jsonl::snapshot_jsonl(
             &invocation,
             &cx,
             &transcript_path,
-            None,
+            resume.as_ref(),
             crate::context::jsonl::CursorKind::Observation,
         )
         .map_err(|e| {
@@ -1459,6 +1510,10 @@ fn observe_command(clock: &EntryClock, matches: &clap::ArgMatches) -> Result<Str
                 format!("Transcript snapshot failed: {e}"),
             )
         })?;
+        // Partial coverage has to be visible. The reader computes this and nothing used to read
+        // it, so a pass that stopped before the end of the file reported "ok" with no hint that
+        // there was more (AGENTS.md: expose truncation and partial coverage).
+        unread_backlog = snapshot.unread_backlog;
         let bytes_scanned = snapshot.cursor.byte_offset;
         let events = snapshot.events;
         let current = events.iter().rev().find(|e| {
@@ -1761,15 +1816,21 @@ fn observe_command(clock: &EntryClock, matches: &clap::ArgMatches) -> Result<Str
             "observations_recorded": new_observations.len(),
             "cursor_generation": next_generation,
             "last_event_id": last_event_id,
+            "unread_backlog": unread_backlog,
         });
         format!("{}\n", val)
     } else {
         format!(
-            "Recorded {} observation(s) for session {} on branch {} (generation {})\n",
+            "Recorded {} observation(s) for session {} on branch {} (generation {}){}\n",
             new_observations.len(),
             session_id,
             agent_branch,
             next_generation,
+            if unread_backlog {
+                "; input continues past this pass, run observe again to reach it"
+            } else {
+                ""
+            },
         )
     };
 
