@@ -849,3 +849,79 @@ fn a_judgment_already_stored_under_a_name_is_left_untouched() {
     );
     assert!(inv.shutdown());
 }
+
+// RESTORED VERBATIM from 44c5fd1 (SilentFinch, sr-2wda). My sr-oufi commit 6d2c2b5 published a copy of
+// this file based on 20d3ec6, which predates their case, so publishing it deleted theirs. The commit
+// guard I was using compared MAIN against a base I claimed rather than comparing MY FILE against main,
+// so it could not see that my copy was missing content main already had. Not one character of the case
+// below is mine.
+#[test]
+fn attempt_advancement_refuses_identity_collisions_atomically() {
+    let (inv, cx) = test_invocation();
+    let mut f = Fixture::new("identity-collision", &inv, &cx);
+    let original = attempt_fixture("owned-attempt", "original-event");
+    let stamp = f.store.stamp();
+    f.store
+        .record_ranking_event_with_attempts(
+            inv.clock(),
+            &cx,
+            &event_fixture("original-event"),
+            &[],
+            None,
+            std::slice::from_ref(&original),
+            stamp,
+        )
+        .expect("original event and attempt recorded together");
+
+    for field in ["owner", "stage", "fingerprint", "admission"] {
+        let mut conflicting = original.clone();
+        let mut event = event_fixture("original-event");
+        event.reason = "must-not-commit".into();
+        conflicting.status = AttemptStatus::Completed;
+        conflicting.input_tokens = Some(999);
+        conflicting.completed_at_unix_ms = Some(1_700_000_020);
+        match field {
+            "owner" => {
+                event.event_id = "foreign-event".into();
+                conflicting.owner_event_id = event.event_id.clone();
+            }
+            "stage" => conflicting.stage = CandidateStage::Rerank,
+            "fingerprint" => conflicting.request_fingerprint = "different-request".into(),
+            _ => conflicting.admitted_at_unix_ms += 1,
+        }
+        let stamp = f.store.stamp();
+        let result = f.store.record_ranking_event_with_attempts(
+            inv.clock(),
+            &cx,
+            &event,
+            &[],
+            None,
+            &[conflicting],
+            stamp,
+        );
+        assert!(
+            matches!(result, Err(StoreError::RecordConflict)),
+            "conflicting {field} must be refused: {result:?}"
+        );
+        assert_eq!(
+            f.tokens("owned-attempt"),
+            (None, None, "sent".into()),
+            "conflicting {field} changed original cost/status"
+        );
+        assert_eq!(f.attempt_count("original-event"), 1);
+        let conn = Connection::open(f.store.database_path()).unwrap();
+        let events: Vec<(String, String)> = conn
+            .prepare("SELECT event_id, reason FROM ranking_events ORDER BY event_id")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            events,
+            vec![("original-event".into(), "eligible".into())],
+            "conflicting {field} partially committed its event"
+        );
+    }
+    assert!(inv.shutdown());
+}
