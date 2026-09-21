@@ -1,6 +1,7 @@
 //! Select the active request's history before rendering or disclosing any prose.
 //! Payload formatting and redaction retain their existing implementation.
 
+mod labels;
 mod payload;
 mod session;
 
@@ -11,6 +12,7 @@ pub use payload::{
     sanitize_media_data, strip_advisory_from_non_user, strip_thinking_blocks,
 };
 
+pub use labels::TOOL_LABEL_SCALARS;
 pub use session::{
     SESSION_REFERENCE_RECORDS, SESSION_REFERENCE_SUMMARY_SCALARS, SESSION_STATE_SCALARS,
 };
@@ -90,11 +92,13 @@ pub fn render_context_and_receipt(
     context: &NormalizedContext,
     options: &RenderContextOptions<'_>,
 ) -> Result<(RenderedContextPayload, DisclosureReceipt), RenderContextError> {
-    let (context, incomplete, omitted) = project(context)?;
+    let (mut context, incomplete, omitted) = project(context)?;
+    let labels = labels::prepare(&mut context, options)?;
     let (prepared, session_receipt) = session::prepare(options)?;
     let incomplete = incomplete
         || session_receipt.omitted_count != 0
-        || session_receipt.truncated_count != 0;
+        || session_receipt.truncated_count != 0
+        || labels.truncated != 0;
     let (mut rendered, mut receipt) = payload::render_context_and_receipt(&context, &prepared)?;
     receipt.disclosed_bytes = finalize(&mut rendered, incomplete, options)?;
     receipt.context_quality = rendered.context_quality;
@@ -102,6 +106,10 @@ pub fn render_context_and_receipt(
         if category.category == SourceCategory::SessionState {
             *category = session_receipt.clone();
             continue;
+        }
+        if category.category == SourceCategory::ToolEvents {
+            category.redaction_count += labels.redactions;
+            category.truncated_count += labels.truncated;
         }
         let count = match category.category {
             SourceCategory::MessageHistory => omitted[0],
@@ -139,11 +147,13 @@ pub fn render_context(
     context: &NormalizedContext,
     options: &RenderContextOptions<'_>,
 ) -> Result<RenderedContextPayload, RenderContextError> {
-    let (context, incomplete, _) = project(context)?;
+    let (mut context, incomplete, _) = project(context)?;
+    let labels = labels::prepare(&mut context, options)?;
     let (prepared, session_receipt) = session::prepare(options)?;
     let incomplete = incomplete
         || session_receipt.omitted_count != 0
-        || session_receipt.truncated_count != 0;
+        || session_receipt.truncated_count != 0
+        || labels.truncated != 0;
     let mut rendered = payload::render_context(&context, &prepared)?;
     finalize(&mut rendered, incomplete, options)?;
     Ok(rendered)

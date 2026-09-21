@@ -92,3 +92,24 @@ verifier with secrets in every session field, Unicode/exact-bound allocation,
 mandatory-constraint overflow, optional omissions, source limits, both profiles,
 and immutable local inputs. No additional provider call, discovery, or persistence
 is performed to build this view.
+
+## Tool labels are transcript text
+
+Tool names are redacted in the selected provider view before message windowing,
+not copied verbatim until the final payload inspector rejects a secret-bearing
+name. The complete label is scanned before it is shortened to at most 128 Unicode
+scalars, with a head/tail omission marker. Aggregate label input is bounded to
+1 MiB. Long labels cannot consume the entire message budget and displace the
+active task or tool result. Names used for local dispatch and load attribution
+remain unchanged; a shortened provider label creates no callable authority.
+
+Name redactions and truncations contribute to the existing tool-event receipt
+category and all totals. A truncated label marks the context partial without
+overriding insufficient context. `--no-tools`, the minimal profile, and scope
+selection happen before label processing: excluded labels cannot trigger a
+privacy refusal, and their contents are not claimed as inspected. The final
+serialized payload inspection remains mandatory.
+
+`tests/render_tool_labels.rs` includes both API/receipt checks and an isolated
+CLI dry-run that requires a real provider preview with a redacted tool label and
+preserved result, plus the no-tools counterpart. No live Jev request is made.
