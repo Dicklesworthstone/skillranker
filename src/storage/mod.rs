@@ -8,6 +8,7 @@ pub mod export;
 mod filesystem;
 pub mod ledger;
 mod platform;
+mod publication;
 mod read_view;
 pub(crate) use platform::storage_path;
 
@@ -37,7 +38,7 @@ pub use ledger::{
 
 use crate::blocking::{BlockingLeafKind, remaining_busy_wait, run_blocking_leaf};
 use crate::cache::{CacheKey, CachedResponseEntry, RequestFingerprint, RequestStage};
-use crate::jev::codec::{MAX_RESPONSE_BYTES, Usage};
+use crate::jev::codec::Usage;
 use crate::runtime::{EntryClock, ProcessInvocation, RuntimeError};
 use crate::sqlite_engine::EngineQualificationError;
 pub use crate::sqlite_engine::{
@@ -746,14 +747,7 @@ impl CacheStore {
         now_unix_ms: u64,
         fence: Option<(PathBuf, crate::cache::LeaderContext)>,
     ) -> Result<Self, StoreError> {
-        if entry.response_bytes.len() > MAX_RESPONSE_BYTES
-            || !(1..=MAX_RESPONSE_TTL_SECONDS).contains(&entry.ttl_seconds)
-            || entry.model.is_empty()
-            || entry.model.len() > 256
-            || entry.model_revision.as_ref().is_some_and(|r| r.len() > 256)
-        {
-            return Err(StoreError::Quota);
-        }
+        publication::validate_response(&entry)?;
         let clock = invocation.clock();
         let child = cx.clone();
         run_blocking_leaf(
@@ -797,23 +791,7 @@ impl CacheStore {
                  OR received_at_unix_ms>?2 OR received_at_unix_ms+ttl_seconds*1000<=?2",
                     params![generation, now],
                 )?;
-                tx.execute(
-                    "INSERT OR REPLACE INTO sr_cache_response VALUES \
-                 (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-                    params![
-                        generation,
-                        &namespace[..],
-                        entry.stage.as_str(),
-                        &entry.request_fingerprint.as_bytes()[..],
-                        entry.response_bytes,
-                        sql_integer(entry.received_at_unix_ms)?,
-                        entry.ttl_seconds,
-                        entry.model,
-                        entry.model_revision,
-                        sql_integer(entry.original_usage.input_tokens)?,
-                        sql_integer(entry.original_usage.output_tokens)?,
-                    ],
-                )?;
+                publication::write_response(&tx, generation, namespace, &entry)?;
                 refresh_busy_limit(&tx, clock, &child)?;
                 if expires.is_some_and(|expires| cache_wall_clock_ms() >= expires) {
                     return Err(StoreError::LeaseSuperseded);
