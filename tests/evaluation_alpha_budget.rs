@@ -57,3 +57,68 @@ fn ordinary_and_small_equal_splits_preserve_every_endpoint() {
         }
     }
 }
+
+#[test]
+fn exhausted_budgets_reject_even_an_excess_lost_by_float_addition() {
+    for budget in [0.5, 1e-12, 1e-100, 1e-300] {
+        let extra = f64::from_bits(1);
+        assert_eq!(budget + extra, budget);
+        assert!(
+            MultiEndpointAlphaAllocation::explicit(
+                budget,
+                BTreeMap::from([("a".into(), budget), ("b".into(), extra)]),
+            )
+            .is_err()
+        );
+        assert!(
+            MultiEndpointAlphaAllocation::explicit(
+                budget,
+                BTreeMap::from([("a".into(), extra), ("b".into(), budget)]),
+            )
+            .is_err()
+        );
+        // A representably smaller first allocation leaves real room for extra.
+        assert!(
+            MultiEndpointAlphaAllocation::explicit(
+                budget,
+                BTreeMap::from([("a".into(), budget.next_down()), ("b".into(), extra)]),
+            )
+            .is_ok()
+        );
+    }
+}
+
+#[test]
+fn exact_budget_comparison_handles_all_binary_exponents() {
+    // Every power of two in (0, 1), including the entire subnormal range.
+    for power in 1..=1074 {
+        let budget = if power <= 1022 {
+            f64::from_bits(((1023 - power) as u64) << 52)
+        } else {
+            f64::from_bits(1_u64 << (1074 - power))
+        };
+        let one = MultiEndpointAlphaAllocation::explicit(
+            budget,
+            BTreeMap::from([("one".into(), budget)]),
+        )
+        .unwrap();
+        assert_eq!(one.get("one"), Some(budget));
+        if power < 1074 {
+            let half = budget / 2.0;
+            assert!(
+                MultiEndpointAlphaAllocation::explicit(
+                    budget,
+                    BTreeMap::from([("a".into(), half), ("b".into(), half)]),
+                )
+                .is_ok()
+            );
+            assert!(
+                MultiEndpointAlphaAllocation::explicit(
+                    budget,
+                    BTreeMap::from([("a".into(), half), ("b".into(), half.next_up())]),
+                )
+                .is_err()
+            );
+        }
+    }
+}

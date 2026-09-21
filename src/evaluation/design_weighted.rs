@@ -95,7 +95,7 @@ impl fmt::Display for DesignWeightedError {
             Self::AlphaBudgetExceeded { allocated, budget } => {
                 write!(
                     f,
-                    "allocated alpha sum {allocated} exceeds total error budget {budget}"
+                    "endpoint allocations exceed total error budget {budget} (rounded sum: {allocated})"
                 )
             }
             Self::InvalidLoss { value } => {
@@ -377,26 +377,29 @@ impl MultiEndpointAlphaAllocation {
         if allocations.is_empty() || allocations.keys().any(|name| name.trim().is_empty()) {
             return Err(DesignWeightedError::InvalidEndpoints);
         }
+        let budget_units = alpha_units(total_alpha);
+        let mut allocated_units = [0_u64; 17];
         let mut sum = 0.0;
-        let mut correction = 0.0;
         for &alpha_m in allocations.values() {
             validate_alpha(alpha_m)?;
-            // Compensated summation avoids rejecting ordinary equal splits
-            // solely because repeated additions accumulate rounding error.
-            let next = sum + alpha_m;
-            correction += if sum >= alpha_m {
-                (sum - next) + alpha_m
-            } else {
-                (alpha_m - next) + sum
-            };
-            sum = next;
-        }
-        sum += correction;
-        if !sum.is_finite() || sum > total_alpha {
-            return Err(DesignWeightedError::AlphaBudgetExceeded {
-                allocated: sum,
-                budget: total_alpha,
-            });
+            sum += alpha_m;
+            let units = alpha_units(alpha_m);
+            let mut carry = false;
+            for (allocated, addition) in allocated_units.iter_mut().zip(units).rev() {
+                let (next, first_carry) = allocated.overflowing_add(addition);
+                let (next, second_carry) = next.overflowing_add(u64::from(carry));
+                *allocated = next;
+                carry = first_carry || second_carry;
+            }
+            // Big-endian integer comparison preserves even an excess smaller
+            // than one ULP of the budget. Each accepted partial sum is <= alpha
+            // < 1, so adding the next allocation (< 1) fits in 17 words.
+            if allocated_units > budget_units {
+                return Err(DesignWeightedError::AlphaBudgetExceeded {
+                    allocated: sum,
+                    budget: total_alpha,
+                });
+            }
         }
         Ok(Self {
             total_alpha,
@@ -420,6 +423,29 @@ impl MultiEndpointAlphaAllocation {
     pub fn endpoints(&self) -> Vec<String> {
         self.allocations.keys().cloned().collect()
     }
+}
+
+/// Exact big-endian integer count of 2^-1074 units for a validated alpha in (0, 1).
+/// Binary64 subnormals use their fraction directly; normal values add the hidden
+/// significand bit and shift by the biased exponent minus one. Seventeen words
+/// cover 1088 bits, enough for a sum of two values below one (1075 bits).
+fn alpha_units(alpha: f64) -> [u64; 17] {
+    let bits = alpha.to_bits();
+    let exponent = ((bits >> 52) & 0x7ff) as usize;
+    let fraction = bits & ((1_u64 << 52) - 1);
+    let (significand, shift) = if exponent == 0 {
+        (fraction, 0)
+    } else {
+        (fraction | (1_u64 << 52), exponent - 1)
+    };
+    let word = shift / 64;
+    let offset = shift % 64;
+    let mut units = [0; 17];
+    units[16 - word] = significand << offset;
+    if offset != 0 {
+        units[15 - word] = significand >> (64 - offset);
+    }
+    units
 }
 
 fn validate_alpha(alpha: f64) -> Result<(), DesignWeightedError> {
