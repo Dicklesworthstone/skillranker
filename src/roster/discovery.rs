@@ -13,7 +13,7 @@
 
 use crate::authorized_read::{AuthorizedRoot, FileIdentity, ReadError};
 use crate::identity::{HarnessId, IdentityError, SourceId};
-use crate::limits::{DISCOVERY_FILES, DISCOVERY_PARSED_BYTES, ResourceLimit};
+use crate::limits::{DISCOVERY_FILES, DISCOVERY_PARSED_BYTES, ResourceLimit, SKILL_FILE_BYTES};
 use crate::roster::{LocalPath, Visibility};
 use nix::dir::{Dir, Type};
 use nix::errno::Errno;
@@ -258,6 +258,12 @@ impl DiscoveryPlan {
                 .then_with(|| left.source.as_str().cmp(right.source.as_str()))
                 .then_with(|| left.relative.cmp(&right.relative))
         });
+        discovery.rejected.sort_by(|left, right| {
+            left.source
+                .as_str()
+                .cmp(right.source.as_str())
+                .then_with(|| left.relative.as_path().cmp(right.relative.as_path()))
+        });
         checkpoint()?;
         Ok(discovery)
     }
@@ -346,6 +352,40 @@ impl Candidate {
     }
 }
 
+/// A metadata rejection, not permission to read or invoke the entry.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CandidateProblem {
+    Oversized,
+    NotRegularFile,
+}
+
+/// A named skill-file slot rejected before reserving any content-read bytes.
+/// Retain its source and local relative path so resolution can withhold that
+/// invocation name without either promoting a loser or suppressing other names.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RejectedCandidate {
+    source: SourceId,
+    kind: SourceKind,
+    relative: LocalPath,
+    problem: CandidateProblem,
+}
+
+impl RejectedCandidate {
+    pub fn source(&self) -> &SourceId {
+        &self.source
+    }
+    pub const fn kind(&self) -> SourceKind {
+        self.kind
+    }
+    /// Local-only; Debug redacts the path just like other local load targets.
+    pub fn relative(&self) -> &Path {
+        self.relative.as_path()
+    }
+    pub const fn problem(&self) -> CandidateProblem {
+        self.problem
+    }
+}
+
 /// Diagnostics name the source, never a path, entry name or content.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Diagnostic {
@@ -400,6 +440,7 @@ impl fmt::Display for Diagnostic {
 #[derive(Debug, Default)]
 pub struct Discovery {
     candidates: Vec<Candidate>,
+    rejected: Vec<RejectedCandidate>,
     diagnostics: Vec<Diagnostic>,
     entries_examined: usize,
     bytes_examined: u64,
@@ -412,12 +453,19 @@ impl Discovery {
     pub fn candidates(&self) -> &[Candidate] {
         &self.candidates
     }
+    /// Known rejected slots. These consume the same entry allowance as other
+    /// entries, but are never opened for content or charged to the byte budget.
+    pub fn rejected_candidates(&self) -> &[RejectedCandidate] {
+        &self.rejected
+    }
     pub fn diagnostics(&self) -> &[Diagnostic] {
         &self.diagnostics
     }
     pub const fn entries_examined(&self) -> usize {
         self.entries_examined
     }
+    /// Declared bytes reserved for candidate reads, excluding metadata-only
+    /// rejections. Discovery itself does not read skill contents.
     pub const fn bytes_examined(&self) -> u64 {
         self.bytes_examined
     }
@@ -435,6 +483,16 @@ impl Discovery {
     fn stop(&mut self, diagnostic: Diagnostic) {
         self.stopped = true;
         self.note(diagnostic);
+    }
+
+    fn reject(&mut self, planned: &PlannedRoot, relative: PathBuf, problem: CandidateProblem) {
+        self.partial = true;
+        self.rejected.push(RejectedCandidate {
+            source: planned.spec.source.clone(),
+            kind: planned.spec.kind,
+            relative: LocalPath::new(relative),
+            problem,
+        });
     }
 
     // A failed readdir need not advance its stream. Abandon that directory
@@ -548,6 +606,19 @@ impl Discovery {
                 };
                 checkpoint()?;
                 match kind {
+                    // Inspect every named skill-file slot, including FIFOs,
+                    // sockets and directories. Silently ignoring an invalid
+                    // higher-priority slot could promote a shadowed loser.
+                    _ if name == planned.spec.skill_file => {
+                        self.push_candidate(
+                            planned,
+                            directory.as_fd(),
+                            &relative,
+                            name,
+                            matches!(kind, Type::Symlink),
+                            limits,
+                        );
+                    }
                     Type::Directory => {
                         if depth + 1 > limits.depth {
                             self.note(Diagnostic::DepthLimitReached(planned.spec.source.clone()));
@@ -556,32 +627,9 @@ impl Discovery {
                         queue.push_back((planned, root, relative.join(name), depth + 1));
                     }
                     Type::Symlink => {
-                        // Only file links can be candidates. The authorized
-                        // read still checks containment before reading bytes.
-                        if name == planned.spec.skill_file {
-                            self.push_candidate(
-                                planned,
-                                directory.as_fd(),
-                                &relative,
-                                name,
-                                true,
-                                limits,
-                            );
-                        } else {
-                            self.note(Diagnostic::SymlinkedDirectorySkipped(
-                                planned.spec.source.clone(),
-                            ));
-                        }
-                    }
-                    Type::File if name == planned.spec.skill_file => {
-                        self.push_candidate(
-                            planned,
-                            directory.as_fd(),
-                            &relative,
-                            name,
-                            false,
-                            limits,
-                        );
+                        self.note(Diagnostic::SymlinkedDirectorySkipped(
+                            planned.spec.source.clone(),
+                        ));
                     }
                     _ => {}
                 }
@@ -622,10 +670,18 @@ impl Discovery {
             self.note(Diagnostic::EntryUnreadable(planned.spec.source.clone()));
             return;
         };
-        if sflag_to_type(stat.st_mode) != Type::File {
+        if (SFlag::from_bits_truncate(stat.st_mode) & SFlag::S_IFMT) != SFlag::S_IFREG {
+            self.reject(planned, full, CandidateProblem::NotRegularFile);
             return;
         }
         let size = stat.st_size.max(0) as u64;
+        if size > SKILL_FILE_BYTES.max() as u64 {
+            // No content read could admit this snapshot. Retain the rejected
+            // name, not a reservation that can exhaust every other skill's
+            // cumulative allowance. A later repair needs a fresh capture.
+            self.reject(planned, full, CandidateProblem::Oversized);
+            return;
+        }
         let next = self.bytes_examined.saturating_add(size);
         if usize::try_from(next).map_or(true, |total| limits.bytes.check(total).is_err()) {
             self.stop(Diagnostic::ByteLimitReached);

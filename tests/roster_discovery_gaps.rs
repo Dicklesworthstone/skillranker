@@ -259,7 +259,7 @@ fn real_entry_ceiling_preserves_names_and_resolves_shallow_personal_overrides() 
 }
 
 #[test]
-fn byte_ceiling_keeps_clean_names_without_reading_the_skipped_file() {
+fn oversized_file_keeps_clean_names_without_reading_the_rejected_file() {
     let workspace = tree();
     let home = tree();
     skill(&workspace, "helpful", "# Helpful\n\nbody");
@@ -277,13 +277,15 @@ fn byte_ceiling_keeps_clean_names_without_reading_the_skipped_file() {
     assert_eq!(roster.exact_name("overflow"), ExactResolution::Missing);
     assert!(
         roster
-            .source_diagnostics()
-            .contains(&Diagnostic::ByteLimitReached)
+            .diagnostics()
+            .iter()
+            .any(|(_, e)| *e == ResolutionError::Oversized)
     );
+    assert!(!roster.source_diagnostics().contains(&Diagnostic::ByteLimitReached));
 }
 
 #[test]
-fn byte_ceiling_never_promotes_an_unobserved_competing_binding() {
+fn rejected_oversized_competitor_never_promotes_the_lower_priority_binding() {
     let workspace = tree();
     let home = tree();
     skill(&workspace, "helpful", "# Helpful\n\nbody");
@@ -298,15 +300,13 @@ fn byte_ceiling_never_promotes_an_unobserved_competing_binding() {
     let plan = claude_code_plan(&workspace, Some(&home), verified()).unwrap();
     let discovery = plan.discover();
     assert_eq!(discovery.candidates().len(), 2);
-    assert!(
-        discovery
-            .diagnostics()
-            .contains(&Diagnostic::ByteLimitReached)
-    );
+    assert_eq!(discovery.rejected_candidates().len(), 1);
+    assert!(!discovery.diagnostics().contains(&Diagnostic::ByteLimitReached));
     let roster = resolve(&plan);
     assert!(roster.is_partial());
     assert_advice(&roster, &["helpful"]);
     assert_withheld(&roster, "blocked");
+    assert!(roster.diagnostics().iter().any(|(_, e)| *e == ResolutionError::Oversized));
 }
 
 #[test]
