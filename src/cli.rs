@@ -4285,7 +4285,7 @@ mod documented_flag_tests {
             let words: Vec<_> = invocation.split_whitespace().collect();
             let name = words[1];
             if crate::capabilities::planned_command_phase(name).is_none() {
-                let parser = if matches!(name, "--help" | "--version" | "-h" | "-V") {
+                let mut parser = if matches!(name, "--help" | "--version" | "-h" | "-V") {
                     &app
                 } else if name.starts_with('-') {
                     app.find_subcommand("rank").unwrap()
@@ -4293,6 +4293,14 @@ mod documented_flag_tests {
                     app.find_subcommand(name)
                         .expect("documented command must exist")
                 };
+                // install-hook claude and ledger init have nested parsers.
+                for word in words.iter().skip(2) {
+                    if let Some(child) = parser.find_subcommand(word) {
+                        parser = child;
+                    } else {
+                        break;
+                    }
+                }
                 for word in &words[1..] {
                     if let Some(flag) = word.strip_prefix("--") {
                         let flag = flag.split('=').next().unwrap();
