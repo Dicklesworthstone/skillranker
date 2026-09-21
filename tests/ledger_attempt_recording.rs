@@ -180,10 +180,27 @@ impl Fixture {
     }
 
     fn rank_with(&self, port: u16, extra: &[&str]) -> std::process::Output {
+        self.rank_command(port, extra).output().unwrap()
+    }
+
+    fn rank_command(&self, port: u16, extra: &[&str]) -> Command {
         let mut args: Vec<&str> =
             vec!["rank", "--json", "--allow-network", "--timeout-ms", "12000"];
         args.extend_from_slice(extra);
-        self.command(port, &args).output().unwrap()
+        self.command(port, &args)
+    }
+
+    /// Polls for the invocation's own in-flight row, so a kill can be timed against
+    /// observed state rather than a sleep.
+    fn wait_for_event(&self, deadline: std::time::Duration) -> bool {
+        let start = std::time::Instant::now();
+        while start.elapsed() < deadline {
+            if !self.events().is_empty() {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        false
     }
 
     fn attempts(&self) -> Vec<StoredAttempt> {
@@ -269,6 +286,10 @@ struct Provider {
 
 impl Provider {
     fn start(f: &Fixture, scenario: &str) -> Self {
+        Self::start_with(f, scenario, &[])
+    }
+
+    fn start_with(f: &Fixture, scenario: &str, extra: &[&str]) -> Self {
         let directory = f
             .root
             .join(format!("provider-{}", NEXT.fetch_add(1, Ordering::Relaxed)));
@@ -292,6 +313,7 @@ impl Provider {
         let mut child = Command::new("/usr/bin/python3")
             .arg(directory.join("provider_server.py"))
             .arg(scenario)
+            .args(extra)
             .env_clear()
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -616,4 +638,75 @@ fn a_new_turn_with_identical_text_is_still_a_separate_event() {
             "each event owns its own pair: {rows:#?}"
         );
     }
+}
+
+#[test]
+fn an_invocation_killed_mid_flight_is_still_recorded() {
+    // sr-roadmap-l1i.6.7's hard-kill clause, which SilentFinch was right to insist is
+    // not covered by failure-path tests: a process that dies while waiting on the
+    // provider cannot record anything afterwards, so what matters is what it wrote
+    // before sending. Without that write the ledger cannot distinguish "this
+    // invocation never happened" from "it ran and may have paid".
+    let f = Fixture::new();
+    f.claude_session("rec-kill", TASK);
+    f.ledger_init();
+    // The wide stage sleeps for ten seconds, so the process is certainly still
+    // waiting when the kill lands.
+    let target = f.root.join("provider-target.txt");
+    std::fs::write(&target, "unused").unwrap();
+    let provider = Provider::start_with(&f, "slow-wide", &[target.to_str().unwrap(), "10"]);
+    // No extra --timeout-ms: the default is already in the argument list and strict
+    // parsing refuses a duplicate, which would kill the child before it recorded
+    // anything and make this case pass for the wrong reason.
+    let mut child = f
+        .rank_command(provider.port, &[])
+        // stdin must be null, not inherited: a piped stdin makes `sr` require an
+        // explicit input mode, and the child would exit before recording anything.
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+
+    // Timed against observed state, not a sleep: wait until the invocation has
+    // written itself down, then kill it outright.
+    assert!(
+        f.wait_for_event(std::time::Duration::from_secs(20)),
+        "the invocation never recorded itself before sending"
+    );
+    child.kill().expect("SIGKILL delivered");
+    let status = child.wait().unwrap();
+    assert!(
+        !status.success(),
+        "the process was supposed to be killed, not to finish"
+    );
+
+    let events = f.events();
+    assert_eq!(events.len(), 1, "{events:#?}");
+    let (_, decision, snapshot, reason) = &events[0];
+    // Nothing was decided and nothing was delivered, which is what these two say.
+    assert_eq!(decision, "unavailable");
+    assert_eq!(reason, "in-flight");
+    assert_eq!(*snapshot, None, "no roster membership was established");
+    let conn = rusqlite::Connection::open(f.ledger_db()).unwrap();
+    let exposure: String = conn
+        .query_row("SELECT exposure_state FROM ranking_events", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(
+        exposure, "generated",
+        "a killed invocation leaves its row in flight"
+    );
+    // Its own recorded time is a real wall clock, so a reader can tell that the row
+    // is older than any invocation deadline and therefore died rather than running.
+    let created: i64 = conn
+        .query_row("SELECT created_at_unix_ms FROM ranking_events", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert!(
+        created >= 1_700_000_000_000,
+        "created_at {created} is not wall clock"
+    );
 }
