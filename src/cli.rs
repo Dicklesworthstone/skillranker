@@ -2701,9 +2701,8 @@ fn eval_command(clock: &EntryClock, eval_matches: &clap::ArgMatches) -> Result<S
         compare_policy: None,
     };
 
-    crate::evaluation::batch::validate_batch_config(&config).map_err(|err| {
-        (2, "invalid-usage", err.to_string())
-    })?;
+    crate::evaluation::batch::validate_batch_config(&config)
+        .map_err(|err| (2, "invalid-usage", err.to_string()))?;
     timely(clock)?;
 
     let policy = if let Some(p) = eval_matches.get_one::<String>("policy") {
@@ -2731,7 +2730,13 @@ fn eval_command(clock: &EntryClock, eval_matches: &clap::ArgMatches) -> Result<S
     timely(clock)?;
     // Pin the selected directory and use the descriptor that was checked as a
     // regular file. A FIFO (including a raced-in replacement) cannot block open.
-    let input_error = || (7, "malformed-input", "Evaluation dataset must be an accessible authorized regular file".into());
+    let input_error = || {
+        (
+            7,
+            "malformed-input",
+            "Evaluation dataset must be an accessible authorized regular file".into(),
+        )
+    };
     let absolute = std::path::absolute(dataset_str).map_err(|_| input_error())?;
     let parent = absolute.parent().ok_or_else(input_error)?;
     let parent = std::fs::canonicalize(parent).map_err(|_| input_error())?;
