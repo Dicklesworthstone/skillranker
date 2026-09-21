@@ -16,7 +16,6 @@ use nix::errno::Errno;
 use nix::fcntl::{AtFlags, OFlag, openat};
 use nix::sys::stat::{Mode, SFlag, fstatat};
 use std::collections::{BTreeMap, BTreeSet};
-use std::os::fd::AsFd;
 use std::path::Path;
 
 #[derive(Default)]
