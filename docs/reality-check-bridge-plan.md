@@ -1,10 +1,132 @@
 # SkillRanker reality check and bridge plan
 
-Latest assessment: 2026-09-21 UTC, executable-journey review. Earlier reviews and receipts are retained below as
+Latest assessment: 2026-09-21 UTC, second executable-journey pass at `a82abbb`. Earlier reviews and receipts are retained below as
 history. Inventory and ownership statements describe their stated snapshots, not
 a frozen release or a product-completion percentage.
 
-## Current assessment — 2026-09-21 UTC, executable-journey review
+## Current assessment — 2026-09-21 UTC, second executable-journey pass
+
+**The two defects the morning review filed that had owners free have been fixed and are verified
+closed in this pass; the two strategic data-acquisition beads it filed remain the critical path.
+The central claim is still unproven: nothing here shows a SkillRanker recommendation makes agent
+work better.** The measurement apparatus is now demonstrably connected end to end — this review
+re-ran the entire documented journey against the TLS fixture at `a82abbb` and every stage behaved
+as documented — but `gate_status` still reads `not-established`, and correctly so.
+
+### Scope and evidence boundaries
+
+Read all of AGENTS.md and README.md in full, the plan's promotion gates and implementation order,
+and the morning review. Built `sr` locally (RCH artifact transfer failed with exit 102 on both
+hz2 and ovh-a; `RCH_CARGO_WRAPPER_BYPASS=1` local build used instead) and drove it in an isolated
+owner-only HOME with a three-skill workspace and a synthetic Claude session, against the project's
+own TLS fixture provider. Assessed revision `a82abbb` (origin/main); the tree moved 38 commits
+during the review, and every behavior claim below was re-verified against a binary rebuilt at
+`a82abbb` after the move. The provider proves the pipeline over genuine TLS through the production
+transport, decoder and admission path; it proves nothing about Jev's answer quality.
+
+### Gates run at `a82abbb`
+
+| Gate | Result |
+|---|---|
+| `cargo fmt --check` | clean |
+| `cargo clippy --locked --all-targets -- -D warnings` | clean |
+| `cargo test --locked --no-fail-fast` | **1,236 passed, 0 failed, 10 ignored** |
+| `python3 scripts/validate_public_contracts.py` | passed |
+| `ubs --diff` | anomaly: reported "no supported languages detected" in a Rust repo, exit 3; not a pass, not a failure finding |
+| RCH remote builds | broken today (exit 102, artifact transfer after successful remote compile, twice); local cargo is the working gate |
+
+The one suite failure observed today (`a_late_rerank_answer_is_never_published`) appeared in two
+full-suite runs while host load average exceeded 110, then passed 3/3 in isolation. It asserts an
+owned runtime shuts down inside the remaining deadline budget; under scheduler starvation the
+assertion trips. This is the same shape as open `sr-5n0b` (concurrent runtime construction
+exhausting subprocess test budgets); a deadline-sensitive suite that cannot run green on a loaded
+shared box is a real CI-robustness gap, not a product defect found today.
+
+### Journey re-driven, end to end (all at `a82abbb`, all observed by this reviewer)
+
+`ledger init` → `rank --allow-network` over loopback TLS: `ranked`, one suggestion
+(rust-test-triage), 2 logical requests / 2 HTTP attempts, 275 known tokens, `persistence: recorded`
+→ `observe` attributed the session after the transcript filename was made to match its `sessionId`
+(durable identity requires stem == sessionId plus a `cwd` record for this workspace — two misnamed
+fixtures were refused with `missing-session`, correctly) → `feedback` committed → `stats --by-skill`
+reported every documented cohort → `--save-case` then `replay` reproduced `ranked` with 2/2 stages
+and `actionable: false` → `eval --dataset` replay returned `kind: report`, `run_status: complete`,
+`gate_status: not-established`. Local-only paths: `--require-skill` resolved offline with zero HTTP
+attempts; `--dry-run` produced a `preview` envelope with provider request and `disclosure` receipt;
+an offline rank over the cached inputs returned `ranked` with zero requests, and the same command
+with a different endpoint identity correctly missed (exit 11); roster snapshot/diff round-tripped;
+prune preview computed a sane 30-day cutoff; hook in shadow emitted zero bytes with exit 0 and
+recorded a separate shadow-channel turn; malformed hook input produced empty stdout, sanitized
+stderr, exit 0; `install-hook claude` previewed an exact settings diff.
+
+Two contract-honoring refusals worth recording: an advisory-mode hook with network consent emitted
+nothing and logged `native advice disabled for unverified harness (UnverifiedHarness)` — the
+publication boundary now enforces harness qualification, superseding the historical review's
+finding 2. And a group-accessible ancestor directory makes `ledger init` refuse, as documented.
+
+### Status of the morning review's six beads
+
+| Bead | State at `a82abbb` | Evidence from this pass |
+|---|---|---|
+| `sr-an94` (late tool-result upgrade) | **Fixed, verified live** | tool_use pass records `attempted`; a later pass seeing only the result upgrades to `loaded` (session-d experiment; control shows `is_error: false` required for recognition) |
+| `sr-x4s8` (planned flags refuse generically) | **Fixed, verified live** | `eval --sample-size/--seed/--explain` and `doctor --descriptions` now refuse naming their phase; `capabilities --json` exposes `planned_flags` |
+| `sr-2wda` (attempt identity collision) | Closed | not re-exercised |
+| `sr-oufi` (judgment keyed by invocation name) | **Still live on main** | `feedback u3 --skill rust-code-review` stores the invocation name in `judgments.skill_id` while `ranking_candidates` holds the stable id; `stats --by-skill` splits one skill into two rows. Fix exists on unmerged peer branch (`6d2c2b5`) |
+| `sr-488b` (owner-only refusal names no path/mode) | **Still live** | `ledger init` under a group-accessible ancestor says only "cache path does not satisfy owner-only permissions" |
+| `sr-uv2v` / `sr-1uf4` (corpus and shadow traffic) | Open | unchanged; still the critical path to every promotion gate |
+
+### New findings this pass
+
+1. **The installed hook's outer timeout equals the inner deadline instead of exceeding it
+   (NO_BEAD before this review).** `DEFAULT_HOOK_TIMEOUT_SECS = 3` (src/installer.rs:32) against a
+   3,000 ms internal deadline that starts at process entry; README promises a harness timeout
+   "above the ranker's deadline" and says it "is initially four seconds." Because startup precedes
+   the internal clock, the harness can kill `sr` during its 200 ms output reserve. Filed as
+   **`sr-83cc`**.
+2. **The circuit breaker is plumbing without a producer.** `AdmissionRefusal::ProviderCooldown`,
+   `RankingStage::Probe`, exit-4 mapping and ledger exclusions all exist, but nothing in src/
+   constructs a cooldown or issues a probe (src/jev/retry.rs disclaims owning persistent cooldown).
+   Honest staging — `sr budget` is planned-P6 and `.7.7` owns the implementation — but anyone
+   reading the types could mistake them for function. No new bead; `.7.7` covers it.
+3. **`sr eval --online` is a clean refusal, not a capability.** "live batch execution is not
+   implemented; supply recorded replay cases in offline mode" (src/evaluation/batch.rs:265).
+   Owned by `.6.19` (in progress). Fine as staged; worth remembering the README flag table's live
+   path is not yet reachable.
+4. **`sr-jgez` (peer-filed during this review) is real and matters for hooks:** `sr observe`
+   re-reads transcripts from byte 0 every pass, so observation cost grows with session length on
+   the per-turn hook path.
+
+### What this means for the bridge
+
+The morning review's ordering survives with its first row half-complete:
+
+| Order | Work | State after this pass |
+|---|---|---|
+| 1 | `sr-oufi` (+ merge the branch fix), `sr-an94` | an94 done; oufi is one reviewed merge away |
+| 2 | `sr-1uf4` self-hosted shadow deployment | unchanged — still the cheapest source of the operational cohort, and now additionally the only realistic soak for `sr-jgez`-class observation costs |
+| 3 | `sr-uv2v` adjudicated corpus pilot | unchanged |
+| 4 | `.6.20`–`.6.28` evaluation/reporting proof suite | unblocked by nothing new; `sr-x4s8` done removes the flag-honesty objection |
+| 5 | `.7.11`, `.7.9`, `.8.9`/`.8.10` harness qualification and trials | the publication boundary now enforces qualification (verified today); the trials themselves remain |
+| 6 | `.8.1`–`.8.6`, `.7.12`, `.8.4` promotion cohorts | still the only row that answers whether the product works; still gated on rows 2–3 |
+| 7 | `.7.4`–`.7.8`, `.7.10` allowance/breaker/snooze | breaker currently surface-only (finding 2); also a prerequisite for spending real budget on row 2 |
+| 8 | `.5.23`, `.8.7` release | still hostage to macOS CI infrastructure, not beads |
+| 9 | `sr-x4s8`, `sr-488b`, `sr-83cc` | x4s8 done; 488b and the new timeout bead are cheap and user-visible |
+
+Backlog health: ~265 issues, no dependency cycles, 19 actionable of 88 unresolved; the longest
+chain (29 beads) still roots at `.6.7`. No vision goal has zero bead coverage after `sr-83cc`;
+the weakest coverage is macOS release qualification (one infra-blocked bead) and deferred
+non-Claude adapters.
+
+The one-sentence answer to "are we there yet": **the pipeline works and is honest about its own
+limits; the product claim (Jev-ranked suggestions improve agent work) has excellent instruments
+and no readings yet — rows 2 and 3 are the entire ballgame.**
+
+This update revises the existing bridge in place. Its current-state claims retire when the next
+revision-bound assessment supersedes them. The sections below are historical snapshots and must
+not be read as the current implementation inventory.
+
+## Historical assessment — 2026-09-21 UTC, executable-journey review
+
 
 **The reporting and evaluation seam the previous review called the bottleneck is now
 built and connected. `sr stats` and `sr eval` exist, the whole P5 journey runs end to
