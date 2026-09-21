@@ -264,7 +264,9 @@ fn ledger_snapshot_counts_and_event_scope_must_match_evidence() {
 
 #[test]
 fn ledger_snapshot_preserves_full_roster_and_rejects_overflow() {
-    let (inv, cx) = test_invocation();
+    // Two maximal snapshots (10,000 members each) are written inside this one invocation, so it gets
+    // an explicit deadline rather than inheriting the product's and turning contention into a verdict.
+    let (inv, cx) = generous_invocation();
     let mut store = open_test_store(&inv, &cx, "snapshot-full");
     let stamp = store.stamp();
     let valid = snapshot_fixture();
@@ -459,6 +461,32 @@ fn ledger_snapshot_reference_revalidates_legacy_rows_and_preserves_unknown_cover
 
 fn test_invocation() -> (ProcessInvocation, Cx) {
     let invocation = ProcessInvocation::enter().expect("process invocation");
+    let cx = invocation.request_cx().expect("request_cx");
+    (invocation, cx)
+}
+
+/// An invocation with a deliberately generous deadline, for the cases whose work is genuinely
+/// expensive.
+///
+/// The default 3,000 ms deadline is the product's, and using it here means a test also asserts,
+/// silently, that its work fits in that budget on whatever machine happens to run it. That is a
+/// performance claim nobody wrote down, and it is not what these cases are about: they are about what
+/// the store PRESERVES. On a loaded box the full-roster case took 4.11 s and failed on
+/// `Err(Cancelled)`, then passed three times at 1.15 s, 1.46 s and 1.44 s minutes later — the verdict
+/// was reporting machine load, and it misled two separate reviews (sr-0i7u).
+///
+/// Sixty seconds is not a performance target either; it is far enough above the real cost (~1.2 s of
+/// work) that contention cannot reach it, so the assertions decide the outcome. A case that needs this
+/// must still fail when the evidence is wrong, which is why the deadline is the only thing relaxed.
+fn generous_invocation() -> (ProcessInvocation, Cx) {
+    let clock = skillranker::runtime::EntryClock::capture()
+        .expect("entry clock")
+        .with_total(
+            skillranker::limits::DurationMillis::new("test_deadline_ms", 60_000, 600_000)
+                .expect("a bounded test deadline"),
+        )
+        .expect("a generous deadline");
+    let invocation = ProcessInvocation::from_clock(clock).expect("process invocation");
     let cx = invocation.request_cx().expect("request_cx");
     (invocation, cx)
 }
