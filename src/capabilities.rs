@@ -20,6 +20,7 @@ pub const IMPLEMENTED_COMMANDS: &[&str] = &[
     "capabilities",
     "demo",
     "doctor",
+    "eval",
     "feedback",
     "hook",
     "install-hook",

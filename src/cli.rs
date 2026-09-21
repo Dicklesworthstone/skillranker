@@ -12,7 +12,9 @@ use std::ffi::OsString;
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
-const HELP: &str = "SkillRanker — powered by TypeSafe.ai Jev\n\nUsage: sr [rank] [--context FILE | --transcript FILE --harness NAME | --session PATH | --latest]\n                 [--roster FILE] [--require-skill ID] [--dry-run [--shortlist-ids ID,...]]\n                 [--offline | --allow-network] [--json | --table]\n                 [--top N] [--shortlist M] [--gate FLOAT] [--fits FLOAT]\n                 [--explain] [--why-not ID] [--cursor TOKEN] [--no-tools] [--no-cache]\n                 [--save-case FILE]\n       sr doctor [--json | --table] [--offline | --allow-network]\n       sr doctor --config [--json | --table] [--top N] [--shortlist N]\n       sr roster [--json] [--limit N] [--cursor TOKEN]\n       sr roster --snapshot FILE | --diff FILE\n       sr capabilities [--json]\n       sr demo --case <useful|none|explicit|unavailable> [--json | --table]\n       sr replay FILE [--policy FILE] [--compare-policy FILE] [--json | --table]\n       sr feedback <EVENT_ID> --skill ID [--instead ID] [--verdict <useful|not-useful|unknown>] [--reason CODE] [--provenance TEXT] [--expected-version GEN] [--dir DIR] [--json]\n       sr ledger <init|migrate|status|prune|clear> [--before TIME] [--apply] [--json]\n       sr observe [--context FILE | --transcript FILE --harness NAME | --session PATH] [--branch NAME] [--roster FILE] [--dir DIR] [--json]\n       sr stats [--since DURATION] [--by-skill] [--dir DIR] [--json | --table]\n       sr hook <claude> [--shadow] [--offline | --allow-network] [--dir DIR]\n       sr install-hook <claude> [--settings FILE] [--target-dir DIR] [--apply] [--json]\n       sr uninstall-hook <claude> [--settings FILE] [--target-dir DIR] [--apply] [--json]\n       sr --help | --version\n\nRank the next step of an agent session using TypeSafe Jev.\nRequires your own TypeSafe API key (TYPESAFE_API_KEY) and network consent (--allow-network).\n";
+const HELP: &str = "SkillRanker — powered by TypeSafe.ai Jev\n\nUsage: sr [rank] [--context FILE | --transcript FILE --harness NAME | --session PATH | --latest]\n                 [--roster FILE] [--require-skill ID] [--dry-run [--shortlist-ids ID,...]]\n                 [--offline | --allow-network] [--json | --table]\n                 [--top N] [--shortlist M] [--gate FLOAT] [--fits FLOAT]\n                 [--explain] [--why-not ID] [--cursor TOKEN] [--no-tools] [--no-cache]\n                 [--save-case FILE]\n       sr doctor [--json | --table] [--offline | --allow-network]\n       sr doctor --config [--json | --table] [--top N] [--shortlist N]\n       sr roster [--json] [--limit N] [--cursor TOKEN]\n       sr roster --snapshot FILE | --diff FILE\n       sr capabilities [--json]\n       sr demo --case <useful|none|explicit|unavailable> [--json | --table]\n       sr replay FILE [--policy FILE] [--compare-policy FILE] [--json | --table]\n       sr eval --dataset FILE [--online] [--allow-network] [--max-requests N] [--max-runtime-ms MS] [--timeout-ms MS] [--policy FILE] [--compare-policy FILE] [--explain] [--json | --table]\n       sr feedback <EVENT_ID> --skill ID [--instead ID] [--verdict <useful|not-useful|unknown>] [--reason CODE] [--provenance TEXT] [--expected-version GEN] [--dir DIR] [--json]\n       sr ledger <init|migrate|status|prune|clear> [--before TIME] [--apply] [--json]\n       sr observe [--context FILE | --transcript FILE --harness NAME | --session PATH] [--branch NAME] [--roster FILE] [--dir DIR] [--json]\n       sr stats [--since DURATION] [--by-skill] [--dir DIR] [--json | --table]\n       sr hook <claude> [--shadow] [--offline | --allow-network] [--dir DIR]\n       sr install-hook <claude> [--settings FILE] [--target-dir DIR] [--apply] [--json]\n       sr uninstall-hook <claude> [--settings FILE] [--target-dir DIR] [--apply] [--json]\n       sr --help | --version\n\nRank the next step of an agent session using TypeSafe Jev.\nRequires your own TypeSafe API key (TYPESAFE_API_KEY) and network consent (--allow-network).\n";
+
+const EVAL_HELP: &str = "sr eval --dataset FILE [--online] [--allow-network] [--max-requests N] [--max-runtime-ms MS] [--timeout-ms MS] [--policy FILE] [--compare-policy FILE] [--explain] [--json | --table]\n\nEvaluate recorded or synthetic replay batches against local or comparison policies with bounded runtime and explicit accounting.\n";
 
 const STATS_HELP: &str = "sr stats [--since DURATION] [--by-skill] [--dir DIR] [--json | --table]\n\nReport observation and operational metrics across honest cohorts (evaluations, suggestions, abstentions, latency, loads, judgments, tokens, and cost).\n";
 
@@ -296,6 +298,83 @@ fn command() -> Command {
                         .value_name("FILE")
                         .help("Path to a comparison policy file")
                         .action(ArgAction::Set),
+                )
+                .arg(
+                    Arg::new("json")
+                        .long("json")
+                        .conflicts_with("table")
+                        .action(ArgAction::SetTrue),
+                )
+                .arg(Arg::new("table").long("table").action(ArgAction::SetTrue)),
+        )
+        .subcommand(
+            Command::new("eval")
+                .disable_help_flag(true)
+                .arg(
+                    Arg::new("help")
+                        .long("help")
+                        .short('h')
+                        .action(ArgAction::SetTrue),
+                )
+                .arg(
+                    Arg::new("dataset")
+                        .long("dataset")
+                        .value_name("FILE")
+                        .help("Path to the evaluation dataset (JSONL / JSON)")
+                        .action(ArgAction::Set),
+                )
+                .arg(
+                    Arg::new("online")
+                        .long("online")
+                        .help("Enable live evaluation against provider")
+                        .action(ArgAction::SetTrue),
+                )
+                .arg(
+                    Arg::new("allow-network")
+                        .long("allow-network")
+                        .help("Explicit network authorization consent")
+                        .action(ArgAction::SetTrue),
+                )
+                .arg(
+                    Arg::new("max-requests")
+                        .long("max-requests")
+                        .value_name("N")
+                        .help("Maximum HTTP attempts across the batch (required for live evaluation)")
+                        .action(ArgAction::Set),
+                )
+                .arg(
+                    Arg::new("max-runtime-ms")
+                        .long("max-runtime-ms")
+                        .value_name("MS")
+                        .help("Maximum runtime deadline for the batch in milliseconds")
+                        .action(ArgAction::Set),
+                )
+                .arg(
+                    Arg::new("timeout-ms")
+                        .long("timeout-ms")
+                        .value_name("MS")
+                        .help("Optional per-case deadline in milliseconds")
+                        .action(ArgAction::Set),
+                )
+                .arg(
+                    Arg::new("policy")
+                        .long("policy")
+                        .value_name("FILE")
+                        .help("Path to a local policy override file")
+                        .action(ArgAction::Set),
+                )
+                .arg(
+                    Arg::new("compare-policy")
+                        .long("compare-policy")
+                        .value_name("FILE")
+                        .help("Path to a comparison policy file")
+                        .action(ArgAction::Set),
+                )
+                .arg(
+                    Arg::new("explain")
+                        .long("explain")
+                        .help("Include mathematical explanation cards in report")
+                        .action(ArgAction::SetTrue),
                 )
                 .arg(
                     Arg::new("json")
@@ -981,6 +1060,12 @@ fn execute(clock: &EntryClock, mut args: Vec<OsString>) -> Result<String, Failur
             return Ok(HELP.into());
         }
         return replay_command(clock, replay_matches);
+    }
+    if let Some(("eval", eval_matches)) = matches.subcommand() {
+        if eval_matches.get_flag("help") {
+            return Ok(EVAL_HELP.into());
+        }
+        return eval_command(clock, eval_matches);
     }
     if let Some(("ledger", ledger_matches)) = matches.subcommand() {
         if ledger_matches.get_flag("help") {
@@ -2408,6 +2493,131 @@ fn replay_command(
     }
 }
 
+fn eval_command(clock: &EntryClock, eval_matches: &clap::ArgMatches) -> Result<String, Failure> {
+    timely(clock)?;
+    let dataset_str = eval_matches
+        .get_one::<String>("dataset")
+        .ok_or_else(|| (2, "invalid-usage", "Missing required argument --dataset".into()))?;
+    let case_path = Path::new(dataset_str);
+    let file = std::fs::File::open(case_path).map_err(|err| {
+        (
+            2,
+            "invalid-usage",
+            format!("Failed to open dataset file '{dataset_str}': {err}"),
+        )
+    })?;
+    let reader = std::io::BufReader::new(file);
+
+    let online = eval_matches.get_flag("online");
+    let allow_network = eval_matches.get_flag("allow-network");
+    if online && !allow_network {
+        return Err((
+            crate::output::ErrorKind::NetworkDenied.exit_code() as u8,
+            crate::output::ErrorKind::NetworkDenied.as_str(),
+            "Online live evaluation requires explicit network authorization (--allow-network)".into(),
+        ));
+    }
+
+    let max_requests = if let Some(s) = eval_matches.get_one::<String>("max-requests") {
+        Some(s.parse::<u32>().map_err(|_| {
+            (
+                2,
+                "invalid-usage",
+                "Invalid --max-requests: must be a positive integer".into(),
+            )
+        })?)
+    } else {
+        None
+    };
+
+    if online && max_requests.is_none() {
+        return Err((
+            crate::output::ErrorKind::InvalidUsage.exit_code() as u8,
+            crate::output::ErrorKind::InvalidUsage.as_str(),
+            "Online live evaluation requires an explicit --max-requests cap".into(),
+        ));
+    }
+
+    let max_runtime_ms = if let Some(s) = eval_matches.get_one::<String>("max-runtime-ms") {
+        s.parse::<u64>().map_err(|_| {
+            (
+                2,
+                "invalid-usage",
+                "Invalid --max-runtime-ms: must be a positive integer".into(),
+            )
+        })?
+    } else {
+        crate::limits::DEFAULT_EVAL_BATCH_RUNTIME_MS
+    };
+
+    let per_case_timeout_ms = if let Some(s) = eval_matches.get_one::<String>("timeout-ms") {
+        Some(s.parse::<u64>().map_err(|_| {
+            (
+                2,
+                "invalid-usage",
+                "Invalid --timeout-ms: must be a positive integer".into(),
+            )
+        })?)
+    } else {
+        None
+    };
+
+    let policy = if let Some(p) = eval_matches.get_one::<String>("policy") {
+        let pol = crate::replay::ReplayPolicy::load_from_file(Path::new(p)).map_err(|err| {
+            let kind = err.kind();
+            (kind.exit_code() as u8, kind.as_str(), err.to_string())
+        })?;
+        Some(pol)
+    } else {
+        None
+    };
+
+    let compare_policy = if let Some(p) = eval_matches.get_one::<String>("compare-policy") {
+        let pol = crate::replay::ReplayPolicy::load_from_file(Path::new(p)).map_err(|err| {
+            let kind = err.kind();
+            (kind.exit_code() as u8, kind.as_str(), err.to_string())
+        })?;
+        Some(pol)
+    } else {
+        None
+    };
+
+    let config = crate::evaluation::batch::BatchConfig {
+        max_requests,
+        max_runtime_ms,
+        per_case_timeout_ms,
+        online,
+        allow_network,
+        evidence_origin: crate::evaluation::batch::EvidenceOrigin::Recorded,
+        policy,
+        compare_policy,
+    };
+
+    let report = match crate::evaluation::batch::execute_evaluation_batch(reader, &config, clock) {
+        Ok(rep) => rep,
+        Err(err) => {
+            let kind = err.kind();
+            return Err((kind.exit_code() as u8, kind.as_str(), err.to_string()));
+        }
+    };
+
+    let doc = report
+        .to_document()
+        .map_err(|e| (2, "output-error", e.to_string()))?;
+
+    let json_output = eval_matches.get_flag("json")
+        || (!eval_matches.get_flag("table") && !io::stdout().is_terminal());
+
+    if json_output {
+        let wire = doc
+            .to_json()
+            .map_err(|e| (2, "output-error", e.to_string()))?;
+        Ok(format!("{}\n", String::from_utf8_lossy(&wire)))
+    } else {
+        Ok(doc.render_table())
+    }
+}
+
 fn demo_command(clock: &EntryClock, demo_matches: &clap::ArgMatches) -> Result<String, Failure> {
     timely(clock)?;
     let case_str = demo_matches
@@ -3003,6 +3213,28 @@ fn hook_claude_command(clock: &EntryClock, m: &clap::ArgMatches) -> Result<Strin
     // In shadow mode (the default in P6 or forced via --shadow), the hook emits zero stdout and returns 0.
     if m.get_flag("shadow") || effective_mode == crate::config::HookMode::Shadow {
         return Ok(String::new());
+    }
+
+    // In advisory mode, check adapter qualification before emitting native advice for ranked suggestions.
+    // Explicit user directives are not blocked by harness qualification.
+    if let crate::output::OutputKind::Decision(crate::output::Decision::Ranked) = output_doc.kind() {
+        if let Ok(foundation) = crate::adapter::foundation_capabilities() {
+            if let Some(record) = foundation
+                .adapters
+                .iter()
+                .find(|a| a.adapter_id.as_str() == crate::adapter::CLAUDE_CODE_ID)
+            {
+                if let crate::adapter::AdviceDisposition::Disabled(reason) =
+                    record.advice(crate::adapter::CompatibilityQuestion::EmitNativeAdvice, None)
+                {
+                    let _ = writeln!(
+                        io::stderr().lock(),
+                        "sr: native advice disabled for unverified harness ({reason:?})"
+                    );
+                    return Ok(String::new());
+                }
+            }
+        }
     }
 
     // In advisory mode, render one safe suggestion or explicit list

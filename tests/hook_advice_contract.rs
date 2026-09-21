@@ -412,3 +412,23 @@ fn forced_shadow_flag_overrides_advisory_config() {
         "--shadow flag must suppress all stdout even when advisory mode is configured"
     );
 }
+
+#[test]
+fn advisory_mode_suppresses_ranked_advice_for_unverified_harness() {
+    // Contract requirement:
+    // Ranked suggestions for an unverified harness (Claude Code has no tested versions
+    // and unevaluated matrix) must downgrade to quiet shadow with a diagnostic on stderr.
+    use skillranker::adapter::{CLAUDE_CODE_ID, CompatibilityQuestion, foundation_capabilities};
+
+    let foundation = foundation_capabilities().expect("foundation capabilities");
+    let record = foundation
+        .adapters
+        .iter()
+        .find(|a| a.adapter_id.as_str() == CLAUDE_CODE_ID)
+        .expect("claude_code adapter");
+    let disposition = record.advice(CompatibilityQuestion::EmitNativeAdvice, None);
+    assert!(
+        matches!(disposition, skillranker::adapter::AdviceDisposition::Disabled(_)),
+        "Claude Code adapter must be unverified/disabled for native advice in this phase"
+    );
+}
