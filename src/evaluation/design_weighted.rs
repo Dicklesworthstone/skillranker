@@ -27,6 +27,7 @@ use std::fmt;
 /// Mathematical or domain errors in design-weighted estimation.
 #[derive(Clone, Debug, PartialEq)]
 pub enum DesignWeightedError {
+    InvalidEndpoints,
     UnsupportedDesign,
     InvalidInclusionProbability {
         stratum: String,
@@ -75,6 +76,9 @@ pub enum DesignWeightedError {
 impl fmt::Display for DesignWeightedError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::InvalidEndpoints => f.write_str(
+                "endpoint names must be nonempty and unique, with at least one endpoint",
+            ),
             Self::UnsupportedDesign => {
                 f.write_str("design-based inference requires a probability sample or census")
             }
@@ -325,7 +329,7 @@ pub struct StratumCaseRatioPair {
 /// does not exceed the total report error budget $\alpha$.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MultiEndpointAlphaAllocation {
-    pub total_alpha: f64,
+    total_alpha: f64,
     allocations: BTreeMap<String, f64>,
 }
 
@@ -337,20 +341,31 @@ impl MultiEndpointAlphaAllocation {
     ) -> Result<Self, DesignWeightedError> {
         validate_alpha(total_alpha)?;
         if endpoint_names.is_empty() {
-            return Err(DesignWeightedError::AlphaBudgetExceeded {
-                allocated: 0.0,
-                budget: total_alpha,
-            });
+            return Err(DesignWeightedError::InvalidEndpoints);
         }
         let per_endpoint = total_alpha / (endpoint_names.len() as f64);
+        validate_alpha(per_endpoint)?;
         let mut allocations = BTreeMap::new();
         for name in endpoint_names {
-            allocations.insert(name.as_ref().to_string(), per_endpoint);
+            if name.as_ref().trim().is_empty()
+                || allocations
+                    .insert(name.as_ref().to_string(), per_endpoint)
+                    .is_some()
+            {
+                return Err(DesignWeightedError::InvalidEndpoints);
+            }
         }
-        Ok(Self {
-            total_alpha,
-            allocations,
-        })
+        match Self::explicit(total_alpha, allocations.clone()) {
+            Err(DesignWeightedError::AlphaBudgetExceeded { .. }) => {
+                // Division can round a share upward. Reduce each share by one
+                // representable step, then revalidate rather than grant slack.
+                for value in allocations.values_mut() {
+                    *value = value.next_down();
+                }
+                Self::explicit(total_alpha, allocations)
+            }
+            result => result,
+        }
     }
 
     /// Creates an allocator with explicit per-endpoint alpha budgets, verifying $\sum \alpha_m \le \alpha$.
@@ -359,12 +374,25 @@ impl MultiEndpointAlphaAllocation {
         allocations: BTreeMap<String, f64>,
     ) -> Result<Self, DesignWeightedError> {
         validate_alpha(total_alpha)?;
+        if allocations.is_empty() || allocations.keys().any(|name| name.trim().is_empty()) {
+            return Err(DesignWeightedError::InvalidEndpoints);
+        }
         let mut sum = 0.0;
+        let mut correction = 0.0;
         for &alpha_m in allocations.values() {
             validate_alpha(alpha_m)?;
-            sum += alpha_m;
+            // Compensated summation avoids rejecting ordinary equal splits
+            // solely because repeated additions accumulate rounding error.
+            let next = sum + alpha_m;
+            correction += if sum >= alpha_m {
+                (sum - next) + alpha_m
+            } else {
+                (alpha_m - next) + sum
+            };
+            sum = next;
         }
-        if sum > total_alpha + 1e-9 {
+        sum += correction;
+        if !sum.is_finite() || sum > total_alpha {
             return Err(DesignWeightedError::AlphaBudgetExceeded {
                 allocated: sum,
                 budget: total_alpha,
@@ -374,6 +402,12 @@ impl MultiEndpointAlphaAllocation {
             total_alpha,
             allocations,
         })
+    }
+
+    /// The immutable total budget validated at construction.
+    #[must_use]
+    pub const fn total_alpha(&self) -> f64 {
+        self.total_alpha
     }
 
     /// Returns the allocated alpha for a given endpoint name.
