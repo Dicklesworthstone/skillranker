@@ -65,6 +65,23 @@ pub const IN_FLIGHT_REASON: &str = "in-flight";
 const UNFINISHED_ROW_SQL: &str =
     "(decision = 'unavailable' AND exposure_state = 'generated' AND reason = ?3)";
 
+/// The primary key of one attempt's row.
+///
+/// The in-process attempt id is `<invocation id>-att-<n>`, and the invocation id is a
+/// fixed word for a given entry point, so it repeats on every run. The owner alone is not
+/// enough either: a duplicate delivery is deliberately the *same* event, so two deliveries
+/// that each paid would collide on an owner-scoped key and the second would be dropped.
+/// The invocation token distinguishes them, so a repeat appends its own rows under the one
+/// event it belongs to (sr-qqlk).
+///
+/// One attempt is written more than once — when admitted, when its request reaches the
+/// wire, and when it settles — and every one of those writers has to land on the same row.
+/// They share this function so that they cannot compose the key differently and leave
+/// several rows behind for a single attempt.
+pub fn attempt_row_key(owner_event_id: &str, invocation_token: &str, attempt_id: &str) -> String {
+    format!("{owner_event_id}:{invocation_token}:{attempt_id}")
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct LedgerCapacityReport {
     pub total_quota_bytes: u64,
@@ -1033,16 +1050,76 @@ fn validated_snapshot(snapshot: &NewRosterSnapshot) -> Result<String, StoreError
 
 /// Insert one attempt row inside a caller-owned transaction, so an attempt can be
 /// committed together with the ranking event that owns it.
+const PROVIDER_ATTEMPT_COLUMNS: &str = "INSERT INTO provider_attempts (
+            attempt_id, owner_event_id, stage, request_fingerprint,
+            admitted_at_unix_ms, sent_at_unix_ms, completed_at_unix_ms,
+            status, input_tokens, output_tokens, http_status, error_kind
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)";
+
+/// Writes one attempt row, and refuses to write over one that already exists.
+///
+/// The refusal is the point. An attempt id that already owns a row owns a record of what
+/// that attempt cost, and a second unrelated write under the same id would replace it —
+/// silently, with whatever the second caller happened to know. Recorded spend is not
+/// overwritable, so this stays a plain insert and a duplicate is an error the caller has
+/// to deal with. Advancing an attempt through its own lifecycle is a different operation
+/// with its own function: see [`advance_provider_attempt`].
 fn insert_provider_attempt(
     tx: &rusqlite::Transaction<'_>,
     attempt: &NewProviderAttempt,
 ) -> Result<(), StoreError> {
     tx.execute(
-        "INSERT INTO provider_attempts (
-            attempt_id, owner_event_id, stage, request_fingerprint,
-            admitted_at_unix_ms, sent_at_unix_ms, completed_at_unix_ms,
-            status, input_tokens, output_tokens, http_status, error_kind
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+        PROVIDER_ATTEMPT_COLUMNS,
+        params![
+            attempt.attempt_id,
+            attempt.owner_event_id,
+            attempt.stage.as_str(),
+            attempt.request_fingerprint,
+            attempt.admitted_at_unix_ms as i64,
+            attempt.sent_at_unix_ms.map(|t| t as i64),
+            attempt.completed_at_unix_ms.map(|t| t as i64),
+            attempt.status.as_str(),
+            attempt.input_tokens.map(|t| t as i64),
+            attempt.output_tokens.map(|t| t as i64),
+            attempt.http_status.map(|s| s as i64),
+            attempt.error_kind,
+        ],
+    )?;
+    Ok(())
+}
+
+/// Writes one attempt row, or advances the row this same attempt already owns.
+///
+/// Distinct from [`insert_provider_attempt`], and the distinction is about who is writing.
+/// A duplicate write under an existing attempt id is refused there, because it would
+/// replace a record of real spend with a stranger's guess at it. This function is for the
+/// one writer entitled to update a row: the invocation that created it, carrying the same
+/// attempt through its own lifecycle. An attempt is recorded when it is admitted, again
+/// when its request reaches the wire, and again when it settles, so that a process killed
+/// in between still leaves behind what was true at the time — and those three writes have
+/// to land on one row rather than collide.
+///
+/// Each of those writes knows strictly more than the one before it, which is why `status`
+/// comes from the newest. Every other column is coalesced, so a write that happens not to
+/// carry a fact — a settlement that observed no usage, say — cannot erase one already
+/// recorded. The key includes the invocation token, so this can only ever advance a row
+/// belonging to the same invocation.
+fn advance_provider_attempt(
+    tx: &rusqlite::Transaction<'_>,
+    attempt: &NewProviderAttempt,
+) -> Result<(), StoreError> {
+    tx.execute(
+        &format!(
+            "{PROVIDER_ATTEMPT_COLUMNS}
+        ON CONFLICT(attempt_id) DO UPDATE SET
+            status = excluded.status,
+            sent_at_unix_ms = coalesce(excluded.sent_at_unix_ms, sent_at_unix_ms),
+            completed_at_unix_ms = coalesce(excluded.completed_at_unix_ms, completed_at_unix_ms),
+            input_tokens = coalesce(excluded.input_tokens, input_tokens),
+            output_tokens = coalesce(excluded.output_tokens, output_tokens),
+            http_status = coalesce(excluded.http_status, http_status),
+            error_kind = coalesce(excluded.error_kind, error_kind)"
+        ),
         params![
             attempt.attempt_id,
             attempt.owner_event_id,
@@ -1396,17 +1473,7 @@ impl NewProviderAttempt {
         };
         let owner_event_id = owner_event_id.into();
         Some(Self {
-            // The in-process attempt id is `<invocation id>-att-<n>`, and the
-            // invocation id is a fixed word for a given entry point, so it repeats
-            // on every run. The owner alone is not enough either: a duplicate
-            // delivery is deliberately the *same* event, so two deliveries that each
-            // paid would collide on the owner-scoped key and the second would be
-            // dropped. The token distinguishes invocations, so a repeat appends its
-            // own rows under the one event it belongs to (sr-qqlk).
-            attempt_id: format!(
-                "{owner_event_id}:{invocation_token}:{}",
-                provenance.attempt_id
-            ),
+            attempt_id: attempt_row_key(&owner_event_id, invocation_token, &provenance.attempt_id),
             owner_event_id,
             stage,
             request_fingerprint: request_fingerprint.into(),
@@ -4112,7 +4179,11 @@ impl LedgerStore {
             )?;
         }
         for attempt in attempts {
-            insert_provider_attempt(&tx, attempt)?;
+            // This invocation settling its own attempts, which the sending path may
+            // already have recorded as admitted or sent. Advancing those rows is the
+            // point; a stranger overwriting them is what `insert_provider_attempt`
+            // refuses.
+            advance_provider_attempt(&tx, attempt)?;
         }
         check_work(clock, cx)?;
         self.directory.verify_database_file(&self.file, clock, cx)?;
@@ -4237,6 +4308,61 @@ impl LedgerStore {
         check_stamp(&tx, expected_stamp)?;
 
         insert_provider_attempt(&tx, attempt)?;
+
+        self.directory.verify_database_file(&self.file, clock, cx)?;
+        check_work(clock, cx)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Records that this attempt's request reached the wire, before its response is
+    /// awaited.
+    ///
+    /// This is the one transition that cannot be written after the fact. Everything
+    /// else about an attempt is known once it settles, but whether a request was
+    /// actually sent is only knowable *before* the wait that a kill interrupts — and it
+    /// is the fact that decides whether the provider may already have charged for this
+    /// attempt. It deliberately does not set a completion time: an attempt that reached
+    /// the wire has not finished, and dating its completion would claim otherwise.
+    ///
+    /// Only an `admitted` row is advanced, so this can never drag a settled attempt
+    /// backwards. A missing row is reported rather than ignored, because it means the
+    /// admission write did not land; callers on the sending path are expected to carry
+    /// on regardless, since losing the record must never cost the caller its answer.
+    pub fn mark_provider_attempt_sent(
+        &mut self,
+        clock: EntryClock,
+        cx: &Cx,
+        attempt_id: &str,
+        sent_at_unix_ms: u64,
+        expected_stamp: LedgerStamp,
+    ) -> Result<(), StoreError> {
+        if self.read_only {
+            return Err(StoreError::Permissions);
+        }
+        check_work(clock, cx)?;
+        self.directory.verify_database_file(&self.file, clock, cx)?;
+        self.directory.admit_space()?;
+        refresh_busy_limit(&self.connection, clock, cx)?;
+
+        let tx = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        check_stamp(&tx, expected_stamp)?;
+
+        let rows = tx.execute(
+            "UPDATE provider_attempts SET status = ?1, sent_at_unix_ms = ?2 \
+             WHERE attempt_id = ?3 AND status = ?4",
+            params![
+                AttemptStatus::Sent.as_str(),
+                sent_at_unix_ms as i64,
+                attempt_id,
+                AttemptStatus::Admitted.as_str(),
+            ],
+        )?;
+        if rows == 0 {
+            return Err(StoreError::Missing);
+        }
 
         self.directory.verify_database_file(&self.file, clock, cx)?;
         check_work(clock, cx)?;
@@ -5525,6 +5651,86 @@ pub fn record_ranking_with_attempts(
                 &attempts,
                 stamp,
             )?;
+            Ok(true)
+        },
+    )
+    .map_err(StoreError::Runtime)?;
+    res.value
+}
+
+/// Writes one attempt's admission, before anything has been sent on its behalf.
+///
+/// Called on the sending path rather than at settlement, so that an invocation killed
+/// while waiting on the provider still leaves a row naming the attempt it had started.
+/// A row written here claims only that the attempt was admitted: it carries no sent time
+/// and no usage, because neither exists yet.
+pub fn record_attempt_admission(
+    invocation: &ProcessInvocation,
+    cx: &Cx,
+    access: LedgerAccess,
+    location: LedgerLocation,
+    attempt: &NewProviderAttempt,
+) -> Result<bool, StoreError> {
+    if access == LedgerAccess::Disabled {
+        return Ok(false);
+    }
+    let clock = invocation.clock();
+    let child = cx.clone();
+    let attempt = attempt.clone();
+    let res = run_blocking_leaf(
+        invocation,
+        cx,
+        BlockingLeafKind::Database,
+        false,
+        move || {
+            let mut store = match open_blocking(clock, &child, access, location)? {
+                LedgerOpen::Ready(store) => *store,
+                LedgerOpen::Disabled | LedgerOpen::Missing | LedgerOpen::ReadOnly(_) => {
+                    return Ok(false);
+                }
+            };
+            let stamp = store.stamp();
+            store.record_provider_attempt(clock, &child, &attempt, stamp)?;
+            Ok(true)
+        },
+    )
+    .map_err(StoreError::Runtime)?;
+    res.value
+}
+
+/// Records that an already-admitted attempt's request reached the wire.
+///
+/// This is the transition that cannot be recovered afterwards: after it, the provider may
+/// have been paid for this attempt whatever becomes of this process, and before it, it
+/// certainly has not. See [`LedgerStore::mark_provider_attempt_sent`].
+pub fn record_attempt_reached_wire(
+    invocation: &ProcessInvocation,
+    cx: &Cx,
+    access: LedgerAccess,
+    location: LedgerLocation,
+    attempt_id: &str,
+    sent_at_unix_ms: u64,
+) -> Result<bool, StoreError> {
+    if access == LedgerAccess::Disabled {
+        return Ok(false);
+    }
+    let clock = invocation.clock();
+    let child = cx.clone();
+    let attempt_id = attempt_id.to_string();
+    let res = run_blocking_leaf(
+        invocation,
+        cx,
+        BlockingLeafKind::Database,
+        false,
+        move || {
+            let mut store = match open_blocking(clock, &child, access, location)? {
+                LedgerOpen::Ready(store) => *store,
+                LedgerOpen::Disabled | LedgerOpen::Missing | LedgerOpen::ReadOnly(_) => {
+                    return Ok(false);
+                }
+            };
+            let stamp = store.stamp();
+            store.mark_provider_attempt_sent(clock, &child, &attempt_id, sent_at_unix_ms, stamp)?;
             Ok(true)
         },
     )

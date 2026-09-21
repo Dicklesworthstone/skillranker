@@ -7,7 +7,7 @@ use super::CanonicalOrigin;
 use super::OriginScopedCredential;
 use super::admission::{
     AdmissionError, AdmissionRefusal, AttemptAdmission, AttemptBudget, AttemptFailure,
-    AttemptPermit, AttemptProvenance, CostReceipt, RankingStage, SentAttempt,
+    AttemptJournal, AttemptPermit, AttemptProvenance, CostReceipt, RankingStage, SentAttempt,
 };
 use super::client::{JevTransport, TransportError, TransportErrorKind};
 use super::codec::{Request, Response, Usage};
@@ -15,6 +15,7 @@ use crate::privacy::NetworkConsent;
 use crate::runtime::EntryClock;
 use asupersync::Cx;
 use std::fmt;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
 /// No raw provider header text survives parsing.
@@ -191,6 +192,15 @@ pub struct RetrySession<'a> {
     admission: AttemptAdmission,
     wide: Option<ModelObservation>,
     last_model: Option<ModelObservation>,
+    /// Where each attempt's admission and reached-wire moments are written down while
+    /// they happen, so that a kill mid-request still leaves evidence of a possible
+    /// charge. Absent when nothing durable is available to write to, which changes what
+    /// is recorded and never what is sent.
+    ///
+    /// Shared rather than borrowed: an exclusive borrow held for the session's lifetime
+    /// would conflict with every other use of the session inside the retry loop, and the
+    /// journal has to be reachable from the send callback as well as from the loop.
+    journal: Option<Arc<Mutex<dyn AttemptJournal + Send + 'a>>>,
 }
 
 impl<'a> RetrySession<'a> {
@@ -214,7 +224,18 @@ impl<'a> RetrySession<'a> {
             admission: AttemptAdmission::new(budget, clock, invocation_id)?,
             wide: None,
             last_model: None,
+            journal: None,
         })
+    }
+
+    /// Attaches a durable record of attempt admission and reached-wire transitions.
+    ///
+    /// Separate from [`Self::new`] because a session is perfectly usable without one:
+    /// every caller that only needs the answer can leave it off, and only a caller that
+    /// wants crash evidence pays for it.
+    pub fn with_journal(mut self, journal: Arc<Mutex<dyn AttemptJournal + Send + 'a>>) -> Self {
+        self.journal = Some(journal);
+        self
     }
 
     pub fn receipt(&self) -> CostReceipt {
@@ -277,8 +298,17 @@ impl<'a> RetrySession<'a> {
                 .admission
                 .admit(stage, &self.origin)
                 .map_err(|kind| self.error(RetryErrorKind::Admission(kind), last_transport))?;
+            // Written before the send, not after it: an attempt recorded only on
+            // settlement is an attempt that vanishes if this process is killed while
+            // waiting, which is the case the record exists for.
+            if let Some(journal) = self.journal.as_ref()
+                && let Ok(mut journal) = journal.lock()
+            {
+                journal.admitted(permit.attempt_id().as_str(), stage, permit.admitted_at());
+            }
             let mut flight = AttemptFlight {
                 admission: &mut self.admission,
+                journal: self.journal.clone(),
                 permit: Some(permit),
                 sent: None,
             };
@@ -375,12 +405,13 @@ impl<'a> RetrySession<'a> {
 
 /// Synchronous finalization also protects cancellation by dropping the future:
 /// once entered, unresolved work is unknown cost, never free or left active.
-struct AttemptFlight<'a> {
+struct AttemptFlight<'a, 'j> {
     admission: &'a mut AttemptAdmission,
+    journal: Option<Arc<Mutex<dyn AttemptJournal + Send + 'j>>>,
     permit: Option<AttemptPermit>,
     sent: Option<SentAttempt>,
 }
-impl AttemptFlight<'_> {
+impl AttemptFlight<'_, '_> {
     fn start(&mut self) -> Result<(), TransportError> {
         let error = || TransportError {
             kind: TransportErrorKind::Protocol,
@@ -394,6 +425,15 @@ impl AttemptFlight<'_> {
             .mark_sent()
             .map_err(|_| error())?;
         self.admission.record_sent(&sent).map_err(|_| error())?;
+        // This callback runs at the moment the request goes on the wire, which is the
+        // last instant at which "a charge is now possible" can still be written down.
+        // The transport awaits its response immediately afterwards, and a kill during
+        // that wait leaves nothing else behind.
+        if let Some(journal) = self.journal.as_ref()
+            && let Ok(mut journal) = journal.lock()
+        {
+            journal.reached_wire(sent.attempt_id().as_str(), sent.sent_at());
+        }
         self.sent = Some(sent);
         Ok(())
     }
@@ -417,7 +457,7 @@ impl AttemptFlight<'_> {
         }
     }
 }
-impl Drop for AttemptFlight<'_> {
+impl Drop for AttemptFlight<'_, '_> {
     fn drop(&mut self) {
         let _ = self.finish(None, None);
     }

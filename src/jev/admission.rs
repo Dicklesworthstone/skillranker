@@ -664,6 +664,34 @@ const fn transport_failure_kind(kind: TransportErrorKind) -> &'static str {
     }
 }
 
+/// Somewhere durable to note an attempt's two irreversible moments while they happen.
+///
+/// [`AttemptProvenance`] lives in memory and is written out when an attempt settles,
+/// which is sufficient for every ending the process survives. It is exactly wrong for
+/// the ending that matters most: if the process is killed while a request is on the
+/// wire, the provider may already have done the work and may already have charged for
+/// it, and nothing recorded after the kill can establish that. The only record that
+/// survives is one written before the wait.
+///
+/// Implementations are therefore called at two points, both before anything is awaited:
+/// when an attempt is admitted, and when its request reaches the wire. The distinction
+/// is the whole value of the journal — an attempt that was admitted and never sent
+/// cannot have been charged, while one that reached the wire may have been, and after a
+/// kill those two look identical unless someone wrote down which happened.
+///
+/// A journal must never fail an invocation. Losing the record costs evidence; refusing
+/// the ranking costs the user the answer they asked for, which is worse. Implementations
+/// swallow their own errors and the caller ignores the outcome.
+pub trait AttemptJournal {
+    /// An attempt has been admitted. Nothing has been sent for it yet, so no charge is
+    /// possible on its behalf.
+    fn admitted(&mut self, attempt_id: &str, stage: RankingStage, admitted_at: MonotonicMillis);
+
+    /// This attempt's request has reached the wire. A charge is possible from here on,
+    /// whatever happens to this process.
+    fn reached_wire(&mut self, attempt_id: &str, sent_at: MonotonicMillis);
+}
+
 /// One attempt's bounded provenance: who owned it, which stage it served, when
 /// it moved, and what it cost. Aggregate counters cannot answer "which attempt
 /// incurred this token spend", which is what recording attempt ownership needs.

@@ -68,6 +68,7 @@ use crate::roster::retrieval::{
 use crate::roster::{InvocationKind, LoadTarget, Visibility};
 use crate::runtime::{EntryClock, ProcessInvocation, admit_publication};
 use crate::scoring::{Input as ScoringInput, Ranking, Weights, rank};
+use std::sync::{Arc, Mutex};
 
 mod cass_source;
 mod roster;
@@ -218,6 +219,116 @@ struct Progress {
 /// Everything here is captured before the first send and refreshed after each
 /// stage settles, because the error itself unwinds past the point where the
 /// session, roster and context are still in scope.
+/// Writes each attempt's admission and reached-wire moment into the ledger as it happens.
+///
+/// The invocation's own [`crate::jev::AttemptProvenance`] already describes every attempt,
+/// and for every ending this process survives that is the better record: it is complete,
+/// and it is written once. This exists for the ending the process does not survive. If it
+/// is killed while a request is on the wire, the provider may already have done the work
+/// and charged for it, and no record written afterwards can establish that. Only a write
+/// that happened before the wait survives it.
+///
+/// Both transitions are therefore written on the sending path, ahead of anything being
+/// awaited, and both are best effort. A journal that cannot write loses evidence; one that
+/// propagated its errors would cost the user the recommendation they asked for, which is
+/// the worse failure. Every outcome here is discarded deliberately.
+struct LedgerAttemptJournal<'a> {
+    invocation: &'a ProcessInvocation,
+    cx: Cx,
+    location: crate::storage::LedgerLocation,
+    owner_event_id: String,
+    invocation_token: String,
+    /// One reading of the wall clock at process entry, so that the monotonic instants the
+    /// journal is handed become wall-clock times consistent with each other.
+    entry_wall_clock_unix_ms: u64,
+    wide_fingerprint: String,
+    /// Not known when the session is built: the rerank request is derived from the wide
+    /// answer. The pipeline publishes it here once it exists, through a lock rather than a
+    /// second borrow, because by then the session holds this journal.
+    rerank_fingerprint: Arc<Mutex<Option<String>>>,
+}
+
+impl LedgerAttemptJournal<'_> {
+    /// The request fingerprint for a stage, or `None` when this stage has no durable home
+    /// in the ranking-attempt table or its request is not yet known.
+    fn stage_row(&self, stage: RankingStage) -> Option<(crate::storage::CandidateStage, String)> {
+        match stage {
+            RankingStage::Wide => Some((
+                crate::storage::CandidateStage::Wide,
+                self.wide_fingerprint.clone(),
+            )),
+            RankingStage::Rerank => self
+                .rerank_fingerprint
+                .lock()
+                .ok()
+                .and_then(|held| held.clone())
+                .map(|fingerprint| (crate::storage::CandidateStage::Rerank, fingerprint)),
+            // A breaker probe and an evaluation batch attempt are not ranking stages, and
+            // filing either as one would attribute its cost to a ranking nobody asked for.
+            RankingStage::Probe | RankingStage::Evaluation => None,
+        }
+    }
+}
+
+impl crate::jev::admission::AttemptJournal for LedgerAttemptJournal<'_> {
+    fn admitted(
+        &mut self,
+        attempt_id: &str,
+        stage: RankingStage,
+        admitted_at: crate::limits::MonotonicMillis,
+    ) {
+        let Some((stage, request_fingerprint)) = self.stage_row(stage) else {
+            return;
+        };
+        let attempt = crate::storage::NewProviderAttempt {
+            attempt_id: crate::storage::ledger::attempt_row_key(
+                &self.owner_event_id,
+                &self.invocation_token,
+                attempt_id,
+            ),
+            owner_event_id: self.owner_event_id.clone(),
+            stage,
+            request_fingerprint,
+            admitted_at_unix_ms: self
+                .entry_wall_clock_unix_ms
+                .saturating_add(admitted_at.as_millis()),
+            // Nothing has been sent and nothing has settled, so both stay absent rather
+            // than being dated now. An admitted attempt cannot have been charged for.
+            sent_at_unix_ms: None,
+            completed_at_unix_ms: None,
+            status: crate::storage::ledger::AttemptStatus::Admitted,
+            input_tokens: None,
+            output_tokens: None,
+            http_status: None,
+            error_kind: None,
+        };
+        let _ = crate::storage::ledger::record_attempt_admission(
+            self.invocation,
+            &self.cx,
+            crate::storage::LedgerAccess::ExistingOnly,
+            self.location.clone(),
+            &attempt,
+        );
+    }
+
+    fn reached_wire(&mut self, attempt_id: &str, sent_at: crate::limits::MonotonicMillis) {
+        let key = crate::storage::ledger::attempt_row_key(
+            &self.owner_event_id,
+            &self.invocation_token,
+            attempt_id,
+        );
+        let _ = crate::storage::ledger::record_attempt_reached_wire(
+            self.invocation,
+            &self.cx,
+            crate::storage::LedgerAccess::ExistingOnly,
+            self.location.clone(),
+            &key,
+            self.entry_wall_clock_unix_ms
+                .saturating_add(sent_at.as_millis()),
+        );
+    }
+}
+
 struct FailureRecording {
     ledger_dir: Option<PathBuf>,
     workspace_root: String,
@@ -2201,9 +2312,31 @@ async fn rank_once(
     // that dies leaves this row behind as the only evidence that it ran and may have
     // incurred cost. A reader treats a `generated` row older than the invocation
     // deadline as died in flight, with unknown cost rather than none.
-    if let Some(recording) = progress.failed_recording.as_ref() {
-        record_inflight_ranking(invocation, cx, recording);
-    }
+    // A journal is possible only once that row is durably in place, because every attempt
+    // row references it. When the row did not land there is nothing to attach attempts to,
+    // and the invocation proceeds with no durable per-attempt record rather than failing.
+    let rerank_fingerprint_for_journal: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    let attempt_journal: Option<Arc<Mutex<dyn crate::jev::AttemptJournal + Send + '_>>> = progress
+        .failed_recording
+        .as_ref()
+        .filter(|recording| record_inflight_ranking(invocation, cx, recording))
+        .map(
+            |recording| -> Arc<Mutex<dyn crate::jev::AttemptJournal + Send + '_>> {
+                Arc::new(Mutex::new(LedgerAttemptJournal {
+                    invocation,
+                    cx: cx.clone(),
+                    location: match recording.ledger_dir.as_deref() {
+                        Some(dir) => crate::storage::LedgerLocation::Directory(dir.to_path_buf()),
+                        None => crate::storage::LedgerLocation::Platform,
+                    },
+                    owner_event_id: recording.event_id.clone(),
+                    invocation_token: invocation_token().to_string(),
+                    entry_wall_clock_unix_ms: entry_wall_clock_unix_ms(clock),
+                    wide_fingerprint: wide_req_fp.to_hex(),
+                    rerank_fingerprint: Arc::clone(&rerank_fingerprint_for_journal),
+                }))
+            },
+        );
 
     let mut cached_rerank: Option<Response> = None;
     let wide_fresh = cached.is_none();
@@ -2263,8 +2396,8 @@ async fn rank_once(
                     )),
                     _ => None,
                 };
-            let active = session.insert(
-                RetrySession::new(
+            let active = session.insert({
+                let opened = RetrySession::new(
                     client,
                     credential,
                     *clock,
@@ -2278,8 +2411,14 @@ async fn rank_once(
                         kind.as_str(),
                         "The attempt allowance could not be opened",
                     )
-                })?,
-            );
+                })?;
+                // Attached here rather than passed to `new`, because a session is usable
+                // without one: only a caller that wants crash evidence pays for it.
+                match attempt_journal.as_ref() {
+                    Some(journal) => opened.with_journal(Arc::clone(journal)),
+                    None => opened,
+                }
+            });
             let stage = provider_stage(
                 active,
                 RankingStage::Wide,
@@ -2477,6 +2616,13 @@ async fn rank_once(
         )
     });
     let rerank_req_fp: Option<String> = rerank_fp.map(|fp| fp.to_hex());
+    // Published before any rerank attempt can be admitted, so a rerank attempt's durable
+    // row names the request it was made for rather than going unrecorded.
+    if let Some(fingerprint) = rerank_req_fp.as_ref()
+        && let Ok(mut held) = rerank_fingerprint_for_journal.lock()
+    {
+        *held = Some(fingerprint.clone());
+    }
     let rerank_response = match cached_rerank.take() {
         Some(response) => {
             progress.metrics.rerank_hit = true;
@@ -3881,7 +4027,14 @@ pub(crate) fn derive_request_event_id(context: &NormalizedContext) -> String {
 /// row does not change the ranking. The row carries no snapshot and no candidates,
 /// because neither exists yet, and no attempts, because none have been admitted —
 /// what it establishes is that an invocation with this identity was in flight.
-fn record_inflight_ranking(invocation: &ProcessInvocation, cx: &Cx, recording: &FailureRecording) {
+/// Returns whether the row was durably written, which decides whether per-attempt rows
+/// can follow it: `provider_attempts.owner_event_id` references this event, so without
+/// it there is nothing for an attempt to belong to.
+fn record_inflight_ranking(
+    invocation: &ProcessInvocation,
+    cx: &Cx,
+    recording: &FailureRecording,
+) -> bool {
     let event = crate::storage::NewRankingEvent {
         event_id: recording.event_id.clone(),
         verified_delivery_key: None,
@@ -3904,16 +4057,21 @@ fn record_inflight_ranking(invocation: &ProcessInvocation, cx: &Cx, recording: &
         Some(dir) => crate::storage::LedgerLocation::Directory(dir.to_path_buf()),
         None => crate::storage::LedgerLocation::Platform,
     };
-    let _ = crate::storage::record_ranking_with_attempts(
-        invocation,
-        cx,
-        crate::storage::LedgerAccess::ExistingOnly,
-        location,
-        &event,
-        &[],
-        None,
-        &[],
-    );
+    // `Ok(false)` means a store was not available to write to, which is not a recorded
+    // row: only `Ok(true)` establishes that an attempt may now reference this event.
+    matches!(
+        crate::storage::record_ranking_with_attempts(
+            invocation,
+            cx,
+            crate::storage::LedgerAccess::ExistingOnly,
+            location,
+            &event,
+            &[],
+            None,
+            &[],
+        ),
+        Ok(true)
+    )
 }
 
 /// Record an unavailable event owning the attempts a failed run already made.
@@ -4010,6 +4168,41 @@ impl AttemptEvidence<'_> {
 ///
 /// The wall-clock base is derived from one reading minus the elapsed monotonic
 /// time, so every attempt time in this event shares a single conversion.
+/// Distinguishes this invocation's attempt rows from another invocation's under the same
+/// event, and does so identically every time it is asked.
+///
+/// A duplicate delivery is deliberately the *same* event, so the owner alone cannot key an
+/// attempt row; the invocation has to contribute something too. Entry time and process id
+/// together are enough — two deliveries are separate processes, and a shared start
+/// millisecond is still separated by the pid.
+///
+/// It is computed once per process on purpose. The rows for one attempt are written more
+/// than once, first on the sending path and again at settlement, and the entry time these
+/// writers would each derive from the monotonic clock can differ by a millisecond. A token
+/// recomputed per writer would therefore key the same attempt differently and leave two
+/// rows where there was one attempt, which is exactly the double-counting the key exists
+/// to prevent. Nothing in it is private or externally meaningful.
+fn invocation_token() -> &'static str {
+    static TOKEN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    TOKEN.get_or_init(|| format!("{:x}-{}", wall_clock_ms(), std::process::id()))
+}
+
+/// The wall-clock time this process entered, from one reading, shared by everything that
+/// turns a monotonic instant into a stored timestamp.
+///
+/// An attempt's three timestamps are written by two different callers — the sending path
+/// records when it was admitted and when its request reached the wire, settlement records
+/// when it finished. Each deriving its own base from `wall_clock_ms() - clock.now()` gives
+/// answers that can differ by a millisecond, which is enough to make one attempt's stored
+/// times inconsistent with each other and, in a fast failure, to date its completion before
+/// its send. Taking the base once removes the class of problem rather than the symptom.
+///
+/// The first caller's reading wins, which is also the closest one to actual entry.
+fn entry_wall_clock_unix_ms(clock: &EntryClock) -> u64 {
+    static ENTRY: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *ENTRY.get_or_init(|| wall_clock_ms().saturating_sub(clock.now().as_millis()))
+}
+
 fn attempt_evidence<'a>(
     session: Option<&'a RetrySession<'_>>,
     wide_fingerprint: &RequestFingerprint,
@@ -4021,16 +4214,13 @@ fn attempt_evidence<'a>(
     if attempts.is_empty() {
         return None;
     }
-    let entry_wall_clock_unix_ms = wall_clock_ms().saturating_sub(clock.now().as_millis());
+    let entry_wall_clock_unix_ms = entry_wall_clock_unix_ms(clock);
     Some(AttemptEvidence {
         attempts,
         wide_fingerprint: wide_fingerprint.to_hex(),
         rerank_fingerprint: rerank_fingerprint.map(str::to_owned),
         entry_wall_clock_unix_ms,
-        // Entry time and process id together: two deliveries of one event are
-        // separate processes, and a shared start millisecond is still separated by
-        // the pid. Nothing here is private or externally meaningful.
-        invocation_token: format!("{entry_wall_clock_unix_ms:x}-{}", std::process::id()),
+        invocation_token: invocation_token().to_string(),
     })
 }
 

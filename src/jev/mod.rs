@@ -15,8 +15,9 @@ pub mod wide;
 
 pub use admission::{
     AdmissionError, AdmissionRefusal, AttemptAdmission, AttemptBudget, AttemptFailure, AttemptId,
-    AttemptOutcome, AttemptPermit, AttemptProvenance, CostReceipt, DEFAULT_GUARD_GENERATION,
-    DEFAULT_MIN_ATTEMPT_RESERVE_MS, DiscardedAttempt, RankingStage, SentAttempt,
+    AttemptJournal, AttemptOutcome, AttemptPermit, AttemptProvenance, CostReceipt,
+    DEFAULT_GUARD_GENERATION, DEFAULT_MIN_ATTEMPT_RESERVE_MS, DiscardedAttempt, RankingStage,
+    SentAttempt,
 };
 pub use codec::{
     Answer, ChoiceAnswer, CodecError, MAX_CHOICE_OPTIONS, MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES,

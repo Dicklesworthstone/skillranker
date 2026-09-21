@@ -284,3 +284,96 @@ fn an_event_with_no_attempts_records_none() {
     assert_eq!(f.attempt_count("evt-follower"), 0);
     assert!(inv.shutdown());
 }
+
+#[test]
+fn an_invocation_may_advance_its_own_attempt_through_its_lifecycle() {
+    // The companion to `an_attempt_id_owns_exactly_one_row`, and the reason that case has
+    // to be about *strangers* rather than about second writes as such. One attempt is
+    // deliberately recorded more than once — admitted before anything is sent, sent when
+    // its request reaches the wire, settled when it returns — so that a process killed
+    // between those points still leaves behind what was true at the time. Those writes
+    // have to land on the one row.
+    //
+    // What must never happen is the opposite mistake: a later write erasing a fact an
+    // earlier one recorded. So the cost observed at settlement is kept, and a settlement
+    // that observed nothing may not blank out what was already known.
+    let (inv, cx) = test_invocation();
+    let mut f = Fixture::new("advance", &inv, &cx).with_event(&inv, &cx, "evt-1");
+
+    let mut admitted = attempt_fixture("att-1", "evt-1");
+    admitted.status = AttemptStatus::Admitted;
+    admitted.sent_at_unix_ms = None;
+    let stamp = f.store.stamp();
+    f.store
+        .record_provider_attempt(inv.clock(), &cx, &admitted, stamp)
+        .expect("the admission write is the first record of this attempt");
+
+    // Reaching the wire advances the same row and does not date its completion.
+    let stamp = f.store.stamp();
+    f.store
+        .mark_provider_attempt_sent(inv.clock(), &cx, "att-1", 1_700_000_002, stamp)
+        .expect("an admitted attempt can be marked sent");
+    let (_, _, status) = f.tokens("att-1");
+    assert_eq!(status, "sent");
+    assert_eq!(f.attempt_count("evt-1"), 1, "still one row, not two");
+
+    // Settling it records what it cost, on that same row.
+    let mut settled = attempt_fixture("att-1", "evt-1");
+    settled.status = AttemptStatus::Completed;
+    settled.completed_at_unix_ms = Some(1_700_000_003);
+    settled.input_tokens = Some(120);
+    settled.output_tokens = Some(35);
+    let stamp = f.store.stamp();
+    f.store
+        .record_ranking_event_with_attempts(
+            inv.clock(),
+            &cx,
+            &event_fixture("evt-1"),
+            &[],
+            None,
+            std::slice::from_ref(&settled),
+            stamp,
+        )
+        .expect("this invocation settles its own attempt");
+
+    assert_eq!(
+        f.attempt_count("evt-1"),
+        1,
+        "three lifecycle writes left more than one row for one attempt"
+    );
+    let (input, output, status) = f.tokens("att-1");
+    assert_eq!(status, "completed");
+    assert_eq!(input, Some(120), "the settled cost was not recorded");
+    assert_eq!(output, Some(35));
+
+    // A further write that knows nothing about usage must not erase it.
+    let mut blank = attempt_fixture("att-1", "evt-1");
+    blank.status = AttemptStatus::Completed;
+    blank.input_tokens = None;
+    blank.output_tokens = None;
+    let stamp = f.store.stamp();
+    f.store
+        .record_ranking_event_with_attempts(
+            inv.clock(),
+            &cx,
+            &event_fixture("evt-1"),
+            &[],
+            None,
+            std::slice::from_ref(&blank),
+            stamp,
+        )
+        .expect("recording again is permitted");
+    let (input, output, _) = f.tokens("att-1");
+    assert_eq!(
+        input,
+        Some(120),
+        "recorded spend was erased by a later write"
+    );
+    assert_eq!(
+        output,
+        Some(35),
+        "recorded spend was erased by a later write"
+    );
+
+    assert!(inv.shutdown());
+}
