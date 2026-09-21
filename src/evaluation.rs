@@ -462,6 +462,29 @@ mod json_strip_parser {
     }
 }
 
+/// Bound the read itself: an unterminated line must not allocate beyond the
+/// remaining dataset allowance. One lookahead byte distinguishes exact EOF
+/// from oversized input. Count blank lines and delimiters against the same cap.
+fn read_bounded_line<R: BufRead>(
+    reader: &mut R,
+    line: &mut String,
+    total_bytes: &mut usize,
+    max_bytes: usize,
+) -> Result<usize, EvaluationError> {
+    line.clear();
+    let remaining = max_bytes.saturating_sub(*total_bytes);
+    let mut bounded = std::io::Read::take(reader, remaining.saturating_add(1) as u64);
+    let read = bounded.read_line(line)?;
+    *total_bytes = total_bytes.saturating_add(read);
+    if *total_bytes > max_bytes {
+        return Err(EvaluationError::OversizedDataset {
+            len: *total_bytes,
+            max: max_bytes,
+        });
+    }
+    Ok(read)
+}
+
 /// Stream evaluation case records from a reader with size, record count, and depth bounds.
 pub fn parse_case_records_streaming<R: BufRead>(
     mut reader: R,
@@ -470,14 +493,13 @@ pub fn parse_case_records_streaming<R: BufRead>(
     let mut total_bytes = 0usize;
     let mut line = String::new();
 
-    while reader.read_line(&mut line)? > 0 {
-        total_bytes = total_bytes.saturating_add(line.len());
-        if total_bytes > EVALUATION_DATASET_BYTES.max() {
-            return Err(EvaluationError::OversizedDataset {
-                len: total_bytes,
-                max: EVALUATION_DATASET_BYTES.max(),
-            });
-        }
+    while read_bounded_line(
+        &mut reader,
+        &mut line,
+        &mut total_bytes,
+        EVALUATION_DATASET_BYTES.max(),
+    )? > 0
+    {
         let trimmed = line.trim();
         if trimmed.is_empty() {
             line.clear();
@@ -510,14 +532,13 @@ pub fn parse_labels_streaming<R: BufRead>(
     let mut total_bytes = 0usize;
     let mut line = String::new();
 
-    while reader.read_line(&mut line)? > 0 {
-        total_bytes = total_bytes.saturating_add(line.len());
-        if total_bytes > EVALUATION_DATASET_BYTES.max() {
-            return Err(EvaluationError::OversizedDataset {
-                len: total_bytes,
-                max: EVALUATION_DATASET_BYTES.max(),
-            });
-        }
+    while read_bounded_line(
+        &mut reader,
+        &mut line,
+        &mut total_bytes,
+        EVALUATION_DATASET_BYTES.max(),
+    )? > 0
+    {
         let trimmed = line.trim();
         if trimmed.is_empty() {
             line.clear();
@@ -893,5 +914,65 @@ pub fn compute_metrics(resolved: &[ResolvedEvaluationCase]) -> EvaluationMetrics
         positive_suggestion_rate,
         needless_suggestion_rate,
         false_abstention_rate,
+    }
+}
+
+#[cfg(test)]
+mod streaming_bounds_tests {
+    use super::*;
+    use std::io::Cursor;
+
+    #[test]
+    fn unterminated_line_stops_after_one_lookahead_byte() {
+        let mut input = Cursor::new(b"0123456789abcdef");
+        let mut line = String::new();
+        let mut total = 0;
+        assert!(matches!(
+            read_bounded_line(&mut input, &mut line, &mut total, 8),
+            Err(EvaluationError::OversizedDataset { len: 9, max: 8 })
+        ));
+        assert_eq!(input.position(), 9);
+        assert_eq!(line.len(), 9);
+    }
+
+    #[test]
+    fn exact_limit_accepts_final_line_and_counts_blank_lines() {
+        for bytes in [b"\n1234567".as_slice(), b"\n123456\n".as_slice()] {
+            let mut input = Cursor::new(bytes);
+            let mut line = String::new();
+            let mut total = 0;
+            assert_eq!(
+                read_bounded_line(&mut input, &mut line, &mut total, 8).unwrap(),
+                1
+            );
+            assert_eq!(
+                read_bounded_line(&mut input, &mut line, &mut total, 8).unwrap(),
+                7
+            );
+            assert_eq!(
+                read_bounded_line(&mut input, &mut line, &mut total, 8).unwrap(),
+                0
+            );
+            assert_eq!(total, 8);
+        }
+    }
+
+    #[test]
+    fn consumed_lines_reduce_the_next_line_allowance() {
+        let mut input = Cursor::new(b"\n\n123456789abcdef");
+        let mut line = String::new();
+        let mut total = 0;
+        for _ in 0..2 {
+            assert_eq!(
+                read_bounded_line(&mut input, &mut line, &mut total, 8).unwrap(),
+                1
+            );
+        }
+        assert!(matches!(
+            read_bounded_line(&mut input, &mut line, &mut total, 8),
+            Err(EvaluationError::OversizedDataset { len: 9, max: 8 })
+        ));
+        assert_eq!(line.len(), 7);
+        assert_eq!(input.position(), 9);
     }
 }
