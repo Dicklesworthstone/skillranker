@@ -23,6 +23,7 @@ use crate::identity::{
 use serde_json::Value;
 use std::collections::{BTreeMap, HashSet};
 
+mod association;
 mod dispatch;
 
 /// Default maximum characters for tool argument or result excerpts.
@@ -189,6 +190,17 @@ fn associate_tool_event_iter<'a>(
                     })
                     .unwrap_or((None, ()));
 
+                // Combined invocation/result records need the same error
+                // checks as separately delivered results. Ignoring an inline
+                // error would manufacture a successful load.
+                let (res_summary, error_lines) = tool
+                    .result
+                    .as_ref()
+                    .map(|r| {
+                        let (summary, errors) = summarize_tool_result(r.as_str(), max_excerpt_chars);
+                        (Some(summary), errors)
+                    })
+                    .unwrap_or((None, Vec::new()));
                 let idx = associated.len();
                 associated.push(AssociatedToolCall {
                     call_id: tool.call_id.clone(),
@@ -202,15 +214,31 @@ fn associate_tool_event_iter<'a>(
                     raw_arguments: tool.arguments.clone(),
                     raw_result: tool.result.clone(),
                     arguments_summary: args_summary.map(PrivateText::new),
-                    result_summary: None,
-                    error_lines: Vec::new(),
+                    result_summary: res_summary.map(PrivateText::new),
+                    error_lines,
                 });
 
+                let completed = tool.result.is_some()
+                    && matches!(tool.status, ToolStatus::Succeeded | ToolStatus::Failed);
                 if let Some(cid) = &tool.call_id {
-                    pending_by_call_id.insert((scope, cid), idx);
+                    association::register(
+                        &mut pending_by_call_id,
+                        (scope, cid),
+                        idx,
+                        &mut associated,
+                        false,
+                        completed,
+                    );
                 } else {
                     // A name is only a sequential fallback within this turn.
-                    pending_by_name.insert((scope, event.turn_id.as_ref(), tool_name_str), idx);
+                    association::register(
+                        &mut pending_by_name,
+                        (scope, event.turn_id.as_ref(), tool_name_str),
+                        idx,
+                        &mut associated,
+                        true,
+                        completed,
+                    );
                 }
             }
             EventKind::ToolResult => {
@@ -223,10 +251,14 @@ fn associate_tool_event_iter<'a>(
                     })
                     .unwrap_or((None, Vec::new()));
 
-                let matched_idx = if let Some(cid) = &tool.call_id {
-                    pending_by_call_id.remove(&(scope, cid))
+                let (matched_idx, ambiguous) = if let Some(cid) = &tool.call_id {
+                    association::take(&mut pending_by_call_id, &(scope, cid), &mut associated)
                 } else {
-                    pending_by_name.remove(&(scope, event.turn_id.as_ref(), tool_name_str))
+                    association::take(
+                        &mut pending_by_name,
+                        &(scope, event.turn_id.as_ref(), tool_name_str),
+                        &mut associated,
+                    )
                 };
 
                 if let Some(idx) = matched_idx {
@@ -249,7 +281,11 @@ fn associate_tool_event_iter<'a>(
                         agent_id: event.agent_id.clone(),
                         branch_id: event.branch_id.clone(),
                         tool_name: tool.name.clone(),
-                        status: tool.status,
+                        status: if ambiguous {
+                            ToolStatus::Unknown
+                        } else {
+                            tool.status
+                        },
                         raw_arguments: tool.arguments.clone(),
                         raw_result: tool.result.clone(),
                         arguments_summary: None,
