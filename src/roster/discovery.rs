@@ -609,7 +609,11 @@ impl Discovery {
                     // Inspect every named skill-file slot, including FIFOs,
                     // sockets and directories. Silently ignoring an invalid
                     // higher-priority slot could promote a shadowed loser.
-                    _ if name == planned.spec.skill_file => {
+                    // A root-level directory called SKILL.md is a skill name,
+                    // however: its own SKILL.md is the file slot to inspect.
+                    _ if name == planned.spec.skill_file
+                        && !(relative.as_os_str().is_empty() && matches!(kind, Type::Directory)) =>
+                    {
                         self.push_candidate(
                             planned,
                             directory.as_fd(),
@@ -670,7 +674,15 @@ impl Discovery {
             self.note(Diagnostic::EntryUnreadable(planned.spec.source.clone()));
             return;
         };
-        if (SFlag::from_bits_truncate(stat.st_mode) & SFlag::S_IFMT) != SFlag::S_IFREG {
+        let kind = SFlag::from_bits_truncate(stat.st_mode) & SFlag::S_IFMT;
+        if kind != SFlag::S_IFREG {
+            if via_symlink && relative.as_os_str().is_empty() && kind == SFlag::S_IFDIR {
+                // A root-level SKILL.md link may hide a directory bearing that
+                // callable name, not merely an unsupported root-level file.
+                self.note(Diagnostic::SymlinkedDirectorySkipped(
+                    planned.spec.source.clone(),
+                ));
+            }
             self.reject(planned, full, CandidateProblem::NotRegularFile);
             return;
         }
