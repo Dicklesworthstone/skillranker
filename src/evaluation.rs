@@ -8,11 +8,13 @@
 //! 5. Null-key and unmatched case preservation (never silently dropped or fabricated).
 //! 6. Independent metrics computation with honest denominators and explicit unknown/unjudged tracking.
 
+pub mod batch;
 pub mod design_weighted;
 pub mod numerics;
 pub mod sampling;
 pub mod stratified;
 
+pub use batch::*;
 pub use design_weighted::*;
 pub use numerics::{
     BACKEND_PROVENANCE, BackendProvenance, BetaDist, NumericsError, clopper_pearson_ci,
