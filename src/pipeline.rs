@@ -2168,29 +2168,32 @@ async fn rank_once(
     // Armed before any send. A run that fails after paying for an attempt unwinds
     // past every recording site, so what an unavailable event needs is captured
     // here, while the context that names it is still in scope.
-    progress.failed_recording = Some(FailureRecording {
-        ledger_dir: args.ledger_dir.clone(),
-        workspace_root: normalized_context.workspace_root.as_str().to_string(),
-        session_id: normalized_context
-            .session_id
-            .as_ref()
-            .map_or_else(|| "session-0".to_string(), |s| s.as_str().to_string()),
-        agent_branch: normalized_context
-            .branch_id
-            .as_ref()
-            .map_or_else(|| "main".to_string(), |b| b.as_str().to_string()),
-        mode_channel: mode_channel.to_string(),
-        policy_version: "ranking-v1",
-        event_id: normalized_context
-            .current_request
-            .event_id
-            .as_ref()
-            .map_or_else(
-                || derive_request_event_id(&normalized_context),
-                |e| e.as_str().to_string(),
-            ),
-        attempts: Vec::new(),
-    });
+    // The in-flight and failure paths share this optional recording state. Do
+    // not even open an existing ledger when the user's effect policy disables it.
+    progress.failed_recording =
+        matches!(gate.ledger(), StoreAccess::Enabled).then(|| FailureRecording {
+            ledger_dir: args.ledger_dir.clone(),
+            workspace_root: normalized_context.workspace_root.as_str().to_string(),
+            session_id: normalized_context
+                .session_id
+                .as_ref()
+                .map_or_else(|| "session-0".to_string(), |s| s.as_str().to_string()),
+            agent_branch: normalized_context
+                .branch_id
+                .as_ref()
+                .map_or_else(|| "main".to_string(), |b| b.as_str().to_string()),
+            mode_channel: mode_channel.to_string(),
+            policy_version: "ranking-v1",
+            event_id: normalized_context
+                .current_request
+                .event_id
+                .as_ref()
+                .map_or_else(
+                    || derive_request_event_id(&normalized_context),
+                    |e| e.as_str().to_string(),
+                ),
+            attempts: Vec::new(),
+        });
     // Written before the first send, so an invocation killed while waiting on the
     // provider is not simply absent from the ledger. `unavailable` and `generated`
     // are the truth at this moment: work has started, nothing has been decided, and

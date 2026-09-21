@@ -357,6 +357,35 @@ impl Provider {
 }
 
 #[test]
+fn disabled_ledger_records_neither_success_nor_failure() {
+    for flag in ["--no-ledger", "--no-persist"] {
+        for scenario in ["useful", "always-503"] {
+            let f = Fixture::new();
+            f.claude_session("disabled-ledger", TASK);
+            f.ledger_init();
+            let provider = Provider::start(&f, scenario);
+            let out = f.rank_with(provider.port, &[flag]);
+            let served = provider.finish();
+            assert_eq!(
+                out.status.code(),
+                Some(if scenario == "useful" { 0 } else { 4 }),
+                "{flag}/{scenario}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            assert!(served > 0, "{flag}/{scenario} must reach the provider");
+            assert!(
+                f.events().is_empty(),
+                "{flag}/{scenario} wrote ranking events despite disabled ledger"
+            );
+            assert!(
+                f.attempts().is_empty(),
+                "{flag}/{scenario} wrote provider attempts despite disabled ledger"
+            );
+        }
+    }
+}
+
+#[test]
 fn a_ranking_run_records_one_row_per_provider_attempt() {
     let f = Fixture::new();
     f.claude_session("rec-happy", TASK);
