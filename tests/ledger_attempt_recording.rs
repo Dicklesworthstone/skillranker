@@ -119,6 +119,32 @@ impl Fixture {
         .unwrap();
     }
 
+    /// Appends another user turn, as Claude does between hook invocations: a new
+    /// record with its own uuid, parented on the previous one.
+    fn append_turn(&self, session: &str, request: &str, n: u8) {
+        let workspace = std::fs::canonicalize(self.workspace()).unwrap();
+        let workspace_str = workspace.to_str().unwrap();
+        let directory = self
+            .root
+            .join("home/.claude/projects")
+            .join(workspace_str.replace('/', "-"));
+        let path = directory.join(format!("{session}.jsonl"));
+        let record = json!({
+            "type": "user",
+            "uuid": format!("{session}-{n}"),
+            "parentUuid": format!("{session}-{}", n - 1),
+            "cwd": workspace_str,
+            "sessionId": session,
+            "timestamp": "2026-09-19T10:05:00Z",
+            "message": {"role": "user", "content": request}
+        })
+        .to_string();
+        let mut existing = std::fs::read_to_string(&path).unwrap();
+        existing.push_str(&record);
+        existing.push('\n');
+        std::fs::write(&path, existing).unwrap();
+    }
+
     fn command(&self, port: u16, args: &[&str]) -> Command {
         let ca = self.root.join("fixture-ca.pem");
         std::fs::write(&ca, include_bytes!("fixtures/jev-tls/ca.pem")).unwrap();
@@ -542,4 +568,52 @@ fn two_paying_deliveries_of_one_event_record_both_costs() {
     }
     assert_eq!(rows.iter().filter(|r| r.stage == "wide").count(), 2);
     assert_eq!(rows.iter().filter(|r| r.stage == "rerank").count(), 2);
+}
+
+#[test]
+fn a_new_turn_with_identical_text_is_still_a_separate_event() {
+    // Independent check of the sr-7jji identity derivation against the contract it
+    // has to satisfy: "identical prompt text does not merge distinct turns". The
+    // duplicate-delivery case above proves the same turn twice is one event; this is
+    // the opposite direction, and getting it wrong would mean one event per session
+    // forever with every later turn's cost silently dropped.
+    let f = Fixture::new();
+    f.claude_session("rec-turns", TASK);
+    f.ledger_init();
+    let provider = Provider::start(&f, "useful");
+    let first = f.rank_with(provider.port, &["--no-cache"]);
+    assert!(
+        first.status.success(),
+        "first turn failed: {}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    // A third record with the *same* text as the second: a new turn, not a repeat.
+    f.append_turn("rec-turns", TASK, 3);
+    let second = f.rank_with(provider.port, &["--no-cache"]);
+    assert!(
+        second.status.success(),
+        "second turn failed: {}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+    let served = provider.finish();
+    assert_eq!(served, 4, "each turn sent wide and rerank");
+
+    let events = f.events();
+    assert_eq!(
+        events.len(),
+        2,
+        "two turns with the same text are two events: {events:#?}"
+    );
+    assert_ne!(events[0].0, events[1].0, "and they carry distinct ids");
+    let rows = f.attempts();
+    assert_eq!(rows.len(), served, "{rows:#?}");
+    for (event_id, _, _, _) in &events {
+        assert_eq!(
+            rows.iter()
+                .filter(|r| &r.owner_event_id == event_id)
+                .count(),
+            2,
+            "each event owns its own pair: {rows:#?}"
+        );
+    }
 }
