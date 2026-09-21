@@ -239,7 +239,7 @@ fn real_walk_ceiling_retains_clean_names_and_the_actual_personal_winner() {
 }
 
 #[test]
-fn an_unobserved_oversized_personal_competitor_still_blocks_project_fallback() {
+fn a_rejected_oversized_personal_competitor_still_blocks_project_fallback() {
     let fixture = Fixture::new();
     fixture.skill("workspace", "alpha", "");
     fixture.skill("workspace", "beta", "");
@@ -253,7 +253,48 @@ fn an_unobserved_oversized_personal_competitor_still_blocks_project_fallback() {
     fixture.assert_cache_miss(1);
     fixture.assert_explicit("alpha");
     let partial = fixture.listing();
-    assert_eq!(partial["source_causes"]["byte-limit"], 1);
+    assert_eq!(partial["record_causes"]["oversized"], 1);
+    assert!(partial["source_causes"].get("byte-limit").is_none());
+    let (output, value) = fixture.rank(&["--require-skill", "beta"]);
+    assert_ne!(output.status.code(), Some(0), "{value}");
+    assert_ne!(value["decision"], "explicit");
+}
+
+#[test]
+fn an_oversized_project_skill_does_not_empty_the_personal_roster() {
+    let fixture = Fixture::new();
+    fixture.skill("workspace", "oversized-private-name", "");
+    fs::OpenOptions::new()
+        .write(true)
+        .open(fixture.root.join("workspace/.claude/skills/oversized-private-name/SKILL.md"))
+        .unwrap()
+        .set_len(DISCOVERY_PARSED_BYTES.max() as u64 + 1)
+        .unwrap();
+    for name in ["alpha", "beta", "gamma"] {
+        fixture.skill("home", name, "");
+    }
+    let value = fixture.assert_cache_miss(3);
+    assert!(!value.to_string().contains("oversized-private-name"));
+    let listing = fixture.listing();
+    assert_eq!(listing["counts"]["skills"], 3);
+    assert_eq!(listing["record_causes"]["oversized"], 1);
+    assert!(listing["source_causes"].get("byte-limit").is_none());
+    assert!(!listing.to_string().contains("oversized-private-name"));
+    fixture.assert_explicit("beta");
+}
+
+#[test]
+fn a_fifo_personal_override_is_not_silently_treated_as_absent() {
+    let fixture = Fixture::new();
+    fixture.skill("workspace", "alpha", "");
+    fixture.skill("workspace", "beta", "");
+    let path = fixture.root.join("home/.claude/skills/beta/SKILL.md");
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    nix::unistd::mkfifo(&path, nix::sys::stat::Mode::S_IRWXU).unwrap();
+    fixture.assert_cache_miss(1);
+    fixture.assert_explicit("alpha");
+    let listing = fixture.listing();
+    assert_eq!(listing["record_causes"]["unreadable"], 1);
     let (output, value) = fixture.rank(&["--require-skill", "beta"]);
     assert_ne!(output.status.code(), Some(0), "{value}");
     assert_ne!(value["decision"], "explicit");

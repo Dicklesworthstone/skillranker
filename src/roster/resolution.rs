@@ -3,7 +3,7 @@
 
 mod discovery_scope;
 
-use super::discovery::{Diagnostic, DiscoveryLimits, DiscoveryPlan, SourceKind};
+use super::discovery::{CandidateProblem, Diagnostic, DiscoveryLimits, DiscoveryPlan, SourceKind};
 use super::{
     DisplayName, InvocationKind, InvocationName, InvocationRestrictions, LoadTarget, SkillAlias,
     SkillRecord, Visibility, parse_skill_metadata,
@@ -455,6 +455,23 @@ pub fn resolve_claude_plan(
     let mut diagnostics = Vec::new();
     let mut total = 0usize;
     let mut withheld_names = BTreeSet::new();
+    // Metadata-only rejections do not consume the content-read allowance, but
+    // their names still participate in safety. Never treat a rejected personal
+    // override as absence and promote a project definition of the same name.
+    for (offset, rejected) in discovery.rejected_candidates().iter().enumerate() {
+        budget(cx, clock)?;
+        let index = discovery.candidates().len() + offset;
+        let Some(invocation) = claude_invocation(rejected.kind(), rejected.relative()) else {
+            diagnostics.push((index, ResolutionError::UnsupportedLayout));
+            continue;
+        };
+        let problem = match rejected.problem() {
+            CandidateProblem::Oversized => ResolutionError::Oversized,
+            CandidateProblem::NotRegularFile => ResolutionError::Read,
+        };
+        diagnostics.push((index, problem));
+        withheld_names.insert(invocation.as_str().to_owned());
+    }
     for (index, candidate) in discovery.candidates().iter().enumerate() {
         budget(cx, clock)?;
         let Some(invocation) = claude_invocation(candidate.kind(), candidate.relative()) else {

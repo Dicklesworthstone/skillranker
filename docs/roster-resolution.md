@@ -93,6 +93,36 @@ conformance with a running Claude installation. Explicit roster import retains
 its separate all-or-nothing validation contract and does not gain directory-link
 support from this change.
 
+### Metadata-only candidate rejections
+
+Discovery separates readable-size regular-file candidates from known rejected
+skill-file slots. A regular file larger than 256 KiB is recorded as `Oversized`
+in `Discovery::rejected_candidates()`, without opening its content or reserving
+any of the 32 MiB cumulative read allowance. One enormous file, or many files
+that individually exceed the limit, therefore cannot spend other skills' read
+budget. `bytes_examined()` reports the declared sizes reserved for candidates,
+not bytes in rejected files and not content actually read by enumeration.
+
+Every entry named by the root's skill-file contract is inspected, even when its
+filesystem type is a FIFO, socket, directory, or link to a non-regular object.
+These slots are rejected as `NotRegularFile`, never opened for content or silently
+treated as absent. Resolution maps known rejections to per-record `oversized` or
+`unreadable` diagnostics and withholds their supported invocation names. A broken
+personal override still cannot promote its project counterpart. Rejections in
+unsupported layouts are instead `unsupported-layout`; they claim no callable name.
+
+Rejected records retain source identity and local relative paths solely for that
+name-scoped check. Their Debug representation redacts paths, and public diagnostics
+remain path-free. Rejections consume the existing pass-wide entry allowance; they
+do not get a second walk or a separate unbounded collection. The cumulative byte
+ceiling still stops the entire pass when ordinary admissible-size candidates
+exhaust it. A metadata rejection is not a `byte-limit` scan failure.
+
+Repairing or moving a rejected file requires fresh discovery and resolution. It
+does not upgrade an old snapshot. Publication revalidation repeats this boundary,
+including name-scoped withholding, so moving one rejected slot into a competing
+name invalidates affected advice even if the rejection count is unchanged.
+
 ### Bounded discovery execution
 
 Discovery uses one breadth-first queue across all declared roots. Shallower
@@ -141,8 +171,10 @@ rewrites, collisions, restrictions, local option maps, and privacy-safe debug
 output. `tests/roster_discovery_gaps.rs` adds the issue #4 symlink regression,
 actual discovery/parse ceilings, personal overrides, unseen competing names, and
 publication checks. `tests/rank_discovery_gaps.rs` exercises the same boundaries
-through offline CLI calls. The discovery unit tests cover cross-root depth
-ordering, pass-wide ceilings, interrupted scans, iterator errors, and replaced
-parents. The resolver's internal proof tests cover missing/changed slots, dangling
-links, and deterministic proof-budget exhaustion. These establish local contracts,
-not live Jev or hook readiness.
+through offline CLI calls. `tests/roster_rejections.rs` covers oversized and
+non-regular slots, rejected-entry bounds, unchanged cumulative byte limits,
+repairs, and moved rejections at publication. The discovery unit tests cover
+cross-root depth ordering, pass-wide ceilings, interrupted scans, iterator errors,
+and replaced parents. The resolver's internal proof tests cover missing/changed
+slots, dangling links, and deterministic proof-budget exhaustion. These establish
+local contracts, not live Jev or hook readiness.
