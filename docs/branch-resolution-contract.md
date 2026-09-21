@@ -18,6 +18,39 @@ Satisfies boundary `p3_branch_resolution` (`sr-roadmap-l1i.4.4`).
 - Invocations, tool results, and skill loads occurring on a sibling branch do not leak into the active branch's context or eligibility calculations.
 - Satisfies assertion `no_branch_confusion` and E2E case `sibling-branch-isolation`.
 
+#### Qualified event identity
+
+The local event key is `(agent_id, branch_id, event_id)`. Identical redelivery
+of that definition is idempotent; different content under the same key is
+`ConflictingEventDefinitions`, never last-writer-wins. An explicit event target
+must also satisfy every supplied agent and branch qualifier. A bare event ID
+that identifies more than one scope is `AmbiguousEventIdentity`. A missing
+qualified target is `TargetEventNotFound`; a scope without a selectable leaf
+is `NoMatchingEvents`, not a reason to use an unrelated singleton.
+
+After selecting a leaf, parent lookup remains in its exact agent namespace;
+an absent agent label is not a wildcard for a named agent. Lookup first uses
+the child's branch. When that key is absent, one unique same-agent definition
+can establish the parent edge across a fork or to an unlabeled ancestor. More
+than one possible out-of-branch definition is ambiguous and stops resolution.
+An explicit branch constraint continues to reject conflicting labeled ancestors.
+A parent found only in another agent is missing from this lineage: retain the
+partial ancestry flag rather than importing that agent's context or epochs.
+Only resolved parent edges remove candidate leaves, so another agent's parent
+reference cannot hide this agent's otherwise valid leaf.
+
+Cycles and conflicting selected definitions are refused. Public lineage cursors
+and epoch maps still expose bare event IDs, so a single lineage containing that
+ID in two different scopes is also refused rather than assigning an ambiguous
+epoch. Indexing uses storage proportional to the supplied bounded snapshot and
+ordered lookup; it performs no filesystem reads, provider calls or persistence.
+
+Before associating tool calls/results, both observation and loaded-record
+extraction filter the supplied events using the active lineage's qualified
+keys. A foreign event with the same bare ID cannot acquire active membership,
+create a load under the selected session, or borrow its compaction epoch. This
+is a local snapshot contract, not cross-pass conflict recovery in the ledger.
+
 ### 3. Context Compaction, Resumed Epochs, and Task Boundaries
 - `EventKind::Compaction` marks an epoch boundary. Every compaction advances the context epoch (`epoch-0`, `epoch-1`, ...).
 - `EventKind::TaskBoundary` records task boundaries within a branch.
@@ -52,3 +85,5 @@ Satisfies boundary `p3_branch_resolution` (`sr-roadmap-l1i.4.4`).
 | Out-of-order timestamps | Parent links prevail over skewed timestamps | `tests/context_contract.rs` |
 | Compaction epochs | Epochs increment on compaction; compacted references become eligible | `tests/context_contract.rs` |
 | Worktree isolation | Linked worktrees receive distinct `WorkspaceId`s; detached HEAD detected | `tests/context_contract.rs` |
+| Qualified event targeting and parent lookup | Reused IDs, conflicting definitions, foreign parents, scope mismatch and cycle refusal | `tests/branch_identity.rs` |
+| Qualified load membership | Same-ID foreign agents, unlabeled scopes, orphan results, valid ancestors and redelivery | `tests/tool_active_scope.rs` |

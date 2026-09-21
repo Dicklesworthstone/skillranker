@@ -21,6 +21,8 @@ use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
+mod lineage;
+
 /// Usage kind for a skill candidate or loaded evidence.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -95,6 +97,16 @@ impl ActiveBranch {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum UnresolvedBranchReason {
     EmptyHistory,
+    /// No event/leaf satisfies the requested agent and branch scope.
+    NoMatchingEvents,
+    /// The supplied event or parent ID has multiple possible definitions.
+    AmbiguousEventIdentity {
+        event: EventId,
+    },
+    /// Same qualified identity, different content: neither definition is trusted.
+    ConflictingEventDefinitions {
+        event: EventId,
+    },
     AmbiguousSiblingForks {
         candidate_leaves: Vec<EventId>,
     },
@@ -114,6 +126,13 @@ impl fmt::Display for UnresolvedBranchReason {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::EmptyHistory => f.write_str("event history is empty"),
+            Self::NoMatchingEvents => f.write_str("no event leaf matches the requested scope"),
+            Self::AmbiguousEventIdentity { .. } => {
+                f.write_str("event identity is ambiguous within the requested scope")
+            }
+            Self::ConflictingEventDefinitions { .. } => {
+                f.write_str("event identity has conflicting definitions")
+            }
             Self::AmbiguousSiblingForks { candidate_leaves } => {
                 write!(
                     f,
@@ -208,164 +227,7 @@ pub fn resolve_active_branch(
     events: &[NormalizedEvent],
     target: &BranchResolutionTarget,
 ) -> BranchResolution {
-    if events.is_empty() {
-        return BranchResolution::Unresolved(UnresolvedBranchReason::EmptyHistory);
-    }
-
-    // Index events by string event_id
-    let mut by_id: BTreeMap<&str, &NormalizedEvent> = BTreeMap::new();
-    let mut parent_referenced: BTreeSet<&str> = BTreeSet::new();
-
-    for ev in events {
-        if let Some(id) = ev.event_id.as_ref() {
-            by_id.insert(id.as_str(), ev);
-        }
-        if let Some(parent) = ev.parent_id.as_ref() {
-            parent_referenced.insert(parent.as_str());
-        }
-    }
-
-    // Determine the active leaf event
-    let leaf_event: &NormalizedEvent = if let Some(target_id) = target.target_event_id.as_ref() {
-        match by_id.get(target_id.as_str()) {
-            Some(ev) => ev,
-            None => {
-                return BranchResolution::Unresolved(UnresolvedBranchReason::TargetEventNotFound {
-                    target: target_id.clone(),
-                });
-            }
-        }
-    } else {
-        // Collect candidate leaves: events with an event_id that are not referenced as parent_id
-        let mut leaves: Vec<&NormalizedEvent> = by_id
-            .iter()
-            .filter(|(id, _)| !parent_referenced.contains(*id))
-            .map(|(_, ev)| *ev)
-            .collect();
-
-        // If target_branch_id is specified, filter candidate leaves
-        if let Some(target_branch) = target.target_branch_id.as_ref() {
-            leaves.retain(|ev| ev.branch_id.as_ref() == Some(target_branch));
-        }
-
-        // If target_agent_id is specified, filter candidate leaves
-        if let Some(target_agent) = target.target_agent_id.as_ref() {
-            leaves.retain(|ev| ev.agent_id.as_ref() == Some(target_agent));
-        }
-
-        match leaves.len() {
-            0 => {
-                // If there are no leaves (e.g. single event with no ID or a pure cycle)
-                if events.len() == 1 {
-                    &events[0]
-                } else {
-                    let first_id = events
-                        .iter()
-                        .find_map(|e| e.event_id.clone())
-                        .unwrap_or_else(|| EventId::new("unknown").unwrap());
-                    return BranchResolution::Unresolved(UnresolvedBranchReason::CycleDetected {
-                        at_event: first_id,
-                    });
-                }
-            }
-            1 => leaves[0],
-            _ => {
-                // Multiple sibling leaves exist without an explicit target: AMBIGUOUS!
-                let candidate_leaves = leaves
-                    .into_iter()
-                    .filter_map(|e| e.event_id.clone())
-                    .collect();
-                return BranchResolution::Unresolved(
-                    UnresolvedBranchReason::AmbiguousSiblingForks { candidate_leaves },
-                );
-            }
-        }
-    };
-
-    // Trace ancestors backwards from leaf to root following parent_id
-    let mut lineage = Vec::new();
-    let mut visited = BTreeSet::new();
-    let mut curr = leaf_event;
-    let mut ancestor_chain_truncated = false;
-
-    lineage.push(curr.clone());
-    if let Some(id) = curr.event_id.as_ref() {
-        visited.insert(id.as_str());
-    }
-
-    while let Some(parent_id) = curr.parent_id.as_ref() {
-        if visited.contains(parent_id.as_str()) {
-            return BranchResolution::Unresolved(UnresolvedBranchReason::CycleDetected {
-                at_event: parent_id.clone(),
-            });
-        }
-        visited.insert(parent_id.as_str());
-        match by_id.get(parent_id.as_str()) {
-            Some(parent_ev) => {
-                lineage.push((*parent_ev).clone());
-                curr = parent_ev;
-            }
-            None => {
-                // Parent is outside the current snapshot/tail window
-                ancestor_chain_truncated = true;
-                break;
-            }
-        }
-    }
-
-    // Reverse lineage to obtain root-to-leaf chronological order
-    lineage.reverse();
-
-    // Verify branch identity consistency if target_branch_id was requested
-    if let Some(expected_branch) = target.target_branch_id.as_ref() {
-        for ev in &lineage {
-            if let Some(b) = ev.branch_id.as_ref()
-                && b != expected_branch
-            {
-                return BranchResolution::Unresolved(
-                    UnresolvedBranchReason::ConflictingBranchIdentities {
-                        expected: expected_branch.clone(),
-                        observed: b.clone(),
-                    },
-                );
-            }
-        }
-    }
-
-    // Track epochs, compactions, and task boundaries along the active lineage
-    let mut epoch_index = 0u64;
-    let mut compaction_count = 0usize;
-    let mut task_boundary_count = 0usize;
-
-    for ev in &lineage {
-        match ev.kind {
-            EventKind::Compaction => {
-                compaction_count += 1;
-                epoch_index += 1;
-            }
-            EventKind::TaskBoundary => {
-                task_boundary_count += 1;
-            }
-            _ => {}
-        }
-    }
-
-    let current_epoch = epoch_name(epoch_index);
-
-    let branch_id = target
-        .target_branch_id
-        .clone()
-        .or_else(|| lineage.iter().rev().find_map(|e| e.branch_id.clone()));
-
-    BranchResolution::Resolved(ActiveBranch {
-        branch_id,
-        leaf_event_id: leaf_event.event_id.clone(),
-        events: lineage,
-        current_epoch,
-        compaction_count,
-        task_boundary_count,
-        ancestor_chain_truncated,
-    })
+    lineage::resolve(events, target)
 }
 
 fn epoch_name(index: u64) -> ContextEpoch {
