@@ -558,7 +558,7 @@ pub struct TurnMetrics {
     pub by_channel: Vec<ChannelStats>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ObservationMetrics {
     pub total_observations: u64,
     pub observed_loads: u64,
@@ -570,10 +570,10 @@ pub struct ObservationMetrics {
     pub observation_coverage: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub suggestion_adoption_rate: Option<f64>,
-    pub caveat: &'static str,
+    pub caveat: String,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct JudgmentMetrics {
     pub total_judgments: u64,
     pub useful: u64,
@@ -586,7 +586,7 @@ pub struct JudgmentMetrics {
     pub useful_ratio_in_judged: Option<f64>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ProviderMetrics {
     pub total_attempts: u64,
     pub completed_attempts: u64,
@@ -616,7 +616,7 @@ pub struct SkillStatSummary {
     pub judged_neutral: u64,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct StatsValueReport {
     pub as_of_unix_ms: i64,
     pub since_unix_ms: i64,
@@ -3129,7 +3129,7 @@ impl LedgerStore {
             unattributed_loads,
             observation_coverage,
             suggestion_adoption_rate,
-            caveat: "Adoption is not task success; a recommendation can cause its own observed load without proving counterfactual benefit.",
+            caveat: "Adoption is not task success; a recommendation can cause its own observed load without proving counterfactual benefit.".into(),
         };
 
         // 4. Judgments
