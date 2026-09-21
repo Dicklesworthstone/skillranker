@@ -1857,14 +1857,25 @@ fn format_stats_report(report: &crate::storage::StatsValueReport) -> String {
         "Explicit requirements:    {}",
         report.turns.explicit_requirements
     );
+    let _ = writeln!(
+        out,
+        "Unfinished (in flight or killed): {}",
+        report.turns.in_flight_or_killed
+    );
 
     if !report.turns.by_channel.is_empty() {
         let _ = writeln!(out, "\nBy Channel:");
         for c in &report.turns.by_channel {
             let _ = writeln!(
                 out,
-                "  [{}] evaluated: {}, emitted: {}, abstain: {}, muted: {}, unavailable: {}",
-                c.channel, c.evaluated_turns, c.emitted, c.abstain, c.muted, c.unavailable
+                "  [{}] evaluated: {}, emitted: {}, abstain: {}, muted: {}, unavailable: {}, unfinished: {}",
+                c.channel,
+                c.evaluated_turns,
+                c.emitted,
+                c.abstain,
+                c.muted,
+                c.unavailable,
+                c.in_flight_or_killed
             );
         }
     }
@@ -1879,6 +1890,15 @@ fn format_stats_report(report: &crate::storage::StatsValueReport) -> String {
         report.latency.min_ms,
         report.latency.max_ms
     );
+    if report.latency.excluded_unfinished > 0 {
+        // Said out loud, because a duration summary that quietly covers only part of
+        // the window reads exactly like one that covers all of it.
+        let _ = writeln!(
+            out,
+            "Excluded {} unfinished turn(s) with no measured duration.",
+            report.latency.excluded_unfinished
+        );
+    }
 
     let _ = writeln!(out, "\n--- Observations & Adoption ---");
     let _ = writeln!(

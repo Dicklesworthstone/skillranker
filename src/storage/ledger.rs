@@ -40,6 +40,31 @@ pub const LEDGER_RECORDING_CEILING_BYTES: u64 =
 pub const MAX_BUSY_WAIT_MS: u64 = 25;
 pub const DEFAULT_RETENTION_MS: i64 = 30 * 24 * 60 * 60 * 1000; // 30 days in milliseconds: 2_592_000_000
 
+/// The `reason` recorded on a ranking event written before its first provider send.
+///
+/// An invocation records itself with this reason, `DecisionKind::Unavailable`,
+/// `ExposureState::Generated` and `elapsed_ms = 0` before it sends anything, so that
+/// a process killed while waiting on the provider leaves evidence that it ran and may
+/// have paid. Completion rewrites all four fields in place, so a row that still
+/// carries this reason belongs to an invocation that never came back: either one still
+/// running, or one that was killed.
+///
+/// Statistics must therefore not read such a row as a finished outcome. Its decision
+/// is not a failure of the provider, its `elapsed_ms` is a placeholder rather than a
+/// measurement, and its lack of provider attempts is not evidence of cache reuse. The
+/// producer in the ranking pipeline and every reader share this constant so that the
+/// two cannot drift apart silently.
+pub const IN_FLIGHT_REASON: &str = "in-flight";
+
+/// SQL predicate matching a `ranking_events` row whose invocation never came back.
+///
+/// The reason is bound as `?3` rather than written into the SQL, so [`IN_FLIGHT_REASON`]
+/// stays the single spelling shared by the pipeline that writes these rows and every
+/// statistic that has to exclude them. Any query using this fragment must therefore
+/// bind the window as `?1`/`?2` and the reason as `?3`.
+const UNFINISHED_ROW_SQL: &str =
+    "(decision = 'unavailable' AND exposure_state = 'generated' AND reason = ?3)";
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct LedgerCapacityReport {
     pub total_quota_bytes: u64,
@@ -536,6 +561,10 @@ pub struct ChannelStats {
     pub abstain: u64,
     pub muted: u64,
     pub unavailable: u64,
+    /// Turns in this channel that recorded themselves and never came back: still
+    /// running, or killed. Counted apart from `unavailable`, which is about a
+    /// provider outcome this turn never reached. See [`IN_FLIGHT_REASON`].
+    pub in_flight_or_killed: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -545,6 +574,11 @@ pub struct LatencySummary {
     pub p95_ms: u64,
     pub min_ms: u64,
     pub max_ms: u64,
+    /// Turns left out of the five figures above because they never finished, so their
+    /// recorded duration is a placeholder rather than a measurement. Reported so that
+    /// a summary drawn from a subset says which subset, rather than implying it
+    /// covered every turn in the window.
+    pub excluded_unfinished: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -555,6 +589,11 @@ pub struct TurnMetrics {
     pub muted_or_suppressed: u64,
     pub operational_failures: u64,
     pub explicit_requirements: u64,
+    /// Turns that recorded themselves before sending and never recorded an outcome.
+    /// An invocation still in flight and one that was killed are indistinguishable
+    /// from the ledger alone, so they share one honest count rather than being split
+    /// on a guess. They are neither failures nor deliveries: see [`IN_FLIGHT_REASON`].
+    pub in_flight_or_killed: u64,
     pub by_channel: Vec<ChannelStats>,
 }
 
@@ -3004,9 +3043,24 @@ impl LedgerStore {
             [since_unix_ms, as_of_unix_ms],
             |r| r.get(0),
         )?;
+        // A row that never came back also carries `decision = 'unavailable'`, because
+        // at the moment it was written nothing had been decided. Counting it here
+        // would report an invocation that is still running, or one that was killed
+        // outright, as a failure of the provider.
         let operational_failures: i64 = self.connection.query_row(
-            "SELECT count(*) FROM ranking_events WHERE created_at_unix_ms >= ?1 AND created_at_unix_ms <= ?2 AND decision = 'unavailable'",
-            [since_unix_ms, as_of_unix_ms],
+            &format!(
+                "SELECT count(*) FROM ranking_events WHERE created_at_unix_ms >= ?1 \
+                 AND created_at_unix_ms <= ?2 AND decision = 'unavailable' AND NOT {UNFINISHED_ROW_SQL}"
+            ),
+            params![since_unix_ms, as_of_unix_ms, IN_FLIGHT_REASON],
+            |r| r.get(0),
+        )?;
+        let in_flight_or_killed: i64 = self.connection.query_row(
+            &format!(
+                "SELECT count(*) FROM ranking_events WHERE created_at_unix_ms >= ?1 \
+                 AND created_at_unix_ms <= ?2 AND {UNFINISHED_ROW_SQL}"
+            ),
+            params![since_unix_ms, as_of_unix_ms, IN_FLIGHT_REASON],
             |r| r.get(0),
         )?;
         let explicit_requirements: i64 = self.connection.query_row(
@@ -3016,25 +3070,30 @@ impl LedgerStore {
         )?;
 
         // Channels
-        let mut channel_stmt = self.connection.prepare(
+        let mut channel_stmt = self.connection.prepare(&format!(
             "SELECT mode_channel, count(*), \
              sum(CASE WHEN decision IN ('ranked', 'explicit') AND exposure_state IN ('emitted', 'acknowledged') THEN 1 ELSE 0 END), \
              sum(CASE WHEN decision = 'abstain' THEN 1 ELSE 0 END), \
              sum(CASE WHEN decision = 'ranked' AND exposure_state IN ('generated', 'prepared') THEN 1 ELSE 0 END), \
-             sum(CASE WHEN decision = 'unavailable' THEN 1 ELSE 0 END) \
+             sum(CASE WHEN decision = 'unavailable' AND NOT {UNFINISHED_ROW_SQL} THEN 1 ELSE 0 END), \
+             sum(CASE WHEN {UNFINISHED_ROW_SQL} THEN 1 ELSE 0 END) \
              FROM ranking_events WHERE created_at_unix_ms >= ?1 AND created_at_unix_ms <= ?2 \
-             GROUP BY mode_channel ORDER BY mode_channel",
+             GROUP BY mode_channel ORDER BY mode_channel"
+        ))?;
+        let channel_rows = channel_stmt.query_map(
+            params![since_unix_ms, as_of_unix_ms, IN_FLIGHT_REASON],
+            |row| {
+                Ok(ChannelStats {
+                    channel: row.get(0)?,
+                    evaluated_turns: row.get::<_, i64>(1)? as u64,
+                    emitted: row.get::<_, i64>(2)? as u64,
+                    abstain: row.get::<_, i64>(3)? as u64,
+                    muted: row.get::<_, i64>(4)? as u64,
+                    unavailable: row.get::<_, i64>(5)? as u64,
+                    in_flight_or_killed: row.get::<_, i64>(6)? as u64,
+                })
+            },
         )?;
-        let channel_rows = channel_stmt.query_map([since_unix_ms, as_of_unix_ms], |row| {
-            Ok(ChannelStats {
-                channel: row.get(0)?,
-                evaluated_turns: row.get::<_, i64>(1)? as u64,
-                emitted: row.get::<_, i64>(2)? as u64,
-                abstain: row.get::<_, i64>(3)? as u64,
-                muted: row.get::<_, i64>(4)? as u64,
-                unavailable: row.get::<_, i64>(5)? as u64,
-            })
-        })?;
         let mut by_channel = Vec::new();
         for ch in channel_rows {
             by_channel.push(ch?);
@@ -3047,15 +3106,23 @@ impl LedgerStore {
             muted_or_suppressed: muted_or_suppressed as u64,
             operational_failures: operational_failures as u64,
             explicit_requirements: explicit_requirements as u64,
+            in_flight_or_killed: in_flight_or_killed as u64,
             by_channel,
         };
 
-        // 2. Latency
-        let mut lat_stmt = self.connection.prepare(
-            "SELECT elapsed_ms FROM ranking_events WHERE created_at_unix_ms >= ?1 AND created_at_unix_ms <= ?2 ORDER BY elapsed_ms ASC",
+        // 2. Latency. An unfinished row carries `elapsed_ms = 0` as a placeholder, not
+        // as a measurement of a very fast turn. Admitting it would pull the mean, the
+        // median and p95 toward zero and make every killed invocation look like the
+        // fastest thing the product ever did, so the sample is drawn from turns that
+        // finished and the summary reports how many it left out.
+        let mut lat_stmt = self.connection.prepare(&format!(
+            "SELECT elapsed_ms FROM ranking_events WHERE created_at_unix_ms >= ?1 \
+             AND created_at_unix_ms <= ?2 AND NOT {UNFINISHED_ROW_SQL} ORDER BY elapsed_ms ASC"
+        ))?;
+        let lat_rows = lat_stmt.query_map(
+            params![since_unix_ms, as_of_unix_ms, IN_FLIGHT_REASON],
+            |row| row.get::<_, i64>(0),
         )?;
-        let lat_rows =
-            lat_stmt.query_map([since_unix_ms, as_of_unix_ms], |row| row.get::<_, i64>(0))?;
         let mut latencies: Vec<u64> = Vec::new();
         let mut sum_lat: u64 = 0;
         for l in lat_rows {
@@ -3063,6 +3130,7 @@ impl LedgerStore {
             sum_lat = sum_lat.saturating_add(val);
             latencies.push(val);
         }
+        let excluded_unfinished = in_flight_or_killed as u64;
         let latency = if latencies.is_empty() {
             LatencySummary {
                 mean_ms: 0,
@@ -3070,6 +3138,7 @@ impl LedgerStore {
                 p95_ms: 0,
                 min_ms: 0,
                 max_ms: 0,
+                excluded_unfinished,
             }
         } else {
             let len = latencies.len();
@@ -3082,6 +3151,7 @@ impl LedgerStore {
                 p95_ms: latencies[p95_idx],
                 min_ms: latencies[0],
                 max_ms: latencies[len - 1],
+                excluded_unfinished,
             }
         };
 
@@ -3186,22 +3256,41 @@ impl LedgerStore {
             [since_unix_ms, as_of_unix_ms],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?)),
         )?;
+        // A turn that was killed before it admitted an attempt has no attempt rows
+        // either, so counting "no attempts" alone would read every killed invocation
+        // as a cache hit and inflate the rate. Only a turn that finished can be said
+        // to have been served without paying, and only finished turns are eligible to
+        // be served at all, so they are the denominator too.
         let cache_served_events: i64 = self.connection.query_row(
-            "SELECT count(*) FROM ranking_events e WHERE e.created_at_unix_ms >= ?1 AND e.created_at_unix_ms <= ?2 AND NOT EXISTS (SELECT 1 FROM provider_attempts a WHERE a.owner_event_id = e.event_id)",
-            [since_unix_ms, as_of_unix_ms],
+            &format!(
+                "SELECT count(*) FROM ranking_events e WHERE e.created_at_unix_ms >= ?1 \
+                 AND e.created_at_unix_ms <= ?2 AND NOT {UNFINISHED_ROW_SQL} \
+                 AND NOT EXISTS (SELECT 1 FROM provider_attempts a WHERE a.owner_event_id = e.event_id)"
+            ),
+            params![since_unix_ms, as_of_unix_ms, IN_FLIGHT_REASON],
             |r| r.get(0),
         )?;
-        let cache_hit_rate = if total_evaluated > 0 {
-            Some(cache_served_events as f64 / total_evaluated as f64)
+        let finished_turns = total_evaluated.saturating_sub(in_flight_or_killed);
+        let cache_hit_rate = if finished_turns > 0 {
+            Some(cache_served_events as f64 / finished_turns as f64)
         } else {
             None
         };
 
         // Judged cohort attempts & tokens
+        // Each attempt is counted once, against the set of judged events rather than
+        // against the judgments themselves. Joining attempts to judgments directly
+        // repeats every attempt once per label on its turn, so a turn labelled twice —
+        // two reviewers, or a revised label — would report twice the tokens it spent
+        // without a single extra token having been spent. What a turn cost is a
+        // property of the turn, not of how many times anyone judged it.
         let (judged_cohort_tokens, judged_cohort_attempts): (i64, i64) = self.connection.query_row(
             "SELECT coalesce(sum(coalesce(a.input_tokens, 0) + coalesce(a.output_tokens, 0)), 0), count(*) \
-             FROM provider_attempts a JOIN judgments j ON a.owner_event_id = j.attributed_event_id JOIN ranking_events e ON j.attributed_event_id = e.event_id \
-             WHERE e.created_at_unix_ms >= ?1 AND e.created_at_unix_ms <= ?2",
+             FROM provider_attempts a WHERE a.owner_event_id IN ( \
+               SELECT DISTINCT j.attributed_event_id FROM judgments j \
+               JOIN ranking_events e ON j.attributed_event_id = e.event_id \
+               WHERE e.created_at_unix_ms >= ?1 AND e.created_at_unix_ms <= ?2 \
+             )",
             [since_unix_ms, as_of_unix_ms],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )?;

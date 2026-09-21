@@ -213,3 +213,56 @@ Stages are `discovery`, `visibility`, `local-policy`, `quill-admission`,
 operands and reason. Reasons for observed stages are local identifiers, not
 invented model reasoning. Actual trace production and CLI pagination belong to
 their downstream implementation beads.
+
+## Statistics envelope
+
+`sr stats` reports what the local ledger can establish about turns already recorded.
+It reads; it never ranks, never contacts a provider, and never writes. An absent or
+unreadable ledger is a typed storage failure, never an empty report: "there is nothing
+to read" and "nothing happened" are different claims and must not share an output.
+
+The envelope carries `as_of_unix_ms` and `since_unix_ms`, both Unix milliseconds, so a
+report always states the window it chose. The upper bound is wall-clock time; the
+monotonic entry clock is not a timestamp and a window derived from it excludes every
+stored record. `--since` accepts a duration (`30m`, `24h`, `7d`) or an ISO timestamp,
+and an unparseable value is a usage error rather than a silently widened window.
+
+`turns` counts `total_evaluated`, `emitted_suggestions`, `valid_abstentions`,
+`muted_or_suppressed`, `operational_failures`, `explicit_requirements`, and
+`in_flight_or_killed`, with the same measures per channel under `by_channel`. Channels
+keep separate denominators: a shadow-hook turn and a CLI turn are not averaged
+together. A turn recorded before its first provider send and never completed is counted
+only as `in_flight_or_killed`. It is not an operational failure, because no provider
+outcome was ever observed; it is not muted, because no output existed to withhold; and
+an invocation still running is indistinguishable from one that was killed, so both
+share that one count rather than being separated on a guess.
+
+`latency` reports `mean_ms`, `median_ms`, `p95_ms`, `min_ms`, `max_ms` over turns that
+finished, plus `excluded_unfinished`. An unfinished turn's recorded duration is a
+placeholder, not a measurement of a fast turn; admitting it would drag every figure
+toward zero. A summary drawn from a subset states the size of the subset it dropped.
+
+`observations` separates evidence states (`observed_loads`, `attempted_loads`,
+`censored_observations`) from attribution (`attributed_loads`, `unattributed_loads`),
+because whether a load happened and whether it can be tied to a recommendation are
+different questions. `observation_coverage` and `suggestion_adoption_rate` are absent
+rather than zero when their denominators are empty, and `caveat` is always present:
+observed adoption is not task success, since a recommendation can cause the load that
+appears to vindicate it.
+
+`judgments` reports `useful`, `harmful`, `neutral`, `distinct_judged_events`,
+`label_coverage_rate` and `useful_ratio_in_judged`. Ratios are absent, never zero, when
+nothing is labelled.
+
+`provider` reports attempt counts by settlement (`completed_attempts`,
+`failed_attempts`, `unknown_attempts`), the token totals that are actually known, and
+`unknown_usage_attempts` alongside them, so a total is never mistaken for a census. An
+attempt whose settlement was never observed is `unknown`, not failed. `cache_served_events`
+and `cache_hit_rate` cover only finished turns: a turn killed before admitting an attempt
+has no attempt rows either, and counting its absence as reuse would inflate the rate.
+`cost_per_useful_suggestion` is a string that either carries a figure or says why it
+cannot, and it is computed over the judged cohort's own attempts only.
+
+`retained` reports what retention still holds, and `by_skill` appears only with
+`--by-skill`. Per-skill output reports appearances, loads and labels, and deliberately
+no rate: one transcript cannot say what the agent would have done unprompted.

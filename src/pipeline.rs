@@ -3892,7 +3892,7 @@ fn record_inflight_ranking(invocation: &ProcessInvocation, cx: &Cx, recording: &
         policy_version: recording.policy_version.to_string(),
         schema_version: SCHEMA_VERSION as u32,
         decision: crate::storage::DecisionKind::Unavailable,
-        reason: "in-flight".to_string(),
+        reason: crate::storage::ledger::IN_FLIGHT_REASON.to_string(),
         exposure_state: crate::storage::ExposureState::Generated,
         elapsed_ms: 0,
         created_at_unix_ms: wall_clock_ms(),
