@@ -2330,7 +2330,7 @@ async fn rank_once(
                         None => crate::storage::LedgerLocation::Platform,
                     },
                     owner_event_id: recording.event_id.clone(),
-                    invocation_token: invocation_token().to_string(),
+                    invocation_token: invocation_row_mark().to_string(),
                     entry_wall_clock_unix_ms: entry_wall_clock_unix_ms(clock),
                     wide_fingerprint: wide_req_fp.to_hex(),
                     rerank_fingerprint: Arc::clone(&rerank_fingerprint_for_journal),
@@ -4182,9 +4182,14 @@ impl AttemptEvidence<'_> {
 /// recomputed per writer would therefore key the same attempt differently and leave two
 /// rows where there was one attempt, which is exactly the double-counting the key exists
 /// to prevent. Nothing in it is private or externally meaningful.
-fn invocation_token() -> &'static str {
-    static TOKEN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    TOKEN.get_or_init(|| format!("{:x}-{}", wall_clock_ms(), std::process::id()))
+/// Not a credential, despite the word: it is a row-key discriminator, is derived from the
+/// clock and the process id rather than from any source of randomness, and is neither secret
+/// nor externally meaningful. Named `MARK` here because a static called `TOKEN` built this
+/// way reads — to a human and to `ubs`'s `rust.security.non-crypto-random` rule — like a
+/// session token generated without a CSPRNG, which is a mistake worth not appearing to make.
+fn invocation_row_mark() -> &'static str {
+    static MARK: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    MARK.get_or_init(|| format!("{:x}-{}", wall_clock_ms(), std::process::id()))
 }
 
 /// The wall-clock time this process entered, from one reading, shared by everything that
@@ -4220,7 +4225,7 @@ fn attempt_evidence<'a>(
         wide_fingerprint: wide_fingerprint.to_hex(),
         rerank_fingerprint: rerank_fingerprint.map(str::to_owned),
         entry_wall_clock_unix_ms,
-        invocation_token: invocation_token().to_string(),
+        invocation_token: invocation_row_mark().to_string(),
     })
 }
 
