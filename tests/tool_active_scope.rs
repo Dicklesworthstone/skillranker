@@ -83,7 +83,10 @@ fn extract(
         },
         workspace: Some(WorkspaceId::new("workspace").unwrap()),
         session: Some(SessionId::new("session").unwrap()),
-        agent: active.events.first().and_then(|event| event.agent_id.clone()),
+        agent: active
+            .events
+            .first()
+            .and_then(|event| event.agent_id.clone()),
         branch: active.branch_id.clone(),
         epoch: Some(active.current_epoch.clone()),
     };
@@ -132,10 +135,7 @@ fn agent_isolation_also_holds_when_branch_labels_are_absent() {
 #[test]
 fn an_unassigned_agent_is_not_a_wildcard() {
     for (active, other) in [(None, Some("other")), (Some("active"), None)] {
-        assert_only_active(
-            &pair(active, None, "alpha"),
-            &pair(other, None, "foreign"),
-        );
+        assert_only_active(&pair(active, None, "alpha"), &pair(other, None, "foreign"));
     }
 }
 
@@ -151,8 +151,7 @@ fn an_unassigned_branch_cannot_enter_a_named_lineage_by_id_alone() {
 fn orphan_foreign_results_with_arguments_cannot_create_active_loads() {
     let active_events = pair(Some("active"), None, "alpha");
     let mut reply = pair(Some("other"), None, "foreign").pop().unwrap();
-    reply.tool.as_mut().unwrap().arguments =
-        Some(PrivateText::new(r#"{"skill":"foreign"}"#));
+    reply.tool.as_mut().unwrap().arguments = Some(PrivateText::new(r#"{"skill":"foreign"}"#));
     // The real active invocation is still pending. A foreign result carrying
     // the same result ID must not be attributed to the active session.
     let events = [active_events[0].clone(), reply];
