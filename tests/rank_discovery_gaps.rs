@@ -20,15 +20,17 @@ struct Fixture {
 impl Fixture {
     fn new() -> Self {
         static NEXT: AtomicU64 = AtomicU64::new(0);
-        let root = fs::canonicalize(std::env::temp_dir()).unwrap().join(format!(
-            "sr-rank-discovery-gap-{}-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
+        let root = fs::canonicalize(std::env::temp_dir())
+            .unwrap()
+            .join(format!(
+                "sr-rank-discovery-gap-{}-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
         // Retained for inspection; do not remove the fixture tree on drop.
         fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
         for directory in ["workspace", "home/.claude/skills", "config/sr", "outside"] {
@@ -164,7 +166,9 @@ fn one_unrelated_directory_link_never_turns_three_skills_into_empty_roster() {
     let cause = "symlinked-directory-skipped";
     assert!(original["source_causes"].get(cause).is_none());
 
-    let link = fixture.root.join("home/.claude/skills/private-symlink-canary");
+    let link = fixture
+        .root
+        .join("home/.claude/skills/private-symlink-canary");
     fs::write(
         fixture.root.join("outside/SKILL.md"),
         "# Must not be admitted\n\nprivate-skill-body-canary\n",
@@ -200,7 +204,9 @@ fn real_walk_ceiling_retains_clean_names_and_the_actual_personal_winner() {
     for name in ["alpha", "beta", "gamma"] {
         fixture.skill("workspace", name, "");
     }
-    let references = fixture.root.join("workspace/.claude/skills/alpha/references");
+    let references = fixture
+        .root
+        .join("workspace/.claude/skills/alpha/references");
     fs::create_dir_all(&references).unwrap();
     // The breadth-first walk must visit all three direct SKILL.md files before
     // reaching these support files, independent of filesystem entry order.
@@ -225,7 +231,10 @@ fn real_walk_ceiling_retains_clean_names_and_the_actual_personal_winner() {
     assert_eq!(value["decision"], "explicit");
     assert_eq!(value["skills"][0]["invocation_name"], "beta");
     let personal = fs::read(fixture.root.join("home/.claude/skills/beta/SKILL.md")).unwrap();
-    assert_eq!(value["skills"][0]["content_hash"], ContentHash::from_bytes(&personal).as_str());
+    assert_eq!(
+        value["skills"][0]["content_hash"],
+        ContentHash::from_bytes(&personal).as_str()
+    );
     assert_eq!(value["usage"]["http_attempts"], 0);
 }
 

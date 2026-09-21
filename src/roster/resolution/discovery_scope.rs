@@ -16,7 +16,6 @@ use nix::errno::Errno;
 use nix::fcntl::{AtFlags, OFlag, openat};
 use nix::sys::stat::{Mode, SFlag, fstatat};
 use std::collections::{BTreeMap, BTreeSet};
-use std::os::fd::AsFd;
 use std::path::Path;
 
 #[derive(Default)]
@@ -68,7 +67,10 @@ fn prove_with_limit(
         let relative = Path::new(name).join(CLAUDE_SKILL_FILE);
         for planned in plan.roots() {
             budget(cx, clock)?;
-            if !matches!(planned.spec().kind(), SourceKind::Project | SourceKind::User) {
+            if !matches!(
+                planned.spec().kind(),
+                SourceKind::Project | SourceKind::User
+            ) {
                 continue; // This adapter gives unsupported sources no callable names.
             }
             if probes >= max_probes {
@@ -251,7 +253,10 @@ mod tests {
         let runtime = ProcessInvocation::from_clock(clock).unwrap();
         let cx = runtime.request_cx().unwrap();
         let proof = prove_with_limit(&plan, &entries, &BTreeSet::new(), &cx, &clock, 0).unwrap();
-        assert_eq!(proof.withheld, BTreeSet::from(["alpha".to_owned(), "beta".to_owned()]));
+        assert_eq!(
+            proof.withheld,
+            BTreeSet::from(["alpha".to_owned(), "beta".to_owned()])
+        );
         assert_eq!(proof.limited, proof.withheld);
         let proof = prove_with_limit(&plan, &entries, &BTreeSet::new(), &cx, &clock, 1).unwrap();
         assert_eq!(proof.withheld, BTreeSet::from(["beta".to_owned()]));

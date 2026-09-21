@@ -428,7 +428,10 @@ fn advisory_mode_suppresses_ranked_advice_for_unverified_harness() {
         .expect("claude_code adapter");
     let disposition = record.advice(CompatibilityQuestion::EmitNativeAdvice, None);
     assert!(
-        matches!(disposition, skillranker::adapter::AdviceDisposition::Disabled(_)),
+        matches!(
+            disposition,
+            skillranker::adapter::AdviceDisposition::Disabled(_)
+        ),
         "Claude Code adapter must be unverified/disabled for native advice in this phase"
     );
 }

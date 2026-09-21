@@ -439,11 +439,7 @@ impl Discovery {
 
     // A failed readdir need not advance its stream. Abandon that directory
     // after one error rather than retrying forever outside the entry budget.
-    fn next_entry<T>(
-        &mut self,
-        next: Option<Result<T, Errno>>,
-        source: &SourceId,
-    ) -> Option<T> {
+    fn next_entry<T>(&mut self, next: Option<Result<T, Errno>>, source: &SourceId) -> Option<T> {
         match next {
             Some(Ok(entry)) => Some(entry),
             Some(Err(_)) => {
@@ -564,7 +560,12 @@ impl Discovery {
                         // read still checks containment before reading bytes.
                         if name == planned.spec.skill_file {
                             self.push_candidate(
-                                planned, directory.as_fd(), &relative, name, true, limits,
+                                planned,
+                                directory.as_fd(),
+                                &relative,
+                                name,
+                                true,
+                                limits,
                             );
                         } else {
                             self.note(Diagnostic::SymlinkedDirectorySkipped(
@@ -574,7 +575,12 @@ impl Discovery {
                     }
                     Type::File if name == planned.spec.skill_file => {
                         self.push_candidate(
-                            planned, directory.as_fd(), &relative, name, false, limits,
+                            planned,
+                            directory.as_fd(),
+                            &relative,
+                            name,
+                            false,
+                            limits,
                         );
                     }
                     _ => {}

@@ -99,7 +99,11 @@ fn checkpoint_errors_abort_inside_a_walk_and_preserve_the_callers_error() {
     let error = plan
         .discover_with_checkpoint(DiscoveryLimits::defaults(), || {
             calls += 1;
-            if calls == 40 { Err("cancelled") } else { Ok(()) }
+            if calls == 40 {
+                Err("cancelled")
+            } else {
+                Ok(())
+            }
         })
         .unwrap_err();
     assert_eq!(error, "cancelled");
@@ -138,7 +142,11 @@ fn even_an_empty_pass_checks_admission_and_completion() {
     assert_eq!(
         plan.discover_with_checkpoint(DiscoveryLimits::defaults(), || {
             calls.set(calls.get() + 1);
-            if calls.get() == completed { Err("deadline") } else { Ok(()) }
+            if calls.get() == completed {
+                Err("deadline")
+            } else {
+                Ok(())
+            }
         })
         .unwrap_err(),
         "deadline"
@@ -156,7 +164,10 @@ fn a_nonadvancing_failed_directory_stream_is_not_retried() {
     });
     assert!(discovery.next_entry(broken.next(), &source).is_none());
     assert_eq!(calls.get(), 1);
-    assert_eq!(discovery.diagnostics(), &[Diagnostic::EntryUnreadable(source)]);
+    assert_eq!(
+        discovery.diagnostics(),
+        &[Diagnostic::EntryUnreadable(source)]
+    );
     assert!(discovery.is_partial());
 }
 
@@ -184,8 +195,13 @@ fn candidate_metadata_uses_the_open_directory_not_a_replaced_parent_path() {
     let expected = fs::metadata(path.join("alpha/SKILL.md")).unwrap();
     let planned = PlannedRoot::open(spec("fixture"), &path).unwrap().unwrap();
     let flags = OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC;
-    let directory = openat(planned.root().unwrap().as_fd(), "alpha", flags, Mode::empty())
-        .unwrap();
+    let directory = openat(
+        planned.root().unwrap().as_fd(),
+        "alpha",
+        flags,
+        Mode::empty(),
+    )
+    .unwrap();
     fs::rename(path.join("alpha"), path.join("retained-alpha")).unwrap();
     symlink(&outside, path.join("alpha")).unwrap();
 
@@ -200,13 +216,20 @@ fn candidate_metadata_uses_the_open_directory_not_a_replaced_parent_path() {
     );
     assert_eq!(discovery.candidates().len(), 1);
     let candidate = &discovery.candidates()[0];
-    assert_eq!(candidate.identity(), FileIdentity::new(expected.dev(), expected.ino()));
+    assert_eq!(
+        candidate.identity(),
+        FileIdentity::new(expected.dev(), expected.ino())
+    );
     assert_eq!(candidate.size(), expected.len());
     // Metadata discovery grants no new read authority to the replacement link.
     let roots = crate::authorized_read::AuthorizedRoots::single(
         planned.root().unwrap().try_clone().unwrap(),
     );
-    assert!(roots.read_bounded(0, candidate.relative(), crate::limits::SKILL_FILE_BYTES).is_err());
+    assert!(
+        roots
+            .read_bounded(0, candidate.relative(), crate::limits::SKILL_FILE_BYTES)
+            .is_err()
+    );
 }
 
 #[test]
@@ -239,7 +262,11 @@ fn shallower_skills_in_every_root_precede_another_roots_nested_support_files() {
         assert_eq!(discovery.candidates().len(), 3);
         assert_eq!(discovery.entries_examined(), 8);
         assert_eq!(discovery.diagnostics(), &[Diagnostic::EntryLimitReached]);
-        let sources: Vec<_> = discovery.candidates().iter().map(|c| c.source().as_str()).collect();
+        let sources: Vec<_> = discovery
+            .candidates()
+            .iter()
+            .map(|c| c.source().as_str())
+            .collect();
         assert_eq!(sources, vec!["root-0", "root-1", "root-2"]);
         assert_eq!(
             discovery.candidates(),

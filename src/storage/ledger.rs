@@ -2547,12 +2547,7 @@ pub fn ledger_stats(
         BlockingLeafKind::Database,
         false,
         move || {
-            let open = open_blocking(
-                clock,
-                &child,
-                LedgerAccess::ExistingOnly,
-                location,
-            )?;
+            let open = open_blocking(clock, &child, LedgerAccess::ExistingOnly, location)?;
             let store = match open {
                 LedgerOpen::Ready(s) => s,
                 LedgerOpen::ReadOnly(s) => s,
@@ -3059,7 +3054,8 @@ impl LedgerStore {
         let mut lat_stmt = self.connection.prepare(
             "SELECT elapsed_ms FROM ranking_events WHERE created_at_unix_ms >= ?1 AND created_at_unix_ms <= ?2 ORDER BY elapsed_ms ASC",
         )?;
-        let lat_rows = lat_stmt.query_map([since_unix_ms, as_of_unix_ms], |row| row.get::<_, i64>(0))?;
+        let lat_rows =
+            lat_stmt.query_map([since_unix_ms, as_of_unix_ms], |row| row.get::<_, i64>(0))?;
         let mut latencies: Vec<u64> = Vec::new();
         let mut sum_lat: u64 = 0;
         for l in lat_rows {
@@ -3077,7 +3073,9 @@ impl LedgerStore {
             }
         } else {
             let len = latencies.len();
-            let p95_idx = ((len as f64 * 0.95).ceil() as usize).saturating_sub(1).min(len - 1);
+            let p95_idx = ((len as f64 * 0.95).ceil() as usize)
+                .saturating_sub(1)
+                .min(len - 1);
             LatencySummary {
                 mean_ms: sum_lat / (len as u64),
                 median_ms: latencies[len / 2],
@@ -3137,7 +3135,13 @@ impl LedgerStore {
         };
 
         // 4. Judgments
-        let (total_judgments, useful, harmful, neutral, distinct_judged): (i64, i64, i64, i64, i64) = self.connection.query_row(
+        let (total_judgments, useful, harmful, neutral, distinct_judged): (
+            i64,
+            i64,
+            i64,
+            i64,
+            i64,
+        ) = self.connection.query_row(
             "SELECT count(*), \
              coalesce(sum(CASE WHEN j.label = 'useful' THEN 1 ELSE 0 END), 0), \
              coalesce(sum(CASE WHEN j.label = 'harmful' THEN 1 ELSE 0 END), 0), \
@@ -3239,7 +3243,8 @@ impl LedgerStore {
                 let mut stmt = self.connection.prepare(
                     "SELECT DISTINCT c.skill_id FROM ranking_candidates c JOIN ranking_events e ON c.event_id = e.event_id WHERE e.created_at_unix_ms >= ?1 AND e.created_at_unix_ms <= ?2",
                 )?;
-                let rows = stmt.query_map([since_unix_ms, as_of_unix_ms], |r| r.get::<_, String>(0))?;
+                let rows =
+                    stmt.query_map([since_unix_ms, as_of_unix_ms], |r| r.get::<_, String>(0))?;
                 for s in rows {
                     skill_set.insert(s?);
                 }
@@ -3248,7 +3253,8 @@ impl LedgerStore {
                 let mut stmt = self.connection.prepare(
                     "SELECT DISTINCT skill_id FROM observations WHERE observed_at_unix_ms >= ?1 AND observed_at_unix_ms <= ?2",
                 )?;
-                let rows = stmt.query_map([since_unix_ms, as_of_unix_ms], |r| r.get::<_, String>(0))?;
+                let rows =
+                    stmt.query_map([since_unix_ms, as_of_unix_ms], |r| r.get::<_, String>(0))?;
                 for s in rows {
                     skill_set.insert(s?);
                 }
@@ -3257,7 +3263,8 @@ impl LedgerStore {
                 let mut stmt = self.connection.prepare(
                     "SELECT DISTINCT j.skill_id FROM judgments j JOIN ranking_events e ON j.attributed_event_id = e.event_id WHERE e.created_at_unix_ms >= ?1 AND e.created_at_unix_ms <= ?2",
                 )?;
-                let rows = stmt.query_map([since_unix_ms, as_of_unix_ms], |r| r.get::<_, String>(0))?;
+                let rows =
+                    stmt.query_map([since_unix_ms, as_of_unix_ms], |r| r.get::<_, String>(0))?;
                 for s in rows {
                     skill_set.insert(s?);
                 }

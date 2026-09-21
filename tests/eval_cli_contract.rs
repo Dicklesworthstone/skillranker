@@ -159,7 +159,12 @@ fn eval_offline_replay_batch_succeeds_with_json_report() {
 
     let out = run_sr(
         &root,
-        &["eval", "--dataset", dataset_file.to_str().unwrap(), "--json"],
+        &[
+            "eval",
+            "--dataset",
+            dataset_file.to_str().unwrap(),
+            "--json",
+        ],
     );
     assert_eq!(out.status.code(), Some(0));
     let stdout = String::from_utf8_lossy(&out.stdout);
