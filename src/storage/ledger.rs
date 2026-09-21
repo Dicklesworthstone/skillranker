@@ -4630,7 +4630,9 @@ impl LedgerStore {
             }
         }
 
-        // Insert observations with deduplication on source_event_key
+        // Replayed bounded input can resolve a previously attempted load. Upgrade
+        // only that same observation, without moving its original attribution.
+        // Never let stale attempts or censored input weaken confirmed evidence.
         for obs in observations {
             let attributed_event_id = match &obs.attributed_event_id {
                 Some(id) => Some(id.clone()),
@@ -4659,7 +4661,17 @@ impl LedgerStore {
                     observation_id, source_event_key, workspace_root, session_id,
                     agent_branch, attributed_event_id, skill_id, evidence_state, observed_at_unix_ms
                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
-                ON CONFLICT (source_event_key) DO NOTHING",
+                ON CONFLICT (source_event_key) DO UPDATE SET
+                    evidence_state = excluded.evidence_state,
+                    observed_at_unix_ms = excluded.observed_at_unix_ms
+                WHERE observations.evidence_state = 'attempted'
+                  AND excluded.evidence_state = 'loaded'
+                  AND observations.observation_id = excluded.observation_id
+                  AND observations.workspace_root = excluded.workspace_root
+                  AND observations.session_id = excluded.session_id
+                  AND observations.agent_branch = excluded.agent_branch
+                  AND observations.skill_id = excluded.skill_id
+                  AND excluded.observed_at_unix_ms >= observations.observed_at_unix_ms",
                 params![
                     obs.observation_id,
                     obs.source_event_key,

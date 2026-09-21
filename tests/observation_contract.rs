@@ -1141,8 +1141,7 @@ fn test_observe_cli_e2e_with_context() {
     );
 }
 
-#[test]
-fn test_observe_cli_native_final_turn_success_and_idempotency() {
+fn native_observe_journey(split: bool, failed: bool) {
     let bin = env!("CARGO_BIN_EXE_sr");
     let ledger_dir = temp_private_dir("native-obs-ledger");
     let ledger_dir_str = ledger_dir.to_str().unwrap();
@@ -1215,6 +1214,62 @@ fn test_observe_cli_native_final_turn_success_and_idempotency() {
         "{\"type\":\"assistant\",\"uuid\":\"msg-a1\",\"sessionId\":\"native-sess-1\",\"parentUuid\":\"msg-u1\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"call-cr-1\",\"name\":\"code-review\",\"input\":{\"path\":\"src/lib.rs\"}}]}}".to_string(),
         "{\"type\":\"tool_result\",\"uuid\":\"msg-r1\",\"sessionId\":\"native-sess-1\",\"parentUuid\":\"msg-a1\",\"tool_use_id\":\"call-cr-1\",\"content\":\"Review passed\",\"is_error\":false}".to_string(),
     ];
+    let mut original_id = None;
+    if split {
+        fs::write(&transcript_path, lines[..3].join("\n") + "\n").unwrap();
+        let out = std::process::Command::new(bin)
+            .current_dir(&ws_dir)
+            .args([
+                "observe",
+                "--transcript",
+                transcript_path.to_str().unwrap(),
+                "--harness",
+                "claude_code",
+                "--dir",
+                ledger_dir_str,
+                "--json",
+            ])
+            .output()
+            .unwrap();
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+        let conn = Connection::open(ledger_dir.join(LEDGER_FILE)).unwrap();
+        let (id, state): (String, String) = conn
+            .query_row(
+                "SELECT observation_id, evidence_state FROM observations",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(state, "attempted");
+        original_id = Some(id);
+        // A later emission must not steal attribution when confirmation arrives.
+        let mut later = ranking_ev.clone();
+        later.event_id = "rank-ev-later".into();
+        later.created_at_unix_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        let (inv, cx) = test_invocation();
+        record_ranking(
+            &inv,
+            &cx,
+            LedgerAccess::ExistingOnly,
+            LedgerLocation::Directory(ledger_dir.clone()),
+            &later,
+            &[],
+            None,
+        )
+        .unwrap();
+    }
+    let mut lines = lines;
+    if failed {
+        lines[3] = lines[3].replace("false", "true");
+    }
     fs::write(&transcript_path, lines.join("\n") + "\n").expect("write transcript");
 
     // Run sr observe --transcript ... --harness claude_code --dir ... --json
@@ -1254,7 +1309,7 @@ fn test_observe_cli_native_final_turn_success_and_idempotency() {
     );
     assert_eq!(
         out_json.get("cursor_generation").and_then(|v| v.as_u64()),
-        Some(1)
+        Some(if split { 2 } else { 1 })
     );
 
     // Verify DB records
@@ -1269,7 +1324,7 @@ fn test_observe_cli_native_final_turn_success_and_idempotency() {
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .expect("query native cursor");
-    assert_eq!(cur_gen, 1);
+    assert_eq!(cur_gen, if split { 2 } else { 1 });
     assert_eq!(last_ev, "msg-r1");
 
     // Verify observation is recorded and attributed to the preceding ranking event
@@ -1281,7 +1336,13 @@ fn test_observe_cli_native_final_turn_success_and_idempotency() {
         )
         .expect("query observation");
     assert!(skill_id.starts_with("s_"));
-    assert_eq!(ev_state, "loaded");
+    assert_eq!(ev_state, if failed { "attempted" } else { "loaded" });
+    if let Some(id) = original_id {
+        let stored: String = conn
+            .query_row("SELECT observation_id FROM observations", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(stored, id);
+    }
     assert_eq!(attr_id, Some("rank-ev-1".to_string()));
 
     // Run sr observe a second time: idempotent, generation advances to 2, no duplicate observation
@@ -1304,7 +1365,7 @@ fn test_observe_cli_native_final_turn_success_and_idempotency() {
     let out_json_2: serde_json::Value = serde_json::from_slice(&out_2.stdout).unwrap();
     assert_eq!(
         out_json_2.get("cursor_generation").and_then(|v| v.as_u64()),
-        Some(2)
+        Some(if split { 3 } else { 2 })
     );
 
     let obs_count: i64 = conn
@@ -1318,6 +1379,49 @@ fn test_observe_cli_native_final_turn_success_and_idempotency() {
         obs_count, 1,
         "observation row must not be duplicated on repeated run"
     );
+    let stats = std::process::Command::new(bin)
+        .current_dir(&ws_dir)
+        .args(["stats", "--dir", ledger_dir_str, "--json", "--by-skill"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        stats.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&stats.stdout)
+    );
+    let stats: serde_json::Value = serde_json::from_slice(&stats.stdout).unwrap();
+    assert_eq!(
+        stats["observations"]["observed_loads"],
+        if failed { 0 } else { 1 }
+    );
+    assert_eq!(
+        stats["observations"]["attempted_loads"],
+        if failed { 1 } else { 0 }
+    );
+    if !failed {
+        assert!(
+            stats["observations"]["suggestion_adoption_rate"]
+                .as_f64()
+                .unwrap()
+                > 0.0
+        );
+    }
+}
+
+#[test]
+fn test_observe_cli_native_final_turn_success_and_idempotency() {
+    native_observe_journey(false, false);
+}
+
+#[test]
+fn split_observation_confirmation_preserves_identity_and_attribution() {
+    native_observe_journey(true, false);
+}
+
+#[test]
+fn split_observation_failure_does_not_claim_a_load() {
+    native_observe_journey(true, true);
 }
 
 #[test]
@@ -1542,4 +1646,96 @@ fn test_observe_cli_refuses_unsupported_harness_and_missing_session() {
         Some(3),
         "missing durable session identity must be rejected with exit code 3 (missing-session)"
     );
+}
+
+#[test]
+fn observation_completion_is_identity_bound_monotone_and_cursor_atomic() {
+    let dir = temp_private_dir("completion-fences");
+    init_test_ledger(&dir);
+    let mut cursor = SessionCursor {
+        workspace_root: "/data/workspace".into(),
+        session_id: "session-complete".into(),
+        agent_branch: "main".into(),
+        cursor_kind: CursorKind::Observation,
+        transcript_generation: 1,
+        last_complete_event_id: "call".into(),
+        last_offset_bytes: 100,
+        updated_at_unix_ms: 1000,
+    };
+    let original = NewObservation {
+        observation_id: "observation".into(),
+        source_event_key: "source-call".into(),
+        workspace_root: cursor.workspace_root.clone(),
+        session_id: cursor.session_id.clone(),
+        agent_branch: cursor.agent_branch.clone(),
+        attributed_event_id: None,
+        skill_id: "skill-alpha".into(),
+        evidence_state: EvidenceState::Attempted,
+        observed_at_unix_ms: 1000,
+    };
+    let write = |obs: NewObservation, cursor: &SessionCursor, expected| {
+        let (inv, cx) = test_invocation();
+        record_observations_with_cursor(
+            &inv,
+            &cx,
+            LedgerAccess::ExistingOnly,
+            LedgerLocation::Directory(dir.clone()),
+            &[obs],
+            cursor,
+            Some(expected),
+        )
+    };
+    write(original.clone(), &cursor, 0).unwrap();
+    let conn = Connection::open(dir.join(LEDGER_FILE)).unwrap();
+    let read = || {
+        conn.query_row(
+            "SELECT evidence_state, observed_at_unix_ms FROM observations",
+            [],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)),
+        )
+        .unwrap()
+    };
+    let mut confirmed = original.clone();
+    confirmed.evidence_state = EvidenceState::Loaded;
+    confirmed.observed_at_unix_ms = 2000;
+    cursor.transcript_generation = 2;
+    assert!(matches!(
+        write(confirmed.clone(), &cursor, 9),
+        Err(StoreError::RecordConflict)
+    ));
+    assert_eq!(read(), ("attempted".into(), 1000));
+    // A matching source key alone cannot authorize an update across identities.
+    for field in 0..6 {
+        let mut foreign = confirmed.clone();
+        match field {
+            0 => foreign.observation_id = "another".into(),
+            1 => foreign.workspace_root = "/another".into(),
+            2 => foreign.session_id = "another".into(),
+            3 => foreign.agent_branch = "another".into(),
+            4 => foreign.skill_id = "another".into(),
+            _ => foreign.observed_at_unix_ms = 999,
+        }
+        write(foreign, &cursor, cursor.transcript_generation - 1).unwrap();
+        assert_eq!(read(), ("attempted".into(), 1000));
+        cursor.transcript_generation += 1;
+    }
+    write(confirmed.clone(), &cursor, cursor.transcript_generation - 1).unwrap();
+    assert_eq!(read(), ("loaded".into(), 2000));
+    // Neither a duplicate completion nor newer incomplete input rewrites history.
+    for state in [
+        EvidenceState::Loaded,
+        EvidenceState::Attempted,
+        EvidenceState::Censored,
+    ] {
+        cursor.transcript_generation += 1;
+        let mut replayed = confirmed.clone();
+        replayed.evidence_state = state;
+        replayed.observed_at_unix_ms = 3000;
+        write(replayed, &cursor, cursor.transcript_generation - 1).unwrap();
+        assert_eq!(read(), ("loaded".into(), 2000));
+    }
+    let count: i64 = conn
+        .query_row("SELECT count(*) FROM observations", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(count, 1);
 }
