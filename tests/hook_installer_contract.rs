@@ -150,7 +150,10 @@ fn apply_install_creates_settings_and_backup() {
             .unwrap()
             .contains("hook claude")
     );
-    assert_eq!(entry["hooks"][0]["timeout"], 3);
+    // Four, not three: the harness timeout must STRICTLY exceed the 3,000 ms internal deadline,
+    // because the internal clock starts after process startup and the last 200 ms of it are
+    // reserved for writing the answer (sr-83cc). README documents four seconds.
+    assert_eq!(entry["hooks"][0]["timeout"], 4);
 
     // Backup file must exist in state directory
     assert!(fixture.state_dir().exists());
@@ -467,4 +470,45 @@ fn capabilities_lists_install_and_uninstall_as_implemented() {
         .find(|c| c["name"] == "uninstall-hook")
         .expect("uninstall-hook in capabilities");
     assert_eq!(uninstall["status"], "implemented");
+}
+
+/// The installed harness timeout must strictly exceed the internal deadline (sr-83cc).
+///
+/// Not "match" it. `sr`'s own clock starts at process entry, so process spawn, dynamic linking and
+/// configuration reads all happen inside the harness timeout and outside the deadline; and the last
+/// 200 ms of the deadline are reserved for writing the answer. An equal timeout can therefore kill
+/// the run in precisely the window where being killed loses the reply rather than merely timing out.
+#[test]
+fn the_default_harness_timeout_strictly_exceeds_the_internal_deadline() {
+    let deadline_ms = skillranker::limits::DEFAULT_INVOCATION_DEADLINE_MS;
+    let outer_ms = u64::from(skillranker::installer::DEFAULT_HOOK_TIMEOUT_SECS) * 1_000;
+    assert!(
+        outer_ms > deadline_ms,
+        "installed harness timeout {outer_ms} ms must exceed the internal deadline {deadline_ms} ms"
+    );
+    assert_eq!(
+        skillranker::installer::minimum_hook_timeout_secs(deadline_ms),
+        skillranker::installer::DEFAULT_HOOK_TIMEOUT_SECS,
+        "the default should be exactly the minimum that bounds the deadline, so a later deadline \
+         change is visible rather than absorbed"
+    );
+}
+
+/// A timeout that cannot bound the deadline is refused, and the refusal carries the numbers.
+#[test]
+fn a_harness_timeout_that_cannot_bound_the_deadline_is_refused_with_its_numbers() {
+    let deadline_ms = skillranker::limits::DEFAULT_INVOCATION_DEADLINE_MS;
+    for too_tight in [0_u32, 1, 2, 3] {
+        let refusal = skillranker::installer::check_hook_timeout(too_tight, deadline_ms)
+            .expect_err("a timeout at or below the deadline must be refused");
+        let message = refusal.to_string();
+        assert!(
+            message.contains(&too_tight.to_string()) && message.contains("3000"),
+            "the refusal must state what was asked for and what the deadline is; got: {message}"
+        );
+    }
+    assert!(skillranker::installer::check_hook_timeout(4, deadline_ms).is_ok());
+    // A deadline raised past a whole second needs the next second, not merely one more than before.
+    assert_eq!(skillranker::installer::minimum_hook_timeout_secs(3_200), 5);
+    assert_eq!(skillranker::installer::minimum_hook_timeout_secs(1), 2);
 }

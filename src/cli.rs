@@ -3593,6 +3593,16 @@ fn install_hook_command(clock: &EntryClock, m: &clap::ArgMatches) -> Result<Stri
         .get_one::<String>("timeout-secs")
         .and_then(|s| s.parse::<u32>().ok())
         .unwrap_or(crate::installer::DEFAULT_HOOK_TIMEOUT_SECS);
+    // A harness timeout that does not strictly exceed the internal deadline can kill the run inside
+    // the window reserved for writing its answer, because the internal clock starts only after
+    // process startup. Refuse it here, with the numbers, rather than installing an entry that looks
+    // fine and truncates a reply under load (sr-83cc).
+    if let Err(refusal) = crate::installer::check_hook_timeout(
+        timeout_secs,
+        crate::limits::DEFAULT_INVOCATION_DEADLINE_MS,
+    ) {
+        return Err((2u8, "invalid-usage", refusal.to_string()));
+    }
 
     let workspace = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let user_root = user_config_root().unwrap_or(None);

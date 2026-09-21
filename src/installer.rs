@@ -29,7 +29,59 @@ use std::time::SystemTime;
 
 static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-pub const DEFAULT_HOOK_TIMEOUT_SECS: u32 = 3;
+/// The harness timeout written into the managed hook entry.
+///
+/// It must STRICTLY exceed the internal deadline, not merely match it. The internal clock starts at
+/// process entry, so everything before it — process spawn, dynamic linking, TLS state, configuration
+/// reads — is outside the deadline but inside the harness timeout. At three seconds against a
+/// 3,000 ms deadline the harness could kill `sr` during the final 200 ms it reserves for writing its
+/// answer and cleaning up, which is the one window where being killed loses work rather than merely
+/// timing out. Four seconds is also what README documents (sr-83cc).
+pub const DEFAULT_HOOK_TIMEOUT_SECS: u32 = 4;
+
+/// The smallest harness timeout that can bound a given internal deadline.
+///
+/// Ceiling of the deadline in whole seconds, plus one: a 3,000 ms deadline needs 4 s, and a 3,200 ms
+/// deadline also needs 4 s. The extra second is the startup headroom described above, and expressing
+/// it as a function rather than a constant means a later deadline change cannot silently invalidate
+/// the installed entry — which is exactly what AGENTS.md forbids.
+pub const fn minimum_hook_timeout_secs(deadline_ms: u64) -> u32 {
+    let whole = deadline_ms.div_ceil(1_000);
+    (whole + 1) as u32
+}
+
+/// Why a requested harness timeout cannot be installed.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TimeoutTooTight {
+    pub requested_secs: u32,
+    pub deadline_ms: u64,
+    pub minimum_secs: u32,
+}
+
+impl std::fmt::Display for TimeoutTooTight {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "a harness timeout of {}s cannot bound sr's own {} ms deadline: the internal clock \
+             starts after process startup, so the harness must allow at least {}s or it can kill \
+             the run inside the window reserved for writing its answer",
+            self.requested_secs, self.deadline_ms, self.minimum_secs
+        )
+    }
+}
+
+/// Refuses a harness timeout that does not strictly exceed the internal deadline.
+pub fn check_hook_timeout(requested_secs: u32, deadline_ms: u64) -> Result<(), TimeoutTooTight> {
+    let minimum_secs = minimum_hook_timeout_secs(deadline_ms);
+    if requested_secs >= minimum_secs {
+        return Ok(());
+    }
+    Err(TimeoutTooTight {
+        requested_secs,
+        deadline_ms,
+        minimum_secs,
+    })
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
