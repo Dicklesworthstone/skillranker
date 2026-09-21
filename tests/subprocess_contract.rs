@@ -411,15 +411,33 @@ fn termination_observer_rejects_a_live_child() {
 
 // Eight MiB needs at least 1024 8-KiB passes. Sleeping after every
 // successful pass cannot fit this work budget, even with zero spawn overhead.
+//
+// Retried for the same reason `invocation()` above is, and it is the site the original sr-5n0b
+// report named alongside it: "Two new 1200ms bulk tests also exhausted budget". A thousand
+// milliseconds is more headroom than the 200 ms case has, which is exactly why this one looks safe
+// and is not — the observed construction delay was 718-852 ms, inside this budget. The budget stays
+// as it is, because a wider one would stop forcing the drain these cases assert.
 fn bulk_invocation() -> ProcessInvocation {
-    ProcessInvocation::from_clock(
-        EntryClock::capture_with(
-            DurationMillis::new("total", 1200, 3000).unwrap(),
-            DurationMillis::new("cleanup", 200, 3000).unwrap(),
+    for attempt in 1..=16 {
+        let invocation = ProcessInvocation::from_clock(
+            EntryClock::capture_with(
+                DurationMillis::new("total", 1200, 3000).unwrap(),
+                DurationMillis::new("cleanup", 200, 3000).unwrap(),
+            )
+            .unwrap(),
         )
-        .unwrap(),
-    )
-    .unwrap()
+        .unwrap();
+        if invocation.request_cx().is_ok() {
+            return invocation;
+        }
+        eprintln!("sr-5n0b: construction spent the 1000ms bulk work budget; retry {attempt}");
+        let _ = invocation.shutdown();
+    }
+    panic!(
+        "no attempt in 16 left any of the 1000ms bulk work budget after constructing a runtime; \
+         this host is too loaded to run these cases, and nothing here is evidence about \
+         subprocess behaviour"
+    );
 }
 
 #[test]
