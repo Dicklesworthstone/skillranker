@@ -1110,13 +1110,15 @@ fn insert_provider_attempt(
 /// Each of those writes knows strictly more than the one before it, which is why `status`
 /// comes from the newest. Every other column is coalesced, so a write that happens not to
 /// carry a fact — a settlement that observed no usage, say — cannot erase one already
-/// recorded. The key includes the invocation token, so this can only ever advance a row
-/// belonging to the same invocation.
+/// recorded. Callers derive the key from an invocation token, but the storage boundary
+/// also checks the immutable owner, stage, request and admission time before updating.
+/// A conflicting key must roll back the enclosing event transaction, not alter another
+/// attempt's recorded cost.
 fn advance_provider_attempt(
     tx: &rusqlite::Transaction<'_>,
     attempt: &NewProviderAttempt,
 ) -> Result<(), StoreError> {
-    tx.execute(
+    let rows = tx.execute(
         &format!(
             "{PROVIDER_ATTEMPT_COLUMNS}
         ON CONFLICT(attempt_id) DO UPDATE SET
@@ -1126,7 +1128,11 @@ fn advance_provider_attempt(
             input_tokens = coalesce(excluded.input_tokens, input_tokens),
             output_tokens = coalesce(excluded.output_tokens, output_tokens),
             http_status = coalesce(excluded.http_status, http_status),
-            error_kind = coalesce(excluded.error_kind, error_kind)"
+            error_kind = coalesce(excluded.error_kind, error_kind)
+        WHERE provider_attempts.owner_event_id = excluded.owner_event_id
+          AND provider_attempts.stage = excluded.stage
+          AND provider_attempts.request_fingerprint = excluded.request_fingerprint
+          AND provider_attempts.admitted_at_unix_ms = excluded.admitted_at_unix_ms"
         ),
         params![
             attempt.attempt_id,
@@ -1143,6 +1149,9 @@ fn advance_provider_attempt(
             attempt.error_kind,
         ],
     )?;
+    if rows == 0 {
+        return Err(StoreError::RecordConflict);
+    }
     Ok(())
 }
 
