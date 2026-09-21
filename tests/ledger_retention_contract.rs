@@ -937,3 +937,101 @@ fn cli_ledger_prune_and_clear_e2e() {
         serde_json::from_slice(&clear_apply_out.stdout).unwrap();
     assert_eq!(clear_rep_json["records_cleared"], 0);
 }
+
+#[test]
+fn a_relative_prune_cutoff_lands_in_recent_history_not_at_the_epoch() {
+    // `cli_ledger_prune_and_clear_e2e` passes `--before 2026-09-01`, an absolute date that
+    // `parse_cutoff_to_unix_ms` resolves without consulting the clock — so it never exercised the
+    // clock the *relative* forms depend on, and the one input shape that bypassed the bug was the
+    // one under test. Both the default cutoff and `--before 30d` derived "now" from the monotonic
+    // entry clock, which counts milliseconds since this process started, so every cutoff landed in
+    // December 1969. Nothing is older than that, so prune selected nothing and retention was never
+    // enforced through this command however often it was run.
+    let dir = temp_private_dir("cli-prune-relative");
+    let bin = env!("CARGO_BIN_EXE_sr");
+
+    let init_out = Command::new(bin)
+        .args(["ledger", "init", "--dir", dir.to_str().unwrap(), "--json"])
+        .output()
+        .expect("init");
+    assert!(init_out.status.success());
+
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    let day_ms = 24 * 60 * 60 * 1000u64;
+
+    // One turn from sixty days ago, one from today.
+    let (invocation, cx) = test_invocation();
+    let open_res = open_ledger(
+        &invocation,
+        &cx,
+        LedgerAccess::ExistingOnly,
+        LedgerLocation::Directory(dir.clone()),
+    )
+    .unwrap();
+    let mut store = match open_res {
+        LedgerOpen::Ready(s) => s,
+        _ => panic!("expected ready ledger"),
+    };
+    for (id, age_days) in [("ev-ancient", 60u64), ("ev-today", 0u64)] {
+        let at = now_ms - age_days * day_ms;
+        let stamp = store.stamp();
+        let snap = snapshot_fixture(&format!("snap-{id}"), at);
+        store
+            .record_roster_snapshot(invocation.clock(), &cx, &snap, stamp)
+            .unwrap();
+        let stamp = store.stamp();
+        let ev = event_fixture(id, &format!("snap-{id}"), at);
+        store
+            .record_ranking_event(invocation.clock(), &cx, &ev, &[], None, stamp)
+            .unwrap();
+    }
+    drop(store);
+
+    for args in [
+        vec!["ledger", "prune", "--dir", dir.to_str().unwrap(), "--json"],
+        vec![
+            "ledger",
+            "prune",
+            "--dir",
+            dir.to_str().unwrap(),
+            "--before",
+            "30d",
+            "--json",
+        ],
+    ] {
+        let out = Command::new(bin)
+            .args(&args)
+            .output()
+            .expect("prune preview");
+        assert!(out.status.success(), "{args:?} failed: {out:?}");
+        let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        let cutoff = json["cutoff_unix_ms"].as_i64().expect("cutoff_unix_ms");
+
+        // A retention cutoff is a point in history, so it must be positive and close to
+        // thirty days ago rather than a few milliseconds after the epoch.
+        assert!(
+            cutoff > 0,
+            "{args:?} produced a cutoff at or before the epoch: {} ({})",
+            json["cutoff_iso"],
+            cutoff
+        );
+        let expected = (now_ms - 30 * day_ms) as i64;
+        assert!(
+            (cutoff - expected).abs() < day_ms as i64,
+            "{args:?} produced a cutoff of {} ({}), more than a day from the expected {expected}",
+            json["cutoff_iso"],
+            cutoff
+        );
+
+        // And it selects the sixty-day-old turn while leaving today's alone, which is the
+        // behaviour a cutoff in 1969 silently withheld.
+        assert_eq!(
+            json["events_to_prune"], 1,
+            "{args:?} selected {} events; retention is not being enforced",
+            json["events_to_prune"]
+        );
+    }
+}

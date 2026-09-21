@@ -3095,6 +3095,22 @@ impl LedgerStore {
         as_of_unix_ms: i64,
         by_skill: bool,
     ) -> Result<StatsValueReport, StoreError> {
+        // One snapshot for the whole report. This builds every figure from more than thirty
+        // separate statements, and without a read transaction each one sees whatever the database
+        // held at the moment it ran. A hook firing once per turn while somebody runs `sr stats` is
+        // the case this product is built for, not an edge case, and under that load the parts stop
+        // agreeing: measured across 130 concurrent runs, one report printed a channel breakdown
+        // summing to 495 against a total of 494, and a cache hit rate of 100.2% — a number whose
+        // existence is proof that its numerator and denominator came from different instants.
+        //
+        // A deferred read transaction on this connection gives every subsequent read the same
+        // snapshot until it ends. It takes no write lock, so it cannot block the hook that is
+        // writing; it only stops this reader from straddling that writer's commits. Dropping it
+        // rolls back, which for a read-only report is the same as committing.
+        let snapshot = self
+            .connection
+            .unchecked_transaction()
+            .map_err(StoreError::from)?;
         let retained = self.query_retained_stats(as_of_unix_ms)?;
 
         // 1. Turns
@@ -3331,23 +3347,39 @@ impl LedgerStore {
             [since_unix_ms, as_of_unix_ms],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?)),
         )?;
-        // A turn that was killed before it admitted an attempt has no attempt rows
-        // either, so counting "no attempts" alone would read every killed invocation
-        // as a cache hit and inflate the rate. Only a turn that finished can be said
-        // to have been served without paying, and only finished turns are eligible to
-        // be served at all, so they are the denominator too.
+        // "No attempt rows" alone is not evidence of cache reuse, and two different kinds of turn
+        // satisfy it without the cache having served anything. A turn killed before it admitted an
+        // attempt has none because it died; a turn that abstained, or resolved an explicit
+        // requirement, before the provider was ever consulted has none because it never needed one.
+        // Counting either as a hit invents reuse: three turns, one paid and two abstaining, used to
+        // report a 67% hit rate against a cache that served nothing.
+        //
+        // So a served turn is one that produced a ranking without paying for it, and the rate is
+        // over rankings rather than over all turns — otherwise abstentions dilute a figure they
+        // cannot contribute to. This deliberately undercounts one case it cannot see: an abstention
+        // reached by reading a reused response is real cache reuse and is not counted here, because
+        // the ledger records no marker distinguishing it from one decided locally. Under-reporting
+        // reuse is the safe direction; inventing it is not. Counting it properly needs the
+        // pipeline's own cache flags persisted on the event row, which is a schema change.
         let cache_served_events: i64 = self.connection.query_row(
             &format!(
                 "SELECT count(*) FROM ranking_events e WHERE e.created_at_unix_ms >= ?1 \
-                 AND e.created_at_unix_ms <= ?2 AND NOT {UNFINISHED_ROW_SQL} \
+                 AND e.created_at_unix_ms <= ?2 AND e.decision = 'ranked' AND NOT {UNFINISHED_ROW_SQL} \
                  AND NOT EXISTS (SELECT 1 FROM provider_attempts a WHERE a.owner_event_id = e.event_id)"
             ),
             params![since_unix_ms, as_of_unix_ms, IN_FLIGHT_REASON],
             |r| r.get(0),
         )?;
-        let finished_turns = total_evaluated.saturating_sub(in_flight_or_killed);
-        let cache_hit_rate = if finished_turns > 0 {
-            Some(cache_served_events as f64 / finished_turns as f64)
+        let finished_rankings: i64 = self.connection.query_row(
+            &format!(
+                "SELECT count(*) FROM ranking_events e WHERE e.created_at_unix_ms >= ?1 \
+                 AND e.created_at_unix_ms <= ?2 AND e.decision = 'ranked' AND NOT {UNFINISHED_ROW_SQL}"
+            ),
+            params![since_unix_ms, as_of_unix_ms, IN_FLIGHT_REASON],
+            |r| r.get(0),
+        )?;
+        let cache_hit_rate = if finished_rankings > 0 {
+            Some(cache_served_events as f64 / finished_rankings as f64)
         } else {
             None
         };
@@ -3391,7 +3423,25 @@ impl LedgerStore {
             |r| r.get(0),
         )?;
 
-        let cost_per_useful_suggestion = if useful == 0 {
+        // A useful *suggestion* is a turn somebody found useful, not a label. Three skills judged
+        // useful on one emission are three labels and one suggestion, and the numerator already
+        // counts a turn's attempts once per turn rather than once per label — that was the point of
+        // aggregating against distinct judged events. Dividing turn-scoped attempts by a label count
+        // measured two different things against each other, so one turn's single attempt divided by
+        // three labels rounded to "0 attempts" printed beside a nonzero token figure. The rest of
+        // the report already treats a suggestion as a turn: `label_coverage_rate` is distinct judged
+        // events over emitted suggestions.
+        let useful_suggestions: i64 = self.connection.query_row(
+            "SELECT count(*) FROM ( \
+               SELECT DISTINCT j.attributed_event_id FROM judgments j \
+               JOIN ranking_events e ON j.attributed_event_id = e.event_id \
+               WHERE e.created_at_unix_ms >= ?1 AND e.created_at_unix_ms <= ?2 AND j.label = 'useful' \
+             )",
+            [since_unix_ms, as_of_unix_ms],
+            |r| r.get(0),
+        )?;
+
+        let cost_per_useful_suggestion = if useful_suggestions == 0 {
             "not estimable (0 useful labels in judged cohort)".to_string()
         } else if judged_cohort_attempts == 0 {
             // Every judged turn reused a response it did not pay for. Dividing by `useful`
@@ -3410,8 +3460,8 @@ impl LedgerStore {
             // zero presented as one — so it says which it is.
             format!(
                 "pricing configuration absent; {} attempts / {} tokens per useful suggestion across judged cohort{}{}",
-                (judged_cohort_attempts as f64 / useful as f64).round() as u64,
-                (judged_cohort_tokens as f64 / useful as f64).round() as u64,
+                (judged_cohort_attempts as f64 / useful_suggestions as f64).round() as u64,
+                (judged_cohort_tokens as f64 / useful_suggestions as f64).round() as u64,
                 if judged_cohort_unknown_usage > 0 {
                     format!(
                         "; a lower bound, because {judged_cohort_unknown_usage} of those attempts reported no usage"
@@ -3428,8 +3478,8 @@ impl LedgerStore {
                 }
             )
         };
-        let tokens_per_useful_suggestion = if useful > 0 && judged_cohort_attempts > 0 {
-            Some(judged_cohort_tokens as f64 / useful as f64)
+        let tokens_per_useful_suggestion = if useful_suggestions > 0 && judged_cohort_attempts > 0 {
+            Some(judged_cohort_tokens as f64 / useful_suggestions as f64)
         } else {
             None
         };
@@ -3541,6 +3591,10 @@ impl LedgerStore {
         } else {
             None
         };
+
+        // Released explicitly rather than by drop, so that a future edit moving work below this
+        // point cannot silently read outside the snapshot the figures above were built from.
+        snapshot.finish().map_err(StoreError::from)?;
 
         Ok(StatsValueReport {
             as_of_unix_ms,

@@ -501,3 +501,80 @@ fn a_second_label_on_one_turn_does_not_double_its_recorded_cost() {
         report.provider
     );
 }
+
+#[test]
+fn a_turn_that_never_consulted_the_provider_is_not_a_cache_hit() {
+    // `cache_served_events` infers reuse from the absence of attempt rows. A turn that abstained
+    // before the provider was ever consulted also has no attempts, so the inference credits the
+    // cache for work it never did. The comment in query_value_stats claims "only finished turns
+    // are eligible to be served at all", which is the wrong test: eligibility requires having
+    // reached the provider stage, not merely having finished.
+    let mut ledger = Ledger::new("noprovider");
+    ledger.record(
+        &finished_event(
+            "ev-paid",
+            "cli",
+            DecisionKind::Ranked,
+            ExposureState::Emitted,
+            "ranked",
+            500,
+            BASE_MS + 100,
+        ),
+        &[completed_attempt("att-1", "ev-paid", BASE_MS + 100)],
+    );
+    for (id, offset) in [("ev-abstain-1", 200u64), ("ev-abstain-2", 300)] {
+        ledger.record(
+            &finished_event(
+                id,
+                "cli",
+                DecisionKind::Abstain,
+                ExposureState::Generated,
+                "abstain",
+                40,
+                BASE_MS + offset,
+            ),
+            &[],
+        );
+    }
+
+    let report = ledger.stats();
+    assert_eq!(
+        report.provider.cache_served_events, 0,
+        "two turns that never consulted the provider were reported as served from cache: {:#?}",
+        report.provider
+    );
+}
+
+#[test]
+fn several_labels_on_one_turn_do_not_divide_its_attempts_away() {
+    // Three skills judged useful on one emission. The numerator counts attempts once per turn —
+    // that was the point of the duplicate-join fix — while the denominator counts labels, so the
+    // two halves of the ratio measure different things and one turn's single attempt is divided
+    // by three. Rounded, it prints as "0 attempts", next to a nonzero token figure.
+    let mut ledger = Ledger::new("manylabels");
+    ledger.record(
+        &finished_event(
+            "ev-1",
+            "cli",
+            DecisionKind::Ranked,
+            ExposureState::Emitted,
+            "ranked",
+            500,
+            BASE_MS + 100,
+        ),
+        &[completed_attempt("att-1", "ev-1", BASE_MS + 100)],
+    );
+    for (n, skill) in [(1, "review"), (2, "test_runner"), (3, "deploy")] {
+        ledger.judge(&format!("j-{n}"), "ev-1", JudgmentLabel::Useful);
+        let _ = skill;
+    }
+
+    let report = ledger.stats();
+    assert_eq!(report.judgments.useful, 3, "{:#?}", report.judgments);
+    assert_eq!(report.provider.total_attempts, 1, "{:#?}", report.provider);
+    let text = &report.provider.cost_per_useful_suggestion;
+    assert!(
+        !text.contains("0 attempts"),
+        "one real attempt was rounded away to zero while a token figure stood beside it: {text}"
+    );
+}

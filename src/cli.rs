@@ -2282,7 +2282,20 @@ fn ledger_command(
         }
         "prune" => {
             let before_str = sub_matches.get_one::<String>("before").map(|s| s.as_str());
-            let now_ms = clock.now().as_millis() as i64;
+            // Wall-clock, not the monotonic entry clock. A retention cutoff is a point in
+            // history, and `clock.now()` is milliseconds since this process started: deriving
+            // the cutoff from it put every cutoff in 1969, so nothing was ever old enough to
+            // prune and retention was never enforced through this command. `ledger_stats` had
+            // the same defect and it was repaired in d10ca98; this is the same repair here.
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .ok()
+                .and_then(|elapsed| i64::try_from(elapsed.as_millis()).ok())
+                .ok_or((
+                    9u8,
+                    "storage-failure",
+                    "The system clock is outside the representable range".to_string(),
+                ))?;
             let cutoff_ms = match before_str {
                 Some(s) => crate::storage::parse_cutoff_to_unix_ms(s, now_ms)
                     .map_err(|err| (2u8, "invalid-arguments", err))?,
