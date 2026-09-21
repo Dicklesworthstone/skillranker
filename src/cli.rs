@@ -896,6 +896,42 @@ pub fn run(clock: EntryClock) -> u8 {
     }
 }
 
+/// Turns a storage refusal into something a person can act on.
+///
+/// The permission case is the one that was undiagnosable: "cache path does not satisfy owner-only
+/// permissions" named no path, and the generic hint said to inspect trusted-user and project
+/// configuration when the fix is a chmod on one directory. Locating it took four attempts in one
+/// review and two in another, both times on a directory the harness had just created (sr-488b).
+///
+/// Everything else keeps its existing wording: this adds a sentence where one was missing rather
+/// than rewriting error text across the CLI.
+fn storage_failure(
+    prefix: &str,
+    error: &crate::storage::StoreError,
+    location: &crate::storage::LedgerLocation,
+) -> String {
+    let base = format!("{prefix}: {error}");
+    if !matches!(error, crate::storage::StoreError::Permissions) {
+        return base;
+    }
+    let path = match location {
+        crate::storage::LedgerLocation::Directory(dir) => Some(dir.clone()),
+        crate::storage::LedgerLocation::Platform => crate::storage::default_ledger_directory().ok(),
+    };
+    // No path, or a chain that passes its own rules, means the refusal came from somewhere this
+    // cannot see -- a read-only filesystem, say. Better to say nothing extra than to guess.
+    let Some(refusal) = path
+        .as_deref()
+        .and_then(crate::storage::diagnose_owner_only)
+    else {
+        return base;
+    };
+    match refusal.remedy() {
+        Some(remedy) => format!("{base}. {}. Fix with: {remedy}", refusal.describe()),
+        None => format!("{base}. {}", refusal.describe()),
+    }
+}
+
 fn try_extract_dir(args: &[OsString]) -> Option<PathBuf> {
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
@@ -2181,12 +2217,13 @@ fn ledger_command(
 
     let outcome: Result<String, Failure> = match sub_name {
         "init" => {
+            let diagnosed = location.clone();
             let report =
                 crate::storage::init_ledger(&invocation, &cx, location).map_err(|err| {
                     (
                         9u8,
                         "storage-failure",
-                        format!("Failed to initialize ledger: {err}"),
+                        storage_failure("Failed to initialize ledger", &err, &diagnosed),
                     )
                 })?;
             if wants_json {

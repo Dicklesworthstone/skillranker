@@ -6,6 +6,9 @@
 
 pub mod export;
 mod filesystem;
+// The permission diagnosis is deliberately public while the directory admission itself stays
+// private: the CLI needs to explain a refusal, not to make one (sr-488b).
+pub use filesystem::{PermissionRefusal, RequiredMode, diagnose_owner_only};
 pub mod ledger;
 mod platform;
 mod publication;
@@ -29,7 +32,7 @@ pub use ledger::{
     NewObservation, NewProviderAttempt, NewRankingCandidate, NewRankingEvent, NewRosterSnapshot,
     ObservationMetrics, PairedCorrectionRequest, PendingMigration, ProposalStatus, ProviderMetrics,
     PrunePreview, PruneReport, RetainedStats, SessionCursor, SingleFeedbackRequest,
-    SkillStatSummary, SnapshotMember, StatsValueReport, TurnMetrics,
+    SkillStatSummary, SnapshotMember, StatsValueReport, TurnMetrics, default_ledger_directory,
     find_latest_preceding_emission, format_unix_ms, get_session_cursor, get_session_observations,
     init_ledger, ledger_stats, ledger_status, open_ledger, parse_cutoff_to_unix_ms,
     record_acknowledgment, record_emission, record_observations_with_cursor, record_ranking,
