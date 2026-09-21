@@ -184,7 +184,9 @@ fn argument_documents_obey_the_context_byte_and_depth_bounds() {
 #[test]
 fn path_only_evidence_cannot_inherit_registered_current_hashes() {
     let resolver = resolver();
-    let actual = resolver.resolve_file_read("/skills/alpha/SKILL.md").unwrap();
+    let actual = resolver
+        .resolve_file_read("/skills/alpha/SKILL.md")
+        .unwrap();
     assert_eq!(actual.skill_id.as_str(), "alpha-id");
     assert!(actual.source_content.is_none());
     assert!(actual.rendered_content.is_none());
@@ -210,10 +212,7 @@ fn parameterized_loads_do_not_reuse_parameterless_rendered_evidence() {
         assert!(actual.has_dynamic_arguments);
         assert!(actual.rendered_content.is_none());
     }
-    for good in [
-        r#"{"skill":"alpha","args":""}"#,
-        r#"{"skill":"alpha"}"#,
-    ] {
+    for good in [r#"{"skill":"alpha","args":""}"#, r#"{"skill":"alpha"}"#] {
         assert_eq!(
             resolver.resolve_tool("Skill", Some(good)),
             Some(matched("alpha-id"))
