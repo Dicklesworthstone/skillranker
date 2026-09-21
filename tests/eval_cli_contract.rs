@@ -11,8 +11,9 @@
 use serde_json::Value;
 use std::fs;
 use std::path::PathBuf;
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 static FIXTURE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -32,14 +33,28 @@ fn temp_root() -> PathBuf {
 }
 
 fn run_sr(root: &PathBuf, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_sr"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_sr"))
         .env_clear()
         .env("HOME", root)
         .env("XDG_CONFIG_HOME", root.join("config"))
         .current_dir(root.join("workspace"))
         .args(args)
-        .output()
-        .expect("run sr binary")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("run sr binary");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if child.try_wait().expect("poll sr").is_some() {
+            return child.wait_with_output().expect("collect sr output");
+        }
+        if Instant::now() >= deadline {
+            child.kill().expect("terminate stalled sr");
+            let output = child.wait_with_output().expect("reap stalled sr");
+            panic!("sr blocked on evaluation input: {:?}", output.status);
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
 }
 
 fn make_replay_case_json() -> String {
@@ -219,4 +234,65 @@ fn eval_online_without_max_requests_fails_with_usage_error() {
     );
     // Exit code 2 is InvalidUsage
     assert_eq!(out.status.code(), Some(2));
+}
+
+#[cfg(unix)]
+#[test]
+fn eval_rejects_nonregular_datasets_without_waiting_for_a_writer() {
+    let root = temp_root();
+    let fifo = root.join("workspace/dataset.fifo");
+    nix::unistd::mkfifo(
+        &fifo,
+        nix::sys::stat::Mode::S_IRUSR | nix::sys::stat::Mode::S_IWUSR,
+    )
+    .expect("create real FIFO without a writer");
+    let escaped = root.join("outside.jsonl");
+    fs::write(&escaped, make_replay_case_json()).unwrap();
+    let link = root.join("workspace/escape.jsonl");
+    std::os::unix::fs::symlink(&escaped, &link).unwrap();
+    for dataset in [
+        &fifo,
+        &root.join("workspace"),
+        &PathBuf::from("/dev/null"),
+        &link,
+    ] {
+        let out = run_sr(
+            &root,
+            &["eval", "--dataset", dataset.to_str().unwrap(), "--json"],
+        );
+        assert_eq!(out.status.code(), Some(7), "dataset {dataset:?}: {out:?}");
+        let error: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(error["decision"], "unavailable");
+        assert_eq!(error["error"]["kind"], "malformed-input");
+        assert!(!String::from_utf8_lossy(&out.stdout).contains(dataset.to_str().unwrap()));
+    }
+}
+
+#[test]
+fn eval_validates_mode_and_bounds_before_opening_any_input() {
+    let root = temp_root();
+    for (options, expected) in [
+        (vec!["--online"], 8),
+        (vec!["--online", "--allow-network"], 2),
+        (vec!["--max-runtime-ms", "0"], 2),
+        (vec!["--max-runtime-ms", "86400001"], 2),
+        (vec!["--timeout-ms", "0"], 2),
+        (vec!["--max-requests", "nonsense"], 2),
+    ] {
+        let mut args = vec![
+            "eval",
+            "--dataset",
+            "missing-dataset",
+            "--policy",
+            "missing-policy",
+            "--json",
+        ];
+        args.extend(options);
+        let out = run_sr(&root, &args);
+        assert_eq!(out.status.code(), Some(expected), "{args:?}: {out:?}");
+        let error: Value = serde_json::from_slice(&out.stdout).unwrap();
+        let message = error["error"]["message"].as_str().unwrap();
+        assert!(!message.contains("missing-dataset") && !message.contains("missing-policy"));
+        assert!(!message.contains("No such file"), "{error}");
+    }
 }
