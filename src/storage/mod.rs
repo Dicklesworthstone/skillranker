@@ -8,6 +8,7 @@ pub mod export;
 mod filesystem;
 pub mod ledger;
 mod platform;
+mod read_view;
 pub(crate) use platform::storage_path;
 
 pub use export::{
@@ -203,7 +204,7 @@ impl fmt::Display for StoreError {
                 "linked SQLite engine is not the qualified version and source"
             }
             Self::StoreReplaced => "cache directory, file or incarnation changed",
-            Self::StaleGeneration => "cache generation changed before mutation",
+            Self::StaleGeneration => "cache generation or response read view changed",
             Self::LeaseSuperseded => "response publisher no longer owns its lease",
             Self::LeaseUnavailable => "response publication could not lock its lease",
             Self::GenerationExhausted => "cache generation cannot be advanced",
@@ -266,6 +267,7 @@ pub struct CacheStore {
     engine: EngineIdentity,
     stamp: CacheStamp,
     key: [u8; 32],
+    wide_read_view: read_view::ResponseReadView,
 }
 impl fmt::Debug for CacheStore {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -578,6 +580,7 @@ fn open_blocking(
         engine,
         stamp,
         key,
+        wide_read_view: read_view::ResponseReadView::default(),
     })))
 }
 
@@ -614,7 +617,10 @@ impl CacheStore {
     /// Read one stored response of this generation by exact namespace hash,
     /// stage and request fingerprint. Freshness is the caller's decision;
     /// nothing is renewed, repaired or pruned on read. A changed generation or
-    /// incarnation is refused rather than served.
+    /// incarnation is refused rather than served. Each Wide read begins a new
+    /// read view; a subsequent Rerank in that namespace returns StaleGeneration
+    /// if the database changed in between. Reopen or start a fresh Wide lookup
+    /// rather than combining response stages from different read snapshots.
     pub fn response(
         mut self,
         invocation: &ProcessInvocation,
@@ -641,6 +647,7 @@ impl CacheStore {
                     .connection
                     .transaction_with_behavior(TransactionBehavior::Deferred)?;
                 check_stamp(&tx, expected)?;
+                self.wide_read_view.observe(&tx, namespace, stage)?;
                 let row = tx
                     .query_row(
                         "SELECT response, received_at_unix_ms, ttl_seconds, model, \

@@ -1130,8 +1130,12 @@ impl std::str::FromStr for DecisionKind {
 ///
 /// - `Prepared` is what `try_record_ledger` writes for every recorded ranking.
 /// - `Emitted` is what `record_emission` advances to once bytes were written.
-/// - `Generated` has no writer. Recording happens after a decision exists, so the
-///   pre-decision state is never the state a row is stored in.
+/// - `Generated` is what an invocation writes about itself before it sends anything,
+///   so that a process killed while waiting on the provider is not simply absent
+///   from the ledger. A completing invocation updates the row to `Prepared`; a row
+///   left in `Generated` past the invocation deadline died in flight, and its cost
+///   is unknown rather than zero. Attribution ignores it: only `emitted` and
+///   `acknowledged` rows can be attributed an observed load.
 /// - `Acknowledged` has no writer either, because nothing available establishes
 ///   delivery. `record_acknowledgment` exists and is tested, and it requires a
 ///   `verified_delivery_key`: evidence that the harness received the advisory.
@@ -3937,28 +3941,50 @@ impl LedgerStore {
             ],
         )?;
         if inserted == 0 {
-            // A duplicate delivery of the same event, which the identity derivation
-            // is supposed to produce: the same turn delivered twice is one event.
-            // Failing here would roll back the whole transaction and take this
-            // delivery's attempt rows with it, which is how a repeat that really
-            // paid ended up recorded nowhere (sr-qqlk). Keep the stored event as
-            // the first delivery wrote it, and only refuse if the id has been
-            // reused for a different session or workspace, which is a collision
-            // rather than a repeat.
-            let stored: (String, String, String) = tx.query_row(
-                "SELECT workspace_root, session_id, agent_branch
+            // Either a duplicate delivery of the same event, or this invocation's own
+            // in-flight row being finalised. Both are the same turn, which the identity
+            // derivation is supposed to produce; failing here would roll the whole
+            // transaction back and take this delivery's attempt rows with it, which is
+            // how a repeat that really paid ended up recorded nowhere (sr-qqlk).
+            let stored: (String, String, String, String) = tx.query_row(
+                "SELECT workspace_root, session_id, agent_branch, exposure_state
                  FROM ranking_events WHERE event_id = ?1",
                 params![event.event_id],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )?;
-            if stored
+            // An id reused for a different session or workspace is a collision, not a
+            // repeat, and is still refused.
+            if (&stored.0, &stored.1, &stored.2)
                 != (
-                    event.workspace_root.clone(),
-                    event.session_id.clone(),
-                    event.agent_branch.clone(),
+                    &event.workspace_root,
+                    &event.session_id,
+                    &event.agent_branch,
                 )
             {
                 return Err(StoreError::RecordConflict);
+            }
+            // `generated` means an invocation wrote itself down before sending and has
+            // not finished: this write is that invocation finishing. Anything further
+            // along belongs to a delivery that already completed, and the first
+            // delivery's record stands.
+            if stored.3 == ExposureState::Generated.as_str() {
+                tx.execute(
+                    "UPDATE ranking_events SET decision = ?1, reason = ?2, exposure_state = ?3,
+                            elapsed_ms = ?4, input_tokens = ?5, output_tokens = ?6,
+                            snapshot_id = ?7
+                     WHERE event_id = ?8 AND exposure_state = ?9",
+                    params![
+                        event.decision.as_str(),
+                        event.reason,
+                        event.exposure_state.as_str(),
+                        event.elapsed_ms as i64,
+                        event.input_tokens.map(|t| t as i64),
+                        event.output_tokens.map(|t| t as i64),
+                        event.snapshot_id,
+                        event.event_id,
+                        ExposureState::Generated.as_str(),
+                    ],
+                )?;
             }
         }
 

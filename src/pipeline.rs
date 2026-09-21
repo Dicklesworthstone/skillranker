@@ -2191,6 +2191,16 @@ async fn rank_once(
             ),
         attempts: Vec::new(),
     });
+    // Written before the first send, so an invocation killed while waiting on the
+    // provider is not simply absent from the ledger. `unavailable` and `generated`
+    // are the truth at this moment: work has started, nothing has been decided, and
+    // nothing has been delivered. A completing invocation updates both fields; one
+    // that dies leaves this row behind as the only evidence that it ran and may have
+    // incurred cost. A reader treats a `generated` row older than the invocation
+    // deadline as died in flight, with unknown cost rather than none.
+    if let Some(recording) = progress.failed_recording.as_ref() {
+        record_inflight_ranking(invocation, cx, recording);
+    }
 
     let mut cached_rerank: Option<Response> = None;
     let wide_fresh = cached.is_none();
@@ -3860,6 +3870,47 @@ pub(crate) fn derive_request_event_id(context: &NormalizedContext) -> String {
     hasher.update(context.current_request.text.as_str().as_bytes());
 
     format!("ev-{}", &hasher.finalize().to_hex()[..16])
+}
+
+/// Write this invocation down before it sends anything.
+///
+/// Best effort, like every other optional recording: a store that cannot take the
+/// row does not change the ranking. The row carries no snapshot and no candidates,
+/// because neither exists yet, and no attempts, because none have been admitted —
+/// what it establishes is that an invocation with this identity was in flight.
+fn record_inflight_ranking(invocation: &ProcessInvocation, cx: &Cx, recording: &FailureRecording) {
+    let event = crate::storage::NewRankingEvent {
+        event_id: recording.event_id.clone(),
+        verified_delivery_key: None,
+        workspace_root: recording.workspace_root.clone(),
+        session_id: recording.session_id.clone(),
+        agent_branch: recording.agent_branch.clone(),
+        mode_channel: recording.mode_channel.clone(),
+        policy_version: recording.policy_version.to_string(),
+        schema_version: SCHEMA_VERSION as u32,
+        decision: crate::storage::DecisionKind::Unavailable,
+        reason: "in-flight".to_string(),
+        exposure_state: crate::storage::ExposureState::Generated,
+        elapsed_ms: 0,
+        created_at_unix_ms: wall_clock_ms(),
+        input_tokens: None,
+        output_tokens: None,
+        snapshot_id: None,
+    };
+    let location = match recording.ledger_dir.as_deref() {
+        Some(dir) => crate::storage::LedgerLocation::Directory(dir.to_path_buf()),
+        None => crate::storage::LedgerLocation::Platform,
+    };
+    let _ = crate::storage::record_ranking_with_attempts(
+        invocation,
+        cx,
+        crate::storage::LedgerAccess::ExistingOnly,
+        location,
+        &event,
+        &[],
+        None,
+        &[],
+    );
 }
 
 /// Record an unavailable event owning the attempts a failed run already made.
