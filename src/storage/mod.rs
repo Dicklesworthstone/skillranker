@@ -232,6 +232,11 @@ impl From<rusqlite::Error> for StoreError {
                 | ErrorCode::FileLockingProtocolFailed,
             ) => Self::Io,
             Some(ErrorCode::SchemaChanged) => Self::IncompatibleSchema,
+            // A uniqueness or check violation is an ordinary, expected outcome of a rule this
+            // schema states on purpose. Reporting it as corruption told a person their ledger
+            // could not be read safely when the truth was that a row already claimed the
+            // identity, and sent them looking for damage that was not there (sr-mdng).
+            Some(ErrorCode::ConstraintViolation) => Self::RecordConflict,
             _ => Self::Corrupt,
         }
     }

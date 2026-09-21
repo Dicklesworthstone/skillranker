@@ -1119,3 +1119,65 @@ fn the_documented_adoption_loop_reports_one_skill_as_one_row() {
         assert_eq!(other["observed_loads"].as_u64(), Some(0), "other: {other}");
     }
 }
+
+/// One session, two agent branches. Both observations must be recorded (sr-mdng).
+///
+/// `observation_id` is the table's primary key and `source_event_key` is unique. The key
+/// carries the producer namespace and the branch; the id used to omit both, so a second
+/// branch produced a new key with an identical id and the insert died on the primary key.
+/// The command exited 9 saying "cache database could not be read safely", which was not true:
+/// a row already claimed the id. AGENTS.md requires these namespaces to stay distinct — rule 1
+/// binds state to workspace, session AND agent branch, and `observe` documents `--branch`.
+#[test]
+fn one_session_observed_under_two_branches_keeps_a_row_for_each() {
+    let f = Fixture::new();
+    f.claude_session("two-branches", TASK);
+    f.ledger_init();
+    f.append_tool_use("two-branches", "alpha", 3);
+    f.append_tool_result("two-branches", 4);
+    let transcript = f.transcript("two-branches");
+    let transcript_str = transcript.to_str().unwrap();
+
+    for branch in ["main", "feature-x"] {
+        let out = f
+            .command(
+                1,
+                &[
+                    "observe",
+                    "--transcript",
+                    transcript_str,
+                    "--harness",
+                    "claude_code",
+                    "--branch",
+                    branch,
+                    "--json",
+                ],
+            )
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "observe on branch {branch} failed: stdout={} stderr={}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    let conn = rusqlite::Connection::open(f.ledger_db()).unwrap();
+    let mut statement = conn
+        .prepare("SELECT agent_branch, evidence_state FROM observations ORDER BY agent_branch")
+        .unwrap();
+    let rows: Vec<(String, String)> = statement
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(
+        rows,
+        vec![
+            ("feature-x".to_string(), "loaded".to_string()),
+            ("main".to_string(), "loaded".to_string()),
+        ],
+        "each branch owns its own observation; neither may collide with or overwrite the other"
+    );
+}

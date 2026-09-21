@@ -1739,3 +1739,76 @@ fn observation_completion_is_identity_bound_monotone_and_cursor_atomic() {
         .unwrap();
     assert_eq!(count, 1);
 }
+
+/// A uniqueness clash is a conflict, not corruption (sr-mdng).
+///
+/// Every unmapped SQLite error used to become `StoreError::Corrupt`, so a constraint
+/// violation — an ordinary outcome of a rule this schema states on purpose — reached a person
+/// as "cache database could not be read safely", with a hint pointing at their configuration.
+/// Nothing was corrupt. This pins the honest mapping, and the planted negative is the old one:
+/// with `ConstraintViolation` falling through to the catch-all, this asserts Corrupt instead.
+#[test]
+fn a_uniqueness_clash_is_reported_as_a_conflict_not_as_corruption() {
+    let dir = temp_private_dir("constraint-not-corrupt");
+    init_test_ledger(&dir);
+    let (inv, cx) = test_invocation();
+
+    // Two observations that share a primary key while differing in the unique key. The store
+    // must refuse the second, and must say why in terms a reader can act on.
+    let shared_id = "obs-clash";
+    let first = NewObservation {
+        observation_id: shared_id.into(),
+        source_event_key: "native:sess:main:ev-1:skill-a".into(),
+        workspace_root: "/data/workspace".into(),
+        session_id: "clash-session".into(),
+        agent_branch: "main".into(),
+        attributed_event_id: None,
+        skill_id: "skill-a".into(),
+        evidence_state: EvidenceState::Loaded,
+        observed_at_unix_ms: 1_000,
+    };
+    let second = NewObservation {
+        source_event_key: "native:sess:other:ev-1:skill-a".into(),
+        agent_branch: "other".into(),
+        ..first.clone()
+    };
+    let cursor = SessionCursor {
+        workspace_root: "/data/workspace".into(),
+        session_id: "clash-session".into(),
+        agent_branch: "main".into(),
+        cursor_kind: CursorKind::Observation,
+        transcript_generation: 1,
+        last_complete_event_id: "ev-1".into(),
+        last_offset_bytes: 10,
+        updated_at_unix_ms: 1_000,
+    };
+
+    assert_eq!(
+        record_observations_with_cursor(
+            &inv,
+            &cx,
+            LedgerAccess::ExistingOnly,
+            LedgerLocation::Directory(dir.clone()),
+            &[first],
+            &cursor,
+            Some(0),
+        ),
+        Ok(true)
+    );
+    let refused = record_observations_with_cursor(
+        &inv,
+        &cx,
+        LedgerAccess::ExistingOnly,
+        LedgerLocation::Directory(dir.clone()),
+        &[second],
+        &cursor,
+        None,
+    );
+    assert_eq!(
+        refused,
+        Err(StoreError::RecordConflict),
+        "a row already claims that identity; that is a conflict, and calling it corruption \
+         sends a reader looking for damage that is not there"
+    );
+    assert!(inv.shutdown());
+}

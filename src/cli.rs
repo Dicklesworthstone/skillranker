@@ -1681,12 +1681,14 @@ fn observe_command(clock: &EntryClock, matches: &clap::ArgMatches) -> Result<Str
             event_id_str,
             obs.skill_id.as_str()
         );
-        let observation_id = format!(
-            "obs-{}-{}-{}",
-            session_id,
-            event_id_str,
-            obs.skill_id.as_str()
-        );
+        // Derived from the uniqueness key rather than from a subset of it. `observation_id`
+        // is the table's PRIMARY KEY and `source_event_key` is UNIQUE, so the two must carry
+        // the same identity or they disagree: the old form omitted the producer namespace and
+        // the agent branch, so observing one session under a second branch produced a new
+        // source_event_key with an identical observation_id and the insert died on the primary
+        // key. AGENTS.md requires those namespaces to stay distinct, not to collide
+        // (sr-mdng).
+        let observation_id = format!("obs-{source_event_key}");
         new_observations.push(crate::storage::NewObservation {
             observation_id,
             source_event_key,
