@@ -59,12 +59,23 @@ struct Run {
 }
 impl Run {
     fn new(ms: u64) -> Self {
+        // The deadline under test. Several cases deliberately run until it expires.
         let clock = EntryClock::capture_with(
             DurationMillis::new("test-total", ms, 30_000).unwrap(),
             DurationMillis::new("test-cleanup", 100, 30_000).unwrap(),
         )
         .unwrap();
-        let invocation = ProcessInvocation::from_clock(clock).unwrap();
+        // A separate, generous clock owns the runtime. `shutdown` bounds its drain by
+        // whatever remains of its invocation's deadline, so sharing one clock left
+        // about a millisecond to join threads in exactly the cases that expire on
+        // purpose — a failure with the transport behaving correctly (sr-bdex). The
+        // client still receives `clock` above, so what it must honour is unchanged.
+        let host = EntryClock::capture_with(
+            DurationMillis::new("harness-total", ms + 30_000, 120_000).unwrap(),
+            DurationMillis::new("harness-cleanup", 5_000, 120_000).unwrap(),
+        )
+        .unwrap();
+        let invocation = ProcessInvocation::from_clock(host).unwrap();
         let cx = invocation.request_cx().unwrap();
         Self {
             clock,
