@@ -82,7 +82,10 @@ fn an_explicit_branch_disambiguates_same_agent_event_ids() {
         [&active[..], &other[..]].concat(),
         [&other[..], &active[..]].concat(),
     ] {
-        let branch = resolved(&events, &target(Some("leaf"), Some("agent"), Some("active")));
+        let branch = resolved(
+            &events,
+            &target(Some("leaf"), Some("agent"), Some("active")),
+        );
         assert_eq!(branch.events, active);
         assert!(!branch.ancestor_chain_truncated);
     }
@@ -91,9 +94,18 @@ fn an_explicit_branch_disambiguates_same_agent_event_ids() {
 #[test]
 fn an_unqualified_reused_event_id_is_ambiguous_not_last_writer_wins() {
     for (left, right) in [
-        (event("same", None, Some("a"), None), event("same", None, Some("b"), None)),
-        (event("same", None, None, Some("a")), event("same", None, None, Some("b"))),
-        (event("same", None, None, None), event("same", None, Some("a"), None)),
+        (
+            event("same", None, Some("a"), None),
+            event("same", None, Some("b"), None),
+        ),
+        (
+            event("same", None, None, Some("a")),
+            event("same", None, None, Some("b")),
+        ),
+        (
+            event("same", None, None, None),
+            event("same", None, Some("a"), None),
+        ),
     ] {
         for events in [[left.clone(), right.clone()], [right.clone(), left.clone()]] {
             assert!(matches!(
@@ -125,14 +137,20 @@ fn a_foreign_singleton_is_not_a_fallback_for_an_empty_selected_scope() {
         if !identified {
             foreign.event_id = None;
         }
-        for request in [target(None, Some("active"), None), target(None, None, Some("active"))] {
+        for request in [
+            target(None, Some("active"), None),
+            target(None, None, Some("active")),
+        ] {
             assert_eq!(
                 resolve_active_branch(std::slice::from_ref(&foreign), &request),
                 BranchResolution::Unresolved(UnresolvedBranchReason::NoMatchingEvents)
             );
         }
         // Honest counterpart: the matching singleton is still usable.
-        let branch = resolved(std::slice::from_ref(&foreign), &target(None, Some("other"), None));
+        let branch = resolved(
+            std::slice::from_ref(&foreign),
+            &target(None, Some("other"), None),
+        );
         assert_eq!(branch.events, [foreign]);
     }
 }
@@ -154,7 +172,10 @@ fn a_foreign_parent_is_a_missing_ancestor_not_an_active_compaction() {
 fn another_agents_parent_reference_cannot_hide_the_selected_leaf() {
     let active = event("leaf", None, Some("active"), None);
     let foreign = event("foreign", Some("leaf"), Some("other"), None);
-    let branch = resolved(&[active.clone(), foreign], &target(None, Some("active"), None));
+    let branch = resolved(
+        &[active.clone(), foreign],
+        &target(None, Some("active"), None),
+    );
     assert_eq!(branch.events, [active]);
 }
 
@@ -163,7 +184,10 @@ fn exact_redelivery_deduplicates_but_conflicting_definitions_are_rejected() {
     let root = event("root", None, Some("active"), None);
     let leaf = event("leaf", Some("root"), Some("active"), None);
     let request = target(Some("leaf"), Some("active"), None);
-    let branch = resolved(&[root.clone(), leaf.clone(), root.clone(), leaf.clone()], &request);
+    let branch = resolved(
+        &[root.clone(), leaf.clone(), root.clone(), leaf.clone()],
+        &request,
+    );
     assert_eq!(branch.events.len(), 2);
     let mut conflict = root.clone();
     conflict.kind = EventKind::Compaction;
@@ -173,7 +197,9 @@ fn exact_redelivery_deduplicates_but_conflicting_definitions_are_rejected() {
     ] {
         assert!(matches!(
             resolve_active_branch(&events, &request),
-            BranchResolution::Unresolved(UnresolvedBranchReason::ConflictingEventDefinitions { .. })
+            BranchResolution::Unresolved(
+                UnresolvedBranchReason::ConflictingEventDefinitions { .. }
+            )
         ));
     }
     // An unrelated agent's conflict does not erase an explicitly selected lineage.
@@ -181,7 +207,12 @@ fn exact_redelivery_deduplicates_but_conflicting_definitions_are_rejected() {
     other.agent_id = Some(AgentId::new("other").unwrap());
     conflict.agent_id = other.agent_id.clone();
     conflict.text = PrivateText::new("different definition");
-    assert_eq!(resolved(&[root, leaf, other, conflict], &request).events.len(), 2);
+    assert_eq!(
+        resolved(&[root, leaf, other, conflict], &request)
+            .events
+            .len(),
+        2
+    );
 }
 
 #[test]
@@ -206,7 +237,10 @@ fn unique_shared_fork_ancestors_and_explicit_branch_conflicts_are_preserved() {
     let branch = resolved(&events, &target(Some("leaf"), Some("agent"), None));
     assert_eq!(branch.events, [root, leaf]);
     assert!(matches!(
-        resolve_active_branch(&events, &target(Some("leaf"), Some("agent"), Some("feature"))),
+        resolve_active_branch(
+            &events,
+            &target(Some("leaf"), Some("agent"), Some("feature"))
+        ),
         BranchResolution::Unresolved(UnresolvedBranchReason::ConflictingBranchIdentities { .. })
     ));
 }
@@ -215,7 +249,10 @@ fn unique_shared_fork_ancestors_and_explicit_branch_conflicts_are_preserved() {
 fn cycles_are_rejected_with_and_without_an_explicit_leaf() {
     for events in [
         vec![event("one", Some("one"), None, None)],
-        vec![event("one", Some("two"), None, None), event("two", Some("one"), None, None)],
+        vec![
+            event("one", Some("two"), None, None),
+            event("two", Some("one"), None, None),
+        ],
     ] {
         for request in [target(None, None, None), target(Some("one"), None, None)] {
             assert!(matches!(
@@ -293,12 +330,8 @@ fn selected_lineage_and_production_load_extraction_agree_on_agent_identity() {
         [&other[..], &active[..]].concat(),
     ] {
         let branch = resolved(&events, &target(Some("reply"), Some("active"), None));
-        let loaded = extract_loaded_skill_records(
-            &events,
-            &resolver,
-            Some(&branch),
-            &branch.current_epoch,
-        );
+        let loaded =
+            extract_loaded_skill_records(&events, &resolver, Some(&branch), &branch.current_epoch);
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded[0].skill_id.as_str(), "alpha");
     }

@@ -72,11 +72,10 @@ impl<'a> Index<'a> {
         let Some(parent) = event.parent_id.as_ref() else {
             return Ok(None);
         };
-        if let Some(event) = self.events.get(&(
-            event.agent_id.as_ref(),
-            event.branch_id.as_ref(),
-            parent,
-        )) {
+        if let Some(event) =
+            self.events
+                .get(&(event.agent_id.as_ref(), event.branch_id.as_ref(), parent))
+        {
             return Ok(Some(*event));
         }
         match self.by_agent.get(&(event.agent_id.as_ref(), parent)) {
@@ -99,9 +98,12 @@ impl<'a> Index<'a> {
             let mut candidates = self.events.values().copied().filter(|event| {
                 event.event_id.as_ref() == Some(id) && matches_target(event, target)
             });
-            let first = candidates.next().ok_or_else(|| {
-                UnresolvedBranchReason::TargetEventNotFound { target: id.clone() }
-            })?;
+            let first =
+                candidates
+                    .next()
+                    .ok_or_else(|| UnresolvedBranchReason::TargetEventNotFound {
+                        target: id.clone(),
+                    })?;
             if candidates.next().is_some() {
                 return Err(UnresolvedBranchReason::AmbiguousEventIdentity { event: id.clone() });
             }
@@ -189,8 +191,7 @@ impl<'a> Index<'a> {
                     });
                 }
             }
-            if let (Some(expected), Some(observed)) =
-                (&target.target_branch_id, &current.branch_id)
+            if let (Some(expected), Some(observed)) = (&target.target_branch_id, &current.branch_id)
                 && expected != observed
             {
                 return Err(UnresolvedBranchReason::ConflictingBranchIdentities {
@@ -220,10 +221,12 @@ impl<'a> Index<'a> {
             .filter(|e| e.kind == EventKind::TaskBoundary)
             .count();
         Ok(ActiveBranch {
-            branch_id: target
-                .target_branch_id
-                .clone()
-                .or_else(|| lineage.iter().rev().find_map(|event| event.branch_id.clone())),
+            branch_id: target.target_branch_id.clone().or_else(|| {
+                lineage
+                    .iter()
+                    .rev()
+                    .find_map(|event| event.branch_id.clone())
+            }),
             leaf_event_id: leaf.event_id.clone(),
             events: lineage,
             current_epoch: epoch_name(compaction_count as u64),
