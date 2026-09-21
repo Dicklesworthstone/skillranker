@@ -50,3 +50,45 @@ the receipt byte count is recomputed from the final inspected payload.
 permuted input, foreign reused IDs, receipt totals, incomplete/ambiguous history,
 and the actual production dry-run request. These tests do not establish live
 provider quality, a new native adapter contract, or new load evidence.
+
+## Session evidence is also provider input
+
+Both rendering APIs prepare a separate, bounded provider view of session state.
+Loaded-reference names and summaries, the loaded-state label, and explicit
+exclusion strings are sanitized and fully redacted before any truncation. The
+caller's local loaded records and exact exclusions are never modified. Redacted
+names are display prose only, not a replacement for local invocation authority.
+The caller's redactor (including its entropy setting) remains in force, followed
+by inspection of the final serialized context.
+
+Session input is preflighted without copying bodies: at most 10,000 combined
+reference/exclusion records and 1 MiB of aggregate UTF-8 field bytes. Session
+output has a separate 4,096-scalar allowance, shared across its label, exclusion
+strings, reference names, and summaries. The existing 12,000-scalar request/history
+allowance is unchanged, as is the final 96 KiB serialized-request ceiling shared
+with project signals, roster options, and questions. These are upper bounds, not
+a promise every combination fits the final wire limit.
+
+The evidence-state label and all exclusions reserve space first. They remain
+whole after redaction; inability to fit them is an explicit context error, not a
+silent removal of a user constraint. Optional references use the remainder in
+input order, up to 32 records and 700 scalars per summary. Names are never
+truncated into other names. A reference with an empty or unrepresentable name is
+omitted without preventing a later bounded reference from fitting. Reference
+summary truncation occurs only after full-field redaction and includes a visible
+omission marker when the remaining space permits it.
+
+The session-state receipt counts included/omitted records, truncated summary
+fields, and actual scanner redactions. Redactions count fields scanned during
+selection, including a scanned name later omitted for lack of space; skipped
+bodies are not claimed as scanned. All totals are recomputed after integrating
+session and history accounting. Omitting/truncating reference evidence marks
+context partial, never upgrading an insufficient context. `disclosed_scalars`
+retains its existing request/history meaning; `disclosed_bytes` covers the final
+whole payload, including the session view.
+
+`tests/render_session_state.rs` exercises both production APIs and the receipt
+verifier with secrets in every session field, Unicode/exact-bound allocation,
+mandatory-constraint overflow, optional omissions, source limits, both profiles,
+and immutable local inputs. No additional provider call, discovery, or persistence
+is performed to build this view.

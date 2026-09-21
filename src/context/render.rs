@@ -2,12 +2,17 @@
 //! Payload formatting and redaction retain their existing implementation.
 
 mod payload;
+mod session;
 
 pub use payload::{
     IMAGE_OMISSION_MARKER, MEDIA_OMISSION_MARKER, RenderContextError, RenderContextOptions,
     RenderedContextPayload, RenderedLoadedReference, RenderedMessage, RenderedProjectSignals,
     RenderedSessionState, detect_languages_from_markers, is_sr_advisory_text,
     sanitize_media_data, strip_advisory_from_non_user, strip_thinking_blocks,
+};
+
+pub use session::{
+    SESSION_REFERENCE_RECORDS, SESSION_REFERENCE_SUMMARY_SCALARS, SESSION_STATE_SCALARS,
 };
 
 use crate::context::{EventKind, NormalizedContext, NormalizedEvent, Role};
@@ -86,10 +91,18 @@ pub fn render_context_and_receipt(
     options: &RenderContextOptions<'_>,
 ) -> Result<(RenderedContextPayload, DisclosureReceipt), RenderContextError> {
     let (context, incomplete, omitted) = project(context)?;
-    let (mut rendered, mut receipt) = payload::render_context_and_receipt(&context, options)?;
+    let (prepared, session_receipt) = session::prepare(options)?;
+    let incomplete = incomplete
+        || session_receipt.omitted_count != 0
+        || session_receipt.truncated_count != 0;
+    let (mut rendered, mut receipt) = payload::render_context_and_receipt(&context, &prepared)?;
     receipt.disclosed_bytes = finalize(&mut rendered, incomplete, options)?;
     receipt.context_quality = rendered.context_quality;
     for category in &mut receipt.categories {
+        if category.category == SourceCategory::SessionState {
+            *category = session_receipt.clone();
+            continue;
+        }
         let count = match category.category {
             SourceCategory::MessageHistory => omitted[0],
             SourceCategory::ToolEvents => omitted[1],
@@ -97,7 +110,26 @@ pub fn render_context_and_receipt(
         };
         category.omitted_count += count;
     }
-    receipt.total_omitted = receipt.categories.iter().map(|category| category.omitted_count).sum();
+    receipt.total_included = receipt
+        .categories
+        .iter()
+        .map(|category| category.included_count)
+        .sum();
+    receipt.total_omitted = receipt
+        .categories
+        .iter()
+        .map(|category| category.omitted_count)
+        .sum();
+    receipt.total_truncated = receipt
+        .categories
+        .iter()
+        .map(|category| category.truncated_count)
+        .sum();
+    receipt.total_redactions = receipt
+        .categories
+        .iter()
+        .map(|category| category.redaction_count)
+        .sum();
     Ok((rendered, receipt))
 }
 
@@ -108,7 +140,11 @@ pub fn render_context(
     options: &RenderContextOptions<'_>,
 ) -> Result<RenderedContextPayload, RenderContextError> {
     let (context, incomplete, _) = project(context)?;
-    let mut rendered = payload::render_context(&context, options)?;
+    let (prepared, session_receipt) = session::prepare(options)?;
+    let incomplete = incomplete
+        || session_receipt.omitted_count != 0
+        || session_receipt.truncated_count != 0;
+    let mut rendered = payload::render_context(&context, &prepared)?;
     finalize(&mut rendered, incomplete, options)?;
     Ok(rendered)
 }
