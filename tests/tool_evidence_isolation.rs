@@ -234,3 +234,46 @@ fn reload_after_compaction_preserves_both_observations_and_current_eligibility()
     assert_eq!(records.len(), 1);
     assert_eq!(records[0].epoch, branch.current_epoch);
 }
+
+#[test]
+fn compaction_resets_only_its_own_agent_branch_call_namespace() {
+    for foreign in [false, true] {
+        for by_agent in [false, true] {
+            let mut events = vec![
+                event("call-before", None, EventKind::ToolInvocation),
+                event("result-before", Some("call-before"), EventKind::ToolResult),
+                event("compact-other", None, EventKind::Compaction),
+                event("call-after", None, EventKind::ToolInvocation),
+                event("result-after", Some("call-after"), EventKind::ToolResult),
+            ];
+            for (index, ev) in events.iter_mut().enumerate() {
+                let scope = if foreign && index == 2 {
+                    "other"
+                } else {
+                    "owner"
+                };
+                if by_agent {
+                    ev.agent_id = Some(AgentId::new(scope).unwrap());
+                } else {
+                    ev.branch_id = Some(BranchId::new(scope).unwrap());
+                }
+            }
+            let calls = associate_tool_events(&events, 200);
+            if foreign {
+                assert!(
+                    calls
+                        .iter()
+                        .all(|call| call.status != ToolStatus::Succeeded),
+                    "another namespace's compaction must not authorize duplicate IDs"
+                );
+            } else {
+                assert_eq!(calls.len(), 2);
+                assert!(
+                    calls
+                        .iter()
+                        .all(|call| call.status == ToolStatus::Succeeded)
+                );
+            }
+        }
+    }
+}

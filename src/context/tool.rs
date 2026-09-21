@@ -171,6 +171,15 @@ fn associate_tool_event_iter<'a>(
             continue;
         }
 
+        // Compaction starts a new call-identity epoch for this agent/branch.
+        // Keep prior observations and event deduplication, but do not let a
+        // completed or ambiguous old key poison an independently reused ID.
+        if event.kind == EventKind::Compaction {
+            pending_by_call_id.retain(|(owner, _), _| *owner != scope);
+            pending_by_name.retain(|(owner, _, _), _| *owner != scope);
+            continue;
+        }
+
         let Some(tool) = &event.tool else {
             continue;
         };
@@ -197,7 +206,8 @@ fn associate_tool_event_iter<'a>(
                     .result
                     .as_ref()
                     .map(|r| {
-                        let (summary, errors) = summarize_tool_result(r.as_str(), max_excerpt_chars);
+                        let (summary, errors) =
+                            summarize_tool_result(r.as_str(), max_excerpt_chars);
                         (Some(summary), errors)
                     })
                     .unwrap_or((None, Vec::new()));
