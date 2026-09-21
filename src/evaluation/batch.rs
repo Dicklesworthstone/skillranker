@@ -200,11 +200,7 @@ fn read_cases_streaming<R: BufRead>(mut reader: R) -> Result<Vec<ReplayCase>, Ev
                 max: EVALUATION_CASE_RECORDS.max(),
             });
         }
-        let value = crate::evaluation::parse_bounded_json(
-            trimmed.as_bytes(),
-            EVALUATION_DATASET_DEPTH.max(),
-        )?;
-        let case = ReplayCase::from_value(value)
+        let case = ReplayCase::from_json_bytes(trimmed.as_bytes())
             .map_err(|e| EvaluationError::InvalidField(format!("malformed replay case: {e}")))?;
         if case.case_id.trim().is_empty() || !ids.insert(case.case_id.clone()) {
             return Err(EvaluationError::CardinalityViolation(
