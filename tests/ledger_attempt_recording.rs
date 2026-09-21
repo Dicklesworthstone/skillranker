@@ -771,3 +771,93 @@ fn an_invocation_killed_mid_flight_is_still_recorded() {
         "created_at {created} is not wall clock"
     );
 }
+
+#[test]
+fn an_invocation_killed_after_its_request_reached_the_wire_owns_that_attempt() {
+    // sr-roadmap-l1i.6.7's reached-wire clause, which PurpleFrog was right to insist the
+    // earlier hard-kill case did not cover. That case waited for the invocation's *event*
+    // row, which is written before anything is sent, so it could kill before the request
+    // ever touched transport: it establishes that an invocation started, and nothing about
+    // which attempt was in flight. The expensive fact is narrower — that *this* attempt was
+    // sent, and so the provider may already have done the work and charged for it. After a
+    // kill, an attempt that was merely admitted and one that reached the wire are
+    // indistinguishable unless something wrote down which happened, before the wait.
+    let f = Fixture::new();
+    f.claude_session("rec-wire", TASK);
+    f.ledger_init();
+    // `write-on-wide` writes the target the moment the provider has READ the wide request,
+    // and `slow-wide` then holds the answer for ten seconds. So the marker is the
+    // provider's own receipt that the request reached the wire, and the kill lands while
+    // the response is still being awaited.
+    let marker = f.root.join("reached-wire.txt");
+    std::fs::write(&marker, "not-yet").unwrap();
+    let provider = Provider::start_with(
+        &f,
+        "slow-wide+write-on-wide",
+        &[marker.to_str().unwrap(), "10"],
+    );
+    let mut child = f
+        .rank_command(provider.port, &[])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+
+    // Timed against the provider's own receipt rather than a sleep or our own row: those
+    // would let the kill land before the send and make this case pass for the wrong reason.
+    let start = std::time::Instant::now();
+    let mut reached_wire = false;
+    while start.elapsed() < std::time::Duration::from_secs(25) {
+        if std::fs::read_to_string(&marker).unwrap_or_default().trim() != "not-yet" {
+            reached_wire = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    assert!(
+        reached_wire,
+        "the provider never reported reading the wide request, so this case never got to \
+         the state it exists to test"
+    );
+    child.kill().expect("SIGKILL delivered");
+    let status = child.wait().unwrap();
+    assert!(
+        !status.success(),
+        "the process was supposed to be killed, not to finish"
+    );
+
+    let attempts = f.attempts();
+    assert_eq!(
+        attempts.len(),
+        1,
+        "exactly the one attempt that was in flight should own a row: {attempts:#?}"
+    );
+    let attempt = &attempts[0];
+    assert_eq!(attempt.stage, "wide", "{attempt:#?}");
+    assert_eq!(
+        attempt.status, "sent",
+        "a request the provider is known to have read was not recorded as sent, so the \
+         ledger cannot say a charge was possible: {attempt:#?}"
+    );
+    assert!(attempt.sent_at.is_some(), "{attempt:#?}");
+    // Not dated as completed: it never returned, and claiming otherwise would turn an
+    // unknown outcome into an observed one.
+    assert!(
+        attempt.completed_at.is_none(),
+        "an attempt that never returned was dated as completed: {attempt:#?}"
+    );
+    // Usage unknown rather than zero. The provider may have done the whole job.
+    assert!(
+        attempt.input_tokens.is_none() && attempt.output_tokens.is_none(),
+        "a killed attempt was recorded as having cost nothing: {attempt:#?}"
+    );
+
+    // And the event it belongs to is still the in-flight row, so the pair reads as
+    // "an invocation ran, sent this request, and never came back".
+    let events = f.events();
+    assert_eq!(events.len(), 1, "{events:#?}");
+    assert_eq!(events[0].1, "unavailable", "{events:#?}");
+    assert_eq!(events[0].3, "in-flight", "{events:#?}");
+    assert_eq!(attempt.owner_event_id, events[0].0, "{attempts:#?}");
+}

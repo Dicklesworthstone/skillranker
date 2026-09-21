@@ -1077,3 +1077,418 @@ fn cli_stats_uses_unix_time_for_recent_events_and_relative_cutoffs() {
     assert_eq!(report.turns.total_evaluated, 1);
     assert_eq!(report.turns.emitted_suggestions, 1);
 }
+
+/// The cohorts sr-roadmap-l1i.6.13's acceptance names but this file did not yet exercise:
+/// a follower that reused an owner's response, rows past the retention cutoff, and the TUI
+/// and advisory channels.
+fn ready_store(prefix: &str, inv: &ProcessInvocation, cx: &Cx) -> (LedgerLocation, LedgerStore) {
+    let dir = temp_private_dir(prefix);
+    let location = LedgerLocation::Directory(dir);
+    let _init = init_ledger(inv, cx, location.clone()).expect("init ledger");
+    let open =
+        open_ledger(inv, cx, LedgerAccess::ExistingOnly, location.clone()).expect("open ledger");
+    match open {
+        LedgerOpen::Ready(store) => (location, *store),
+        other => panic!("expected a ready store, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_follower_that_reused_a_response_is_a_delivery_with_no_cost_of_its_own() {
+    // A follower is a turn that was served from a response another turn paid for. It admits no
+    // provider attempt, so it owns no attempt row — which is correct, because the money was
+    // spent by the owner and charging it twice would inflate the total the report exists to
+    // keep honest.
+    //
+    // What that leaves is a question about usefulness rather than about spend: if the follower
+    // is the turn somebody judged useful, the judged cohort's own attempts are none, and the
+    // ratio computed from them describes a suggestion that appears to have cost nothing. This
+    // case establishes what the report actually says in that situation.
+    let (inv, cx) = test_invocation();
+    let (location, mut store) = ready_store("follower", &inv, &cx);
+    let base = 1_700_000_000_000u64;
+
+    let stamp = store.stamp();
+    store
+        .record_roster_snapshot(inv.clock(), &cx, &snapshot_fixture("snap-1", base), stamp)
+        .expect("snapshot");
+
+    // The owner paid for its answer.
+    let owner = event_fixture(
+        "ev-owner",
+        "cli",
+        DecisionKind::Ranked,
+        ExposureState::Emitted,
+        480,
+        base + 100,
+    );
+    let paid = attempt_fixture(
+        "att-owner",
+        "ev-owner",
+        Some(80),
+        Some(20),
+        AttemptStatus::Completed,
+        base + 100,
+    );
+    let stamp = store.stamp();
+    store
+        .record_ranking_event_with_attempts(
+            inv.clock(),
+            &cx,
+            &owner,
+            &[],
+            None,
+            std::slice::from_ref(&paid),
+            stamp,
+        )
+        .expect("owner");
+
+    // The follower reused it: a real delivery, and no attempt of its own.
+    let follower = event_fixture(
+        "ev-follower",
+        "cli",
+        DecisionKind::Ranked,
+        ExposureState::Emitted,
+        11,
+        base + 200,
+    );
+    let stamp = store.stamp();
+    store
+        .record_ranking_event_with_attempts(inv.clock(), &cx, &follower, &[], None, &[], stamp)
+        .expect("follower");
+
+    // And the follower is the one judged useful.
+    let stamp = store.stamp();
+    store
+        .record_judgment(
+            inv.clock(),
+            &cx,
+            &judgment_fixture(
+                "j-1",
+                "ev-follower",
+                "review",
+                JudgmentLabel::Useful,
+                base + 300,
+            ),
+            stamp,
+        )
+        .expect("judgment");
+
+    let report = ledger_stats(&inv, &cx, location, base as i64 - 1, false).expect("ledger_stats");
+
+    // Both turns are evaluated and both delivered. Only one of them paid.
+    assert_eq!(report.turns.total_evaluated, 2, "{:#?}", report.turns);
+    assert_eq!(report.turns.emitted_suggestions, 2, "{:#?}", report.turns);
+    assert_eq!(report.provider.total_attempts, 1, "{:#?}", report.provider);
+    assert_eq!(
+        report.provider.known_total_tokens, 100,
+        "{:#?}",
+        report.provider
+    );
+    assert_eq!(
+        report.provider.cache_served_events, 1,
+        "the reused turn was not recognised as served without paying: {:#?}",
+        report.provider
+    );
+
+    // The follower is not credited with the owner's attempt: that would report the same 100
+    // tokens twice across the two turns.
+    assert_eq!(report.judgments.useful, 1, "{:#?}", report.judgments);
+    assert_eq!(
+        report.provider.judged_turns_served_from_cache, 1,
+        "the judged cohort's reliance on a response it did not pay for went unreported: {:#?}",
+        report.provider
+    );
+
+    // And the ratio is declined rather than reported as zero. Zero would say a useful
+    // suggestion cost nothing; what is true is that this cohort's spend belongs to a turn
+    // outside it, and attributing the owner's tokens here would report them twice once the
+    // owner is judged too.
+    assert!(
+        report.provider.tokens_per_useful_suggestion.is_none(),
+        "a cohort that paid nothing itself was given a token ratio: {:?}",
+        report.provider.tokens_per_useful_suggestion
+    );
+    let text = &report.provider.cost_per_useful_suggestion;
+    assert!(
+        text.starts_with("not estimable"),
+        "cost per useful suggestion claimed a figure for a cohort with no attempts: {text}"
+    );
+    assert!(
+        text.contains("reused a response"),
+        "the reason a figure was declined is not stated: {text}"
+    );
+}
+
+#[test]
+fn rows_past_the_retention_cutoff_are_counted_and_disclosed_as_expiring() {
+    // A window wider than retention includes turns retention already considers expired. They
+    // are still recorded, so the window's counts include them — and `retained` says how much of
+    // what was just counted will survive the next maintenance pass. The two numbers describe
+    // different questions and must not be reconciled by quietly dropping rows from either.
+    let (inv, cx) = test_invocation();
+    let (location, mut store) = ready_store("expired", &inv, &cx);
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    let day = 24 * 60 * 60 * 1000u64;
+
+    let stamp = store.stamp();
+    store
+        .record_roster_snapshot(
+            inv.clock(),
+            &cx,
+            &snapshot_fixture("snap-1", now - 60 * day),
+            stamp,
+        )
+        .expect("snapshot");
+
+    // One turn inside retention, one well past it, each with a paid attempt.
+    for (id, age_days) in [("ev-recent", 2u64), ("ev-ancient", 60u64)] {
+        let event = event_fixture(
+            id,
+            "cli",
+            DecisionKind::Ranked,
+            ExposureState::Emitted,
+            400,
+            now - age_days * day,
+        );
+        let attempt = attempt_fixture(
+            &format!("att-{id}"),
+            id,
+            Some(70),
+            Some(30),
+            AttemptStatus::Completed,
+            now - age_days * day,
+        );
+        let stamp = store.stamp();
+        store
+            .record_ranking_event_with_attempts(
+                inv.clock(),
+                &cx,
+                &event,
+                &[],
+                None,
+                std::slice::from_ref(&attempt),
+                stamp,
+            )
+            .unwrap_or_else(|error| panic!("recording {id} failed: {error:?}"));
+    }
+
+    // A window of ninety days reaches past the thirty-day retention cutoff on purpose.
+    let report =
+        ledger_stats(&inv, &cx, location, (now - 90 * day) as i64, false).expect("ledger_stats");
+
+    // Nothing is silently omitted: both turns and both paid attempts are counted.
+    assert_eq!(report.turns.total_evaluated, 2, "{:#?}", report.turns);
+    assert_eq!(report.provider.total_attempts, 2, "{:#?}", report.provider);
+    assert_eq!(
+        report.provider.known_total_tokens, 200,
+        "a paid attempt on an expiring turn was dropped from the totals: {:#?}",
+        report.provider
+    );
+
+    // And the report says which of them retention no longer protects.
+    assert_eq!(report.retained.total_events, 2, "{:#?}", report.retained);
+    assert_eq!(
+        report.retained.active_events, 1,
+        "the turn inside retention was not identified: {:#?}",
+        report.retained
+    );
+    assert_eq!(
+        report.retained.expired_events, 1,
+        "a turn past the cutoff was not disclosed as expiring: {:#?}",
+        report.retained
+    );
+    assert!(
+        report.retained.cutoff_unix_ms < report.retained.as_of_unix_ms,
+        "{:#?}",
+        report.retained
+    );
+}
+
+#[test]
+fn the_tui_and_advisory_channels_keep_their_own_denominators() {
+    // README promises shadow, advisory-hook, CLI and TUI records have separate denominators.
+    // Two of the four were already covered; a TUI turn averaged into a CLI one would make a
+    // per-channel report worth less than no report, because the reader cannot see it happen.
+    let (inv, cx) = test_invocation();
+    let (location, mut store) = ready_store("channels4", &inv, &cx);
+    let base = 1_700_000_000_000u64;
+
+    let stamp = store.stamp();
+    store
+        .record_roster_snapshot(inv.clock(), &cx, &snapshot_fixture("snap-1", base), stamp)
+        .expect("snapshot");
+
+    // One delivery in each of the four channels, plus an abstention in the TUI only.
+    let rows = [
+        (
+            "ev-cli",
+            "cli",
+            DecisionKind::Ranked,
+            ExposureState::Emitted,
+        ),
+        (
+            "ev-shadow",
+            "shadow",
+            DecisionKind::Ranked,
+            ExposureState::Emitted,
+        ),
+        (
+            "ev-advisory",
+            "advisory",
+            DecisionKind::Ranked,
+            ExposureState::Emitted,
+        ),
+        (
+            "ev-tui",
+            "tui",
+            DecisionKind::Ranked,
+            ExposureState::Emitted,
+        ),
+        (
+            "ev-tui-abstain",
+            "tui",
+            DecisionKind::Abstain,
+            ExposureState::Generated,
+        ),
+    ];
+    for (offset, (id, channel, decision, exposure)) in rows.iter().enumerate() {
+        let event = event_fixture(
+            id,
+            channel,
+            *decision,
+            *exposure,
+            300,
+            base + 100 + offset as u64,
+        );
+        let stamp = store.stamp();
+        store
+            .record_ranking_event_with_attempts(inv.clock(), &cx, &event, &[], None, &[], stamp)
+            .unwrap_or_else(|error| panic!("recording {id} failed: {error:?}"));
+    }
+
+    let report = ledger_stats(&inv, &cx, location, base as i64 - 1, false).expect("ledger_stats");
+
+    assert_eq!(report.turns.total_evaluated, 5, "{:#?}", report.turns);
+    let by_channel: std::collections::BTreeMap<&str, &ChannelStats> = report
+        .turns
+        .by_channel
+        .iter()
+        .map(|channel| (channel.channel.as_str(), channel))
+        .collect();
+    assert_eq!(
+        by_channel.keys().copied().collect::<Vec<_>>(),
+        vec!["advisory", "cli", "shadow", "tui"],
+        "a channel was merged into another: {:#?}",
+        report.turns.by_channel
+    );
+    for name in ["cli", "shadow", "advisory"] {
+        let channel = by_channel[name];
+        assert_eq!(channel.evaluated_turns, 1, "{name}: {channel:#?}");
+        assert_eq!(channel.emitted, 1, "{name}: {channel:#?}");
+        assert_eq!(channel.abstain, 0, "{name}: {channel:#?}");
+    }
+    // The TUI carries two turns of its own, and its abstention stays in its own denominator.
+    let tui = by_channel["tui"];
+    assert_eq!(tui.evaluated_turns, 2, "{tui:#?}");
+    assert_eq!(tui.emitted, 1, "{tui:#?}");
+    assert_eq!(tui.abstain, 1, "{tui:#?}");
+    // Totals agree with the sum of the parts, so a total cannot contradict a channel.
+    let summed: u64 = report
+        .turns
+        .by_channel
+        .iter()
+        .map(|channel| channel.evaluated_turns)
+        .sum();
+    assert_eq!(summed, report.turns.total_evaluated, "{:#?}", report.turns);
+}
+
+#[test]
+fn a_judged_attempt_with_unknown_usage_is_not_silently_costed_at_zero() {
+    // 6.13's acceptance asks that no paid attempt be silently omitted. An attempt whose usage the
+    // provider never reported is still a paid attempt: it contributes nothing to the token sum
+    // because nothing is known, not because nothing was spent. The ratio built from that sum is
+    // therefore a lower bound, and this case establishes whether the report says so.
+    let (inv, cx) = test_invocation();
+    let (location, mut store) = ready_store("unknownusage", &inv, &cx);
+    let base = 1_700_000_000_000u64;
+
+    let stamp = store.stamp();
+    store
+        .record_roster_snapshot(inv.clock(), &cx, &snapshot_fixture("snap-1", base), stamp)
+        .expect("snapshot");
+
+    let event = event_fixture(
+        "ev-1",
+        "cli",
+        DecisionKind::Ranked,
+        ExposureState::Emitted,
+        400,
+        base + 100,
+    );
+    // One attempt reported its usage; the other completed without reporting any.
+    let known = attempt_fixture(
+        "att-known",
+        "ev-1",
+        Some(90),
+        Some(10),
+        AttemptStatus::Completed,
+        base + 100,
+    );
+    let silent = attempt_fixture(
+        "att-silent",
+        "ev-1",
+        None,
+        None,
+        AttemptStatus::Completed,
+        base + 110,
+    );
+    let stamp = store.stamp();
+    store
+        .record_ranking_event_with_attempts(
+            inv.clock(),
+            &cx,
+            &event,
+            &[],
+            None,
+            &[known, silent],
+            stamp,
+        )
+        .expect("event");
+    let stamp = store.stamp();
+    store
+        .record_judgment(
+            inv.clock(),
+            &cx,
+            &judgment_fixture("j-1", "ev-1", "review", JudgmentLabel::Useful, base + 300),
+            stamp,
+        )
+        .expect("judgment");
+
+    let report = ledger_stats(&inv, &cx, location, base as i64 - 1, false).expect("ledger_stats");
+
+    // Both attempts are counted and one of them reported nothing.
+    assert_eq!(report.provider.total_attempts, 2, "{:#?}", report.provider);
+    assert_eq!(
+        report.provider.known_total_tokens, 100,
+        "{:#?}",
+        report.provider
+    );
+    assert_eq!(
+        report.provider.unknown_usage_attempts, 1,
+        "an attempt that reported no usage was not counted as such: {:#?}",
+        report.provider
+    );
+
+    // The ratio is computed from 100 known tokens over two attempts, one of whose cost is
+    // unknown. Saying "50 tokens per useful suggestion" without that qualification presents a
+    // lower bound as a measurement.
+    let text = &report.provider.cost_per_useful_suggestion;
+    assert!(
+        text.contains("unknown") || text.contains("lower bound"),
+        "the cost figure omits an attempt whose usage is unknown without saying so: {text}"
+    );
+}

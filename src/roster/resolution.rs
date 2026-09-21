@@ -3,7 +3,7 @@
 
 mod discovery_scope;
 
-use super::discovery::{Diagnostic, DiscoveryPlan, SourceKind};
+use super::discovery::{Diagnostic, DiscoveryLimits, DiscoveryPlan, SourceKind};
 use super::{
     DisplayName, InvocationKind, InvocationName, InvocationRestrictions, LoadTarget, SkillAlias,
     SkillRecord, Visibility, parse_skill_metadata,
@@ -440,7 +440,8 @@ pub fn resolve_claude_plan(
     if plan.harness().as_str() != "claude_code" {
         return Err(ResolutionError::InvalidBinding);
     }
-    let discovery = plan.discover();
+    let discovery =
+        plan.discover_with_checkpoint(DiscoveryLimits::defaults(), || budget(cx, clock))?;
     budget(cx, clock)?;
     let roots = AuthorizedRoots::new(
         plan.roots()

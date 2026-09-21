@@ -1081,13 +1081,19 @@ SkillRanker keeps observations and judgments separate.
 | Measure | Interpretation |
 |---|---|
 | Evaluated turns, emitted suggestions, valid abstentions, muted/suppressed output | How often the selector evaluates and interrupts |
-| Operational failures, latency, cache reuse | Availability and overhead across the disclosed cohort |
+| Operational failures, unfinished turns, latency, cache reuse | Availability and overhead across the disclosed cohort |
 | Observed loads, observation coverage, censoring | What was seen, with missing evidence kept visible |
 | Independently judged useful suggestions and label coverage | Usefulness for the judged cohort |
 | HTTP attempts, known tokens, unknown usage, estimated cost | Recorded consumption and the limits of its accounting |
 
+A turn that was recorded before its provider request and never finished — one still
+running, or one killed outright — is counted on its own. It is not an operational
+failure, because no provider outcome was observed, and its absent duration is kept out
+of the latency summary, which reports how many turns it excluded.
+
 Cost per judged-useful suggestion uses only that cohort's matched attempts and
-labels. With no useful labels, the ratio is not estimable. Unknown usage or
+labels. A turn carrying more than one label still costs what it cost. With no useful
+labels, the ratio is not estimable. Unknown usage or
 missing/inapplicable pricing also prevents an exact monetary ratio; report known
 attempt and token counts instead. Unlabeled traffic does not inherit measured
 usefulness, adoption is not task success, and token savings

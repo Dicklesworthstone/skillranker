@@ -93,6 +93,40 @@ conformance with a running Claude installation. Explicit roster import retains
 its separate all-or-nothing validation contract and does not gain directory-link
 support from this change.
 
+### Bounded discovery execution
+
+Discovery uses one breadth-first queue across all declared roots. Shallower
+directories in project, personal, and configured roots are visited before deeper
+reference/script trees in any root. This avoids spending the entire entry budget
+on one project's nested support files before seeing a personal override or a
+personal-only skill. The queue holds names and root references, not open sibling
+directories; descriptor use beyond the already-open roots remains constant.
+Candidate sorting and invocation precedence are unchanged.
+
+This is depth ordering, not a promise that every direct skill fits the budget.
+Entries within a directory retain filesystem order; a crowded shallow directory,
+a byte ceiling, or an unreadable directory can still make the inventory partial.
+The per-name proof above remains mandatory when discovery has a gap.
+
+Entry and byte exhaustion stop the **entire pass**. No later root restarts a
+stopped scan or admits smaller files after a byte-bound failure. At most one
+entry beyond the entry ceiling is examined as an overflow sentinel, never
+admitted. Reaching a ceiling exactly is not itself a failure when no further
+entry needs examination. A directory-iterator error is diagnosed once and stops
+that directory's stream, since retrying an error need not advance it. Already
+observed candidates remain available, with partial coverage disclosed.
+
+`resolve_claude_plan` uses `DiscoveryPlan::discover_with_checkpoint` to check its
+existing cancellation/deadline budget before and after filesystem operations,
+including directory reads and metadata probes. Checkpoint errors propagate as
+the caller's typed error, not a late usable partial result. Even empty passes
+check admission and completion. The convenience discovery APIs without a caller
+checkpoint retain their resource bounds but do not invent an invocation deadline.
+Candidate metadata is obtained relative to the directory descriptor being listed,
+not by re-resolving its parent path. A parent replaced with a symlink therefore
+cannot redirect that metadata lookup; subsequent authorized reads still enforce
+containment and identity.
+
 Limits are 10,000 inputs, 256 KiB per file, and 32 MiB cumulative read/parse bytes.
 Cancellation and the invocation deadline are checked around filesystem work,
 between name/root probes, and through resolution. Blocking filesystem syscalls
@@ -105,7 +139,10 @@ No scan freezes files for a later harness load.
 Tests in `tests/roster_resolution.rs` exercise real files, hard links, content
 rewrites, collisions, restrictions, local option maps, and privacy-safe debug
 output. `tests/roster_discovery_gaps.rs` adds the issue #4 symlink regression,
-actual discovery/parse ceilings, unseen competing names, and publication checks.
-The resolver's internal proof tests cover missing/changed slots, dangling links,
-and deterministic proof-budget exhaustion. These establish local contracts, not
-live Jev or hook readiness.
+actual discovery/parse ceilings, personal overrides, unseen competing names, and
+publication checks. `tests/rank_discovery_gaps.rs` exercises the same boundaries
+through offline CLI calls. The discovery unit tests cover cross-root depth
+ordering, pass-wide ceilings, interrupted scans, iterator errors, and replaced
+parents. The resolver's internal proof tests cover missing/changed slots, dangling
+links, and deterministic proof-budget exhaustion. These establish local contracts,
+not live Jev or hook readiness.

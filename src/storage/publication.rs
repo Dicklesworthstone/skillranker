@@ -5,13 +5,13 @@
 //! its existing NORMAL durability policy; atomicity is not a power-loss promise.
 
 use super::{
-    CacheStore, StoreError, cache_wall_clock_ms, check_stamp, check_work, configure,
-    coordination_error, refresh_busy_limit, sql_integer, storage_path,
-    MAX_RESPONSE_TTL_SECONDS,
+    CacheStore, MAX_RESPONSE_TTL_SECONDS, StoreError, cache_wall_clock_ms, check_stamp, check_work,
+    configure, coordination_error, refresh_busy_limit, sql_integer, storage_path,
 };
 use crate::blocking::{BlockingLeafKind, run_blocking_leaf};
-use crate::cache::{CachedResponseEntry, LeaderContext, PublishOutcome, RequestStage,
-                   SqliteLeaseCoordinator};
+use crate::cache::{
+    CachedResponseEntry, LeaderContext, PublishOutcome, RequestStage, SqliteLeaseCoordinator,
+};
 use crate::jev::codec::MAX_RESPONSE_BYTES;
 use crate::runtime::ProcessInvocation;
 use asupersync::Cx;
@@ -56,15 +56,20 @@ impl CacheStore {
                     return Err(StoreError::LeaseUnavailable);
                 }
                 configure(&self.connection, clock, &child)?;
-                self.directory.verify_database_file(&self.file, clock, &child)?;
+                self.directory
+                    .verify_database_file(&self.file, clock, &child)?;
                 refresh_busy_limit(&self.connection, clock, &child)?;
-                let tx = self.connection
+                let tx = self
+                    .connection
                     .transaction_with_behavior(TransactionBehavior::Immediate)?;
                 check_stamp(&tx, self.stamp)?;
                 if let Some((_, leader)) = &fence
                     && !SqliteLeaseCoordinator::active_lease_in_transaction(
-                        &tx, leader, cache_wall_clock_ms(),
-                    ).map_err(coordination_error)?
+                        &tx,
+                        leader,
+                        cache_wall_clock_ms(),
+                    )
+                    .map_err(coordination_error)?
                 {
                     return Err(StoreError::LeaseSuperseded);
                 }
@@ -82,9 +87,14 @@ impl CacheStore {
                     // None means no helper-table body: both production response
                     // rows have already been written in this same transaction.
                     let outcome = SqliteLeaseCoordinator::complete_in_transaction(
-                        &tx, leader.key, leader.owner_token, leader.fencing_generation,
-                        cache_wall_clock_ms(), None,
-                    ).map_err(coordination_error)?;
+                        &tx,
+                        leader.key,
+                        leader.owner_token,
+                        leader.fencing_generation,
+                        cache_wall_clock_ms(),
+                        None,
+                    )
+                    .map_err(coordination_error)?;
                     if outcome != PublishOutcome::Published {
                         return Err(StoreError::LeaseSuperseded);
                     }
@@ -96,11 +106,14 @@ impl CacheStore {
                     return Err(StoreError::LeaseSuperseded);
                 }
                 tx.commit()?;
-                self.directory.verify_database_file(&self.file, clock, &child)?;
+                self.directory
+                    .verify_database_file(&self.file, clock, &child)?;
                 check_work(clock, &child)?;
                 Ok(self)
             },
-        ).map_err(StoreError::Runtime)?.value
+        )
+        .map_err(StoreError::Runtime)?
+        .value
     }
 }
 
@@ -133,7 +146,10 @@ fn validate_evaluation(
         {
             return Err(StoreError::InvalidRecord);
         }
-        if wide.response_bytes.len().saturating_add(rerank.response_bytes.len())
+        if wide
+            .response_bytes
+            .len()
+            .saturating_add(rerank.response_bytes.len())
             > MAX_RESPONSE_BYTES
         {
             return Err(StoreError::Quota);
@@ -208,7 +224,10 @@ mod tests {
             ttl_seconds: 600,
             model: "test-model".to_owned(),
             model_revision: None,
-            original_usage: Usage { input_tokens: 1, output_tokens: 1 },
+            original_usage: Usage {
+                input_tokens: 1,
+                output_tokens: 1,
+            },
             attempt_id: None,
         }
     }
@@ -219,29 +238,48 @@ mod tests {
         db.execute_batch(super::super::RESPONSE_DDL).unwrap();
         {
             let tx = db.transaction().unwrap();
-            replace_responses(&tx, 0, [3; 32], &entry(RequestStage::Wide, b"old"),
-                              Some(&entry(RequestStage::Rerank, b"old")), 1_000, || Ok(())).unwrap();
+            replace_responses(
+                &tx,
+                0,
+                [3; 32],
+                &entry(RequestStage::Wide, b"old"),
+                Some(&entry(RequestStage::Rerank, b"old")),
+                1_000,
+                || Ok(()),
+            )
+            .unwrap();
             tx.commit().unwrap();
         }
         {
             let tx = db.transaction().unwrap();
             let mut checks = 0;
             let result = replace_responses(
-                &tx, 0, [3; 32], &entry(RequestStage::Wide, b"new"),
-                Some(&entry(RequestStage::Rerank, b"new")), 1_000,
+                &tx,
+                0,
+                [3; 32],
+                &entry(RequestStage::Wide, b"new"),
+                Some(&entry(RequestStage::Rerank, b"new")),
+                1_000,
                 || {
                     checks += 1;
-                    if checks == 3 { Err(StoreError::Cancelled) } else { Ok(()) }
+                    if checks == 3 {
+                        Err(StoreError::Cancelled)
+                    } else {
+                        Ok(())
+                    }
                 },
             );
             assert_eq!(result, Err(StoreError::Cancelled));
             assert_eq!(checks, 3, "cancel after the Wide insert, before Rerank");
             // Returning from the production closure drops exactly this transaction.
         }
-        let old: i64 = db.query_row(
-            "SELECT count(*) FROM sr_cache_response WHERE response=?1",
-            [&b"old"[..]], |row| row.get(0),
-        ).unwrap();
+        let old: i64 = db
+            .query_row(
+                "SELECT count(*) FROM sr_cache_response WHERE response=?1",
+                [&b"old"[..]],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(old, 2);
     }
 
@@ -251,16 +289,30 @@ mod tests {
         db.execute_batch(super::super::RESPONSE_DDL).unwrap();
         db.execute_batch(super::super::LEASE_DDL).unwrap();
         let tx = db.transaction().unwrap();
-        replace_responses(&tx, 0, [3; 32], &entry(RequestStage::Wide, b"new"),
-                          Some(&entry(RequestStage::Rerank, b"new")), 1_000, || Ok(())).unwrap();
+        replace_responses(
+            &tx,
+            0,
+            [3; 32],
+            &entry(RequestStage::Wide, b"new"),
+            Some(&entry(RequestStage::Rerank, b"new")),
+            1_000,
+            || Ok(()),
+        )
+        .unwrap();
         let outcome = SqliteLeaseCoordinator::complete_in_transaction(
-            &tx, crate::cache::CoordinationKey::from_bytes([1; 32]),
+            &tx,
+            crate::cache::CoordinationKey::from_bytes([1; 32]),
             crate::cache::OwnerToken::from_bytes([1; 16]),
-            crate::cache::FencingGeneration::initial(), 1_000, None,
-        ).unwrap();
+            crate::cache::FencingGeneration::initial(),
+            1_000,
+            None,
+        )
+        .unwrap();
         assert!(matches!(outcome, PublishOutcome::Superseded { .. }));
         drop(tx);
-        let count: i64 = db.query_row("SELECT count(*) FROM sr_cache_response", [], |r| r.get(0)).unwrap();
+        let count: i64 = db
+            .query_row("SELECT count(*) FROM sr_cache_response", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(count, 0);
     }
 }

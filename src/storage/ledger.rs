@@ -40,6 +40,48 @@ pub const LEDGER_RECORDING_CEILING_BYTES: u64 =
 pub const MAX_BUSY_WAIT_MS: u64 = 25;
 pub const DEFAULT_RETENTION_MS: i64 = 30 * 24 * 60 * 60 * 1000; // 30 days in milliseconds: 2_592_000_000
 
+/// The `reason` recorded on a ranking event written before its first provider send.
+///
+/// An invocation records itself with this reason, `DecisionKind::Unavailable`,
+/// `ExposureState::Generated` and `elapsed_ms = 0` before it sends anything, so that
+/// a process killed while waiting on the provider leaves evidence that it ran and may
+/// have paid. Completion rewrites all four fields in place, so a row that still
+/// carries this reason belongs to an invocation that never came back: either one still
+/// running, or one that was killed.
+///
+/// Statistics must therefore not read such a row as a finished outcome. Its decision
+/// is not a failure of the provider, its `elapsed_ms` is a placeholder rather than a
+/// measurement, and its lack of provider attempts is not evidence of cache reuse. The
+/// producer in the ranking pipeline and every reader share this constant so that the
+/// two cannot drift apart silently.
+pub const IN_FLIGHT_REASON: &str = "in-flight";
+
+/// SQL predicate matching a `ranking_events` row whose invocation never came back.
+///
+/// The reason is bound as `?3` rather than written into the SQL, so [`IN_FLIGHT_REASON`]
+/// stays the single spelling shared by the pipeline that writes these rows and every
+/// statistic that has to exclude them. Any query using this fragment must therefore
+/// bind the window as `?1`/`?2` and the reason as `?3`.
+const UNFINISHED_ROW_SQL: &str =
+    "(decision = 'unavailable' AND exposure_state = 'generated' AND reason = ?3)";
+
+/// The primary key of one attempt's row.
+///
+/// The in-process attempt id is `<invocation id>-att-<n>`, and the invocation id is a
+/// fixed word for a given entry point, so it repeats on every run. The owner alone is not
+/// enough either: a duplicate delivery is deliberately the *same* event, so two deliveries
+/// that each paid would collide on an owner-scoped key and the second would be dropped.
+/// The invocation token distinguishes them, so a repeat appends its own rows under the one
+/// event it belongs to (sr-qqlk).
+///
+/// One attempt is written more than once — when admitted, when its request reaches the
+/// wire, and when it settles — and every one of those writers has to land on the same row.
+/// They share this function so that they cannot compose the key differently and leave
+/// several rows behind for a single attempt.
+pub fn attempt_row_key(owner_event_id: &str, invocation_token: &str, attempt_id: &str) -> String {
+    format!("{owner_event_id}:{invocation_token}:{attempt_id}")
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct LedgerCapacityReport {
     pub total_quota_bytes: u64,
@@ -536,6 +578,10 @@ pub struct ChannelStats {
     pub abstain: u64,
     pub muted: u64,
     pub unavailable: u64,
+    /// Turns in this channel that recorded themselves and never came back: still
+    /// running, or killed. Counted apart from `unavailable`, which is about a
+    /// provider outcome this turn never reached. See [`IN_FLIGHT_REASON`].
+    pub in_flight_or_killed: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -545,6 +591,11 @@ pub struct LatencySummary {
     pub p95_ms: u64,
     pub min_ms: u64,
     pub max_ms: u64,
+    /// Turns left out of the five figures above because they never finished, so their
+    /// recorded duration is a placeholder rather than a measurement. Reported so that
+    /// a summary drawn from a subset says which subset, rather than implying it
+    /// covered every turn in the window.
+    pub excluded_unfinished: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -555,6 +606,11 @@ pub struct TurnMetrics {
     pub muted_or_suppressed: u64,
     pub operational_failures: u64,
     pub explicit_requirements: u64,
+    /// Turns that recorded themselves before sending and never recorded an outcome.
+    /// An invocation still in flight and one that was killed are indistinguishable
+    /// from the ledger alone, so they share one honest count rather than being split
+    /// on a guess. They are neither failures nor deliveries: see [`IN_FLIGHT_REASON`].
+    pub in_flight_or_killed: u64,
     pub by_channel: Vec<ChannelStats>,
 }
 
@@ -602,6 +658,14 @@ pub struct ProviderMetrics {
     pub cost_per_useful_suggestion: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tokens_per_useful_suggestion: Option<f64>,
+    /// Judged turns that owned no provider attempt, because they were served from a response
+    /// another turn paid for. Their usefulness is real and their cost is not theirs, so they
+    /// are counted apart rather than folded into a ratio that would read as free.
+    pub judged_turns_served_from_cache: u64,
+    /// Judged-cohort attempts whose usage the provider never reported, counted by the same
+    /// predicate as `unknown_usage_attempts`. While this is above zero the cohort's token total
+    /// is a lower bound: those attempts were paid for and contribute nothing to the sum.
+    pub judged_cohort_unknown_usage_attempts: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -994,16 +1058,76 @@ fn validated_snapshot(snapshot: &NewRosterSnapshot) -> Result<String, StoreError
 
 /// Insert one attempt row inside a caller-owned transaction, so an attempt can be
 /// committed together with the ranking event that owns it.
+const PROVIDER_ATTEMPT_COLUMNS: &str = "INSERT INTO provider_attempts (
+            attempt_id, owner_event_id, stage, request_fingerprint,
+            admitted_at_unix_ms, sent_at_unix_ms, completed_at_unix_ms,
+            status, input_tokens, output_tokens, http_status, error_kind
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)";
+
+/// Writes one attempt row, and refuses to write over one that already exists.
+///
+/// The refusal is the point. An attempt id that already owns a row owns a record of what
+/// that attempt cost, and a second unrelated write under the same id would replace it —
+/// silently, with whatever the second caller happened to know. Recorded spend is not
+/// overwritable, so this stays a plain insert and a duplicate is an error the caller has
+/// to deal with. Advancing an attempt through its own lifecycle is a different operation
+/// with its own function: see [`advance_provider_attempt`].
 fn insert_provider_attempt(
     tx: &rusqlite::Transaction<'_>,
     attempt: &NewProviderAttempt,
 ) -> Result<(), StoreError> {
     tx.execute(
-        "INSERT INTO provider_attempts (
-            attempt_id, owner_event_id, stage, request_fingerprint,
-            admitted_at_unix_ms, sent_at_unix_ms, completed_at_unix_ms,
-            status, input_tokens, output_tokens, http_status, error_kind
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+        PROVIDER_ATTEMPT_COLUMNS,
+        params![
+            attempt.attempt_id,
+            attempt.owner_event_id,
+            attempt.stage.as_str(),
+            attempt.request_fingerprint,
+            attempt.admitted_at_unix_ms as i64,
+            attempt.sent_at_unix_ms.map(|t| t as i64),
+            attempt.completed_at_unix_ms.map(|t| t as i64),
+            attempt.status.as_str(),
+            attempt.input_tokens.map(|t| t as i64),
+            attempt.output_tokens.map(|t| t as i64),
+            attempt.http_status.map(|s| s as i64),
+            attempt.error_kind,
+        ],
+    )?;
+    Ok(())
+}
+
+/// Writes one attempt row, or advances the row this same attempt already owns.
+///
+/// Distinct from [`insert_provider_attempt`], and the distinction is about who is writing.
+/// A duplicate write under an existing attempt id is refused there, because it would
+/// replace a record of real spend with a stranger's guess at it. This function is for the
+/// one writer entitled to update a row: the invocation that created it, carrying the same
+/// attempt through its own lifecycle. An attempt is recorded when it is admitted, again
+/// when its request reaches the wire, and again when it settles, so that a process killed
+/// in between still leaves behind what was true at the time — and those three writes have
+/// to land on one row rather than collide.
+///
+/// Each of those writes knows strictly more than the one before it, which is why `status`
+/// comes from the newest. Every other column is coalesced, so a write that happens not to
+/// carry a fact — a settlement that observed no usage, say — cannot erase one already
+/// recorded. The key includes the invocation token, so this can only ever advance a row
+/// belonging to the same invocation.
+fn advance_provider_attempt(
+    tx: &rusqlite::Transaction<'_>,
+    attempt: &NewProviderAttempt,
+) -> Result<(), StoreError> {
+    tx.execute(
+        &format!(
+            "{PROVIDER_ATTEMPT_COLUMNS}
+        ON CONFLICT(attempt_id) DO UPDATE SET
+            status = excluded.status,
+            sent_at_unix_ms = coalesce(excluded.sent_at_unix_ms, sent_at_unix_ms),
+            completed_at_unix_ms = coalesce(excluded.completed_at_unix_ms, completed_at_unix_ms),
+            input_tokens = coalesce(excluded.input_tokens, input_tokens),
+            output_tokens = coalesce(excluded.output_tokens, output_tokens),
+            http_status = coalesce(excluded.http_status, http_status),
+            error_kind = coalesce(excluded.error_kind, error_kind)"
+        ),
         params![
             attempt.attempt_id,
             attempt.owner_event_id,
@@ -1357,17 +1481,7 @@ impl NewProviderAttempt {
         };
         let owner_event_id = owner_event_id.into();
         Some(Self {
-            // The in-process attempt id is `<invocation id>-att-<n>`, and the
-            // invocation id is a fixed word for a given entry point, so it repeats
-            // on every run. The owner alone is not enough either: a duplicate
-            // delivery is deliberately the *same* event, so two deliveries that each
-            // paid would collide on the owner-scoped key and the second would be
-            // dropped. The token distinguishes invocations, so a repeat appends its
-            // own rows under the one event it belongs to (sr-qqlk).
-            attempt_id: format!(
-                "{owner_event_id}:{invocation_token}:{}",
-                provenance.attempt_id
-            ),
+            attempt_id: attempt_row_key(&owner_event_id, invocation_token, &provenance.attempt_id),
             owner_event_id,
             stage,
             request_fingerprint: request_fingerprint.into(),
@@ -2547,12 +2661,7 @@ pub fn ledger_stats(
         BlockingLeafKind::Database,
         false,
         move || {
-            let open = open_blocking(
-                clock,
-                &child,
-                LedgerAccess::ExistingOnly,
-                location,
-            )?;
+            let open = open_blocking(clock, &child, LedgerAccess::ExistingOnly, location)?;
             let store = match open {
                 LedgerOpen::Ready(s) => s,
                 LedgerOpen::ReadOnly(s) => s,
@@ -2986,6 +3095,22 @@ impl LedgerStore {
         as_of_unix_ms: i64,
         by_skill: bool,
     ) -> Result<StatsValueReport, StoreError> {
+        // One snapshot for the whole report. This builds every figure from more than thirty
+        // separate statements, and without a read transaction each one sees whatever the database
+        // held at the moment it ran. A hook firing once per turn while somebody runs `sr stats` is
+        // the case this product is built for, not an edge case, and under that load the parts stop
+        // agreeing: measured across 130 concurrent runs, one report printed a channel breakdown
+        // summing to 495 against a total of 494, and a cache hit rate of 100.2% — a number whose
+        // existence is proof that its numerator and denominator came from different instants.
+        //
+        // A deferred read transaction on this connection gives every subsequent read the same
+        // snapshot until it ends. It takes no write lock, so it cannot block the hook that is
+        // writing; it only stops this reader from straddling that writer's commits. Dropping it
+        // rolls back, which for a read-only report is the same as committing.
+        let snapshot = self
+            .connection
+            .unchecked_transaction()
+            .map_err(StoreError::from)?;
         let retained = self.query_retained_stats(as_of_unix_ms)?;
 
         // 1. Turns
@@ -3009,9 +3134,24 @@ impl LedgerStore {
             [since_unix_ms, as_of_unix_ms],
             |r| r.get(0),
         )?;
+        // A row that never came back also carries `decision = 'unavailable'`, because
+        // at the moment it was written nothing had been decided. Counting it here
+        // would report an invocation that is still running, or one that was killed
+        // outright, as a failure of the provider.
         let operational_failures: i64 = self.connection.query_row(
-            "SELECT count(*) FROM ranking_events WHERE created_at_unix_ms >= ?1 AND created_at_unix_ms <= ?2 AND decision = 'unavailable'",
-            [since_unix_ms, as_of_unix_ms],
+            &format!(
+                "SELECT count(*) FROM ranking_events WHERE created_at_unix_ms >= ?1 \
+                 AND created_at_unix_ms <= ?2 AND decision = 'unavailable' AND NOT {UNFINISHED_ROW_SQL}"
+            ),
+            params![since_unix_ms, as_of_unix_ms, IN_FLIGHT_REASON],
+            |r| r.get(0),
+        )?;
+        let in_flight_or_killed: i64 = self.connection.query_row(
+            &format!(
+                "SELECT count(*) FROM ranking_events WHERE created_at_unix_ms >= ?1 \
+                 AND created_at_unix_ms <= ?2 AND {UNFINISHED_ROW_SQL}"
+            ),
+            params![since_unix_ms, as_of_unix_ms, IN_FLIGHT_REASON],
             |r| r.get(0),
         )?;
         let explicit_requirements: i64 = self.connection.query_row(
@@ -3021,25 +3161,30 @@ impl LedgerStore {
         )?;
 
         // Channels
-        let mut channel_stmt = self.connection.prepare(
+        let mut channel_stmt = self.connection.prepare(&format!(
             "SELECT mode_channel, count(*), \
              sum(CASE WHEN decision IN ('ranked', 'explicit') AND exposure_state IN ('emitted', 'acknowledged') THEN 1 ELSE 0 END), \
              sum(CASE WHEN decision = 'abstain' THEN 1 ELSE 0 END), \
              sum(CASE WHEN decision = 'ranked' AND exposure_state IN ('generated', 'prepared') THEN 1 ELSE 0 END), \
-             sum(CASE WHEN decision = 'unavailable' THEN 1 ELSE 0 END) \
+             sum(CASE WHEN decision = 'unavailable' AND NOT {UNFINISHED_ROW_SQL} THEN 1 ELSE 0 END), \
+             sum(CASE WHEN {UNFINISHED_ROW_SQL} THEN 1 ELSE 0 END) \
              FROM ranking_events WHERE created_at_unix_ms >= ?1 AND created_at_unix_ms <= ?2 \
-             GROUP BY mode_channel ORDER BY mode_channel",
+             GROUP BY mode_channel ORDER BY mode_channel"
+        ))?;
+        let channel_rows = channel_stmt.query_map(
+            params![since_unix_ms, as_of_unix_ms, IN_FLIGHT_REASON],
+            |row| {
+                Ok(ChannelStats {
+                    channel: row.get(0)?,
+                    evaluated_turns: row.get::<_, i64>(1)? as u64,
+                    emitted: row.get::<_, i64>(2)? as u64,
+                    abstain: row.get::<_, i64>(3)? as u64,
+                    muted: row.get::<_, i64>(4)? as u64,
+                    unavailable: row.get::<_, i64>(5)? as u64,
+                    in_flight_or_killed: row.get::<_, i64>(6)? as u64,
+                })
+            },
         )?;
-        let channel_rows = channel_stmt.query_map([since_unix_ms, as_of_unix_ms], |row| {
-            Ok(ChannelStats {
-                channel: row.get(0)?,
-                evaluated_turns: row.get::<_, i64>(1)? as u64,
-                emitted: row.get::<_, i64>(2)? as u64,
-                abstain: row.get::<_, i64>(3)? as u64,
-                muted: row.get::<_, i64>(4)? as u64,
-                unavailable: row.get::<_, i64>(5)? as u64,
-            })
-        })?;
         let mut by_channel = Vec::new();
         for ch in channel_rows {
             by_channel.push(ch?);
@@ -3052,14 +3197,23 @@ impl LedgerStore {
             muted_or_suppressed: muted_or_suppressed as u64,
             operational_failures: operational_failures as u64,
             explicit_requirements: explicit_requirements as u64,
+            in_flight_or_killed: in_flight_or_killed as u64,
             by_channel,
         };
 
-        // 2. Latency
-        let mut lat_stmt = self.connection.prepare(
-            "SELECT elapsed_ms FROM ranking_events WHERE created_at_unix_ms >= ?1 AND created_at_unix_ms <= ?2 ORDER BY elapsed_ms ASC",
+        // 2. Latency. An unfinished row carries `elapsed_ms = 0` as a placeholder, not
+        // as a measurement of a very fast turn. Admitting it would pull the mean, the
+        // median and p95 toward zero and make every killed invocation look like the
+        // fastest thing the product ever did, so the sample is drawn from turns that
+        // finished and the summary reports how many it left out.
+        let mut lat_stmt = self.connection.prepare(&format!(
+            "SELECT elapsed_ms FROM ranking_events WHERE created_at_unix_ms >= ?1 \
+             AND created_at_unix_ms <= ?2 AND NOT {UNFINISHED_ROW_SQL} ORDER BY elapsed_ms ASC"
+        ))?;
+        let lat_rows = lat_stmt.query_map(
+            params![since_unix_ms, as_of_unix_ms, IN_FLIGHT_REASON],
+            |row| row.get::<_, i64>(0),
         )?;
-        let lat_rows = lat_stmt.query_map([since_unix_ms, as_of_unix_ms], |row| row.get::<_, i64>(0))?;
         let mut latencies: Vec<u64> = Vec::new();
         let mut sum_lat: u64 = 0;
         for l in lat_rows {
@@ -3067,6 +3221,7 @@ impl LedgerStore {
             sum_lat = sum_lat.saturating_add(val);
             latencies.push(val);
         }
+        let excluded_unfinished = in_flight_or_killed as u64;
         let latency = if latencies.is_empty() {
             LatencySummary {
                 mean_ms: 0,
@@ -3074,16 +3229,20 @@ impl LedgerStore {
                 p95_ms: 0,
                 min_ms: 0,
                 max_ms: 0,
+                excluded_unfinished,
             }
         } else {
             let len = latencies.len();
-            let p95_idx = ((len as f64 * 0.95).ceil() as usize).saturating_sub(1).min(len - 1);
+            let p95_idx = ((len as f64 * 0.95).ceil() as usize)
+                .saturating_sub(1)
+                .min(len - 1);
             LatencySummary {
                 mean_ms: sum_lat / (len as u64),
                 median_ms: latencies[len / 2],
                 p95_ms: latencies[p95_idx],
                 min_ms: latencies[0],
                 max_ms: latencies[len - 1],
+                excluded_unfinished,
             }
         };
 
@@ -3137,7 +3296,13 @@ impl LedgerStore {
         };
 
         // 4. Judgments
-        let (total_judgments, useful, harmful, neutral, distinct_judged): (i64, i64, i64, i64, i64) = self.connection.query_row(
+        let (total_judgments, useful, harmful, neutral, distinct_judged): (
+            i64,
+            i64,
+            i64,
+            i64,
+            i64,
+        ) = self.connection.query_row(
             "SELECT count(*), \
              coalesce(sum(CASE WHEN j.label = 'useful' THEN 1 ELSE 0 END), 0), \
              coalesce(sum(CASE WHEN j.label = 'harmful' THEN 1 ELSE 0 END), 0), \
@@ -3182,37 +3347,139 @@ impl LedgerStore {
             [since_unix_ms, as_of_unix_ms],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?)),
         )?;
+        // "No attempt rows" alone is not evidence of cache reuse, and two different kinds of turn
+        // satisfy it without the cache having served anything. A turn killed before it admitted an
+        // attempt has none because it died; a turn that abstained, or resolved an explicit
+        // requirement, before the provider was ever consulted has none because it never needed one.
+        // Counting either as a hit invents reuse: three turns, one paid and two abstaining, used to
+        // report a 67% hit rate against a cache that served nothing.
+        //
+        // So a served turn is one that produced a ranking without paying for it, and the rate is
+        // over rankings rather than over all turns — otherwise abstentions dilute a figure they
+        // cannot contribute to. This deliberately undercounts one case it cannot see: an abstention
+        // reached by reading a reused response is real cache reuse and is not counted here, because
+        // the ledger records no marker distinguishing it from one decided locally. Under-reporting
+        // reuse is the safe direction; inventing it is not. Counting it properly needs the
+        // pipeline's own cache flags persisted on the event row, which is a schema change.
         let cache_served_events: i64 = self.connection.query_row(
-            "SELECT count(*) FROM ranking_events e WHERE e.created_at_unix_ms >= ?1 AND e.created_at_unix_ms <= ?2 AND NOT EXISTS (SELECT 1 FROM provider_attempts a WHERE a.owner_event_id = e.event_id)",
-            [since_unix_ms, as_of_unix_ms],
+            &format!(
+                "SELECT count(*) FROM ranking_events e WHERE e.created_at_unix_ms >= ?1 \
+                 AND e.created_at_unix_ms <= ?2 AND e.decision = 'ranked' AND NOT {UNFINISHED_ROW_SQL} \
+                 AND NOT EXISTS (SELECT 1 FROM provider_attempts a WHERE a.owner_event_id = e.event_id)"
+            ),
+            params![since_unix_ms, as_of_unix_ms, IN_FLIGHT_REASON],
             |r| r.get(0),
         )?;
-        let cache_hit_rate = if total_evaluated > 0 {
-            Some(cache_served_events as f64 / total_evaluated as f64)
+        let finished_rankings: i64 = self.connection.query_row(
+            &format!(
+                "SELECT count(*) FROM ranking_events e WHERE e.created_at_unix_ms >= ?1 \
+                 AND e.created_at_unix_ms <= ?2 AND e.decision = 'ranked' AND NOT {UNFINISHED_ROW_SQL}"
+            ),
+            params![since_unix_ms, as_of_unix_ms, IN_FLIGHT_REASON],
+            |r| r.get(0),
+        )?;
+        let cache_hit_rate = if finished_rankings > 0 {
+            Some(cache_served_events as f64 / finished_rankings as f64)
         } else {
             None
         };
 
         // Judged cohort attempts & tokens
-        let (judged_cohort_tokens, judged_cohort_attempts): (i64, i64) = self.connection.query_row(
-            "SELECT coalesce(sum(coalesce(a.input_tokens, 0) + coalesce(a.output_tokens, 0)), 0), count(*) \
-             FROM provider_attempts a JOIN judgments j ON a.owner_event_id = j.attributed_event_id JOIN ranking_events e ON j.attributed_event_id = e.event_id \
-             WHERE e.created_at_unix_ms >= ?1 AND e.created_at_unix_ms <= ?2",
+        // Each attempt is counted once, against the set of judged events rather than
+        // against the judgments themselves. Joining attempts to judgments directly
+        // repeats every attempt once per label on its turn, so a turn labelled twice —
+        // two reviewers, or a revised label — would report twice the tokens it spent
+        // without a single extra token having been spent. What a turn cost is a
+        // property of the turn, not of how many times anyone judged it.
+        // The third column uses the same predicate as `unknown_usage_attempts` above, so the
+        // cohort figure and the window figure mean the same thing by construction.
+        let (judged_cohort_tokens, judged_cohort_attempts, judged_cohort_unknown_usage): (
+            i64,
+            i64,
+            i64,
+        ) = self.connection.query_row(
+            "SELECT coalesce(sum(coalesce(a.input_tokens, 0) + coalesce(a.output_tokens, 0)), 0), count(*), \
+             coalesce(sum(CASE WHEN a.input_tokens IS NULL OR a.output_tokens IS NULL OR a.status != 'completed' THEN 1 ELSE 0 END), 0) \
+             FROM provider_attempts a WHERE a.owner_event_id IN ( \
+               SELECT DISTINCT j.attributed_event_id FROM judgments j \
+               JOIN ranking_events e ON j.attributed_event_id = e.event_id \
+               WHERE e.created_at_unix_ms >= ?1 AND e.created_at_unix_ms <= ?2 \
+             )",
             [since_unix_ms, as_of_unix_ms],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )?;
 
-        let cost_per_useful_suggestion = if useful == 0 {
+        // Judged turns that owned no attempt of their own: served from a response another turn
+        // paid for. Counted because otherwise their effect on the ratio below is invisible.
+        let judged_turns_served_from_cache: i64 = self.connection.query_row(
+            "SELECT count(*) FROM ( \
+               SELECT DISTINCT j.attributed_event_id AS event_id FROM judgments j \
+               JOIN ranking_events e ON j.attributed_event_id = e.event_id \
+               WHERE e.created_at_unix_ms >= ?1 AND e.created_at_unix_ms <= ?2 \
+             ) judged WHERE NOT EXISTS ( \
+               SELECT 1 FROM provider_attempts a WHERE a.owner_event_id = judged.event_id \
+             )",
+            [since_unix_ms, as_of_unix_ms],
+            |r| r.get(0),
+        )?;
+
+        // A useful *suggestion* is a turn somebody found useful, not a label. Three skills judged
+        // useful on one emission are three labels and one suggestion, and the numerator already
+        // counts a turn's attempts once per turn rather than once per label — that was the point of
+        // aggregating against distinct judged events. Dividing turn-scoped attempts by a label count
+        // measured two different things against each other, so one turn's single attempt divided by
+        // three labels rounded to "0 attempts" printed beside a nonzero token figure. The rest of
+        // the report already treats a suggestion as a turn: `label_coverage_rate` is distinct judged
+        // events over emitted suggestions.
+        let useful_suggestions: i64 = self.connection.query_row(
+            "SELECT count(*) FROM ( \
+               SELECT DISTINCT j.attributed_event_id FROM judgments j \
+               JOIN ranking_events e ON j.attributed_event_id = e.event_id \
+               WHERE e.created_at_unix_ms >= ?1 AND e.created_at_unix_ms <= ?2 AND j.label = 'useful' \
+             )",
+            [since_unix_ms, as_of_unix_ms],
+            |r| r.get(0),
+        )?;
+
+        let cost_per_useful_suggestion = if useful_suggestions == 0 {
             "not estimable (0 useful labels in judged cohort)".to_string()
-        } else {
+        } else if judged_cohort_attempts == 0 {
+            // Every judged turn reused a response it did not pay for. Dividing by `useful`
+            // here yields zero, and zero is a claim: it says a useful suggestion cost nothing,
+            // when what happened is that the spend belongs to turns outside this cohort.
+            // Attributing the owner's tokens to the follower instead would report the same
+            // spend twice as soon as the owner is judged too, so the honest answer is to
+            // decline the ratio and say why.
             format!(
-                "pricing configuration absent; {} attempts / {} tokens per useful suggestion across judged cohort",
-                (judged_cohort_attempts as f64 / useful as f64).round() as u64,
-                (judged_cohort_tokens as f64 / useful as f64).round() as u64
+                "not estimable (judged cohort owns no provider attempt; {judged_turns_served_from_cache} judged turn(s) reused a response paid for elsewhere)"
+            )
+        } else {
+            // An attempt whose usage the provider never reported contributes nothing to the token
+            // sum because nothing is known, not because nothing was spent. The figure is then a
+            // lower bound, and a lower bound presented as a measurement is the same mistake as a
+            // zero presented as one — so it says which it is.
+            format!(
+                "pricing configuration absent; {} attempts / {} tokens per useful suggestion across judged cohort{}{}",
+                (judged_cohort_attempts as f64 / useful_suggestions as f64).round() as u64,
+                (judged_cohort_tokens as f64 / useful_suggestions as f64).round() as u64,
+                if judged_cohort_unknown_usage > 0 {
+                    format!(
+                        "; a lower bound, because {judged_cohort_unknown_usage} of those attempts reported no usage"
+                    )
+                } else {
+                    String::new()
+                },
+                if judged_turns_served_from_cache > 0 {
+                    format!(
+                        "; excludes {judged_turns_served_from_cache} judged turn(s) that reused a response paid for elsewhere"
+                    )
+                } else {
+                    String::new()
+                }
             )
         };
-        let tokens_per_useful_suggestion = if useful > 0 {
-            Some(judged_cohort_tokens as f64 / useful as f64)
+        let tokens_per_useful_suggestion = if useful_suggestions > 0 && judged_cohort_attempts > 0 {
+            Some(judged_cohort_tokens as f64 / useful_suggestions as f64)
         } else {
             None
         };
@@ -3230,6 +3497,8 @@ impl LedgerStore {
             cache_hit_rate,
             cost_per_useful_suggestion,
             tokens_per_useful_suggestion,
+            judged_turns_served_from_cache: judged_turns_served_from_cache as u64,
+            judged_cohort_unknown_usage_attempts: judged_cohort_unknown_usage as u64,
         };
 
         // 6. By Skill (optional)
@@ -3239,7 +3508,8 @@ impl LedgerStore {
                 let mut stmt = self.connection.prepare(
                     "SELECT DISTINCT c.skill_id FROM ranking_candidates c JOIN ranking_events e ON c.event_id = e.event_id WHERE e.created_at_unix_ms >= ?1 AND e.created_at_unix_ms <= ?2",
                 )?;
-                let rows = stmt.query_map([since_unix_ms, as_of_unix_ms], |r| r.get::<_, String>(0))?;
+                let rows =
+                    stmt.query_map([since_unix_ms, as_of_unix_ms], |r| r.get::<_, String>(0))?;
                 for s in rows {
                     skill_set.insert(s?);
                 }
@@ -3248,7 +3518,8 @@ impl LedgerStore {
                 let mut stmt = self.connection.prepare(
                     "SELECT DISTINCT skill_id FROM observations WHERE observed_at_unix_ms >= ?1 AND observed_at_unix_ms <= ?2",
                 )?;
-                let rows = stmt.query_map([since_unix_ms, as_of_unix_ms], |r| r.get::<_, String>(0))?;
+                let rows =
+                    stmt.query_map([since_unix_ms, as_of_unix_ms], |r| r.get::<_, String>(0))?;
                 for s in rows {
                     skill_set.insert(s?);
                 }
@@ -3257,7 +3528,8 @@ impl LedgerStore {
                 let mut stmt = self.connection.prepare(
                     "SELECT DISTINCT j.skill_id FROM judgments j JOIN ranking_events e ON j.attributed_event_id = e.event_id WHERE e.created_at_unix_ms >= ?1 AND e.created_at_unix_ms <= ?2",
                 )?;
-                let rows = stmt.query_map([since_unix_ms, as_of_unix_ms], |r| r.get::<_, String>(0))?;
+                let rows =
+                    stmt.query_map([since_unix_ms, as_of_unix_ms], |r| r.get::<_, String>(0))?;
                 for s in rows {
                     skill_set.insert(s?);
                 }
@@ -3319,6 +3591,10 @@ impl LedgerStore {
         } else {
             None
         };
+
+        // Released explicitly rather than by drop, so that a future edit moving work below this
+        // point cannot silently read outside the snapshot the figures above were built from.
+        snapshot.finish().map_err(StoreError::from)?;
 
         Ok(StatsValueReport {
             as_of_unix_ms,
@@ -4016,7 +4292,11 @@ impl LedgerStore {
             )?;
         }
         for attempt in attempts {
-            insert_provider_attempt(&tx, attempt)?;
+            // This invocation settling its own attempts, which the sending path may
+            // already have recorded as admitted or sent. Advancing those rows is the
+            // point; a stranger overwriting them is what `insert_provider_attempt`
+            // refuses.
+            advance_provider_attempt(&tx, attempt)?;
         }
         check_work(clock, cx)?;
         self.directory.verify_database_file(&self.file, clock, cx)?;
@@ -4141,6 +4421,61 @@ impl LedgerStore {
         check_stamp(&tx, expected_stamp)?;
 
         insert_provider_attempt(&tx, attempt)?;
+
+        self.directory.verify_database_file(&self.file, clock, cx)?;
+        check_work(clock, cx)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Records that this attempt's request reached the wire, before its response is
+    /// awaited.
+    ///
+    /// This is the one transition that cannot be written after the fact. Everything
+    /// else about an attempt is known once it settles, but whether a request was
+    /// actually sent is only knowable *before* the wait that a kill interrupts — and it
+    /// is the fact that decides whether the provider may already have charged for this
+    /// attempt. It deliberately does not set a completion time: an attempt that reached
+    /// the wire has not finished, and dating its completion would claim otherwise.
+    ///
+    /// Only an `admitted` row is advanced, so this can never drag a settled attempt
+    /// backwards. A missing row is reported rather than ignored, because it means the
+    /// admission write did not land; callers on the sending path are expected to carry
+    /// on regardless, since losing the record must never cost the caller its answer.
+    pub fn mark_provider_attempt_sent(
+        &mut self,
+        clock: EntryClock,
+        cx: &Cx,
+        attempt_id: &str,
+        sent_at_unix_ms: u64,
+        expected_stamp: LedgerStamp,
+    ) -> Result<(), StoreError> {
+        if self.read_only {
+            return Err(StoreError::Permissions);
+        }
+        check_work(clock, cx)?;
+        self.directory.verify_database_file(&self.file, clock, cx)?;
+        self.directory.admit_space()?;
+        refresh_busy_limit(&self.connection, clock, cx)?;
+
+        let tx = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        check_stamp(&tx, expected_stamp)?;
+
+        let rows = tx.execute(
+            "UPDATE provider_attempts SET status = ?1, sent_at_unix_ms = ?2 \
+             WHERE attempt_id = ?3 AND status = ?4",
+            params![
+                AttemptStatus::Sent.as_str(),
+                sent_at_unix_ms as i64,
+                attempt_id,
+                AttemptStatus::Admitted.as_str(),
+            ],
+        )?;
+        if rows == 0 {
+            return Err(StoreError::Missing);
+        }
 
         self.directory.verify_database_file(&self.file, clock, cx)?;
         check_work(clock, cx)?;
@@ -5429,6 +5764,86 @@ pub fn record_ranking_with_attempts(
                 &attempts,
                 stamp,
             )?;
+            Ok(true)
+        },
+    )
+    .map_err(StoreError::Runtime)?;
+    res.value
+}
+
+/// Writes one attempt's admission, before anything has been sent on its behalf.
+///
+/// Called on the sending path rather than at settlement, so that an invocation killed
+/// while waiting on the provider still leaves a row naming the attempt it had started.
+/// A row written here claims only that the attempt was admitted: it carries no sent time
+/// and no usage, because neither exists yet.
+pub fn record_attempt_admission(
+    invocation: &ProcessInvocation,
+    cx: &Cx,
+    access: LedgerAccess,
+    location: LedgerLocation,
+    attempt: &NewProviderAttempt,
+) -> Result<bool, StoreError> {
+    if access == LedgerAccess::Disabled {
+        return Ok(false);
+    }
+    let clock = invocation.clock();
+    let child = cx.clone();
+    let attempt = attempt.clone();
+    let res = run_blocking_leaf(
+        invocation,
+        cx,
+        BlockingLeafKind::Database,
+        false,
+        move || {
+            let mut store = match open_blocking(clock, &child, access, location)? {
+                LedgerOpen::Ready(store) => *store,
+                LedgerOpen::Disabled | LedgerOpen::Missing | LedgerOpen::ReadOnly(_) => {
+                    return Ok(false);
+                }
+            };
+            let stamp = store.stamp();
+            store.record_provider_attempt(clock, &child, &attempt, stamp)?;
+            Ok(true)
+        },
+    )
+    .map_err(StoreError::Runtime)?;
+    res.value
+}
+
+/// Records that an already-admitted attempt's request reached the wire.
+///
+/// This is the transition that cannot be recovered afterwards: after it, the provider may
+/// have been paid for this attempt whatever becomes of this process, and before it, it
+/// certainly has not. See [`LedgerStore::mark_provider_attempt_sent`].
+pub fn record_attempt_reached_wire(
+    invocation: &ProcessInvocation,
+    cx: &Cx,
+    access: LedgerAccess,
+    location: LedgerLocation,
+    attempt_id: &str,
+    sent_at_unix_ms: u64,
+) -> Result<bool, StoreError> {
+    if access == LedgerAccess::Disabled {
+        return Ok(false);
+    }
+    let clock = invocation.clock();
+    let child = cx.clone();
+    let attempt_id = attempt_id.to_string();
+    let res = run_blocking_leaf(
+        invocation,
+        cx,
+        BlockingLeafKind::Database,
+        false,
+        move || {
+            let mut store = match open_blocking(clock, &child, access, location)? {
+                LedgerOpen::Ready(store) => *store,
+                LedgerOpen::Disabled | LedgerOpen::Missing | LedgerOpen::ReadOnly(_) => {
+                    return Ok(false);
+                }
+            };
+            let stamp = store.stamp();
+            store.mark_provider_attempt_sent(clock, &child, &attempt_id, sent_at_unix_ms, stamp)?;
             Ok(true)
         },
     )

@@ -1,7 +1,9 @@
 //! Issue #4: incomplete enumeration must not erase provably resolved names,
 //! and recovering those names must never promote a hidden competitor's loser.
 
-use skillranker::limits::{DISCOVERY_FILES, DISCOVERY_PARSED_BYTES, DurationMillis, SKILL_FILE_BYTES};
+use skillranker::limits::{
+    DISCOVERY_FILES, DISCOVERY_PARSED_BYTES, DurationMillis, SKILL_FILE_BYTES,
+};
 use skillranker::roster::discovery::{Diagnostic, DiscoveryPlan, claude_code_plan};
 use skillranker::roster::resolution::{
     ExactResolution, OptionMap, ResolutionError, ResolvedRoster, resolve_claude_plan,
@@ -72,16 +74,25 @@ fn assert_advice(roster: &ResolvedRoster, names: &[&str]) {
     for name in names {
         assert!(matches!(
             roster.exact_name(name),
-            ExactResolution::Resolved { kind: InvocationKind::Agent, .. }
+            ExactResolution::Resolved {
+                kind: InvocationKind::Agent,
+                ..
+            }
         ));
     }
     for id in &ids {
         assert!(matches!(
             roster.exact_id(id),
-            ExactResolution::Resolved { kind: InvocationKind::Agent, .. }
+            ExactResolution::Resolved {
+                kind: InvocationKind::Agent,
+                ..
+            }
         ));
     }
-    assert_eq!(OptionMap::new(roster, &ids).unwrap().entries().len(), names.len());
+    assert_eq!(
+        OptionMap::new(roster, &ids).unwrap().entries().len(),
+        names.len()
+    );
 }
 
 fn assert_withheld(roster: &ResolvedRoster, name: &str) {
@@ -115,19 +126,34 @@ fn unrelated_symlink_preserves_three_skills_ids_and_option_authority() {
     let partial = resolve(&plan);
     assert!(partial.is_partial());
     assert_advice(&partial, &["alpha", "beta", "gamma"]);
-    assert_eq!(partial.exact_name("linked-private-name"), ExactResolution::Missing);
-    assert_eq!(ids, partial.advisory().map(|s| s.binding.id.clone()).collect());
-    assert!(partial.source_diagnostics().iter().any(|d| matches!(
-        d, Diagnostic::SymlinkedDirectorySkipped(_)
-    )));
+    assert_eq!(
+        partial.exact_name("linked-private-name"),
+        ExactResolution::Missing
+    );
+    assert_eq!(
+        ids,
+        partial.advisory().map(|s| s.binding.id.clone()).collect()
+    );
+    assert!(
+        partial
+            .source_diagnostics()
+            .iter()
+            .any(|d| matches!(d, Diagnostic::SymlinkedDirectorySkipped(_)))
+    );
     assert!(!format!("{:?}", partial.source_diagnostics()).contains("linked-private-name"));
     fs::rename(&link, home.join("retained-link")).unwrap();
     let restored = resolve(&plan);
     assert_advice(&restored, &["alpha", "beta", "gamma"]);
-    assert_eq!(ids, restored.advisory().map(|s| s.binding.id.clone()).collect());
-    assert!(!restored.source_diagnostics().iter().any(|d| matches!(
-        d, Diagnostic::SymlinkedDirectorySkipped(_)
-    )));
+    assert_eq!(
+        ids,
+        restored.advisory().map(|s| s.binding.id.clone()).collect()
+    );
+    assert!(
+        !restored
+            .source_diagnostics()
+            .iter()
+            .any(|d| matches!(d, Diagnostic::SymlinkedDirectorySkipped(_)))
+    );
 }
 
 #[test]
@@ -140,20 +166,27 @@ fn skipped_directory_and_dangling_skill_link_withhold_only_their_names() {
     }
     fs::create_dir_all(home.join(".claude/skills/broken")).unwrap();
     symlink(&outside, home.join(".claude/skills/linked")).unwrap();
-    symlink(outside.join("missing.md"), home.join(".claude/skills/broken/SKILL.md")).unwrap();
+    symlink(
+        outside.join("missing.md"),
+        home.join(".claude/skills/broken/SKILL.md"),
+    )
+    .unwrap();
     let plan = claude_code_plan(&workspace, Some(&home), verified()).unwrap();
     let roster = resolve(&plan);
     assert!(roster.is_partial());
     assert_advice(&roster, &["helpful"]);
     assert_withheld(&roster, "linked");
     assert_withheld(&roster, "broken");
-    assert!(roster.source_diagnostics().iter().any(|d| matches!(
-        d, Diagnostic::EntryUnreadable(_)
-    )));
+    assert!(
+        roster
+            .source_diagnostics()
+            .iter()
+            .any(|d| matches!(d, Diagnostic::EntryUnreadable(_)))
+    );
 }
 
 #[test]
-fn real_entry_ceiling_preserves_resolved_names_but_not_an_unseen_winners_loser() {
+fn real_entry_ceiling_preserves_names_and_resolves_shallow_personal_overrides() {
     let workspace = tree();
     for name in ["alpha", "beta", "gamma"] {
         skill(&workspace, name, &format!("# {name}\n\nbody"));
@@ -168,26 +201,61 @@ fn real_entry_ceiling_preserves_resolved_names_but_not_an_unseen_winners_loser()
     let plan = claude_code_plan(&workspace, None, verified()).unwrap();
     let discovery = plan.discover();
     assert_eq!(discovery.candidates().len(), 3);
-    assert!(discovery.diagnostics().contains(&Diagnostic::EntryLimitReached));
+    assert!(
+        discovery
+            .diagnostics()
+            .contains(&Diagnostic::EntryLimitReached)
+    );
     let roster = resolve(&plan);
     assert!(roster.is_partial());
     assert_advice(&roster, &["alpha", "beta", "gamma"]);
-    assert!(roster.source_diagnostics().contains(&Diagnostic::EntryLimitReached));
+    assert!(
+        roster
+            .source_diagnostics()
+            .contains(&Diagnostic::EntryLimitReached)
+    );
 
-    // The shared enumeration budget is already spent before the personal
-    // root. We must probe it, not assume a project singleton is the winner.
+    // The global queue reaches personal skills before the project's nested
+    // support files. Resolve the real winner rather than withholding its name.
     let home = tree();
     skill(
         &home,
         "beta",
         "---\nname: Beta\ndisable-model-invocation: true\n---\nbody",
     );
+    skill(&home, "delta", "# Personal only\n\nbody");
     let plan = claude_code_plan(&workspace, Some(&home), verified()).unwrap();
     let discovery = plan.discover();
-    assert!(discovery.candidates().iter().all(|c| c.source().as_str() != "claude_code.user"));
+    assert_eq!(discovery.candidates().len(), 5);
+    assert_eq!(discovery.entries_examined(), DISCOVERY_FILES.max() + 1);
+    assert!(
+        discovery
+            .diagnostics()
+            .contains(&Diagnostic::EntryLimitReached)
+    );
     let roster = resolve(&plan);
-    assert_advice(&roster, &["alpha", "gamma"]);
-    assert_withheld(&roster, "beta");
+    assert_advice(&roster, &["alpha", "gamma", "delta"]);
+    assert!(matches!(
+        roster.exact_name("beta"),
+        ExactResolution::Resolved {
+            kind: InvocationKind::ManualOnly,
+            ..
+        }
+    ));
+    let project_beta = roster
+        .skills()
+        .iter()
+        .flat_map(|s| s.bindings())
+        .find(|binding| {
+            binding.source.as_str() == "claude_code.project"
+                && binding.invocation.as_str() == "beta"
+        })
+        .unwrap();
+    assert_eq!(roster.exact_id(&project_beta.id), ExactResolution::Shadowed);
+    assert_eq!(
+        OptionMap::new(&roster, std::slice::from_ref(&project_beta.id)).unwrap_err(),
+        ResolutionError::IneligibleOption
+    );
 }
 
 #[test]
@@ -207,7 +275,38 @@ fn byte_ceiling_keeps_clean_names_without_reading_the_skipped_file() {
     assert!(roster.is_partial());
     assert_advice(&roster, &["helpful"]);
     assert_eq!(roster.exact_name("overflow"), ExactResolution::Missing);
-    assert!(roster.source_diagnostics().contains(&Diagnostic::ByteLimitReached));
+    assert!(
+        roster
+            .source_diagnostics()
+            .contains(&Diagnostic::ByteLimitReached)
+    );
+}
+
+#[test]
+fn byte_ceiling_never_promotes_an_unobserved_competing_binding() {
+    let workspace = tree();
+    let home = tree();
+    skill(&workspace, "helpful", "# Helpful\n\nbody");
+    skill(&workspace, "blocked", "# Lower priority\n\nbody");
+    let skipped = skill(&home, "blocked", "# Not admitted\n\nbody");
+    fs::OpenOptions::new()
+        .write(true)
+        .open(skipped)
+        .unwrap()
+        .set_len(DISCOVERY_PARSED_BYTES.max() as u64 + 1)
+        .unwrap();
+    let plan = claude_code_plan(&workspace, Some(&home), verified()).unwrap();
+    let discovery = plan.discover();
+    assert_eq!(discovery.candidates().len(), 2);
+    assert!(
+        discovery
+            .diagnostics()
+            .contains(&Diagnostic::ByteLimitReached)
+    );
+    let roster = resolve(&plan);
+    assert!(roster.is_partial());
+    assert_advice(&roster, &["helpful"]);
+    assert_withheld(&roster, "blocked");
 }
 
 #[test]
@@ -226,7 +325,12 @@ fn exhausted_parse_budget_does_not_revoke_already_parsed_names() {
     let plan = claude_code_plan(&workspace, None, verified()).unwrap();
     let roster = resolve(&plan);
     assert_eq!(roster.advisory().count(), count);
-    assert!(roster.diagnostics().iter().any(|(_, e)| *e == ResolutionError::Limit));
+    assert!(
+        roster
+            .diagnostics()
+            .iter()
+            .any(|(_, e)| *e == ResolutionError::Limit)
+    );
     assert!(roster.is_partial());
 }
 
@@ -248,13 +352,21 @@ fn recovery_preserves_precedence_manual_only_and_authorized_file_aliases() {
     let plan = claude_code_plan(&workspace, Some(&home), verified()).unwrap();
     let roster = resolve(&plan);
     assert_eq!(roster.advisory().count(), 1); // One physical target, two aliases.
-    assert!(matches!(roster.exact_name("deploy"), ExactResolution::Resolved {
-        kind: InvocationKind::ManualOnly, ..
-    }));
+    assert!(matches!(
+        roster.exact_name("deploy"),
+        ExactResolution::Resolved {
+            kind: InvocationKind::ManualOnly,
+            ..
+        }
+    ));
     for name in ["original", "alias"] {
-        assert!(matches!(roster.exact_name(name), ExactResolution::Resolved {
-            kind: InvocationKind::Agent, ..
-        }));
+        assert!(matches!(
+            roster.exact_name(name),
+            ExactResolution::Resolved {
+                kind: InvocationKind::Agent,
+                ..
+            }
+        ));
     }
     let plan = claude_code_plan(&workspace, Some(&home), Visibility::Unverified).unwrap();
     assert_eq!(resolve(&plan).advisory().count(), 0); // A proof never upgrades visibility.
@@ -275,9 +387,18 @@ fn same_diagnostic_count_cannot_hide_a_new_competitor_at_publication() {
     assert_advice(&initial, &["helpful"]);
     let ids: Vec<_> = initial.advisory().map(|s| s.binding.id.clone()).collect();
     let captured = revalidation::capture(&initial, &ids, &clock).unwrap();
-    assert!(revalidation::revalidate_claude(
-        &captured, &workspace, Some(&home), verified(), &BTreeMap::new(), &cx, &clock
-    ).is_ok());
+    assert!(
+        revalidation::revalidate_claude(
+            &captured,
+            &workspace,
+            Some(&home),
+            verified(),
+            &BTreeMap::new(),
+            &cx,
+            &clock
+        )
+        .is_ok()
+    );
     fs::rename(link, home.join(".claude/skills/helpful")).unwrap();
     let fresh_plan = claude_code_plan(&workspace, Some(&home), verified()).unwrap();
     let fresh = resolve_claude_plan(&fresh_plan, &BTreeMap::new(), &cx, &clock).unwrap();

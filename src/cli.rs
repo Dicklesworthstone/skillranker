@@ -339,7 +339,9 @@ fn command() -> Command {
                     Arg::new("max-requests")
                         .long("max-requests")
                         .value_name("N")
-                        .help("Maximum HTTP attempts across the batch (required for live evaluation)")
+                        .help(
+                            "Maximum HTTP attempts across the batch (required for live evaluation)",
+                        )
                         .action(ArgAction::Set),
                 )
                 .arg(
@@ -1746,10 +1748,7 @@ fn observe_command(clock: &EntryClock, matches: &clap::ArgMatches) -> Result<Str
     finish_invocation(invocation, Ok(out))
 }
 
-fn stats_command(
-    clock: &EntryClock,
-    matches: &clap::ArgMatches,
-) -> Result<String, Failure> {
+fn stats_command(clock: &EntryClock, matches: &clap::ArgMatches) -> Result<String, Failure> {
     timely(clock)?;
     let invocation = crate::runtime::ProcessInvocation::from_clock(*clock)
         .map_err(|_| (6u8, "timeout", "Local runtime unavailable".into()))?;
@@ -1782,7 +1781,8 @@ fn stats_command(
     };
 
     let by_skill = matches.get_flag("by-skill");
-    let wants_json = matches.get_flag("json") || (!matches.get_flag("table") && !io::stdout().is_terminal());
+    let wants_json =
+        matches.get_flag("json") || (!matches.get_flag("table") && !io::stdout().is_terminal());
 
     let report = crate::storage::ledger_stats(&invocation, &cx, location, since_ms, by_skill)
         .map_err(|err| match err {
@@ -1827,20 +1827,55 @@ fn format_stats_report(report: &crate::storage::StatsValueReport) -> String {
     let _ = writeln!(out);
 
     let _ = writeln!(out, "--- Evaluated Turns & Interruption ---");
-    let _ = writeln!(out, "Total turns evaluated:    {}", report.turns.total_evaluated);
-    let _ = writeln!(out, "Emitted suggestions:      {}", report.turns.emitted_suggestions);
-    let _ = writeln!(out, "Valid abstentions:        {}", report.turns.valid_abstentions);
-    let _ = writeln!(out, "Muted or suppressed:      {}", report.turns.muted_or_suppressed);
-    let _ = writeln!(out, "Operational failures:     {}", report.turns.operational_failures);
-    let _ = writeln!(out, "Explicit requirements:    {}", report.turns.explicit_requirements);
+    let _ = writeln!(
+        out,
+        "Total turns evaluated:    {}",
+        report.turns.total_evaluated
+    );
+    let _ = writeln!(
+        out,
+        "Emitted suggestions:      {}",
+        report.turns.emitted_suggestions
+    );
+    let _ = writeln!(
+        out,
+        "Valid abstentions:        {}",
+        report.turns.valid_abstentions
+    );
+    let _ = writeln!(
+        out,
+        "Muted or suppressed:      {}",
+        report.turns.muted_or_suppressed
+    );
+    let _ = writeln!(
+        out,
+        "Operational failures:     {}",
+        report.turns.operational_failures
+    );
+    let _ = writeln!(
+        out,
+        "Explicit requirements:    {}",
+        report.turns.explicit_requirements
+    );
+    let _ = writeln!(
+        out,
+        "Unfinished (in flight or killed): {}",
+        report.turns.in_flight_or_killed
+    );
 
     if !report.turns.by_channel.is_empty() {
         let _ = writeln!(out, "\nBy Channel:");
         for c in &report.turns.by_channel {
             let _ = writeln!(
                 out,
-                "  [{}] evaluated: {}, emitted: {}, abstain: {}, muted: {}, unavailable: {}",
-                c.channel, c.evaluated_turns, c.emitted, c.abstain, c.muted, c.unavailable
+                "  [{}] evaluated: {}, emitted: {}, abstain: {}, muted: {}, unavailable: {}, unfinished: {}",
+                c.channel,
+                c.evaluated_turns,
+                c.emitted,
+                c.abstain,
+                c.muted,
+                c.unavailable,
+                c.in_flight_or_killed
             );
         }
     }
@@ -1855,14 +1890,47 @@ fn format_stats_report(report: &crate::storage::StatsValueReport) -> String {
         report.latency.min_ms,
         report.latency.max_ms
     );
+    if report.latency.excluded_unfinished > 0 {
+        // Said out loud, because a duration summary that quietly covers only part of
+        // the window reads exactly like one that covers all of it.
+        let _ = writeln!(
+            out,
+            "Excluded {} unfinished turn(s) with no measured duration.",
+            report.latency.excluded_unfinished
+        );
+    }
 
     let _ = writeln!(out, "\n--- Observations & Adoption ---");
-    let _ = writeln!(out, "Total observations:       {}", report.observations.total_observations);
-    let _ = writeln!(out, "Observed loads:           {}", report.observations.observed_loads);
-    let _ = writeln!(out, "Attempted loads:          {}", report.observations.attempted_loads);
-    let _ = writeln!(out, "Censored observations:    {}", report.observations.censored_observations);
-    let _ = writeln!(out, "Attributed loads:         {}", report.observations.attributed_loads);
-    let _ = writeln!(out, "Unattributed loads:       {}", report.observations.unattributed_loads);
+    let _ = writeln!(
+        out,
+        "Total observations:       {}",
+        report.observations.total_observations
+    );
+    let _ = writeln!(
+        out,
+        "Observed loads:           {}",
+        report.observations.observed_loads
+    );
+    let _ = writeln!(
+        out,
+        "Attempted loads:          {}",
+        report.observations.attempted_loads
+    );
+    let _ = writeln!(
+        out,
+        "Censored observations:    {}",
+        report.observations.censored_observations
+    );
+    let _ = writeln!(
+        out,
+        "Attributed loads:         {}",
+        report.observations.attributed_loads
+    );
+    let _ = writeln!(
+        out,
+        "Unattributed loads:       {}",
+        report.observations.unattributed_loads
+    );
     if let Some(rate) = report.observations.observation_coverage {
         let _ = writeln!(out, "Observation coverage:     {:.1}%", rate * 100.0);
     }
@@ -1872,11 +1940,27 @@ fn format_stats_report(report: &crate::storage::StatsValueReport) -> String {
     let _ = writeln!(out, "Note: {}", report.observations.caveat);
 
     let _ = writeln!(out, "\n--- Judgments (Judged Cohort) ---");
-    let _ = writeln!(out, "Total judgments:          {}", report.judgments.total_judgments);
+    let _ = writeln!(
+        out,
+        "Total judgments:          {}",
+        report.judgments.total_judgments
+    );
     let _ = writeln!(out, "Useful:                   {}", report.judgments.useful);
-    let _ = writeln!(out, "Harmful:                  {}", report.judgments.harmful);
-    let _ = writeln!(out, "Neutral:                  {}", report.judgments.neutral);
-    let _ = writeln!(out, "Distinct judged events:   {}", report.judgments.distinct_judged_events);
+    let _ = writeln!(
+        out,
+        "Harmful:                  {}",
+        report.judgments.harmful
+    );
+    let _ = writeln!(
+        out,
+        "Neutral:                  {}",
+        report.judgments.neutral
+    );
+    let _ = writeln!(
+        out,
+        "Distinct judged events:   {}",
+        report.judgments.distinct_judged_events
+    );
     if let Some(cov) = report.judgments.label_coverage_rate {
         let _ = writeln!(out, "Label coverage rate:      {:.1}%", cov * 100.0);
     }
@@ -1900,12 +1984,41 @@ fn format_stats_report(report: &crate::storage::StatsValueReport) -> String {
         report.provider.known_input_tokens,
         report.provider.known_output_tokens
     );
-    let _ = writeln!(out, "Unknown usage attempts:   {}", report.provider.unknown_usage_attempts);
-    let _ = writeln!(out, "Cache-served events:      {}", report.provider.cache_served_events);
+    let _ = writeln!(
+        out,
+        "Unknown usage attempts:   {}",
+        report.provider.unknown_usage_attempts
+    );
+    let _ = writeln!(
+        out,
+        "Cache-served events:      {}",
+        report.provider.cache_served_events
+    );
     if let Some(rate) = report.provider.cache_hit_rate {
         let _ = writeln!(out, "Cache hit rate:           {:.1}%", rate * 100.0);
     }
-    let _ = writeln!(out, "Cost per useful suggestion: {}", report.provider.cost_per_useful_suggestion);
+    let _ = writeln!(
+        out,
+        "Cost per useful suggestion: {}",
+        report.provider.cost_per_useful_suggestion
+    );
+    if report.provider.judged_cohort_unknown_usage_attempts > 0 {
+        // The token figure above is a floor, not a measurement, while this is above zero.
+        let _ = writeln!(
+            out,
+            "  a lower bound: {} judged attempt(s) reported no usage",
+            report.provider.judged_cohort_unknown_usage_attempts
+        );
+    }
+    if report.provider.judged_turns_served_from_cache > 0 {
+        // Said next to the figure, because a cost per useful suggestion computed over turns
+        // that reused someone else's answer reads lower than the work actually cost.
+        let _ = writeln!(
+            out,
+            "  of the judged turns, {} reused a response paid for elsewhere",
+            report.provider.judged_turns_served_from_cache
+        );
+    }
 
     if let Some(skills) = &report.by_skill {
         let _ = writeln!(out, "\n--- Skill Breakdown ---");
@@ -1915,7 +2028,14 @@ fn format_stats_report(report: &crate::storage::StatsValueReport) -> String {
             let _ = writeln!(
                 out,
                 "{:<24} {:>6} {:>10} {:>10} {:>10} {:>7} {:>8} {:>8}",
-                "Skill ID", "Top-1", "Shortlist", "Obs Loads", "Attr Loads", "Useful", "Harmful", "Neutral"
+                "Skill ID",
+                "Top-1",
+                "Shortlist",
+                "Obs Loads",
+                "Attr Loads",
+                "Useful",
+                "Harmful",
+                "Neutral"
             );
             for s in skills {
                 let _ = writeln!(
@@ -2162,7 +2282,20 @@ fn ledger_command(
         }
         "prune" => {
             let before_str = sub_matches.get_one::<String>("before").map(|s| s.as_str());
-            let now_ms = clock.now().as_millis() as i64;
+            // Wall-clock, not the monotonic entry clock. A retention cutoff is a point in
+            // history, and `clock.now()` is milliseconds since this process started: deriving
+            // the cutoff from it put every cutoff in 1969, so nothing was ever old enough to
+            // prune and retention was never enforced through this command. `ledger_stats` had
+            // the same defect and it was repaired in d10ca98; this is the same repair here.
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .ok()
+                .and_then(|elapsed| i64::try_from(elapsed.as_millis()).ok())
+                .ok_or((
+                    9u8,
+                    "storage-failure",
+                    "The system clock is outside the representable range".to_string(),
+                ))?;
             let cutoff_ms = match before_str {
                 Some(s) => crate::storage::parse_cutoff_to_unix_ms(s, now_ms)
                     .map_err(|err| (2u8, "invalid-arguments", err))?,
@@ -2495,9 +2628,13 @@ fn replay_command(
 
 fn eval_command(clock: &EntryClock, eval_matches: &clap::ArgMatches) -> Result<String, Failure> {
     timely(clock)?;
-    let dataset_str = eval_matches
-        .get_one::<String>("dataset")
-        .ok_or_else(|| (2, "invalid-usage", "Missing required argument --dataset".into()))?;
+    let dataset_str = eval_matches.get_one::<String>("dataset").ok_or_else(|| {
+        (
+            2,
+            "invalid-usage",
+            "Missing required argument --dataset".into(),
+        )
+    })?;
     let case_path = Path::new(dataset_str);
     let file = std::fs::File::open(case_path).map_err(|err| {
         (
@@ -2514,7 +2651,8 @@ fn eval_command(clock: &EntryClock, eval_matches: &clap::ArgMatches) -> Result<S
         return Err((
             crate::output::ErrorKind::NetworkDenied.exit_code() as u8,
             crate::output::ErrorKind::NetworkDenied.as_str(),
-            "Online live evaluation requires explicit network authorization (--allow-network)".into(),
+            "Online live evaluation requires explicit network authorization (--allow-network)"
+                .into(),
         ));
     }
 
@@ -3217,24 +3355,22 @@ fn hook_claude_command(clock: &EntryClock, m: &clap::ArgMatches) -> Result<Strin
 
     // In advisory mode, check adapter qualification before emitting native advice for ranked suggestions.
     // Explicit user directives are not blocked by harness qualification.
-    if let crate::output::OutputKind::Decision(crate::output::Decision::Ranked) = output_doc.kind() {
-        if let Ok(foundation) = crate::adapter::foundation_capabilities() {
-            if let Some(record) = foundation
-                .adapters
-                .iter()
-                .find(|a| a.adapter_id.as_str() == crate::adapter::CLAUDE_CODE_ID)
-            {
-                if let crate::adapter::AdviceDisposition::Disabled(reason) =
-                    record.advice(crate::adapter::CompatibilityQuestion::EmitNativeAdvice, None)
-                {
-                    let _ = writeln!(
-                        io::stderr().lock(),
-                        "sr: native advice disabled for unverified harness ({reason:?})"
-                    );
-                    return Ok(String::new());
-                }
-            }
-        }
+    if let crate::output::OutputKind::Decision(crate::output::Decision::Ranked) = output_doc.kind()
+        && let Ok(foundation) = crate::adapter::foundation_capabilities()
+        && let Some(record) = foundation
+            .adapters
+            .iter()
+            .find(|a| a.adapter_id.as_str() == crate::adapter::CLAUDE_CODE_ID)
+        && let crate::adapter::AdviceDisposition::Disabled(reason) = record.advice(
+            crate::adapter::CompatibilityQuestion::EmitNativeAdvice,
+            None,
+        )
+    {
+        let _ = writeln!(
+            io::stderr().lock(),
+            "sr: native advice disabled for unverified harness ({reason:?})"
+        );
+        return Ok(String::new());
     }
 
     // In advisory mode, render one safe suggestion or explicit list
