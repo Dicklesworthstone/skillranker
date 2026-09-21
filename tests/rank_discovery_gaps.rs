@@ -266,7 +266,11 @@ fn an_oversized_project_skill_does_not_empty_the_personal_roster() {
     fixture.skill("workspace", "oversized-private-name", "");
     fs::OpenOptions::new()
         .write(true)
-        .open(fixture.root.join("workspace/.claude/skills/oversized-private-name/SKILL.md"))
+        .open(
+            fixture
+                .root
+                .join("workspace/.claude/skills/oversized-private-name/SKILL.md"),
+        )
         .unwrap()
         .set_len(DISCOVERY_PARSED_BYTES.max() as u64 + 1)
         .unwrap();

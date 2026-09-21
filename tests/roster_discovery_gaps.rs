@@ -281,7 +281,11 @@ fn oversized_file_keeps_clean_names_without_reading_the_rejected_file() {
             .iter()
             .any(|(_, e)| *e == ResolutionError::Oversized)
     );
-    assert!(!roster.source_diagnostics().contains(&Diagnostic::ByteLimitReached));
+    assert!(
+        !roster
+            .source_diagnostics()
+            .contains(&Diagnostic::ByteLimitReached)
+    );
 }
 
 #[test]
@@ -301,12 +305,21 @@ fn rejected_oversized_competitor_never_promotes_the_lower_priority_binding() {
     let discovery = plan.discover();
     assert_eq!(discovery.candidates().len(), 2);
     assert_eq!(discovery.rejected_candidates().len(), 1);
-    assert!(!discovery.diagnostics().contains(&Diagnostic::ByteLimitReached));
+    assert!(
+        !discovery
+            .diagnostics()
+            .contains(&Diagnostic::ByteLimitReached)
+    );
     let roster = resolve(&plan);
     assert!(roster.is_partial());
     assert_advice(&roster, &["helpful"]);
     assert_withheld(&roster, "blocked");
-    assert!(roster.diagnostics().iter().any(|(_, e)| *e == ResolutionError::Oversized));
+    assert!(
+        roster
+            .diagnostics()
+            .iter()
+            .any(|(_, e)| *e == ResolutionError::Oversized)
+    );
 }
 
 #[test]
