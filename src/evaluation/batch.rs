@@ -249,13 +249,8 @@ fn required_stages(case: &ReplayCase, config: &BatchConfig) -> usize {
         .map_or(base, |p| base.max(required_for(Some(p))))
 }
 
-/// Recompute validated recorded cases without network or persistence effects.
-/// Independent judgments are not part of ReplayCase; quality loss stays unknown.
-pub fn execute_evaluation_batch<R: BufRead>(
-    reader: R,
-    config: &BatchConfig,
-    clock: &EntryClock,
-) -> Result<EvaluationBatchReport, EvaluationError> {
+/// Validate mode and limits before callers open any evaluation inputs.
+pub(crate) fn validate_batch_config(config: &BatchConfig) -> Result<(), EvaluationError> {
     if config.online {
         if !config.allow_network {
             return Err(EvaluationError::InvalidField(
@@ -287,6 +282,17 @@ pub fn execute_evaluation_batch<R: BufRead>(
             "per-case timeout must be positive".into(),
         ));
     }
+    Ok(())
+}
+
+/// Recompute validated recorded cases without network or persistence effects.
+/// Independent judgments are not part of ReplayCase; quality loss stays unknown.
+pub fn execute_evaluation_batch<R: BufRead>(
+    reader: R,
+    config: &BatchConfig,
+    clock: &EntryClock,
+) -> Result<EvaluationBatchReport, EvaluationError> {
+    validate_batch_config(config)?;
     let expires = clock
         .now()
         .as_millis()

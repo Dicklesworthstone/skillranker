@@ -2635,16 +2635,6 @@ fn eval_command(clock: &EntryClock, eval_matches: &clap::ArgMatches) -> Result<S
             "Missing required argument --dataset".into(),
         )
     })?;
-    let case_path = Path::new(dataset_str);
-    let file = std::fs::File::open(case_path).map_err(|err| {
-        (
-            2,
-            "invalid-usage",
-            format!("Failed to open dataset file '{dataset_str}': {err}"),
-        )
-    })?;
-    let reader = std::io::BufReader::new(file);
-
     let online = eval_matches.get_flag("online");
     let allow_network = eval_matches.get_flag("allow-network");
     if online && !allow_network {
@@ -2700,6 +2690,22 @@ fn eval_command(clock: &EntryClock, eval_matches: &clap::ArgMatches) -> Result<S
         None
     };
 
+    let mut config = crate::evaluation::batch::BatchConfig {
+        max_requests,
+        max_runtime_ms,
+        per_case_timeout_ms,
+        online,
+        allow_network,
+        evidence_origin: crate::evaluation::batch::EvidenceOrigin::Recorded,
+        policy: None,
+        compare_policy: None,
+    };
+
+    crate::evaluation::batch::validate_batch_config(&config).map_err(|err| {
+        (2, "invalid-usage", err.to_string())
+    })?;
+    timely(clock)?;
+
     let policy = if let Some(p) = eval_matches.get_one::<String>("policy") {
         let pol = crate::replay::ReplayPolicy::load_from_file(Path::new(p)).map_err(|err| {
             let kind = err.kind();
@@ -2720,16 +2726,22 @@ fn eval_command(clock: &EntryClock, eval_matches: &clap::ArgMatches) -> Result<S
         None
     };
 
-    let config = crate::evaluation::batch::BatchConfig {
-        max_requests,
-        max_runtime_ms,
-        per_case_timeout_ms,
-        online,
-        allow_network,
-        evidence_origin: crate::evaluation::batch::EvidenceOrigin::Recorded,
-        policy,
-        compare_policy,
-    };
+    config.policy = policy;
+    config.compare_policy = compare_policy;
+    timely(clock)?;
+    // Pin the selected directory and use the descriptor that was checked as a
+    // regular file. A FIFO (including a raced-in replacement) cannot block open.
+    let input_error = || (7, "malformed-input", "Evaluation dataset must be an accessible authorized regular file".into());
+    let absolute = std::path::absolute(dataset_str).map_err(|_| input_error())?;
+    let parent = absolute.parent().ok_or_else(input_error)?;
+    let parent = std::fs::canonicalize(parent).map_err(|_| input_error())?;
+    let name = absolute.file_name().ok_or_else(input_error)?;
+    let root = AuthorizedRoot::open_absolute(&parent).map_err(|_| input_error())?;
+    let file = AuthorizedRoots::single(root)
+        .open_absolute_file(&parent.join(name))
+        .map_err(|_| input_error())?;
+    timely(clock)?;
+    let reader = std::io::BufReader::new(file);
 
     let report = match crate::evaluation::batch::execute_evaluation_batch(reader, &config, clock) {
         Ok(rep) => rep,
