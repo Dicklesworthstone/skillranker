@@ -9,7 +9,9 @@ use skillranker::context::{
     EventKind, LoadedSkillRecord, NormalizedEvent, PrivateText, Role, SkillUsageKind, ToolEvent,
     ToolStatus,
 };
-use skillranker::identity::{AgentId, BranchId, ContextEpoch, EventId, SkillId, ToolCallId, TurnId};
+use skillranker::identity::{
+    AgentId, BranchId, ContextEpoch, EventId, SkillId, ToolCallId, TurnId,
+};
 
 fn invocation(event: &str, call: Option<&str>, skill: &str) -> NormalizedEvent {
     NormalizedEvent {
@@ -71,8 +73,7 @@ fn overlapping_same_id_invocations_cannot_credit_either_skill() {
     for names in [["alpha", "beta"], ["beta", "alpha"]] {
         let mut reply = result("result-1", Some("duplicate"));
         // An ambiguous reply carrying its own arguments is not an escape hatch.
-        reply.tool.as_mut().unwrap().arguments =
-            Some(PrivateText::new(r#"{"skill":"gamma"}"#));
+        reply.tool.as_mut().unwrap().arguments = Some(PrivateText::new(r#"{"skill":"gamma"}"#));
         let events = [
             invocation("call-1", Some("duplicate"), names[0]),
             invocation("call-2", Some("duplicate"), names[1]),
@@ -82,7 +83,11 @@ fn overlapping_same_id_invocations_cannot_credit_either_skill() {
         assert!(loaded(&events).is_empty());
         let joined = associate_tool_events(&events, 200);
         assert!(joined.iter().all(|call| call.status == ToolStatus::Unknown));
-        assert_eq!(joined.len(), 4, "ambiguity must not drop the local evidence");
+        assert_eq!(
+            joined.len(),
+            4,
+            "ambiguity must not drop the local evidence"
+        );
     }
 }
 
@@ -177,7 +182,10 @@ fn identical_call_ids_remain_independent_across_agent_and_branch_scopes() {
         first_result.branch_id = first.branch_id.clone();
         second_result.agent_id = second.agent_id.clone();
         second_result.branch_id = second.branch_id.clone();
-        assert_eq!(loaded(&[first, second, second_result, first_result]).len(), 2);
+        assert_eq!(
+            loaded(&[first, second, second_result, first_result]).len(),
+            2
+        );
     }
 }
 
