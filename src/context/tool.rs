@@ -23,6 +23,8 @@ use crate::identity::{
 use serde_json::Value;
 use std::collections::{BTreeMap, HashSet};
 
+mod dispatch;
+
 /// Default maximum characters for tool argument or result excerpts.
 pub const DEFAULT_TOOL_EXCERPT_CHARS: usize = 200;
 
@@ -336,45 +338,17 @@ impl SimpleSkillResolver {
 
 impl SkillEvidenceResolver for SimpleSkillResolver {
     fn resolve_tool(&self, tool_name: &str, arguments_json: Option<&str>) -> Option<SkillMatch> {
-        // Direct tool name match
-        if let Some(m) = self.tool_skills.get(tool_name) {
-            return Some(m.clone());
-        }
-
-        // Harness "Skill" tool with argument {"skill": "..."} or {"name": "..."}
-        let lower = tool_name.to_ascii_lowercase();
-        if (lower == "skill" || lower == "load_skill" || lower == "run_skill")
-            && let Some(args_str) = arguments_json
-            && let Ok(Value::Object(map)) = serde_json::from_str::<Value>(args_str)
-        {
-            for key in ["skill", "skill_name", "name"] {
-                if let Some(Value::String(target)) = map.get(key)
-                    && let Some(m) = self.tool_skills.get(target)
-                {
-                    return Some(m.clone());
-                }
-            }
-        }
-
-        // File read tools
-        if (lower == "read_file" || lower == "view_file" || lower == "cat" || lower == "read")
-            && let Some(args_str) = arguments_json
-            && let Ok(Value::Object(map)) = serde_json::from_str::<Value>(args_str)
-        {
-            for key in ["path", "file_path", "target"] {
-                if let Some(Value::String(target)) = map.get(key)
-                    && let Some(m) = self.resolve_file_read(target)
-                {
-                    return Some(m);
-                }
-            }
-        }
-
-        None
+        dispatch::resolve_tool(self, tool_name, arguments_json)
     }
 
     fn resolve_file_read(&self, path: &str) -> Option<SkillMatch> {
-        self.path_skills.get(path).cloned()
+        // A registered current revision is not evidence of the bytes consumed
+        // by a historical file read. Enforce this for every caller, not just
+        // the pipeline's roster-to-resolver registration helper.
+        let mut matched = self.path_skills.get(path)?.clone();
+        matched.source_content = None;
+        matched.rendered_content = None;
+        Some(matched)
     }
 }
 
