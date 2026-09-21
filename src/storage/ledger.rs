@@ -658,6 +658,10 @@ pub struct ProviderMetrics {
     pub cost_per_useful_suggestion: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tokens_per_useful_suggestion: Option<f64>,
+    /// Judged turns that owned no provider attempt, because they were served from a response
+    /// another turn paid for. Their usefulness is real and their cost is not theirs, so they
+    /// are counted apart rather than folded into a ratio that would read as free.
+    pub judged_turns_served_from_cache: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -3362,16 +3366,47 @@ impl LedgerStore {
             |r| Ok((r.get(0)?, r.get(1)?)),
         )?;
 
+        // Judged turns that owned no attempt of their own: served from a response another turn
+        // paid for. Counted because otherwise their effect on the ratio below is invisible.
+        let judged_turns_served_from_cache: i64 = self.connection.query_row(
+            "SELECT count(*) FROM ( \
+               SELECT DISTINCT j.attributed_event_id AS event_id FROM judgments j \
+               JOIN ranking_events e ON j.attributed_event_id = e.event_id \
+               WHERE e.created_at_unix_ms >= ?1 AND e.created_at_unix_ms <= ?2 \
+             ) judged WHERE NOT EXISTS ( \
+               SELECT 1 FROM provider_attempts a WHERE a.owner_event_id = judged.event_id \
+             )",
+            [since_unix_ms, as_of_unix_ms],
+            |r| r.get(0),
+        )?;
+
         let cost_per_useful_suggestion = if useful == 0 {
             "not estimable (0 useful labels in judged cohort)".to_string()
+        } else if judged_cohort_attempts == 0 {
+            // Every judged turn reused a response it did not pay for. Dividing by `useful`
+            // here yields zero, and zero is a claim: it says a useful suggestion cost nothing,
+            // when what happened is that the spend belongs to turns outside this cohort.
+            // Attributing the owner's tokens to the follower instead would report the same
+            // spend twice as soon as the owner is judged too, so the honest answer is to
+            // decline the ratio and say why.
+            format!(
+                "not estimable (judged cohort owns no provider attempt; {judged_turns_served_from_cache} judged turn(s) reused a response paid for elsewhere)"
+            )
         } else {
             format!(
-                "pricing configuration absent; {} attempts / {} tokens per useful suggestion across judged cohort",
+                "pricing configuration absent; {} attempts / {} tokens per useful suggestion across judged cohort{}",
                 (judged_cohort_attempts as f64 / useful as f64).round() as u64,
-                (judged_cohort_tokens as f64 / useful as f64).round() as u64
+                (judged_cohort_tokens as f64 / useful as f64).round() as u64,
+                if judged_turns_served_from_cache > 0 {
+                    format!(
+                        "; excludes {judged_turns_served_from_cache} judged turn(s) that reused a response paid for elsewhere"
+                    )
+                } else {
+                    String::new()
+                }
             )
         };
-        let tokens_per_useful_suggestion = if useful > 0 {
+        let tokens_per_useful_suggestion = if useful > 0 && judged_cohort_attempts > 0 {
             Some(judged_cohort_tokens as f64 / useful as f64)
         } else {
             None
@@ -3390,6 +3425,7 @@ impl LedgerStore {
             cache_hit_rate,
             cost_per_useful_suggestion,
             tokens_per_useful_suggestion,
+            judged_turns_served_from_cache: judged_turns_served_from_cache as u64,
         };
 
         // 6. By Skill (optional)

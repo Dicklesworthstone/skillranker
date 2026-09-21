@@ -261,7 +261,18 @@ attempt whose settlement was never observed is `unknown`, not failed. `cache_ser
 and `cache_hit_rate` cover only finished turns: a turn killed before admitting an attempt
 has no attempt rows either, and counting its absence as reuse would inflate the rate.
 `cost_per_useful_suggestion` is a string that either carries a figure or says why it
-cannot, and it is computed over the judged cohort's own attempts only.
+cannot, and it is computed over the judged cohort's own attempts only. A turn served from a
+response another turn paid for owns no attempt, so `judged_turns_served_from_cache` counts how
+many judged turns were in that position: where a figure is still computable it names them as
+excluded, and where every judged turn reused a response the figure is declined rather than
+reported as zero. Zero would say a useful suggestion cost nothing, when what happened is that
+the spend belongs to a turn outside the cohort — and attributing it inward would report the
+same tokens twice as soon as the paying turn is judged too.
+
+`retained` describes retention, not the window: a window wider than the retention period
+counts turns that retention already considers expired, and reports them under
+`expired_events` rather than dropping them from the counts. A recorded turn and a turn that
+will survive the next maintenance pass are different facts.
 
 `retained` reports what retention still holds, and `by_skill` appears only with
 `--by-skill`. Per-skill output reports appearances, loads and labels, and deliberately
