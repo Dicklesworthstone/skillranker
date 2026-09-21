@@ -4181,3 +4181,56 @@ mod invocation_cleanup_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod documented_flag_tests {
+    #[test]
+    fn readme_command_examples_use_implemented_or_registered_planned_flags() {
+        let app = super::command();
+        let mut invocation = String::new();
+        let mut checked = 0;
+        for line in include_str!("../README.md").lines() {
+            let line = line.trim();
+            if invocation.is_empty() && !line.starts_with("sr ") {
+                continue;
+            }
+            let line = line.split('#').next().unwrap().trim();
+            invocation.push(' ');
+            invocation.push_str(line.trim_end_matches('\\'));
+            if line.ends_with('\\') {
+                continue;
+            }
+            let words: Vec<_> = invocation.split_whitespace().collect();
+            let name = words[1];
+            if crate::capabilities::planned_command_phase(name).is_none() {
+                let parser = if name.starts_with('-') {
+                    &app
+                } else {
+                    app.find_subcommand(name)
+                        .expect("documented command must exist")
+                };
+                for word in &words[1..] {
+                    if let Some(flag) = word.strip_prefix("--") {
+                        let flag = flag.split('=').next().unwrap();
+                        assert!(
+                            parser
+                                .get_arguments()
+                                .any(|arg| arg.get_long() == Some(flag)),
+                            "README documents unregistered {name} --{flag}"
+                        );
+                        checked += 1;
+                    }
+                }
+            }
+            invocation.clear();
+        }
+        assert!(
+            checked > 30,
+            "README invocation scan must not pass vacuously"
+        );
+        assert!(
+            invocation.is_empty(),
+            "unfinished README shell continuation"
+        );
+    }
+}
