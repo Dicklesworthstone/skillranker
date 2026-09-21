@@ -191,6 +191,48 @@ fn write_policy_file(path: &Path, content: &str) {
 }
 
 #[test]
+#[cfg(target_os = "linux")]
+fn oversized_replay_inputs_are_rejected_before_large_allocation() {
+    use std::os::unix::fs::OpenOptionsExt;
+    let root = temp_workspace("bounded-allocation");
+    let case = root.join("workspace/case.json");
+    write_case_file(&case, &sample_ranked_case());
+    let oversized = root.join("workspace/oversized.json");
+    let file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&oversized)
+        .unwrap();
+    file.set_len(1024 * 1024 * 1024).unwrap();
+    for policy in [false, true] {
+        let mut command = Command::new("/bin/bash");
+        command
+            .env_clear()
+            .arg("-c")
+            .arg("ulimit -c 0; ulimit -v 262144; exec \"$@\"")
+            .arg("bounded-replay")
+            .arg(env!("CARGO_BIN_EXE_sr"))
+            .arg("replay")
+            .arg(if policy { &case } else { &oversized })
+            .arg("--json")
+            .current_dir(root.join("workspace"));
+        if policy {
+            command.arg("--policy").arg(&oversized);
+        }
+        let out = command.output().unwrap();
+        assert_eq!(
+            out.status.code(),
+            Some(7),
+            "policy={policy}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let error: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(error["error"]["kind"], "oversized-input");
+    }
+}
+
+#[test]
 fn replay_help_succeeds_and_documents_command() {
     let root = temp_workspace("help");
     let output = run_sr(&root, &["replay", "--help"]);
