@@ -1678,7 +1678,17 @@ fn stats_command(
         crate::storage::LedgerLocation::Platform
     };
 
-    let now_ms = clock.now().as_millis() as i64;
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .and_then(|duration| i64::try_from(duration.as_millis()).ok())
+        .ok_or_else(|| {
+            (
+                9u8,
+                "storage-failure",
+                "System clock cannot represent a Unix timestamp".into(),
+            )
+        })?;
     let since_ms = if let Some(s) = matches.get_one::<String>("since") {
         crate::storage::parse_cutoff_to_unix_ms(s, now_ms)
             .map_err(|err| (2u8, "invalid-arguments", err))?

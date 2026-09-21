@@ -2536,7 +2536,11 @@ pub fn ledger_stats(
 ) -> Result<StatsValueReport, StoreError> {
     let clock = invocation.clock();
     let child = cx.clone();
-    let now_ms = clock.now().as_millis() as i64;
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .and_then(|duration| i64::try_from(duration.as_millis()).ok())
+        .ok_or(StoreError::InvalidRecord)?;
     run_blocking_leaf(
         invocation,
         cx,
@@ -2991,7 +2995,7 @@ impl LedgerStore {
             |r| r.get(0),
         )?;
         let emitted_suggestions: i64 = self.connection.query_row(
-            "SELECT count(*) FROM ranking_events WHERE created_at_unix_ms >= ?1 AND created_at_unix_ms <= ?2 AND decision = 'ranked' AND exposure_state IN ('emitted', 'acknowledged')",
+            "SELECT count(*) FROM ranking_events WHERE created_at_unix_ms >= ?1 AND created_at_unix_ms <= ?2 AND decision IN ('ranked', 'explicit') AND exposure_state IN ('emitted', 'acknowledged')",
             [since_unix_ms, as_of_unix_ms],
             |r| r.get(0),
         )?;
@@ -3001,7 +3005,7 @@ impl LedgerStore {
             |r| r.get(0),
         )?;
         let muted_or_suppressed: i64 = self.connection.query_row(
-            "SELECT count(*) FROM ranking_events WHERE created_at_unix_ms >= ?1 AND created_at_unix_ms <= ?2 AND exposure_state IN ('generated', 'prepared')",
+            "SELECT count(*) FROM ranking_events WHERE created_at_unix_ms >= ?1 AND created_at_unix_ms <= ?2 AND decision = 'ranked' AND exposure_state IN ('generated', 'prepared')",
             [since_unix_ms, as_of_unix_ms],
             |r| r.get(0),
         )?;
@@ -3019,9 +3023,9 @@ impl LedgerStore {
         // Channels
         let mut channel_stmt = self.connection.prepare(
             "SELECT mode_channel, count(*), \
-             sum(CASE WHEN decision = 'ranked' AND exposure_state IN ('emitted', 'acknowledged') THEN 1 ELSE 0 END), \
+             sum(CASE WHEN decision IN ('ranked', 'explicit') AND exposure_state IN ('emitted', 'acknowledged') THEN 1 ELSE 0 END), \
              sum(CASE WHEN decision = 'abstain' THEN 1 ELSE 0 END), \
-             sum(CASE WHEN exposure_state IN ('generated', 'prepared') THEN 1 ELSE 0 END), \
+             sum(CASE WHEN decision = 'ranked' AND exposure_state IN ('generated', 'prepared') THEN 1 ELSE 0 END), \
              sum(CASE WHEN decision = 'unavailable' THEN 1 ELSE 0 END) \
              FROM ranking_events WHERE created_at_unix_ms >= ?1 AND created_at_unix_ms <= ?2 \
              GROUP BY mode_channel ORDER BY mode_channel",
@@ -3110,8 +3114,8 @@ impl LedgerStore {
             |r| r.get(0),
         )?;
         let unattributed_loads = (observed_loads as u64).saturating_sub(attributed_loads as u64);
-        let observation_coverage = if total_obs > 0 {
-            Some(attributed_loads as f64 / total_obs as f64)
+        let observation_coverage = if observed_loads > 0 {
+            Some(attributed_loads as f64 / observed_loads as f64)
         } else {
             None
         };
@@ -3129,7 +3133,7 @@ impl LedgerStore {
             unattributed_loads,
             observation_coverage,
             suggestion_adoption_rate,
-            caveat: "Adoption is not task success; a recommendation can cause its own observed load without proving counterfactual benefit.".into(),
+            caveat: "Observed adoption is not task success; a recommendation can cause its own observed load without proving counterfactual benefit.".into(),
         };
 
         // 4. Judgments

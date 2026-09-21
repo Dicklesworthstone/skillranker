@@ -19,7 +19,6 @@
 use asupersync::Cx;
 use skillranker::runtime::ProcessInvocation;
 use skillranker::storage::ledger::*;
-use skillranker::storage::*;
 use std::fs;
 use std::os::unix::fs::DirBuilderExt;
 use std::path::PathBuf;
@@ -254,35 +253,88 @@ fn mixed_cohorts_and_channels_preserve_distinct_denominators() {
     let location = LedgerLocation::Directory(dir.clone());
     let _init = init_ledger(&inv, &cx, location.clone()).expect("init ledger");
 
-    let open = open_ledger(&inv, &cx, LedgerAccess::ExistingOnly, location.clone())
-        .expect("open ledger");
-    let store = match open {
+    let open =
+        open_ledger(&inv, &cx, LedgerAccess::ExistingOnly, location.clone()).expect("open ledger");
+    let mut store = match open {
         LedgerOpen::Ready(s) => s,
         _ => panic!("expected ready store"),
     };
 
+    let stamp = store.stamp();
     let base_time = 1_000_000u64;
-    store.record_roster_snapshot(&snapshot_fixture("snap-1", base_time)).expect("snap");
+    store
+        .record_roster_snapshot(
+            inv.clock(),
+            &cx,
+            &snapshot_fixture("snap-1", base_time),
+            stamp,
+        )
+        .expect("snap");
 
     // 1. CLI emitted suggestion
-    let ev1 = event_fixture("ev-cli-1", "cli", DecisionKind::Ranked, ExposureState::Emitted, 50, base_time + 100);
-    store.record_ranking_event_with_attempts(&ev1, &[], &[]).expect("ev1");
+    let ev1 = event_fixture(
+        "ev-cli-1",
+        "cli",
+        DecisionKind::Ranked,
+        ExposureState::Emitted,
+        50,
+        base_time + 100,
+    );
+    store
+        .record_ranking_event_with_attempts(inv.clock(), &cx, &ev1, &[], None, &[], stamp)
+        .expect("ev1");
 
     // 2. CLI valid abstention
-    let ev2 = event_fixture("ev-cli-2", "cli", DecisionKind::Abstain, ExposureState::Muted, 20, base_time + 200);
-    store.record_ranking_event_with_attempts(&ev2, &[], &[]).expect("ev2");
+    let ev2 = event_fixture(
+        "ev-cli-2",
+        "cli",
+        DecisionKind::Abstain,
+        ExposureState::Generated,
+        20,
+        base_time + 200,
+    );
+    store
+        .record_ranking_event_with_attempts(inv.clock(), &cx, &ev2, &[], None, &[], stamp)
+        .expect("ev2");
 
     // 3. Shadow evaluated turn (muted)
-    let ev3 = event_fixture("ev-sh-1", "shadow", DecisionKind::Ranked, ExposureState::Muted, 40, base_time + 300);
-    store.record_ranking_event_with_attempts(&ev3, &[], &[]).expect("ev3");
+    let ev3 = event_fixture(
+        "ev-sh-1",
+        "shadow",
+        DecisionKind::Ranked,
+        ExposureState::Generated,
+        40,
+        base_time + 300,
+    );
+    store
+        .record_ranking_event_with_attempts(inv.clock(), &cx, &ev3, &[], None, &[], stamp)
+        .expect("ev3");
 
     // 4. Advisory hook operational failure (unavailable)
-    let ev4 = event_fixture("ev-adv-1", "advisory", DecisionKind::Unavailable, ExposureState::Muted, 10, base_time + 400);
-    store.record_ranking_event_with_attempts(&ev4, &[], &[]).expect("ev4");
+    let ev4 = event_fixture(
+        "ev-adv-1",
+        "advisory",
+        DecisionKind::Unavailable,
+        ExposureState::Generated,
+        10,
+        base_time + 400,
+    );
+    store
+        .record_ranking_event_with_attempts(inv.clock(), &cx, &ev4, &[], None, &[], stamp)
+        .expect("ev4");
 
     // 5. CLI explicit requirement
-    let ev5 = event_fixture("ev-cli-3", "cli", DecisionKind::Explicit, ExposureState::Emitted, 5, base_time + 500);
-    store.record_ranking_event_with_attempts(&ev5, &[], &[]).expect("ev5");
+    let ev5 = event_fixture(
+        "ev-cli-3",
+        "cli",
+        DecisionKind::Explicit,
+        ExposureState::Emitted,
+        5,
+        base_time + 500,
+    );
+    store
+        .record_ranking_event_with_attempts(inv.clock(), &cx, &ev5, &[], None, &[], stamp)
+        .expect("ev5");
 
     drop(store);
 
@@ -290,25 +342,40 @@ fn mixed_cohorts_and_channels_preserve_distinct_denominators() {
 
     assert_eq!(report.turns.total_evaluated, 5);
     assert_eq!(report.turns.emitted_suggestions, 2); // ev1 and ev5
-    assert_eq!(report.turns.valid_abstentions, 1);   // ev2
+    assert_eq!(report.turns.valid_abstentions, 1); // ev2
     assert_eq!(report.turns.muted_or_suppressed, 1); // ev3 (shadow)
-    assert_eq!(report.turns.operational_failures, 1);// ev4 (unavailable)
-    assert_eq!(report.turns.explicit_requirements, 1);// ev5
+    assert_eq!(report.turns.operational_failures, 1); // ev4 (unavailable)
+    assert_eq!(report.turns.explicit_requirements, 1); // ev5
 
     // Distinct channel denominators
     assert_eq!(report.turns.by_channel.len(), 3); // cli, shadow, advisory
-    let cli = report.turns.by_channel.iter().find(|c| c.channel == "cli").expect("cli channel");
+    let cli = report
+        .turns
+        .by_channel
+        .iter()
+        .find(|c| c.channel == "cli")
+        .expect("cli channel");
     assert_eq!(cli.evaluated_turns, 3);
     assert_eq!(cli.emitted, 2);
     assert_eq!(cli.abstain, 1);
     assert_eq!(cli.muted, 0);
 
-    let shadow = report.turns.by_channel.iter().find(|c| c.channel == "shadow").expect("shadow channel");
+    let shadow = report
+        .turns
+        .by_channel
+        .iter()
+        .find(|c| c.channel == "shadow")
+        .expect("shadow channel");
     assert_eq!(shadow.evaluated_turns, 1);
     assert_eq!(shadow.emitted, 0);
     assert_eq!(shadow.muted, 1);
 
-    let advisory = report.turns.by_channel.iter().find(|c| c.channel == "advisory").expect("advisory channel");
+    let advisory = report
+        .turns
+        .by_channel
+        .iter()
+        .find(|c| c.channel == "advisory")
+        .expect("advisory channel");
     assert_eq!(advisory.evaluated_turns, 1);
     assert_eq!(advisory.unavailable, 1);
 }
@@ -320,15 +387,23 @@ fn latency_summary_computes_accurate_percentiles() {
     let location = LedgerLocation::Directory(dir.clone());
     let _init = init_ledger(&inv, &cx, location.clone()).expect("init ledger");
 
-    let open = open_ledger(&inv, &cx, LedgerAccess::ExistingOnly, location.clone())
-        .expect("open ledger");
-    let store = match open {
+    let open =
+        open_ledger(&inv, &cx, LedgerAccess::ExistingOnly, location.clone()).expect("open ledger");
+    let mut store = match open {
         LedgerOpen::Ready(s) => s,
         _ => panic!("expected ready store"),
     };
 
+    let stamp = store.stamp();
     let base_time = 1_000_000u64;
-    store.record_roster_snapshot(&snapshot_fixture("snap-1", base_time)).expect("snap");
+    store
+        .record_roster_snapshot(
+            inv.clock(),
+            &cx,
+            &snapshot_fixture("snap-1", base_time),
+            stamp,
+        )
+        .expect("snap");
 
     // Insert 5 events with latencies: 10, 20, 30, 40, 100
     let latencies = [10, 20, 30, 40, 100];
@@ -341,7 +416,9 @@ fn latency_summary_computes_accurate_percentiles() {
             lat,
             base_time + (i as u64 * 100),
         );
-        store.record_ranking_event_with_attempts(&ev, &[], &[]).expect("ev");
+        store
+            .record_ranking_event_with_attempts(inv.clock(), &cx, &ev, &[], None, &[], stamp)
+            .expect("ev");
     }
 
     drop(store);
@@ -361,30 +438,86 @@ fn provider_metrics_tracks_tokens_and_cache_served_events() {
     let location = LedgerLocation::Directory(dir.clone());
     let _init = init_ledger(&inv, &cx, location.clone()).expect("init ledger");
 
-    let open = open_ledger(&inv, &cx, LedgerAccess::ExistingOnly, location.clone())
-        .expect("open ledger");
-    let store = match open {
+    let open =
+        open_ledger(&inv, &cx, LedgerAccess::ExistingOnly, location.clone()).expect("open ledger");
+    let mut store = match open {
         LedgerOpen::Ready(s) => s,
         _ => panic!("expected ready store"),
     };
 
+    let stamp = store.stamp();
     let base_time = 1_000_000u64;
-    store.record_roster_snapshot(&snapshot_fixture("snap-1", base_time)).expect("snap");
+    store
+        .record_roster_snapshot(
+            inv.clock(),
+            &cx,
+            &snapshot_fixture("snap-1", base_time),
+            stamp,
+        )
+        .expect("snap");
 
     // Event 1: has 2 attempts (one completed with tokens, one failed)
-    let ev1 = event_fixture("ev-p1", "cli", DecisionKind::Ranked, ExposureState::Emitted, 50, base_time + 100);
-    let att1 = attempt_fixture("att-1", "ev-p1", Some(120), Some(80), AttemptStatus::Completed, base_time + 100);
-    let att2 = attempt_fixture("att-2", "ev-p1", None, None, AttemptStatus::Failed, base_time + 110);
-    store.record_ranking_event_with_attempts(&ev1, &[], &[att1, att2]).expect("ev1");
+    let ev1 = event_fixture(
+        "ev-p1",
+        "cli",
+        DecisionKind::Ranked,
+        ExposureState::Emitted,
+        50,
+        base_time + 100,
+    );
+    let att1 = attempt_fixture(
+        "att-1",
+        "ev-p1",
+        Some(120),
+        Some(80),
+        AttemptStatus::Completed,
+        base_time + 100,
+    );
+    let att2 = attempt_fixture(
+        "att-2",
+        "ev-p1",
+        None,
+        None,
+        AttemptStatus::Failed,
+        base_time + 110,
+    );
+    store
+        .record_ranking_event_with_attempts(inv.clock(), &cx, &ev1, &[], None, &[att1, att2], stamp)
+        .expect("ev1");
 
     // Event 2: has 1 attempt with unknown usage (status completed, but tokens None)
-    let ev2 = event_fixture("ev-p2", "cli", DecisionKind::Ranked, ExposureState::Emitted, 30, base_time + 200);
-    let att3 = attempt_fixture("att-3", "ev-p2", None, None, AttemptStatus::Unknown, base_time + 200);
-    store.record_ranking_event_with_attempts(&ev2, &[], &[att3]).expect("ev2");
+    let ev2 = event_fixture(
+        "ev-p2",
+        "cli",
+        DecisionKind::Ranked,
+        ExposureState::Emitted,
+        30,
+        base_time + 200,
+    );
+    let att3 = attempt_fixture(
+        "att-3",
+        "ev-p2",
+        None,
+        None,
+        AttemptStatus::Unknown,
+        base_time + 200,
+    );
+    store
+        .record_ranking_event_with_attempts(inv.clock(), &cx, &ev2, &[], None, &[att3], stamp)
+        .expect("ev2");
 
     // Event 3: cache-served event (0 attempts)
-    let ev3 = event_fixture("ev-p3", "cli", DecisionKind::Ranked, ExposureState::Emitted, 2, base_time + 300);
-    store.record_ranking_event_with_attempts(&ev3, &[], &[]).expect("ev3");
+    let ev3 = event_fixture(
+        "ev-p3",
+        "cli",
+        DecisionKind::Ranked,
+        ExposureState::Emitted,
+        2,
+        base_time + 300,
+    );
+    store
+        .record_ranking_event_with_attempts(inv.clock(), &cx, &ev3, &[], None, &[], stamp)
+        .expect("ev3");
 
     drop(store);
 
@@ -398,7 +531,7 @@ fn provider_metrics_tracks_tokens_and_cache_served_events() {
     assert_eq!(report.provider.known_output_tokens, 80);
     assert_eq!(report.provider.known_total_tokens, 200);
     assert_eq!(report.provider.unknown_usage_attempts, 2); // att2 and att3 have NULL tokens
-    assert_eq!(report.provider.cache_served_events, 1);    // ev3
+    assert_eq!(report.provider.cache_served_events, 1); // ev3
     // Cache hit rate = 1 cache-served / 3 total evaluated = 0.333...
     let hit_rate = report.provider.cache_hit_rate.expect("cache_hit_rate");
     assert!((hit_rate - 1.0 / 3.0).abs() < 0.001);
@@ -411,36 +544,90 @@ fn observations_and_adoption_rate_tracked_with_caveats() {
     let location = LedgerLocation::Directory(dir.clone());
     let _init = init_ledger(&inv, &cx, location.clone()).expect("init ledger");
 
-    let open = open_ledger(&inv, &cx, LedgerAccess::ExistingOnly, location.clone())
-        .expect("open ledger");
-    let store = match open {
+    let open =
+        open_ledger(&inv, &cx, LedgerAccess::ExistingOnly, location.clone()).expect("open ledger");
+    let mut store = match open {
         LedgerOpen::Ready(s) => s,
         _ => panic!("expected ready store"),
     };
 
+    let stamp = store.stamp();
     let base_time = 1_000_000u64;
-    store.record_roster_snapshot(&snapshot_fixture("snap-1", base_time)).expect("snap");
+    store
+        .record_roster_snapshot(
+            inv.clock(),
+            &cx,
+            &snapshot_fixture("snap-1", base_time),
+            stamp,
+        )
+        .expect("snap");
 
     // 2 emitted events
-    let ev1 = event_fixture("ev-o1", "cli", DecisionKind::Ranked, ExposureState::Emitted, 50, base_time + 100);
+    let ev1 = event_fixture(
+        "ev-o1",
+        "cli",
+        DecisionKind::Ranked,
+        ExposureState::Emitted,
+        50,
+        base_time + 100,
+    );
     let cand1 = candidate_fixture("ev-o1", "review", CandidateStage::Rerank, Some(1));
-    store.record_ranking_event_with_attempts(&ev1, &[cand1], &[]).expect("ev1");
+    store
+        .record_ranking_event_with_attempts(inv.clock(), &cx, &ev1, &[cand1], None, &[], stamp)
+        .expect("ev1");
 
-    let ev2 = event_fixture("ev-o2", "cli", DecisionKind::Ranked, ExposureState::Emitted, 50, base_time + 200);
+    let ev2 = event_fixture(
+        "ev-o2",
+        "cli",
+        DecisionKind::Ranked,
+        ExposureState::Emitted,
+        50,
+        base_time + 200,
+    );
     let cand2 = candidate_fixture("ev-o2", "test_runner", CandidateStage::Rerank, Some(1));
-    store.record_ranking_event_with_attempts(&ev2, &[cand2], &[]).expect("ev2");
+    store
+        .record_ranking_event_with_attempts(inv.clock(), &cx, &ev2, &[cand2], None, &[], stamp)
+        .expect("ev2");
 
     // Observations:
     // 1 attributed load to ev1
-    let o1 = observation_fixture("obs-1", "review", EvidenceState::Loaded, Some("ev-o1"), base_time + 150);
+    let o1 = observation_fixture(
+        "obs-1",
+        "review",
+        EvidenceState::Loaded,
+        Some("ev-o1"),
+        base_time + 150,
+    );
     // 1 unattributed load
-    let o2 = observation_fixture("obs-2", "deploy", EvidenceState::Loaded, None, base_time + 160);
+    let o2 = observation_fixture(
+        "obs-2",
+        "deploy",
+        EvidenceState::Loaded,
+        None,
+        base_time + 160,
+    );
     // 1 attempted load
-    let o3 = observation_fixture("obs-3", "review", EvidenceState::Attempted, None, base_time + 170);
+    let o3 = observation_fixture(
+        "obs-3",
+        "review",
+        EvidenceState::Attempted,
+        None,
+        base_time + 170,
+    );
     // 1 censored observation
-    let o4 = observation_fixture("obs-4", "review", EvidenceState::Censored, None, base_time + 180);
+    let o4 = observation_fixture(
+        "obs-4",
+        "review",
+        EvidenceState::Censored,
+        None,
+        base_time + 180,
+    );
 
-    store.record_observations(&[o1, o2, o3, o4]).expect("record observations");
+    for observation in [o1, o2, o3, o4] {
+        store
+            .record_observation(inv.clock(), &cx, &observation, stamp)
+            .expect("record observations");
+    }
 
     drop(store);
 
@@ -457,7 +644,12 @@ fn observations_and_adoption_rate_tracked_with_caveats() {
     assert_eq!(report.observations.suggestion_adoption_rate, Some(0.5));
     // Observation coverage = 1 loaded with known attribution / 2 total loaded = 0.5
     assert_eq!(report.observations.observation_coverage, Some(0.5));
-    assert!(report.observations.caveat.contains("adoption is not task success"));
+    assert!(
+        report
+            .observations
+            .caveat
+            .contains("adoption is not task success")
+    );
 }
 
 #[test]
@@ -467,39 +659,111 @@ fn judgments_and_cost_per_useful_suggestion_calculated() {
     let location = LedgerLocation::Directory(dir.clone());
     let _init = init_ledger(&inv, &cx, location.clone()).expect("init ledger");
 
-    let open = open_ledger(&inv, &cx, LedgerAccess::ExistingOnly, location.clone())
-        .expect("open ledger");
-    let store = match open {
+    let open =
+        open_ledger(&inv, &cx, LedgerAccess::ExistingOnly, location.clone()).expect("open ledger");
+    let mut store = match open {
         LedgerOpen::Ready(s) => s,
         _ => panic!("expected ready store"),
     };
 
+    let stamp = store.stamp();
     let base_time = 1_000_000u64;
-    store.record_roster_snapshot(&snapshot_fixture("snap-1", base_time)).expect("snap");
+    store
+        .record_roster_snapshot(
+            inv.clock(),
+            &cx,
+            &snapshot_fixture("snap-1", base_time),
+            stamp,
+        )
+        .expect("snap");
 
     // Event 1: 1 attempt with 500 input, 500 output tokens (= 1000 tokens)
-    let ev1 = event_fixture("ev-j1", "cli", DecisionKind::Ranked, ExposureState::Emitted, 50, base_time + 100);
-    let att1 = attempt_fixture("att-j1", "ev-j1", Some(500), Some(500), AttemptStatus::Completed, base_time + 100);
-    store.record_ranking_event_with_attempts(&ev1, &[], &[att1]).expect("ev1");
+    let ev1 = event_fixture(
+        "ev-j1",
+        "cli",
+        DecisionKind::Ranked,
+        ExposureState::Emitted,
+        50,
+        base_time + 100,
+    );
+    let att1 = attempt_fixture(
+        "att-j1",
+        "ev-j1",
+        Some(500),
+        Some(500),
+        AttemptStatus::Completed,
+        base_time + 100,
+    );
+    store
+        .record_ranking_event_with_attempts(inv.clock(), &cx, &ev1, &[], None, &[att1], stamp)
+        .expect("ev1");
 
     // Event 2: 1 attempt with 200 input, 200 output tokens (= 400 tokens)
-    let ev2 = event_fixture("ev-j2", "cli", DecisionKind::Ranked, ExposureState::Emitted, 50, base_time + 200);
-    let att2 = attempt_fixture("att-j2", "ev-j2", Some(200), Some(200), AttemptStatus::Completed, base_time + 200);
-    store.record_ranking_event_with_attempts(&ev2, &[], &[att2]).expect("ev2");
+    let ev2 = event_fixture(
+        "ev-j2",
+        "cli",
+        DecisionKind::Ranked,
+        ExposureState::Emitted,
+        50,
+        base_time + 200,
+    );
+    let att2 = attempt_fixture(
+        "att-j2",
+        "ev-j2",
+        Some(200),
+        Some(200),
+        AttemptStatus::Completed,
+        base_time + 200,
+    );
+    store
+        .record_ranking_event_with_attempts(inv.clock(), &cx, &ev2, &[], None, &[att2], stamp)
+        .expect("ev2");
 
     // Event 3 (unlabeled): 1 attempt with 3000 tokens
-    let ev3 = event_fixture("ev-j3", "cli", DecisionKind::Ranked, ExposureState::Emitted, 50, base_time + 300);
-    let att3 = attempt_fixture("att-j3", "ev-j3", Some(1500), Some(1500), AttemptStatus::Completed, base_time + 300);
-    store.record_ranking_event_with_attempts(&ev3, &[], &[att3]).expect("ev3");
+    let ev3 = event_fixture(
+        "ev-j3",
+        "cli",
+        DecisionKind::Ranked,
+        ExposureState::Emitted,
+        50,
+        base_time + 300,
+    );
+    let att3 = attempt_fixture(
+        "att-j3",
+        "ev-j3",
+        Some(1500),
+        Some(1500),
+        AttemptStatus::Completed,
+        base_time + 300,
+    );
+    store
+        .record_ranking_event_with_attempts(inv.clock(), &cx, &ev3, &[], None, &[att3], stamp)
+        .expect("ev3");
 
     // Judgments:
     // ev1 labeled useful
-    let j1 = judgment_fixture("jdg-1", "ev-j1", "review", JudgmentLabel::Useful, base_time + 400);
+    let j1 = judgment_fixture(
+        "jdg-1",
+        "ev-j1",
+        "review",
+        JudgmentLabel::Useful,
+        base_time + 400,
+    );
     // ev2 labeled harmful
-    let j2 = judgment_fixture("jdg-2", "ev-j2", "test_runner", JudgmentLabel::Harmful, base_time + 410);
+    let j2 = judgment_fixture(
+        "jdg-2",
+        "ev-j2",
+        "test_runner",
+        JudgmentLabel::Harmful,
+        base_time + 410,
+    );
 
-    store.record_judgment(&j1).expect("j1");
-    store.record_judgment(&j2).expect("j2");
+    store
+        .record_judgment(inv.clock(), &cx, &j1, stamp)
+        .expect("j1");
+    store
+        .record_judgment(inv.clock(), &cx, &j2, stamp)
+        .expect("j2");
 
     drop(store);
 
@@ -511,7 +775,10 @@ fn judgments_and_cost_per_useful_suggestion_calculated() {
     assert_eq!(report.judgments.neutral, 0);
     assert_eq!(report.judgments.distinct_judged_events, 2);
     // Label coverage = 2 distinct judged / 3 emitted = 0.666...
-    let cov = report.judgments.label_coverage_rate.expect("label coverage");
+    let cov = report
+        .judgments
+        .label_coverage_rate
+        .expect("label coverage");
     assert!((cov - 2.0 / 3.0).abs() < 0.001);
     // Useful ratio in judged = 1 useful / 2 judgments = 0.5
     assert_eq!(report.judgments.useful_ratio_in_judged, Some(0.5));
@@ -520,7 +787,12 @@ fn judgments_and_cost_per_useful_suggestion_calculated() {
     // Judged cohort attempts: 2 attempts
     // Useful: 1
     // Cost per useful suggestion = 2 attempts / 1400 tokens per useful suggestion
-    assert!(report.provider.cost_per_useful_suggestion.contains("2 attempts / 1400 tokens per useful suggestion"));
+    assert!(
+        report
+            .provider
+            .cost_per_useful_suggestion
+            .contains("2 attempts / 1400 tokens per useful suggestion")
+    );
     assert_eq!(report.provider.tokens_per_useful_suggestion, Some(1400.0));
 }
 
@@ -531,34 +803,78 @@ fn by_skill_breakdown_orders_by_recommendations_and_shortlist() {
     let location = LedgerLocation::Directory(dir.clone());
     let _init = init_ledger(&inv, &cx, location.clone()).expect("init ledger");
 
-    let open = open_ledger(&inv, &cx, LedgerAccess::ExistingOnly, location.clone())
-        .expect("open ledger");
-    let store = match open {
+    let open =
+        open_ledger(&inv, &cx, LedgerAccess::ExistingOnly, location.clone()).expect("open ledger");
+    let mut store = match open {
         LedgerOpen::Ready(s) => s,
         _ => panic!("expected ready store"),
     };
 
+    let stamp = store.stamp();
     let base_time = 1_000_000u64;
-    store.record_roster_snapshot(&snapshot_fixture("snap-1", base_time)).expect("snap");
+    store
+        .record_roster_snapshot(
+            inv.clock(),
+            &cx,
+            &snapshot_fixture("snap-1", base_time),
+            stamp,
+        )
+        .expect("snap");
 
     // Event 1: skill "review" is Top 1, "test_runner" is Top 2
-    let ev1 = event_fixture("ev-bs1", "cli", DecisionKind::Ranked, ExposureState::Emitted, 50, base_time + 100);
+    let ev1 = event_fixture(
+        "ev-bs1",
+        "cli",
+        DecisionKind::Ranked,
+        ExposureState::Emitted,
+        50,
+        base_time + 100,
+    );
     let c1 = candidate_fixture("ev-bs1", "review", CandidateStage::Rerank, Some(1));
     let c2 = candidate_fixture("ev-bs1", "test_runner", CandidateStage::Rerank, Some(2));
-    store.record_ranking_event_with_attempts(&ev1, &[c1, c2], &[]).expect("ev1");
+    store
+        .record_ranking_event_with_attempts(inv.clock(), &cx, &ev1, &[c1, c2], None, &[], stamp)
+        .expect("ev1");
 
     // Event 2: skill "review" is Top 1 again
-    let ev2 = event_fixture("ev-bs2", "cli", DecisionKind::Ranked, ExposureState::Emitted, 50, base_time + 200);
+    let ev2 = event_fixture(
+        "ev-bs2",
+        "cli",
+        DecisionKind::Ranked,
+        ExposureState::Emitted,
+        50,
+        base_time + 200,
+    );
     let c3 = candidate_fixture("ev-bs2", "review", CandidateStage::Rerank, Some(1));
-    store.record_ranking_event_with_attempts(&ev2, &[c3], &[]).expect("ev2");
+    store
+        .record_ranking_event_with_attempts(inv.clock(), &cx, &ev2, &[c3], None, &[], stamp)
+        .expect("ev2");
 
     // Observation: "review" loaded
-    let o1 = observation_fixture("obs-bs1", "review", EvidenceState::Loaded, Some("ev-bs1"), base_time + 300);
-    store.record_observations(&[o1]).expect("obs");
+    let o1 = observation_fixture(
+        "obs-bs1",
+        "review",
+        EvidenceState::Loaded,
+        Some("ev-bs1"),
+        base_time + 300,
+    );
+    for observation in [o1] {
+        store
+            .record_observation(inv.clock(), &cx, &observation, stamp)
+            .expect("obs");
+    }
 
     // Judgment: "review" useful
-    let j1 = judgment_fixture("jdg-bs1", "ev-bs1", "review", JudgmentLabel::Useful, base_time + 400);
-    store.record_judgment(&j1).expect("j1");
+    let j1 = judgment_fixture(
+        "jdg-bs1",
+        "ev-bs1",
+        "review",
+        JudgmentLabel::Useful,
+        base_time + 400,
+    );
+    store
+        .record_judgment(inv.clock(), &cx, &j1, stamp)
+        .expect("j1");
 
     drop(store);
 
@@ -590,23 +906,49 @@ fn time_window_filtering_respects_since_duration() {
     let location = LedgerLocation::Directory(dir.clone());
     let _init = init_ledger(&inv, &cx, location.clone()).expect("init ledger");
 
-    let open = open_ledger(&inv, &cx, LedgerAccess::ExistingOnly, location.clone())
-        .expect("open ledger");
-    let store = match open {
+    let open =
+        open_ledger(&inv, &cx, LedgerAccess::ExistingOnly, location.clone()).expect("open ledger");
+    let mut store = match open {
         LedgerOpen::Ready(s) => s,
         _ => panic!("expected ready store"),
     };
 
+    let stamp = store.stamp();
     let base_time = 1_000_000u64;
-    store.record_roster_snapshot(&snapshot_fixture("snap-1", base_time)).expect("snap");
+    store
+        .record_roster_snapshot(
+            inv.clock(),
+            &cx,
+            &snapshot_fixture("snap-1", base_time),
+            stamp,
+        )
+        .expect("snap");
 
     // Old event: created at 1_000_100
-    let ev_old = event_fixture("ev-old", "cli", DecisionKind::Ranked, ExposureState::Emitted, 50, 1_000_100);
-    store.record_ranking_event_with_attempts(&ev_old, &[], &[]).expect("old");
+    let ev_old = event_fixture(
+        "ev-old",
+        "cli",
+        DecisionKind::Ranked,
+        ExposureState::Emitted,
+        50,
+        1_000_100,
+    );
+    store
+        .record_ranking_event_with_attempts(inv.clock(), &cx, &ev_old, &[], None, &[], stamp)
+        .expect("old");
 
     // Newer event: created at 2_000_000
-    let ev_new = event_fixture("ev-new", "cli", DecisionKind::Ranked, ExposureState::Emitted, 50, 2_000_000);
-    store.record_ranking_event_with_attempts(&ev_new, &[], &[]).expect("new");
+    let ev_new = event_fixture(
+        "ev-new",
+        "cli",
+        DecisionKind::Ranked,
+        ExposureState::Emitted,
+        50,
+        2_000_000,
+    );
+    store
+        .record_ranking_event_with_attempts(inv.clock(), &cx, &ev_new, &[], None, &[], stamp)
+        .expect("new");
 
     drop(store);
 
@@ -680,4 +1022,60 @@ fn cli_stats_json_and_table_output_and_missing_store_handled() {
     let json_skill: serde_json::Value =
         serde_json::from_slice(&output_by_skill.stdout).expect("parse json skill");
     assert!(json_skill.get("by_skill").is_some());
+}
+
+#[test]
+fn cli_stats_uses_unix_time_for_recent_events_and_relative_cutoffs() {
+    let dir = temp_private_dir("wall-clock");
+    let (inv, cx) = test_invocation();
+    let location = LedgerLocation::Directory(dir.clone());
+    init_ledger(&inv, &cx, location.clone()).unwrap();
+    let LedgerOpen::Ready(mut store) =
+        open_ledger(&inv, &cx, LedgerAccess::ExistingOnly, location).unwrap()
+    else {
+        panic!("expected initialized ledger");
+    };
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    let stamp = store.stamp();
+    store
+        .record_roster_snapshot(
+            inv.clock(),
+            &cx,
+            &snapshot_fixture("snap-1", now - 120_000),
+            stamp,
+        )
+        .unwrap();
+    for (id, time) in [("old", now - 90_000), ("recent", now - 1_000)] {
+        let event = event_fixture(
+            id,
+            "cli",
+            DecisionKind::Ranked,
+            ExposureState::Emitted,
+            10,
+            time,
+        );
+        store
+            .record_ranking_event_with_attempts(inv.clock(), &cx, &event, &[], None, &[], stamp)
+            .unwrap();
+    }
+    drop(store);
+    let output = Command::new(env!("CARGO_BIN_EXE_sr"))
+        .args(["stats", "--json", "--since", "1m", "--dir"])
+        .arg(&dir)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: StatsValueReport = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(report.as_of_unix_ms >= now as i64);
+    assert!(report.since_unix_ms >= now as i64 - 60_000);
+    assert_eq!(report.turns.total_evaluated, 1);
+    assert_eq!(report.turns.emitted_suggestions, 1);
 }
