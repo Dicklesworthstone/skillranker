@@ -1,10 +1,218 @@
 # SkillRanker reality check and bridge plan
 
-Latest assessment: 2026-09-21 UTC (September 20 in New York). Earlier reviews and receipts are retained below as
+Latest assessment: 2026-09-21 UTC, executable-journey review. Earlier reviews and receipts are retained below as
 history. Inventory and ownership statements describe their stated snapshots, not
 a frozen release or a product-completion percentage.
 
-## Current assessment — 2026-09-21 UTC
+## Current assessment — 2026-09-21 UTC, executable-journey review
+
+**The reporting and evaluation seam the previous review called the bottleneck is now
+built and connected. `sr stats` and `sr eval` exist, the whole P5 journey runs end to
+end over a real HTTPS round trip, and the full suite passes 1,180 tests at this
+revision. The central claim is still unproven: nothing here shows that a
+SkillRanker recommendation makes agent work better.** What changed since the previous
+review is the apparatus for measuring usefulness, not the evidence of it. TypeSafe.ai
+Jev remains the essential ranking engine; a fixture provider, offline replay and
+synthetic demos are not a key-free inference backend.
+
+This review drove the product rather than reading it, and that turned up four defects
+the previous reading did not, three of them inside the newly delivered reporting
+surface. Two have no existing owner and are now tracked as `sr-oufi` and `sr-an94`; a
+third refusal-contract gap is `sr-x4s8`.
+
+### Scope and evidence boundaries
+
+Read all 674 lines of AGENTS.md and all 2,034 lines of README.md in full, then worked
+from the code and the running binary rather than from either document. Verified source
+revision `16743e9` (`origin/main`), built `sr` from that content, and exercised it in
+isolated private homes with no credential and no network consent beyond an explicit
+`--allow-network` against a local fixture endpoint. Every figure below is from a
+command this review ran; nothing is carried over from a peer report or a previous
+snapshot. Findings that contradict the previous section are marked as superseding it.
+
+The provider in the journey is the project's own TLS fixture
+(`tests/fixtures/jev-tls/provider_server.py`), not TypeSafe. That choice proves the
+pipeline over a genuine TLS round trip through the production transport, decoder and
+admission path without spending provider budget or sending anything off the machine.
+It proves nothing about the quality of Jev's answers, and no latency figure here is a
+provider benchmark.
+
+### What the binary actually implements
+
+`sr capabilities --json` reports 16 implemented commands — `help`, `version`, `rank`,
+`hook`, `roster`, `doctor`, `capabilities`, `demo`, `install-hook`, `uninstall-hook`,
+`stats`, `observe`, `feedback`, `replay`, `eval`, `ledger` — and five planned:
+`snooze` and `budget` (P6), `calibrate` (P8), `tui` and `gaps` (P9). `features` reports
+`tui: {compiled: false, implemented: false}`.
+
+The five planned commands each refuse with exit 2 and a message that names the phase
+and points at the registry: *"This build does not implement that command; it is planned
+for phase P6. Run sr capabilities for command status."* That is the AGENTS.md
+requirement working as intended, and it is the standard the flag surface fails to meet
+(see finding 3).
+
+Supersedes the previous section: `sr stats` and `sr eval` are no longer absent.
+
+### The documented journey, end to end
+
+One run, one workspace of three real skills on disk, one discovered Claude session,
+one ledger:
+
+| Step | Result |
+|---|---|
+| `ledger init` | new store, schema 1; `ledger status` then reports **ready**, not `needs_migration` |
+| `rank --allow-network --json` | `ranked`, one suggestion, 2 logical requests / 2 HTTP attempts, 275 known tokens, `persistence: recorded`, 483 ms |
+| warnings on that decision | `discovered-session`, `unverified-visibility`, `source-not-enumerated` — all three honest and all three documented |
+| `observe --transcript --harness claude_code` | observation recorded and **attributed** to the ranking event, keyed by the stable skill id |
+| `feedback EVENT --skill ID --verdict useful` | judgment committed |
+| `stats --json --by-skill` | every documented cohort present: turns, latency with `excluded_unfinished`, provider attempts and known tokens, judgments, observations, per-skill rows |
+| `rank --save-case` then `replay CASE` | `kind: replay`, `actionable: false`, reproduced the historical `ranked` decision |
+| `eval --dataset D --json` | `kind: report`, `run_status: complete`, `gate_status: not-established`, completeness accounting for cases and stages, `loss_summary` |
+| `hook claude`, `install-hook claude` | both exit 0; hook defaults to shadow |
+
+Local-only paths verified separately: explicit `--require-skill` resolved offline with
+**zero HTTP attempts**; `--dry-run` produced a `preview` envelope with
+`actionable: false`, a real redacted provider request naming both candidates, and a
+disclosure receipt with per-category included/omitted/redaction counts;
+`--context-profile minimal` produced its own bounded receipt; `roster --snapshot` and
+`--diff` round-tripped; all four `ledger` subcommands previewed correctly.
+
+Two refusals worth recording as correct rather than as defects. A group-writable state
+directory is refused with *"cache path does not satisfy owner-only permissions"* until
+the whole ancestor chain is private — the product enforcing its own documented
+owner-only rule. And piped stdin without an explicit input mode is refused, as the CLI
+contract requires.
+
+`sr ledger prune --before 30d` now resolves a cutoff of `2026-08-22T13:54:15.910Z`.
+The previous review did not cover prune; it computed a 1969 cutoff until `9b77a8f`, so
+retention was never enforced through the CLI. That repair is in this revision.
+
+### Findings that change the next work
+
+1. **A judgment is stored under the invocation name, not the stable skill id.**
+   Observed directly in the ledger: `judgments.skill_id = 'rust-code-review'` while
+   `ranking_candidates.skill_id = 's_6d9c784e05bfd6ba…'` for the same skill, with the
+   event's roster snapshot already carrying the mapping. Observations key correctly, so
+   the judgment write is the sole outlier. `stats --by-skill` therefore splits one skill
+   into two rows — recommendations on one, the label on the other — and per-skill
+   usefulness can never be joined to per-skill recommendation volume, which is the
+   entire purpose of that view. It also breaks P8 priors before they are built, since
+   those are specified as keyed by skill revision. Violates the AGENTS.md identity
+   invariant. **No existing bead named it; now `sr-oufi`.**
+2. **An attempted load is never upgraded to observed when its tool result arrives in a
+   later ingestion pass.** With both records present in one pass the state is `loaded`.
+   With the tool_use read first and the result appended afterwards, the state is
+   `attempted` and a second `observe` cannot repair it, because the cursor has advanced
+   past the tool_use and the result has nothing to associate against. `sr stats` then
+   reports `observed_loads=0` and `suggestion_adoption_rate=0.0` for a skill the agent
+   did load. Periodic observation is the documented usage and the hook runs per turn, so
+   this is ordinary, one-directional, and invisible in the output: `attempted` is a
+   legitimate state, so nothing distinguishes *could not confirm* from *saw the try and
+   discarded the confirmation*. **No existing bead named it; now `sr-an94`.**
+3. **Planned flags refuse generically while planned commands refuse well, and one
+   planned flag is accepted and inert.** `sr eval --explain` returns output
+   byte-identical to `sr eval` — 710 bytes, same keys, same records — while README
+   promises explanation cards in four separate places. `sr doctor --descriptions` and
+   `sr eval --sample-size/--seed` return *"Unsupported or conflicting arguments; use
+   --help"*, telling a user who followed README that their syntax is wrong rather than
+   that the feature is planned. The mechanism to do better exists and is empty:
+   `PLANNED_RANK_FLAGS` is `&[]` with a doc comment describing exactly this purpose. A
+   silently inert flag is worse than a refusal, because the user believes they received
+   the explanation. Features owned by `.6.25`, `.10.3` and `.6.22`; the refusal contract
+   is now `sr-x4s8`, and each owner carries a note.
+4. **The usefulness question is untouched by any of this.** The apparatus improved
+   substantially — ten defects were repaired in the reporting surface at this revision,
+   six of them one shape: a figure derived from partial data inheriting the partiality
+   silently. But `gate_status` on a real report reads `not-established`, and that is
+   correct. There is still no relevance holdout, no paired-harm cohort, no
+   500-invocation operational cohort, no measured latency percentiles against a real
+   provider, and no released binary. Better instruments have not produced a reading.
+5. **Nothing owns producing the two inputs the promotion gates consume.** This is the
+   largest gap in the backlog and it is strategic rather than technical. `.8.1` is
+   titled *execute* the relevance holdout and assumes the holdout exists; `.8.4`
+   validates fallback over 500 representative hook invocations and assumes that traffic
+   exists. `.8.8`, which gates on "at least 300 adjudicated primary cases", explicitly
+   disclaims the work — "do not hold the usable CLI hostage to … corpus mining" — and no
+   other task picks it up. So the project has built excellent measurement apparatus with
+   no data-acquisition plan for either of the things it measures. **Now `sr-uv2v`
+   (the adjudicated corpus) and `sr-1uf4` (self-hosted shadow traffic).**
+6. **The cheapest source of both inputs is this repository.** SkillRanker's own
+   development environment is its target environment: a skill-dense workspace worked
+   continuously by coding agents through the exact Claude `UserPromptSubmit` hook the
+   adapter implements. A shadow deployment here would generate the operational cohort as
+   a byproduct of ordinary work, and — because shadow mode injects no advice and
+   therefore cannot influence agent behaviour — the same sessions can supply the real
+   rosters and moments that relevance cases need, with labels still coming from
+   independent adjudication. That composition is what makes the corpus tractable: it
+   removes the expensive half without introducing circularity. Nothing in the backlog
+   exploited this before now.
+7. **One first-contact diagnostic misdirects.** `sr ledger init` under a group-writable
+   ancestor refuses correctly but names neither the offending path nor the required mode,
+   and its hint says to inspect configuration when the fix is a `chmod`. Locating it took
+   four attempts. Contrast `sr stats` with no store, which says *"run sr ledger init
+   first"* in the message itself — the affordance the permission refusal should copy.
+   `ledger init` is step 6 of the Quick Start and the gateway to every P5 feature.
+   **Now `sr-488b`.**
+
+### Checks and what they establish
+
+- Full suite at `16743e9`, this reviewer's own run: **126 reports, 1,180 passed, 0
+  failed, 10 ignored**. Establishes that the tree is green at the assessed revision; it
+  does not establish product quality, and 10 ignored cases remain ignored.
+- `cargo fmt --check` clean, `clippy --locked --all-targets -- -D warnings` clean,
+  `validate_public_contracts.py` passed, `ubs --diff` reporting one critical that
+  predates this work in a test fixture. Gate receipts for the revision, nothing more.
+- The journey table above. Establishes that the documented P5 loop runs end to end
+  against a real HTTPS provider. Establishes nothing about recommendation relevance.
+- The four findings, each from a command this review ran and a ledger row it read.
+- `br dep cycles`: none. Beads at review time: 251 issues, 82 open, 13 actionable, 69
+  blocked, 7 in progress. Not a completion percentage.
+
+### Existing backlog coverage and the shortest useful bridge
+
+The previous review's conclusion mostly holds: the documented *feature* scope has owners
+and duplicating it would be waste. It was wrong in one respect, and that correction is
+this review's most consequential output — the two inputs the promotion gates consume had
+no owner at all, which a survey of feature coverage could not surface.
+
+Six beads were added: three for defects with no owner (`sr-oufi`, `sr-an94`, `sr-488b`),
+one for a refusal contract (`sr-x4s8`), and two for the data-acquisition gap (`sr-uv2v`,
+`sr-1uf4`). Findings belonging to existing tasks were recorded as notes on `.6.25`,
+`.10.3` and `.6.22` rather than re-filed. No epic was duplicated; each new bead was
+checked against the existing backlog before creation.
+
+The ordering below replaces the previous section's list, whose first two rows are now
+done:
+
+| Order | Work | Concrete exit evidence |
+|---|---|---|
+| 1 | `sr-oufi`, `sr-an94` | One joint case: rank, observe across an ingestion boundary, judge by name, then `--by-skill` shows a single row with top-1, load and label together. Fails twice over today. |
+| 2 | `sr-1uf4` | A declared population, consent and retention boundaries settled before installation, a verified uninstall, and real shadow traffic with per-stratum fallback rates and p50/p95/p99. |
+| 3 | `sr-uv2v` | A 15–25 case pilot under a pre-registered rubric giving a measured per-case cost and a disagreement rate, then either the full corpus or an explicitly narrowed population justified by that pilot. |
+| 4 | `.6.20`, `.6.22`, `.6.25`, `.6.28` | A labelled cohort produces a report whose numbers a reader can recompute, with sampling flags that exist and explanations that differ from their absence. |
+| 5 | `.7.11`, `.7.9`, `.8.9`/`.8.10` | Hook qualification enforced at the publication boundary, then a real installed Claude receiving bounded advice, with default shadow and denied scope staying quiet. |
+| 6 | `.8.1`–`.8.6`, `.7.12`, `.8.4` | The relevance holdout, paired-harm cohort and operational cohort run against their prespecified gates. This is the only row that can answer whether the product works. |
+| 7 | `.7.4`–`.7.8`, `.7.10` | Durable shared allowance and scoped snoozes, still absent commands. The allowance is arguably a prerequisite for row 2 rather than a parallel task, since shadow traffic spends real provider budget. |
+| 8 | `.5.23`, `.8.7` | A signed artifact from a frozen accepted revision, installed and used per claimed target. |
+| 9 | `sr-x4s8`, `sr-488b` | Every documented flag either works or names its phase; the owner-only refusal names the path and the mode. |
+
+Rows 1, 9 are cheap and make everything else legible. Rows 2 and 3 are the ones that
+changed in this review: they are now the critical path to row 6, because row 6 cannot
+start without them and nothing previously owned them. Row 6 is the product. More scoring
+features, the TUI, or additional statistical machinery do not substitute for row 6, and
+this review found no evidence that anyone is confusing the two.
+
+One ordering consequence worth stating plainly: rows 2 and 3 compose in one direction
+only. If the shadow deployment runs first, the corpus pilot can draw real cases from real
+traffic and its cost estimate transfers to the full corpus. If the pilot runs first
+against constructed fixtures, the estimate does not transfer. Sequence accordingly.
+
+This update revises the existing bridge in place. It adds no runtime capability and
+closes no gate. Its current-state claims retire when the next revision-bound assessment
+supersedes them. The sections below are historical snapshots and must not be read as the
+current implementation inventory.
+
+## Historical assessment — 2026-09-21 UTC, delivered-workflows review
 
 **SkillRanker has a real, connected core CLI and substantial local evidence
 machinery. It has not yet demonstrated that its recommendations reliably improve
