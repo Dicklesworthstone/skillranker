@@ -150,12 +150,14 @@ impl Fixture {
     }
 
     fn rank(&self, port: u16) -> std::process::Output {
-        self.command(
-            port,
-            &["rank", "--json", "--allow-network", "--timeout-ms", "12000"],
-        )
-        .output()
-        .unwrap()
+        self.rank_with(port, &[])
+    }
+
+    fn rank_with(&self, port: u16, extra: &[&str]) -> std::process::Output {
+        let mut args: Vec<&str> =
+            vec!["rank", "--json", "--allow-network", "--timeout-ms", "12000"];
+        args.extend_from_slice(extra);
+        self.command(port, &args).output().unwrap()
     }
 
     fn attempts(&self) -> Vec<StoredAttempt> {
@@ -492,4 +494,52 @@ fn a_run_that_fails_after_paying_still_records_its_attempts() {
         assert!(row.admitted_at >= 1_700_000_000_000, "{row:#?}");
         assert!(row.sent_at.unwrap() >= row.admitted_at);
     }
+}
+
+#[test]
+fn two_paying_deliveries_of_one_event_record_both_costs() {
+    // sr-qqlk, end to end. Two deliveries of the same turn are one event by design,
+    // and with the cache unable to serve the repeat they both pay. Before the fix the
+    // second delivery's event insert conflicted, the transaction rolled back, and its
+    // two paid requests were recorded nowhere: four served, two rows.
+    let f = Fixture::new();
+    f.claude_session("rec-dup", TASK);
+    f.ledger_init();
+    let provider = Provider::start(&f, "useful");
+    for delivery in 1..=2 {
+        let out = f.rank_with(provider.port, &["--no-cache"]);
+        assert!(
+            out.status.success(),
+            "delivery {delivery} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    let served = provider.finish();
+    assert_eq!(served, 4, "both deliveries sent wide and rerank");
+
+    let events = f.events();
+    assert_eq!(
+        events.len(),
+        1,
+        "one turn is one event however often it is delivered: {events:#?}"
+    );
+    let rows = f.attempts();
+    assert_eq!(
+        rows.len(),
+        served,
+        "recorded {} attempts for {served} served requests: {rows:#?}",
+        rows.len()
+    );
+    let owner = &events[0].0;
+    let mut keys: Vec<&str> = rows.iter().map(|row| row.attempt_id.as_str()).collect();
+    keys.sort_unstable();
+    keys.dedup();
+    assert_eq!(keys.len(), rows.len(), "every attempt has its own row key");
+    for row in &rows {
+        assert_eq!(&row.owner_event_id, owner);
+        assert_eq!(row.status, "completed", "{row:#?}");
+        assert!(row.input_tokens.unwrap() > 0);
+    }
+    assert_eq!(rows.iter().filter(|r| r.stage == "wide").count(), 2);
+    assert_eq!(rows.iter().filter(|r| r.stage == "rerank").count(), 2);
 }

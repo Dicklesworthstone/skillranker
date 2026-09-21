@@ -3921,6 +3921,10 @@ struct AttemptEvidence<'a> {
     wide_fingerprint: String,
     rerank_fingerprint: Option<String>,
     entry_wall_clock_unix_ms: u64,
+    /// Distinguishes this invocation's attempts from another invocation's under the
+    /// same event. A duplicate delivery is deliberately the same event, so without
+    /// this a repeat that paid again would collide with the first delivery's rows.
+    invocation_token: String,
 }
 
 impl AttemptEvidence<'_> {
@@ -3938,6 +3942,7 @@ impl AttemptEvidence<'_> {
                 }?;
                 crate::storage::NewProviderAttempt::from_provenance(
                     owner_event_id,
+                    &self.invocation_token,
                     fingerprint,
                     self.entry_wall_clock_unix_ms,
                     attempt,
@@ -3962,11 +3967,16 @@ fn attempt_evidence<'a>(
     if attempts.is_empty() {
         return None;
     }
+    let entry_wall_clock_unix_ms = wall_clock_ms().saturating_sub(clock.now().as_millis());
     Some(AttemptEvidence {
         attempts,
         wide_fingerprint: wide_fingerprint.to_hex(),
         rerank_fingerprint: rerank_fingerprint.map(str::to_owned),
-        entry_wall_clock_unix_ms: wall_clock_ms().saturating_sub(clock.now().as_millis()),
+        entry_wall_clock_unix_ms,
+        // Entry time and process id together: two deliveries of one event are
+        // separate processes, and a shared start millisecond is still separated by
+        // the pid. Nothing here is private or externally meaningful.
+        invocation_token: format!("{entry_wall_clock_unix_ms:x}-{}", std::process::id()),
     })
 }
 

@@ -1190,6 +1190,7 @@ impl NewProviderAttempt {
     /// them a durable home is separate work.
     pub fn from_provenance(
         owner_event_id: impl Into<String>,
+        invocation_token: &str,
         request_fingerprint: impl Into<String>,
         entry_wall_clock_unix_ms: u64,
         provenance: &AttemptProvenance,
@@ -1221,10 +1222,15 @@ impl NewProviderAttempt {
         Some(Self {
             // The in-process attempt id is `<invocation id>-att-<n>`, and the
             // invocation id is a fixed word for a given entry point, so it repeats
-            // on every run. Scoping the row key by its owner keeps a second
-            // invocation from colliding with the first and being dropped, which is
-            // how cost evidence would silently stop accumulating.
-            attempt_id: format!("{owner_event_id}:{}", provenance.attempt_id),
+            // on every run. The owner alone is not enough either: a duplicate
+            // delivery is deliberately the *same* event, so two deliveries that each
+            // paid would collide on the owner-scoped key and the second would be
+            // dropped. The token distinguishes invocations, so a repeat appends its
+            // own rows under the one event it belongs to (sr-qqlk).
+            attempt_id: format!(
+                "{owner_event_id}:{invocation_token}:{}",
+                provenance.attempt_id
+            ),
             owner_event_id,
             stage,
             request_fingerprint: request_fingerprint.into(),
@@ -3348,13 +3354,14 @@ impl LedgerStore {
             validated_snapshot(&stored)?;
         }
 
-        tx.execute(
+        let inserted = tx.execute(
             "INSERT INTO ranking_events (
                 event_id, verified_delivery_key, workspace_root, session_id,
                 agent_branch, mode_channel, policy_version, schema_version,
                 decision, reason, exposure_state, elapsed_ms, created_at_unix_ms,
                 input_tokens, output_tokens, snapshot_id
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+            ON CONFLICT(event_id) DO NOTHING",
             params![
                 event.event_id,
                 event.verified_delivery_key,
@@ -3374,6 +3381,31 @@ impl LedgerStore {
                 event.snapshot_id,
             ],
         )?;
+        if inserted == 0 {
+            // A duplicate delivery of the same event, which the identity derivation
+            // is supposed to produce: the same turn delivered twice is one event.
+            // Failing here would roll back the whole transaction and take this
+            // delivery's attempt rows with it, which is how a repeat that really
+            // paid ended up recorded nowhere (sr-qqlk). Keep the stored event as
+            // the first delivery wrote it, and only refuse if the id has been
+            // reused for a different session or workspace, which is a collision
+            // rather than a repeat.
+            let stored: (String, String, String) = tx.query_row(
+                "SELECT workspace_root, session_id, agent_branch
+                 FROM ranking_events WHERE event_id = ?1",
+                params![event.event_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
+            if stored
+                != (
+                    event.workspace_root.clone(),
+                    event.session_id.clone(),
+                    event.agent_branch.clone(),
+                )
+            {
+                return Err(StoreError::RecordConflict);
+            }
+        }
 
         for cand in candidates {
             tx.execute(
@@ -3381,7 +3413,8 @@ impl LedgerStore {
                     event_id, stage, skill_id, skill_version, raw_probability,
                     normalized_probability, fit_score, rank_score, rank_position,
                     excluded, exclusion_reason
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                ON CONFLICT(event_id, stage, skill_id) DO NOTHING",
                 params![
                     cand.event_id,
                     cand.stage.as_str(),

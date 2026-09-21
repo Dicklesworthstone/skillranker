@@ -22,6 +22,7 @@ use skillranker::jev::{
 };
 use skillranker::limits::{DurationMillis, MonotonicMillis};
 use skillranker::runtime::{EntryClock, ProcessInvocation};
+use skillranker::storage::StoreError;
 use skillranker::storage::ledger::*;
 use std::fs;
 use std::os::unix::fs::DirBuilderExt;
@@ -31,6 +32,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// A wall-clock base far from zero, so an unconverted monotonic offset cannot
 /// pass for a converted one.
 const ENTRY_WALL_MS: u64 = 1_789_941_701_834;
+
+/// Stands in for one invocation. Two deliveries of the same event are two
+/// invocations with two tokens, which is what keeps their rows apart.
+const TOKEN: &str = "inv-token-1";
 
 fn endpoint() -> CanonicalOrigin {
     CanonicalOrigin::parse("https://api.typesafe.ai").expect("valid production origin")
@@ -175,7 +180,7 @@ impl Fixture {
 fn only_row(admission: &AttemptAdmission, owner: &str) -> NewProviderAttempt {
     let provenance: Vec<_> = admission.attempts().collect();
     assert_eq!(provenance.len(), 1, "expected exactly one admitted attempt");
-    NewProviderAttempt::from_provenance(owner, "req-fp-hex", ENTRY_WALL_MS, provenance[0])
+    NewProviderAttempt::from_provenance(owner, TOKEN, "req-fp-hex", ENTRY_WALL_MS, provenance[0])
         .expect("a ranking-stage attempt has a row")
 }
 
@@ -184,7 +189,7 @@ fn row_for(admission: &AttemptAdmission, owner: &str, attempt_id: &str) -> NewPr
         .attempts()
         .find(|attempt| attempt.attempt_id == attempt_id)
         .expect("attempt is known to this invocation");
-    NewProviderAttempt::from_provenance(owner, "req-fp-hex", ENTRY_WALL_MS, provenance)
+    NewProviderAttempt::from_provenance(owner, TOKEN, "req-fp-hex", ENTRY_WALL_MS, provenance)
         .expect("a ranking-stage attempt has a row")
 }
 
@@ -240,7 +245,7 @@ fn a_completed_attempt_records_exact_tokens_and_wall_clock_times() {
     fixture.write(&inv, &cx, &row);
     let stored = fixture.read(&row.attempt_id);
     // Owner-scoped, so a second invocation cannot collide with this row.
-    assert_eq!(row.attempt_id, format!("ev-complete:{attempt_id}"));
+    assert_eq!(row.attempt_id, format!("ev-complete:{TOKEN}:{attempt_id}"));
     assert_eq!(stored.stage, "wide");
     assert_eq!(stored.status, "completed");
     assert_eq!(stored.input_tokens, Some(1_200));
@@ -303,7 +308,7 @@ fn a_terminal_provider_status_is_a_failure_carrying_that_status() {
         .unwrap();
 
     let row = only_row(&admission, "ev-http");
-    assert_eq!(row.attempt_id, format!("ev-http:{attempt_id}"));
+    assert_eq!(row.attempt_id, format!("ev-http:{TOKEN}:{attempt_id}"));
     let mut fixture = Fixture::new("http", &inv, &cx, "ev-http");
     fixture.write(&inv, &cx, &row);
     let stored = fixture.read(&row.attempt_id);
@@ -326,7 +331,7 @@ fn a_discard_before_send_has_no_sent_time() {
         .unwrap();
 
     let row = only_row(&admission, "ev-discard");
-    assert_eq!(row.attempt_id, format!("ev-discard:{attempt_id}"));
+    assert_eq!(row.attempt_id, format!("ev-discard:{TOKEN}:{attempt_id}"));
     assert_eq!(row.sent_at_unix_ms, None);
     let mut fixture = Fixture::new("discard", &inv, &cx, "ev-discard");
     fixture.write(&inv, &cx, &row);
@@ -366,6 +371,7 @@ fn determinacy_decides_between_failed_and_unknown() {
     let row = |failure: AttemptFailure| {
         NewProviderAttempt::from_provenance(
             "ev-determinacy",
+            TOKEN,
             "req-fp-hex",
             ENTRY_WALL_MS,
             &AttemptProvenance {
@@ -413,6 +419,7 @@ fn a_probe_attempt_has_no_row_in_a_ranking_stage_table() {
         assert!(
             NewProviderAttempt::from_provenance(
                 "ev-probe",
+                TOKEN,
                 "req-fp-hex",
                 ENTRY_WALL_MS,
                 &provenance
@@ -441,6 +448,7 @@ fn an_out_of_range_http_status_keeps_the_kind_and_drops_the_number() {
     let (inv, cx) = test_invocation();
     let row = NewProviderAttempt::from_provenance(
         "ev-range",
+        TOKEN,
         "req-fp-hex",
         ENTRY_WALL_MS,
         &AttemptProvenance {
@@ -464,4 +472,105 @@ fn an_out_of_range_http_status_keeps_the_kind_and_drops_the_number() {
     assert_eq!(stored.status, "failed");
     assert_eq!(stored.http_status, None);
     assert_eq!(stored.error_kind.as_deref(), Some("http-status"));
+}
+
+#[test]
+fn a_second_delivery_of_one_event_keeps_both_deliveries_cost() {
+    // sr-qqlk. A duplicate delivery is deliberately the same event, so the second
+    // recording conflicts on the event's primary key. Failing there rolled the whole
+    // transaction back and took that delivery's attempt rows with it, so a repeat
+    // that really paid was recorded nowhere. The event stays as the first delivery
+    // wrote it; the attempts accumulate, because both were incurred.
+    let (inv, cx) = test_invocation();
+    let mut fixture = Fixture::new("duplicate", &inv, &cx, "ev-dup");
+    let row_for_invocation = |token: &str| {
+        NewProviderAttempt::from_provenance(
+            "ev-dup",
+            token,
+            "req-fp-hex",
+            ENTRY_WALL_MS,
+            &AttemptProvenance {
+                attempt_id: "rank-att-1".into(),
+                stage: RankingStage::Wide,
+                admitted_at: MonotonicMillis::from_millis(1),
+                sent_at: Some(MonotonicMillis::from_millis(2)),
+                settled_at: Some(MonotonicMillis::from_millis(3)),
+                outcome: AttemptOutcome::Completed,
+                usage: Some(Usage {
+                    input_tokens: 10,
+                    output_tokens: 4,
+                }),
+                failure: None,
+            },
+        )
+        .expect("a ranking-stage attempt has a row")
+    };
+
+    // The first delivery's event already exists from the fixture, so recording the
+    // same event again is exactly the duplicate path.
+    let first = row_for_invocation("inv-a");
+    let second = row_for_invocation("inv-b");
+    assert_ne!(
+        first.attempt_id, second.attempt_id,
+        "two invocations under one event must not share a row key"
+    );
+    let stamp = fixture.store.stamp();
+    fixture
+        .store
+        .record_ranking_event_with_attempts(
+            inv.clock(),
+            &cx,
+            &event_fixture("ev-dup"),
+            &[],
+            None,
+            std::slice::from_ref(&first),
+            stamp,
+        )
+        .expect("a duplicate delivery is recognised, not refused");
+    let stamp = fixture.store.stamp();
+    fixture
+        .store
+        .record_ranking_event_with_attempts(
+            inv.clock(),
+            &cx,
+            &event_fixture("ev-dup"),
+            &[],
+            None,
+            std::slice::from_ref(&second),
+            stamp,
+        )
+        .expect("the second delivery is recognised too");
+
+    let conn = rusqlite::Connection::open(fixture.store.database_path()).unwrap();
+    let events: i64 = conn
+        .query_row("SELECT count(*) FROM ranking_events", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(
+        events, 1,
+        "one turn is one event however often it is delivered"
+    );
+    let attempts: i64 = conn
+        .query_row("SELECT count(*) FROM provider_attempts", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(attempts, 2, "both deliveries paid, so both are recorded");
+}
+
+#[test]
+fn an_event_id_reused_for_another_session_is_refused() {
+    // The counterpart: recognising a repeat must not become accepting a collision.
+    // An id that arrives with a different session is not the same turn twice.
+    let (inv, cx) = test_invocation();
+    let mut fixture = Fixture::new("collision", &inv, &cx, "ev-collide");
+    let mut foreign = event_fixture("ev-collide");
+    foreign.session_id = "a-different-session".into();
+    let stamp = fixture.store.stamp();
+    assert_eq!(
+        fixture
+            .store
+            .record_ranking_event_with_attempts(inv.clock(), &cx, &foreign, &[], None, &[], stamp,)
+            .unwrap_err(),
+        StoreError::RecordConflict
+    );
 }
