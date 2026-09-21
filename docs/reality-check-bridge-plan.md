@@ -1,10 +1,198 @@
 # SkillRanker reality check and bridge plan
 
-Latest assessment: 2026-09-19. Earlier reviews and receipts are retained below as
+Latest assessment: 2026-09-21 UTC (September 20 in New York). Earlier reviews and receipts are retained below as
 history. Inventory and ownership statements describe their stated snapshots, not
 a frozen release or a product-completion percentage.
 
-## Current assessment — 2026-09-19, evening integration review
+## Current assessment — 2026-09-21 UTC
+
+**SkillRanker has a real, connected core CLI and substantial local evidence
+machinery. It has not yet demonstrated that its recommendations reliably improve
+agent work.** That distinction is now more important than whether the executable
+starts. The next valuable work is durable attempt accounting, usable evaluation
+and reporting, and an actually qualified harness trial. Additional scoring
+features, the TUI, and more statistical machinery should not displace those jobs.
+TypeSafe.ai Jev remains the essential ranking engine. Local explicit resolution,
+offline replay and synthetic demos do not supply a key-free inference backend.
+
+### Scope and evidence boundaries
+
+This review read all 674 lines of AGENTS.md, all 2,034 lines of README.md and the
+1,367-line comprehensive plan; checked the existing G01–G70 and I01–I15 crosswalks;
+traced CLI dispatch, ranking, provider admission, hook publication, capabilities,
+storage and evaluation callers; inspected tests and qualification records; and
+consulted the active owners through Agent Mail. Initial inventory was at
+`c62d526`; the later frozen Linux verification target is `3edff71`. Shared main
+and peer working files continued changing. No peer source changes are included
+in this assessment's edits.
+
+The current source registry implements `rank`, `roster`, `doctor`, `capabilities`,
+`demo`, `ledger`, `observe`, `feedback`, `replay`, `hook`, `install-hook` and
+`uninstall-hook`, in addition to help/version. This is a command-path inventory,
+not acceptance of every behavior or a production-advisory qualification.
+
+Direct macOS execution used the already-installed arm64 development binary,
+SHA256 `cd6b248074fc93cf3ac122d6b8aa61ee9696bd7e11659fdbdf0dc505aa00f796`,
+in a new private synthetic home/workspace, with no credential and no network
+consent. It is an older build, not a build of `3edff71`. The retained remote
+receipt is `/Users/jemanuel/sr-reality-g4d6uqdi/receipt.json` on `mac-mini-old`.
+Its four demos completed with explicitly synthetic, non-actionable envelopes;
+doctor and roster ran; ledger init/status ran; explicit `--require-skill`
+resolution returned the requested local skill with zero HTTP attempts. An
+ordinary offline request without a complete cached result returned exit 11,
+not a fabricated abstention. Malformed hook input produced empty stdout and
+exit zero. The receipt does not establish real Claude delivery or Jev relevance.
+
+### Current vision-to-code map
+
+Statuses apply to the stated boundary. WORKING is not a whole-product claim;
+PARTIAL includes substantial library implementation without the promised CLI.
+The goal numbers refer to the full requirements crosswalk retained below.
+
+| Goals | Current reality | Status / remaining ownership |
+|---|---|---|
+| G01–G08: foundations and public contracts | One Rust package, forbidden unsafe roots, pinned Asupersync/Quill, bundled SQLite, typed authority and bounded formats are real. Capabilities distinguishes planned commands. Old engineering narratives and parts of README lag delivery. | WORKING core; documentation reconciliation remains part of acceptance. |
+| G09–G12: transport, validation, deadlines | Production transport, retry/admission, strict decoding and cancellation tests exist. Historical live maximum-shape Jev pair passed through the production decoder. This is not a current availability or latency cohort. | WORKING tested boundaries; operational qualification G59 remains UNPROVEN. |
+| G13–G20: visible roster, explicit requests, redaction, Quill, drift | Connected discovery/import, identity/collision handling, bounded redaction, deterministic retrieval, revalidation and roster snapshot/diff. Native visibility is still marked unverified. | WORKING local paths; native harness authority is PARTIAL pending `.7.11`. |
+| G21–G27: exact context and Cass | Source selection, native/normalized input, prompt overlay, task anchors, disclosure and Cass production adapter are connected. Older claims that Cass is always refused are superseded. | WORKING scoped paths; real installed-harness/version qualification remains separate. |
+| G28–G36: core recommendation and inspection | Wide/rerank pipeline, per-candidate none/fit eligibility, scoring, exact cache/coordination, explanations, dry-run, demo and doctor have production callers and tests. | WORKING core; no inference-quality certificate follows from synthetic or local-server responses. |
+| G37–G40: durable events, observations and usage | Real SQLite ledger lifecycle and `observe` exist. Provider attempts currently settle with ranking evidence; hard-kill accounting is still being repaired by the owner. Fresh-store status was misleading in the audited binary; a later source fix landed during review. | PARTIAL: `.6.7`, `.6.26`; `sr-pnt3` repair `32d17b6` requires its own verification. Do not erase unknown paid attempts. |
+| G41–G43: capture, replay, corrective feedback | `--save-case`, offline replay/policy comparison, and historical feedback are connected. Replay has a checked-in executable suite. | WORKING paths, with phase acceptance `.6.29` still open. |
+| G44: useful operational/value reports | Durable source data exists; `sr stats` is absent. No operational reporting workflow yet exposes all promised cohorts, unknowns and costs. | PARTIAL: `.6.13`, waiting on `.6.7`. |
+| G45–G48: evaluator, metrics, robustness and sampling | Frame/label ingestion, copied narrow numerical primitives, sampling and weighted-bound code exist. No production CLI caller of the evaluation module was found; `sr eval` is absent. | PARTIAL: `.6.19`–`.6.25`, `.6.28`; library tests are not an evaluation product. |
+| G49–G51 and G56: Claude hook and onboarding | Shadow wrapper, bounded advisory rendering and managed installer/uninstaller exist. Capabilities lists no tested Claude version; all native conformance dimensions remain not evaluated. The final hook path does not consult the native-advice eligibility method. | PARTIAL: `.7.9`, `.7.11`, `.7.13`, controlled trial `.8.9`/`.8.10`. |
+| G52–G55: durable allowance, breaker and snoozes | Per-invocation attempt bounds exist. `sr budget` and `sr snooze` do not. Do not confuse a per-run counter with durable shared enforcement or trusted scoped controls. | NOT DELIVERED: `.7.4`–`.7.8`, `.7.10`. |
+| G57–G60: relevance, harm, latency and rollout | Contract fixtures specify the required cohorts. No completed primary relevance holdout, paired-harm cohort or representative operational cohort was found. | UNPROVEN: `.8.1`–`.8.6`, `.7.12`; public promotion `.8.8` remains open. |
+| G61–G65: calibration, learned priors and monitoring | Policy/numerical foundations are not an end-to-end learning lifecycle. `sr calibrate` is absent; no completed held-out improvement or prospective monitor acceptance was found. | NOT DELIVERED: P8 `.9.1`–`.9.9`. |
+| G66–G70: later experiments, TUI, native adapters | `tui = []` is a reserved empty feature, with no FrankenTUI dependency or UI. `gaps` is absent. Additional native adapters and retrieval experiments retain separate tasks and gates. | NOT DELIVERED: P9 `.10.*`; do not hold the useful core behind them. |
+| Distribution and native platforms | Native arm64 APFS execution and substantial revision-bound tests exist; Intel execution used Rosetta. GitHub release listing is empty. | PARTIAL: `.5.23`, `.8.7`; no signed public binary release, physical Intel or HFS+ behavioral qualification. |
+
+### Findings that change the next work
+
+1. **The useful-feedback loop is the bottleneck.** Storage and replay can preserve
+   cases, but there is no `eval` command to turn an independently judged cohort
+   into the promised comparison, and no `stats` command to inspect usage and
+   outcomes conveniently. `src/evaluation.rs` and its four child modules are
+   useful implementation, not proof that those workflows ship. The numerics are
+   narrow copied implementations with provenance, not imported whole scientific
+   workspaces; lack of those dependencies is not itself a defect.
+2. **Hook qualification is descriptive rather than enforced at publication.**
+   `AdapterRecord::advice(EmitNativeAdvice, installed_version)` contains the
+   qualification logic. The production hook path refreshes trusted mode and
+   proceeds to `render_claude_hook` without calling it. All Claude qualification
+   cells are unevaluated. Fix the runtime boundary and give the existing
+   experimental-trial path explicit scope; a warning or a capability row alone
+   does not enforce the promised rule. Preserve explicit user directives and
+   default shadow behavior. Notify the hook owner rather than collide with its
+   active CLI edits.
+3. **Hard termination can lose paid-attempt evidence.** The ledger owner confirmed
+   that settlement-time writes do not cover a process killed during an in-flight
+   request. `.6.7` remains open for progressive recording. Normal error-path
+   tests, cache follower tests and unknown-token fields do not close this case.
+   Required proof includes killing a reached live attempt and recovering an
+   unknown-cost record without inventing a successful ranking or duplicate charge.
+4. **New-store status is misleading.** The isolated Mac run reproduced
+   `ledger init` → schema 1 / created, immediately followed by `ledger status` →
+   needs_migration / target 2. Both exited zero. During this review the owner
+   landed `32d17b6`: usable schemas report ready, with `upgrade_available` kept
+   separate. The source diff and new lifecycle tests were inspected, but this
+   later commit is outside the frozen test run and installed binary used here.
+   The owner subsequently reported RCH migration/retention checks and a replay
+   suite with 109 passing tests (Agent Mail 42448); this audit did not independently
+   execute that later binary. No destructive store repair is warranted.
+5. **macOS is no longer an absent implementation.** The open `.5.23` description
+   still describes Linux-only exports/storage. Keep its broader release-matrix
+   acceptance honest, but update its current-state facts using native receipts.
+   README also says both “Linux or macOS” and “supported local platform is Linux”;
+   its architecture table names former sketch paths. These are factual drift,
+   not grounds for adding a design-stage banner.
+6. **No evidence yet answers the central usefulness question.** The checked-in
+   `tests/eval/README.md` explicitly excludes the 300-family relevance holdout,
+   controlled harm cohort and 500-invocation operational cohort. A live maximum
+   request-shape pass proves interoperability, not that selected skills help.
+
+### Checks and what they establish
+
+- Historical provider receipt: `docs/jev-contract-spike.md`, source `99de43e`,
+  one synthetic live pair, 254-real-option wide capacity and maximum detailed
+  shape; 685 ms wide and 628 ms rerank, two attempts. The shortlist was fixed for
+  codec qualification. Do not report this as an end-to-end ranking benchmark,
+  a latency percentile, or held-out relevance evidence.
+- Historical native receipts: `docs/installation.md`, full arm64 suite at
+  `6b5d17c`: 1,001 passed, zero failed, 10 ignored; 129 focused Linux portability
+  passes; later `8523ab6`: 88 native library/coordination/storage passes and 27
+  hook/installer passes. These remain tied to those revisions.
+- Fresh native full-suite attempt at `c62d526`: RCH refused before compilation
+  with `RCH-I006 missing_runtime`; no local fallback was allowed. SSH confirms
+  the pinned nightly is installed, so this is unresolved worker qualification,
+  not evidence of a Rust compilation failure. Log:
+  `/data/tmp/sr-reality-20260921-full-native.log`.
+- Fresh Linux full-suite attempt at frozen `3edff71` downloaded dependencies,
+  then waited on the shared worker's Cargo build-directory lock. After seven
+  minutes, only this audit's build `30030202658619464` was cancelled through RCH,
+  releasing its slot rather than adding to peer build contention. No test
+  summaries were produced. The retained log is
+  `/data/tmp/sr-reality-20260921-linux-full.log`. There is no fresh full-suite pass
+  from this audit; neither the lock wait nor cancellation is a source failure.
+- Peer-reported Linux suite at `77f302b`-equivalent source: 1,070 passes, zero
+  failures, 10 ignored (Agent Mail 42442). This is useful corroboration, not
+  independently inspected current-source proof. The peer's local Clippy receipt
+  does not satisfy the requested RCH build workflow.
+- Fresh isolated Mac execution confirms the limited workflows above and planned
+  command refusals. Demos' embedded elapsed/usage fields are synthetic historical
+  values; they are not timings or provider charges incurred by this audit. The
+  local receipt copy is `/data/tmp/sr-reality-20260921-macos-cli.json`.
+- Public-contract validation passed (46 local links, 22 shell examples, five
+  JSON examples, 19 capability phases); it explicitly reports documentation
+  consistency only and does not execute those examples. The owned Markdown
+  diff passed whitespace checks. `ubs --staged` detected only Markdown and
+  exited 3 without running a scanner; that is not a code-scan pass.
+- `br dep cycles`: no cycles. GitHub releases: empty at review time.
+
+### Existing backlog coverage and the shortest useful bridge
+
+The 00:51 UTC snapshot contains 249 beads: 163 closed, 76 open, three in progress,
+six deferred and one blocked. This is **not** a product completion percentage.
+The G01–G70/I01–I15 obligations have existing implementation or acceptance owners;
+no additional unowned vision family was found. The deficiencies above belong in
+those tasks, not a duplicate roadmap. Findings were sent to the owners and the
+current Beads export lease holder (Agent Mail 42444–42445), and recorded as
+comments on `.7.11`, `.5.23` and `sr-pnt3` using `br --no-auto-flush` to preserve
+the peer's active JSONL export reservation.
+
+Completing every existing task **to its behavioral acceptance criteria** would
+cover the documented scope, including the later optional features. Merely
+implementing the code tasks would not: independent labels, a real supported
+harness, controlled runs, measured latency and actual release artifacts remain
+necessary. Deferred native adapters may legitimately end with an explicit
+unsupported disposition; that is not implementation of those adapters.
+
+| Order | Existing work to finish | Concrete exit evidence |
+|---|---|---|
+| 1 | `.6.7` attempt accounting and `sr-pnt3` first-run status | Reached-attempt hard kill/restart retains unknown usage; repeated/cache/follower paths add no invented cost. Fresh init/status agree without destroying history. |
+| 2 | `.6.13`, `.6.19`, `.6.20` reporting and evaluator | An isolated CLI journey captures a real case, observes/labels it, replays it and produces stats plus a batch comparison. Missing, failed and unstarted cases remain in the right denominators; live evaluation requires separate consent and caps. |
+| 3 | `.6.22`–`.6.29` integrate and accept evidence workflows | Numerical helpers are actually consumed by reports; adversarial inputs cannot fabricate a passed gate. Keep independent endpoint/baseline and partial-evidence tests. |
+| 4 | `.7.11`, `.7.9`, `.8.9`/`.8.10` qualified installed trial | Runtime checks enforce harness/trial scope; actual supported Claude receives bounded advice; default shadow, denied scope and return-to-shadow stay quiet, including an in-flight stop. |
+| 5 | `.7.4`–`.7.8`, `.7.10`, `.7.12`, `.8.1`–`.8.6` operational and usefulness proof | Durable shared controls, scoped snoozes, declared latency/fallback cohort and independently judged relevance/harm evidence pass their prespecified gates. No post-result threshold changes. |
+| 6 | `.5.23`, `.8.7` publish the proven platform subset | DSR builds signed artifacts from the frozen accepted source; test clean installation and actual use per claimed target, preserving explicit unqualified targets. |
+
+The highest-impact integration is the evaluator/reporting seam, after attempt
+accounting. It makes defects and usefulness measurable using code already built.
+The highest-impact correctness repair is enforcing hook qualification at the
+actual output boundary. The highest-impact product proof is an independent
+relevance cohort followed by controlled agent outcomes. More math, a TUI, or a
+larger backlog does not substitute for any of those.
+
+This update serves the user's explicitly requested comprehensive assessment;
+its current-state claims retire when superseded by the next revision-bound
+assessment. It adds no runtime capability and closes no implementation gate.
+It revises the existing bridge in place. Coverage, dependency ordering,
+positive/refusal test pairs, independent evidence, and external acceptance were
+rechecked against the existing tasks; no speculative feature or duplicate epic
+was added. The following sections are historical snapshots and must not be read
+as the current implementation inventory.
+
+## Historical assessment — 2026-09-19, evening integration review
 
 **The standalone core ranker is real. The complete live-session recommendation
 product is not finished, and the current integration is not accepted.** The
