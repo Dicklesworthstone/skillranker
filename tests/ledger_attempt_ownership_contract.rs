@@ -92,6 +92,7 @@ fn attempt_fixture(id: &str, owner: &str) -> NewProviderAttempt {
 
 struct Fixture {
     store: LedgerStore,
+    dir: PathBuf,
 }
 
 impl Fixture {
@@ -101,14 +102,14 @@ impl Fixture {
             inv,
             cx,
             LedgerAccess::Initialize,
-            LedgerLocation::Directory(dir),
+            LedgerLocation::Directory(dir.clone()),
         )
         .expect("open_ledger succeeds")
         {
             LedgerOpen::Ready(store) => *store,
             other => panic!("expected Ready, got {other:?}"),
         };
-        Self { store }
+        Self { store, dir }
     }
 
     /// Writes the owning event so attempts have something to belong to.
@@ -378,73 +379,473 @@ fn an_invocation_may_advance_its_own_attempt_through_its_lifecycle() {
     assert!(inv.shutdown());
 }
 
+/// A judgment must key on the stable skill id even when a person supplies the invocation
+/// name they read in the ranking output (sr-oufi).
+fn snapshot_with(id: &str, members: &[(&str, &str)]) -> NewRosterSnapshot {
+    let json: Vec<_> = members
+        .iter()
+        .map(|(skill_id, invocation)| {
+            serde_json::json!({
+                "skill_id": skill_id,
+                "invocation_name": invocation,
+                "content_hash": "hash-1",
+                "source": "claude_code.project",
+                "eligible": true,
+                "exclusion_reason": null,
+            })
+        })
+        .collect();
+    NewRosterSnapshot {
+        snapshot_id: id.into(),
+        workspace_root: "/data/workspace".into(),
+        adapter: "claude_code".into(),
+        total_candidates: members.len() as u64,
+        eligible_candidates: members.len() as u64,
+        membership_coverage: MembershipCoverage::Complete,
+        members_json: serde_json::Value::Array(json).to_string(),
+        created_at_unix_ms: 1_700_000_000,
+    }
+}
+
+fn candidate_fixture(
+    event_id: &str,
+    skill_id: &str,
+    stage: CandidateStage,
+    rank_position: Option<u32>,
+) -> NewRankingCandidate {
+    NewRankingCandidate {
+        event_id: event_id.into(),
+        stage,
+        skill_id: skill_id.into(),
+        skill_version: "1.0.0".into(),
+        raw_probability: Some(0.7),
+        normalized_probability: Some(0.7),
+        fit_score: Some(0.8),
+        rank_score: Some(0.9),
+        rank_position,
+        excluded: false,
+        exclusion_reason: None,
+    }
+}
+
+/// Builds an event that carries a snapshot and one recorded candidate, which is the shape a
+/// real ranking leaves behind.
+fn event_with_snapshot(id: &str, snapshot_id: &str) -> NewRankingEvent {
+    let mut event = event_fixture(id);
+    event.snapshot_id = Some(snapshot_id.into());
+    event
+}
+
 #[test]
-fn attempt_advancement_refuses_identity_collisions_atomically() {
+fn a_judgment_supplied_by_invocation_name_is_stored_under_the_stable_skill_id() {
+    // The defect this pins: `sr feedback --skill rust-code-review` stored the literal string
+    // 'rust-code-review' while the candidates and observations for the same skill used the
+    // stable opaque id, so `stats --by-skill` reported one skill as two rows and per-skill
+    // usefulness could never be joined to per-skill recommendations.
     let (inv, cx) = test_invocation();
-    let mut f = Fixture::new("identity-collision", &inv, &cx);
-    let original = attempt_fixture("owned-attempt", "original-event");
+    let mut f = Fixture::new("resolve-name", &inv, &cx);
+    let stable = "s_aaaa0000000000000000000000000000000000000000000000000000000000aa";
+
     let stamp = f.store.stamp();
     f.store
-        .record_ranking_event_with_attempts(
+        .record_roster_snapshot(
             inv.clock(),
             &cx,
-            &event_fixture("original-event"),
-            &[],
-            None,
-            std::slice::from_ref(&original),
+            &snapshot_with("snap-1", &[(stable, "rust-code-review")]),
             stamp,
         )
-        .expect("original event and attempt recorded together");
+        .expect("snapshot recorded");
+    let stamp = f.store.stamp();
+    f.store
+        .record_ranking_event(
+            inv.clock(),
+            &cx,
+            &event_with_snapshot("evt-1", "snap-1"),
+            &[],
+            None,
+            stamp,
+        )
+        .expect("event recorded");
 
-    for field in ["owner", "stage", "fingerprint", "admission"] {
-        let mut conflicting = original.clone();
-        let mut event = event_fixture("original-event");
-        event.reason = "must-not-commit".into();
-        conflicting.status = AttemptStatus::Completed;
-        conflicting.input_tokens = Some(999);
-        conflicting.completed_at_unix_ms = Some(1_700_000_020);
-        match field {
-            "owner" => {
-                event.event_id = "foreign-event".into();
-                conflicting.owner_event_id = event.event_id.clone();
-            }
-            "stage" => conflicting.stage = CandidateStage::Rerank,
-            "fingerprint" => conflicting.request_fingerprint = "different-request".into(),
-            _ => conflicting.admitted_at_unix_ms += 1,
-        }
-        let stamp = f.store.stamp();
-        let result = f.store.record_ranking_event_with_attempts(
+    let stamp = f.store.stamp();
+    f.store
+        .record_single_feedback(
+            inv.clock(),
+            &cx,
+            &SingleFeedbackRequest {
+                event_id: "evt-1".into(),
+                skill_id: "rust-code-review".into(),
+                verdict: JudgmentLabel::Useful,
+                reason_code: None,
+                provenance: Some("contract_test".into()),
+                expected_version: None,
+            },
+            stamp,
+        )
+        .expect("a judgment supplied by invocation name is accepted");
+
+    let conn = Connection::open(f.store.database_path()).expect("open raw sqlite");
+    let stored: String = conn
+        .query_row(
+            "SELECT skill_id FROM judgments WHERE attributed_event_id = ?1",
+            ["evt-1"],
+            |row| row.get(0),
+        )
+        .expect("one judgment row");
+    assert_eq!(
+        stored, stable,
+        "the judgment was stored under the supplied name instead of the stable skill id, so it \
+         cannot join the candidates or observations for the same skill"
+    );
+    assert!(inv.shutdown());
+}
+
+#[test]
+fn a_stable_skill_id_supplied_directly_still_works_without_a_snapshot() {
+    // Resolution must not become a new requirement for callers who already supply the id.
+    // An event whose roster membership was only partially observed has no complete snapshot,
+    // and feedback on it has to keep working.
+    let (inv, cx) = test_invocation();
+    let mut f = Fixture::new("resolve-id", &inv, &cx);
+    let stable = "s_bbbb0000000000000000000000000000000000000000000000000000000000bb";
+
+    let stamp = f.store.stamp();
+    f.store
+        .record_ranking_event(
+            inv.clock(),
+            &cx,
+            &event_fixture("evt-2"),
+            &[candidate_fixture(
+                "evt-2",
+                stable,
+                CandidateStage::Wide,
+                Some(1),
+            )],
+            None,
+            stamp,
+        )
+        .expect("event with a candidate and no snapshot");
+
+    let stamp = f.store.stamp();
+    f.store
+        .record_single_feedback(
+            inv.clock(),
+            &cx,
+            &SingleFeedbackRequest {
+                event_id: "evt-2".into(),
+                skill_id: stable.into(),
+                verdict: JudgmentLabel::Useful,
+                reason_code: None,
+                provenance: Some("contract_test".into()),
+                expected_version: None,
+            },
+            stamp,
+        )
+        .expect("a candidate's stable id needs no snapshot to resolve");
+
+    let conn = Connection::open(f.store.database_path()).expect("open raw sqlite");
+    let stored: String = conn
+        .query_row(
+            "SELECT skill_id FROM judgments WHERE attributed_event_id = ?1",
+            ["evt-2"],
+            |row| row.get(0),
+        )
+        .expect("one judgment row");
+    assert_eq!(stored, stable);
+    assert!(inv.shutdown());
+}
+
+#[test]
+fn an_invocation_name_matching_two_skills_is_refused_rather_than_guessed() {
+    // Invocation names are not unique across sources and the harness may keep same-name
+    // skills distinct, so a name matching two members cannot be resolved. Attaching the label
+    // to whichever happened to sort first would put it on the wrong skill.
+    let (inv, cx) = test_invocation();
+    let mut f = Fixture::new("resolve-ambiguous", &inv, &cx);
+    let one = "s_cccc0000000000000000000000000000000000000000000000000000000000cc";
+    let two = "s_dddd0000000000000000000000000000000000000000000000000000000000dd";
+
+    let stamp = f.store.stamp();
+    f.store
+        .record_roster_snapshot(
+            inv.clock(),
+            &cx,
+            &snapshot_with("snap-2", &[(one, "review"), (two, "review")]),
+            stamp,
+        )
+        .expect("snapshot with two same-named skills");
+    let stamp = f.store.stamp();
+    f.store
+        .record_ranking_event(
+            inv.clock(),
+            &cx,
+            &event_with_snapshot("evt-3", "snap-2"),
+            &[],
+            None,
+            stamp,
+        )
+        .expect("event recorded");
+
+    let stamp = f.store.stamp();
+    let result = f.store.record_single_feedback(
+        inv.clock(),
+        &cx,
+        &SingleFeedbackRequest {
+            event_id: "evt-3".into(),
+            skill_id: "review".into(),
+            verdict: JudgmentLabel::Useful,
+            reason_code: None,
+            provenance: Some("contract_test".into()),
+            expected_version: None,
+        },
+        stamp,
+    );
+    assert!(
+        result.is_err(),
+        "an ambiguous invocation name must be refused, not resolved to an arbitrary match"
+    );
+    let conn = Connection::open(f.store.database_path()).expect("open raw sqlite");
+    let count: i64 = conn
+        .query_row("SELECT count(*) FROM judgments", [], |row| row.get(0))
+        .expect("count");
+    assert_eq!(count, 0, "a refused resolution must write no label at all");
+    assert!(inv.shutdown());
+}
+
+#[test]
+fn a_name_with_no_match_and_no_snapshot_is_refused_without_writing() {
+    // The remaining path: nothing to resolve against. The refusal must say so rather than
+    // storing the unresolved string, which is the behaviour that created the defect.
+    let (inv, cx) = test_invocation();
+    let mut f = Fixture::new("resolve-nothing", &inv, &cx);
+    let stamp = f.store.stamp();
+    f.store
+        .record_ranking_event(inv.clock(), &cx, &event_fixture("evt-4"), &[], None, stamp)
+        .expect("event with neither candidates nor a snapshot");
+
+    let stamp = f.store.stamp();
+    let result = f.store.record_single_feedback(
+        inv.clock(),
+        &cx,
+        &SingleFeedbackRequest {
+            event_id: "evt-4".into(),
+            skill_id: "rust-code-review".into(),
+            verdict: JudgmentLabel::Useful,
+            reason_code: None,
+            provenance: Some("contract_test".into()),
+            expected_version: None,
+        },
+        stamp,
+    );
+    assert!(result.is_err(), "an unresolvable reference must be refused");
+    let conn = Connection::open(f.store.database_path()).expect("open raw sqlite");
+    let count: i64 = conn
+        .query_row("SELECT count(*) FROM judgments", [], |row| row.get(0))
+        .expect("count");
+    assert_eq!(count, 0, "no unresolved name may be stored as a skill id");
+    assert!(inv.shutdown());
+}
+
+#[test]
+fn a_skill_recommended_and_judged_by_name_reports_one_by_skill_row() {
+    // The user-visible consequence, asserted on the real report rather than on the row: the
+    // reality check observed `stats --by-skill` return
+    //   [(s_6d9c784e05bfd6ba44, 1, 0, 0), ..., (rust-code-review, 0, 0, 1)]
+    // for a single skill that was recommended once and judged useful once. One skill, two rows,
+    // and no way for a reader to see they are the same skill. This is the planted negative for
+    // the defect: with the resolution removed, `rows` below has length two.
+    let (inv, cx) = test_invocation();
+    let mut f = Fixture::new("by-skill-one-row", &inv, &cx);
+    let stable = "s_bbbb0000000000000000000000000000000000000000000000000000000000bb";
+
+    let stamp = f.store.stamp();
+    f.store
+        .record_roster_snapshot(
+            inv.clock(),
+            &cx,
+            &snapshot_with("snap-stats", &[(stable, "rust-code-review")]),
+            stamp,
+        )
+        .expect("snapshot recorded");
+
+    // A recommendation a reader would count: ranked, emitted, and top of the rerank stage.
+    let mut event = event_with_snapshot("evt-stats", "snap-stats");
+    event.exposure_state = ExposureState::Emitted;
+    let stamp = f.store.stamp();
+    f.store
+        .record_ranking_event(
             inv.clock(),
             &cx,
             &event,
+            &[candidate_fixture(
+                "evt-stats",
+                stable,
+                CandidateStage::Rerank,
+                Some(1),
+            )],
+            None,
+            stamp,
+        )
+        .expect("event and its top candidate recorded");
+
+    // An observed load under the stable id, which is what the observation path already writes.
+    let stamp = f.store.stamp();
+    f.store
+        .record_observation(
+            inv.clock(),
+            &cx,
+            &NewObservation {
+                observation_id: "obs-stats".into(),
+                source_event_key: "native:session:tool-1".into(),
+                workspace_root: "/data/workspace".into(),
+                session_id: "session".into(),
+                agent_branch: "main".into(),
+                attributed_event_id: Some("evt-stats".into()),
+                skill_id: stable.into(),
+                evidence_state: EvidenceState::Loaded,
+                observed_at_unix_ms: 1_700_000_100,
+            },
+            stamp,
+        )
+        .expect("observation recorded");
+
+    // The judgment arrives the way a human supplies it: by the name printed in the output.
+    let stamp = f.store.stamp();
+    f.store
+        .record_single_feedback(
+            inv.clock(),
+            &cx,
+            &SingleFeedbackRequest {
+                event_id: "evt-stats".into(),
+                skill_id: "rust-code-review".into(),
+                verdict: JudgmentLabel::Useful,
+                reason_code: None,
+                provenance: Some("contract_test".into()),
+                expected_version: None,
+            },
+            stamp,
+        )
+        .expect("judgment by invocation name accepted");
+
+    let report = ledger_stats(&inv, &cx, LedgerLocation::Directory(f.dir.clone()), 0, true)
+        .expect("ledger_stats with --by-skill");
+    let rows = report.by_skill.expect("--by-skill populates the cohort");
+    let named: Vec<&str> = rows.iter().map(|r| r.skill_id.as_str()).collect();
+    assert_eq!(
+        rows.len(),
+        1,
+        "one skill must occupy one row; saw {named:?}, which is the two-row split that makes \
+         per-skill usefulness unjoinable to per-skill recommendations"
+    );
+    let row = rows.first().expect("the single row just asserted above");
+    assert_eq!(
+        row.skill_id, stable,
+        "the row must key on the stable skill id"
+    );
+    assert_eq!(
+        row.top1_recommendations, 1,
+        "the recommendation is on this row"
+    );
+    assert_eq!(
+        row.observed_loads, 1,
+        "the observed load is on the same row"
+    );
+    assert_eq!(row.judged_useful, 1, "the judgment is on the same row");
+    assert!(inv.shutdown());
+}
+
+#[test]
+fn a_judgment_already_stored_under_a_name_is_left_untouched() {
+    // Migration honesty (sr-oufi refinement 1b, answered by reading the DDL): judgments has no
+    // uniqueness constraint or foreign key on skill_id, only `judgment_id` as primary key and
+    // `attributed_event_id` referencing the event. Name-keyed rows written before the fix can
+    // therefore coexist with id-keyed ones, so no migration is forced and nothing has to be
+    // rewritten on a guess. This test pins that: the historical row is still there, unchanged,
+    // after a new judgment for the same event and the same skill is written under the stable id.
+    let (inv, cx) = test_invocation();
+    let mut f = Fixture::new("legacy-row", &inv, &cx);
+    let stable = "s_cccc0000000000000000000000000000000000000000000000000000000000cc";
+
+    let stamp = f.store.stamp();
+    f.store
+        .record_roster_snapshot(
+            inv.clock(),
+            &cx,
+            &snapshot_with("snap-legacy", &[(stable, "rust-code-review")]),
+            stamp,
+        )
+        .expect("snapshot recorded");
+    let stamp = f.store.stamp();
+    f.store
+        .record_ranking_event(
+            inv.clock(),
+            &cx,
+            &event_with_snapshot("evt-legacy", "snap-legacy"),
             &[],
             None,
-            &[conflicting],
             stamp,
-        );
-        assert!(
-            matches!(result, Err(StoreError::RecordConflict)),
-            "conflicting {field} must be refused: {result:?}"
-        );
-        assert_eq!(
-            f.tokens("owned-attempt"),
-            (None, None, "sent".into()),
-            "conflicting {field} changed original cost/status"
-        );
-        assert_eq!(f.attempt_count("original-event"), 1);
-        let conn = Connection::open(f.store.database_path()).unwrap();
-        let events: Vec<(String, String)> = conn
-            .prepare("SELECT event_id, reason FROM ranking_events ORDER BY event_id")
-            .unwrap()
-            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
-            .unwrap()
-            .collect::<Result<_, _>>()
-            .unwrap();
-        assert_eq!(
-            events,
-            vec![("original-event".into(), "eligible".into())],
-            "conflicting {field} partially committed its event"
-        );
+        )
+        .expect("event recorded");
+
+    // Exactly what the defective build left behind: the label keyed by the invocation name.
+    {
+        let conn = Connection::open(f.store.database_path()).expect("open raw sqlite");
+        conn.execute(
+            "INSERT INTO judgments (judgment_id, attributed_event_id, skill_id, label, \
+             label_version, provenance, created_at_unix_ms) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            rusqlite::params![
+                "jdg-legacy",
+                "evt-legacy",
+                "rust-code-review",
+                "useful",
+                1,
+                "pre_fix_build",
+                1_700_000_050i64,
+            ],
+        )
+        .expect("historical name-keyed judgment");
     }
+
+    let stamp = f.store.stamp();
+    f.store
+        .record_single_feedback(
+            inv.clock(),
+            &cx,
+            &SingleFeedbackRequest {
+                event_id: "evt-legacy".into(),
+                skill_id: "rust-code-review".into(),
+                verdict: JudgmentLabel::Harmful,
+                reason_code: None,
+                provenance: Some("contract_test".into()),
+                expected_version: None,
+            },
+            stamp,
+        )
+        .expect("a new judgment resolves and writes under the stable id");
+
+    let conn = Connection::open(f.store.database_path()).expect("open raw sqlite");
+    let (label, version, provenance): (String, i64, String) = conn
+        .query_row(
+            "SELECT label, label_version, provenance FROM judgments WHERE judgment_id = ?1",
+            ["jdg-legacy"],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .expect("the historical row still exists");
+    assert_eq!(
+        (label.as_str(), version, provenance.as_str()),
+        ("useful", 1, "pre_fix_build"),
+        "the historical name-keyed label must not be rewritten, revised or relabelled"
+    );
+    let fresh: String = conn
+        .query_row(
+            "SELECT skill_id FROM judgments WHERE judgment_id != ?1",
+            ["jdg-legacy"],
+            |row| row.get(0),
+        )
+        .expect("the new judgment is a separate row");
+    assert_eq!(
+        fresh, stable,
+        "the new judgment keys on the stable id while the old row keeps its name"
+    );
     assert!(inv.shutdown());
 }

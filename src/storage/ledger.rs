@@ -5038,6 +5038,90 @@ impl LedgerStore {
         Ok(snapshot)
     }
 
+    /// Matches one supplied reference against retained snapshot members.
+    ///
+    /// `Ok(None)` means the snapshot simply does not contain it, which the callers
+    /// distinguish from ambiguity: a name matching several skills is refused rather than
+    /// guessed, because invocation names are not unique across sources and the harness may
+    /// keep same-name skills distinct. Attaching a label to the wrong skill is worse than
+    /// asking the assessor for the stable id.
+    fn match_reference_in_members(
+        members: &[SnapshotMember],
+        supplied: &str,
+    ) -> Result<Option<String>, FeedbackError> {
+        if members.iter().any(|member| member.skill_id == supplied) {
+            return Ok(Some(supplied.to_string()));
+        }
+        let mut matched = members
+            .iter()
+            .filter(|member| member.invocation_name.as_deref() == Some(supplied))
+            .map(|member| member.skill_id.clone());
+        let Some(first) = matched.next() else {
+            return Ok(None);
+        };
+        if matched.next().is_some() {
+            return Err(FeedbackError::InvalidSkillId(format!(
+                "'{supplied}' matches more than one skill in this event's roster snapshot; \
+                 supply the stable skill id"
+            )));
+        }
+        Ok(Some(first))
+    }
+
+    /// Resolves a user-supplied skill reference to the stable skill id, against evidence
+    /// bound to this event.
+    ///
+    /// A person reads an invocation name in the ranking output — `rust-code-review` — and
+    /// types that into `sr feedback --skill`. The ledger joins on the stable opaque id.
+    /// Accepting only the id would make the command unusable from the output it exists to
+    /// follow; storing the name would key the judgment differently from the candidates and
+    /// observations for the same skill, so every per-skill figure would split in two. So the
+    /// reference is resolved here, once, before anything is written.
+    ///
+    /// Order matters. A value that already names a candidate of this event is taken as the
+    /// stable id and needs no snapshot, which keeps feedback working for events whose roster
+    /// membership was only partially observed. Otherwise the event's retained snapshot is
+    /// consulted, because it is the only record of what the invocation names meant at the
+    /// time; today's roster cannot establish what a past name referred to.
+    ///
+    /// The supplied name is not lost by resolving it: `SnapshotMember` retains `skill_id`
+    /// alongside `invocation_name`, so the mapping stays recoverable from the same snapshot
+    /// that resolved it.
+    fn resolve_event_skill_reference(
+        tx: &rusqlite::Transaction<'_>,
+        event_id: &str,
+        snapshot_id: Option<&str>,
+        supplied: &str,
+    ) -> Result<String, FeedbackError> {
+        let is_candidate: i64 = tx
+            .query_row(
+                "SELECT count(*) FROM ranking_candidates WHERE event_id = ?1 AND skill_id = ?2",
+                [event_id, supplied],
+                |row| row.get(0),
+            )
+            .map_err(|e| FeedbackError::Store(StoreError::from(e)))?;
+        if is_candidate > 0 {
+            return Ok(supplied.to_string());
+        }
+
+        let Some(snapshot_id) = snapshot_id else {
+            return Err(FeedbackError::InvalidSkillId(format!(
+                "'{supplied}' is not a candidate of this event and it has no roster snapshot to \
+                 resolve a name against; supply the stable skill id"
+            )));
+        };
+        let snapshot = read_snapshot(tx, snapshot_id)
+            .map_err(FeedbackError::Store)?
+            .ok_or(FeedbackError::MissingSnapshot)?;
+        let members = Self::parse_snapshot_members(&snapshot).map_err(FeedbackError::Store)?;
+        Self::match_reference_in_members(&members, supplied)?.ok_or_else(|| {
+            FeedbackError::InvalidSkillId(format!(
+                "'{supplied}' matches no skill id or invocation name in this event's roster \
+                 snapshot"
+            ))
+        })
+    }
+
     pub fn parse_snapshot_members(
         snapshot: &NewRosterSnapshot,
     ) -> Result<Vec<SnapshotMember>, StoreError> {
@@ -5154,12 +5238,28 @@ impl LedgerStore {
 
         let members = Self::parse_snapshot_members(&snap).map_err(FeedbackError::Store)?;
 
+        // Resolve BOTH references before anything is checked or written. A correction commits
+        // two labels in one transaction, so a resolvable original paired with an unresolvable
+        // alternative must write neither: AGENTS.md requires that a failed alternate lookup
+        // cannot leave an unintended standalone negative label. Resolving up front is what
+        // makes that automatic rather than a thing to remember.
+        let original_skill_id = Self::match_reference_in_members(&members, &req.original_skill_id)?
+            .unwrap_or_else(|| req.original_skill_id.clone());
+        let alternative_skill_id =
+            Self::match_reference_in_members(&members, &req.alternative_skill_id)?
+                .unwrap_or_else(|| req.alternative_skill_id.clone());
+        if original_skill_id == alternative_skill_id {
+            // Two different spellings of one skill, for instance its id and its invocation
+            // name, are still one skill and cannot be a correction.
+            return Err(FeedbackError::IdenticalSkills);
+        }
+
         // 3. Resolve original skill
-        let orig_in_snap = members.iter().any(|m| m.skill_id == req.original_skill_id);
+        let orig_in_snap = members.iter().any(|m| m.skill_id == original_skill_id);
         let orig_in_cands: bool = if !orig_in_snap {
             tx.query_row(
                 "SELECT count(*) FROM ranking_candidates WHERE event_id = ?1 AND skill_id = ?2",
-                [&req.event_id, &req.original_skill_id],
+                [&req.event_id, &original_skill_id],
                 |r| r.get::<_, i64>(0),
             )
             .map(|c| c > 0)
@@ -5169,13 +5269,11 @@ impl LedgerStore {
         };
         if !orig_in_cands {
             return Err(FeedbackError::OriginalSkillNotFound(
-                req.original_skill_id.clone(),
+                original_skill_id.clone(),
             ));
         }
 
-        let alt_member = members
-            .iter()
-            .find(|m| m.skill_id == req.alternative_skill_id);
+        let alt_member = members.iter().find(|m| m.skill_id == alternative_skill_id);
 
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -5198,7 +5296,7 @@ impl LedgerStore {
                         proposal_id,
                         workspace_root,
                         session_id,
-                        req.alternative_skill_id,
+                        alternative_skill_id,
                         ProposalStatus::HistoricallyAbsent.as_str(),
                         notes,
                         now_ms as i64,
@@ -5216,8 +5314,8 @@ impl LedgerStore {
                 Ok((
                     FeedbackOutcome::ProspectiveProposal {
                         event_id: req.event_id.clone(),
-                        original_skill_id: req.original_skill_id.clone(),
-                        alternative_skill_id: req.alternative_skill_id.clone(),
+                        original_skill_id: original_skill_id.clone(),
+                        alternative_skill_id: alternative_skill_id.clone(),
                         proposal_id,
                         reason: "alternative skill was not present in the historical roster snapshot; recorded as prospective proposal".to_string(),
                     },
@@ -5237,7 +5335,7 @@ impl LedgerStore {
                 let orig_existing: Option<(String, i64)> = tx
                     .query_row(
                         "SELECT judgment_id, label_version FROM judgments WHERE attributed_event_id = ?1 AND skill_id = ?2",
-                        [&req.event_id, &req.original_skill_id],
+                        [&req.event_id, &original_skill_id],
                         |r| Ok((r.get(0)?, r.get(1)?)),
                     )
                     .optional()
@@ -5246,7 +5344,7 @@ impl LedgerStore {
                 let alt_existing: Option<(String, i64)> = tx
                     .query_row(
                         "SELECT judgment_id, label_version FROM judgments WHERE attributed_event_id = ?1 AND skill_id = ?2",
-                        [&req.event_id, &req.alternative_skill_id],
+                        [&req.event_id, &alternative_skill_id],
                         |r| Ok((r.get(0)?, r.get(1)?)),
                     )
                     .optional()
@@ -5302,7 +5400,7 @@ impl LedgerStore {
                             params![
                                 id,
                                 req.event_id,
-                                req.original_skill_id,
+                                original_skill_id,
                                 JudgmentLabel::Harmful.as_str(),
                                 1,
                                 provenance,
@@ -5341,7 +5439,7 @@ impl LedgerStore {
                             params![
                                 id,
                                 req.event_id,
-                                req.alternative_skill_id,
+                                alternative_skill_id,
                                 JudgmentLabel::Useful.as_str(),
                                 1,
                                 provenance,
@@ -5376,8 +5474,8 @@ impl LedgerStore {
                 Ok((
                     FeedbackOutcome::PairedCorrection {
                         event_id: req.event_id.clone(),
-                        original_skill_id: req.original_skill_id.clone(),
-                        alternative_skill_id: req.alternative_skill_id.clone(),
+                        original_skill_id: original_skill_id.clone(),
+                        alternative_skill_id: alternative_skill_id.clone(),
                         group_id,
                         original_judgment_id: orig_jdg_id,
                         alternative_judgment_id: alt_jdg_id,
@@ -5425,14 +5523,23 @@ impl LedgerStore {
             .optional()
             .map_err(|e| FeedbackError::Store(StoreError::from(e)))?;
 
-        if event_row.is_none() {
+        let Some((_, _, snapshot_id)) = event_row else {
             return Err(FeedbackError::EventNotFound(req.event_id.clone()));
-        }
+        };
+
+        // Resolve before any lookup keyed on the skill, so the existing-judgment check, the
+        // revision check and the write all agree on one identity.
+        let skill_id = Self::resolve_event_skill_reference(
+            &tx,
+            &req.event_id,
+            snapshot_id.as_deref(),
+            &req.skill_id,
+        )?;
 
         let existing: Option<(String, i64)> = tx
             .query_row(
                 "SELECT judgment_id, label_version FROM judgments WHERE attributed_event_id = ?1 AND skill_id = ?2",
-                [&req.event_id, &req.skill_id],
+                [&req.event_id, &skill_id],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .optional()
@@ -5481,7 +5588,7 @@ impl LedgerStore {
                     params![
                         new_id,
                         req.event_id,
-                        req.skill_id,
+                        skill_id,
                         req.verdict.as_str(),
                         1,
                         provenance,
