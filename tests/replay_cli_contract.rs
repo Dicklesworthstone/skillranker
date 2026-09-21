@@ -233,6 +233,44 @@ fn oversized_replay_inputs_are_rejected_before_large_allocation() {
 }
 
 #[test]
+#[cfg(target_os = "linux")]
+fn replay_inputs_reject_special_files_and_symlinks() {
+    use nix::sys::stat::Mode;
+    let root = temp_workspace("special-input");
+    let case = root.join("workspace/case.json");
+    write_case_file(&case, &sample_ranked_case());
+    let fifo = root.join("workspace/fifo");
+    nix::unistd::mkfifo(&fifo, Mode::S_IRUSR | Mode::S_IWUSR).unwrap();
+    let link = root.join("workspace/link");
+    std::os::unix::fs::symlink(&case, &link).unwrap();
+    for input in [&fifo, &link, &root.join("workspace")] {
+        for policy in [false, true] {
+            let mut command = Command::new("/usr/bin/timeout");
+            command
+                .env_clear()
+                .args(["-s", "KILL", "5"])
+                .arg(env!("CARGO_BIN_EXE_sr"))
+                .arg("replay")
+                .arg(if policy { &case } else { input })
+                .arg("--json")
+                .current_dir(root.join("workspace"));
+            if policy {
+                command.arg("--policy").arg(input);
+            }
+            let out = command.output().unwrap();
+            assert_eq!(
+                out.status.code(),
+                Some(7),
+                "{input:?}, policy={policy}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            let error: Value = serde_json::from_slice(&out.stdout).unwrap();
+            assert_eq!(error["error"]["kind"], "malformed-input");
+        }
+    }
+}
+
+#[test]
 fn replay_help_succeeds_and_documents_command() {
     let root = temp_workspace("help");
     let output = run_sr(&root, &["replay", "--help"]);

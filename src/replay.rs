@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+use std::io::Read;
 use std::path::Path;
 
 /// Bounded replay error kinds. Safe diagnostics contain no private text or credentials.
@@ -374,26 +375,60 @@ impl ReplayCase {
 
     /// Load and validate a replay case from an owner-only file path.
     pub fn load_from_file(path: &Path) -> Result<Self, ReplayError> {
-        let metadata = std::fs::symlink_metadata(path)?;
-        if !metadata.is_file() {
-            return Err(ReplayError::InvalidField(
-                "replay case path must be a regular file".into(),
-            ));
-        }
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::MetadataExt;
-            let mode = metadata.mode();
-            let uid = nix::unistd::geteuid().as_raw();
-            if metadata.uid() != uid || (mode & 0o7777 != 0o600 && mode & 0o7777 != 0o400) {
-                return Err(ReplayError::InvalidField(
-                    "replay case file permissions must be owner-only (0600 or 0400)".into(),
-                ));
-            }
-        }
-        let bytes = std::fs::read(path)?;
+        let bytes =
+            read_private_replay_file(path, "replay case", DEFAULT_MAX_CASE_BYTES, |len, max| {
+                ReplayError::OversizedCase { len, max }
+            })?;
         Self::from_json_bytes(&bytes)
     }
+}
+
+// Open once without following the final symlink or waiting for a FIFO writer.
+// Permission/type checks and the bounded read all concern this same descriptor.
+fn read_private_replay_file(
+    path: &Path,
+    label: &str,
+    max: usize,
+    oversized: fn(usize, usize) -> ReplayError,
+) -> Result<Vec<u8>, ReplayError> {
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_NONBLOCK)
+        .open(path)
+        .map_err(|error| {
+            if error.raw_os_error() == Some(nix::libc::ELOOP) {
+                ReplayError::InvalidField(format!("{label} path must be a regular file"))
+            } else {
+                ReplayError::Io(error)
+            }
+        })?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() {
+        return Err(ReplayError::InvalidField(format!(
+            "{label} path must be a regular file"
+        )));
+    }
+    let mode = metadata.mode() & 0o7777;
+    if metadata.uid() != nix::unistd::geteuid().as_raw() || !matches!(mode, 0o600 | 0o400) {
+        return Err(ReplayError::InvalidField(format!(
+            "{label} file permissions must be owner-only (0600 or 0400)"
+        )));
+    }
+    if metadata.len() > max as u64 {
+        return Err(oversized(
+            usize::try_from(metadata.len()).unwrap_or(usize::MAX),
+            max,
+        ));
+    }
+    // The extra byte detects growth after metadata inspection without permitting
+    // an unbounded allocation. The limits are fixed small format constants.
+    let mut bytes = Vec::new();
+    file.take(max as u64 + 1).read_to_end(&mut bytes)?;
+    if bytes.len() > max {
+        return Err(oversized(bytes.len(), max));
+    }
+    Ok(bytes)
 }
 
 impl ReplayPolicy {
@@ -444,24 +479,12 @@ impl ReplayPolicy {
 
     /// Load and validate a replay policy override document from an owner-only file path.
     pub fn load_from_file(path: &Path) -> Result<Self, ReplayError> {
-        let metadata = std::fs::symlink_metadata(path)?;
-        if !metadata.is_file() {
-            return Err(ReplayError::InvalidField(
-                "replay policy path must be a regular file".into(),
-            ));
-        }
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::MetadataExt;
-            let mode = metadata.mode();
-            let uid = nix::unistd::geteuid().as_raw();
-            if metadata.uid() != uid || (mode & 0o7777 != 0o600 && mode & 0o7777 != 0o400) {
-                return Err(ReplayError::InvalidField(
-                    "replay policy file permissions must be owner-only (0600 or 0400)".into(),
-                ));
-            }
-        }
-        let bytes = std::fs::read(path)?;
+        let bytes = read_private_replay_file(
+            path,
+            "replay policy",
+            REPLAY_POLICY_BYTES.max(),
+            |len, max| ReplayError::OversizedPolicy { len, max },
+        )?;
         if bytes.len() > REPLAY_POLICY_BYTES.max() {
             return Err(ReplayError::OversizedPolicy {
                 len: bytes.len(),
