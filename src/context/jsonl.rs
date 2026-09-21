@@ -297,6 +297,38 @@ fn read_snapshot(
             },
         );
     }
+
+    // The rewind must never cost forward progress. A window is bounded by records as well as by
+    // bytes, so on a transcript of very small records the rewind can swallow the whole record
+    // budget re-reading history and end at or before the watermark it started from — and then every
+    // pass reads the same records for ever, which is the exact defect this resume exists to fix.
+    // When that happens, re-read from the watermark itself with no rewind: the repair window is
+    // worth having only while it is free, and progress is not negotiable.
+    // Note the absence of a `start > 0` condition, which the first version of this guard had and
+    // which made it useless in the very case it was written for: when the rewind saturates at the
+    // beginning of the file, `start` IS zero, and that is precisely when the whole record budget
+    // goes on history.
+    if kind == CursorKind::Observation
+        && !rebuilt
+        && let Some(cursor) = previous
+        && cursor.byte_offset > 0
+        && snapshot.cursor.byte_offset <= cursor.byte_offset
+    {
+        return read_window(
+            &mut file,
+            ReadWindow {
+                identity,
+                kind,
+                snapshot_len,
+                cap,
+                start: cursor.byte_offset,
+                align_to_record: false,
+                generation: generation_after(previous, false),
+                last_event_id: cursor.last_event_id.clone(),
+                rebuilt: false,
+            },
+        );
+    }
     Ok(snapshot)
 }
 
