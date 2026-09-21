@@ -22,7 +22,10 @@ fn directory() -> PathBuf {
             .unwrap()
             .as_nanos()
     ));
-    std::fs::DirBuilder::new().mode(0o700).create(&path).unwrap();
+    std::fs::DirBuilder::new()
+        .mode(0o700)
+        .create(&path)
+        .unwrap();
     path
 }
 

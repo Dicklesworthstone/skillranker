@@ -650,4 +650,3 @@ fn incompatible_schema_store_reports_needs_migration_in_status() {
     assert!(text.contains("Ledger Status: needs_migration"));
     assert!(text.contains("Upgrade Available: 2"));
 }
-
