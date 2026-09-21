@@ -55,9 +55,7 @@ impl JevTransport for Transport {
             );
             requests.push(request.clone());
         }
-        if rerank
-            && let Some((from, to)) = &self.move_during_rerank
-        {
+        if rerank && let Some((from, to)) = &self.move_during_rerank {
             fs::rename(from, to).unwrap();
         }
         let response = response(request);
@@ -196,11 +194,7 @@ impl Fixture {
         match kind {
             "symlink" => {
                 // Move the empty directory aside: deletion is not needed.
-                fs::rename(
-                    slot.parent().unwrap(),
-                    self.root.join("retained-empty-dir"),
-                )
-                .unwrap();
+                fs::rename(slot.parent().unwrap(), self.root.join("retained-empty-dir")).unwrap();
                 fs::write(self.root.join("outside/SKILL.md"), CANARY).unwrap();
                 symlink(self.root.join("outside"), slot.parent().unwrap()).unwrap();
             }
@@ -381,9 +375,7 @@ fn real_entry_ceiling_keeps_personal_precedence_through_ranking() {
     fixture.skill(false, "beta", false);
     fixture.skill(true, "beta", true);
     expected.insert("delta", fixture.skill(true, "delta", false));
-    let references = fixture
-        .workspace
-        .join(".claude/skills/alpha/references");
+    let references = fixture.workspace.join(".claude/skills/alpha/references");
     fs::create_dir_all(&references).unwrap();
     for index in 0..=DISCOVERY_FILES.max() {
         fs::write(references.join(format!("note-{index:05}.txt")), "note").unwrap();

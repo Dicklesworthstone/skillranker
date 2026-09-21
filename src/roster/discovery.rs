@@ -612,7 +612,8 @@ impl Discovery {
                     // A root-level directory called SKILL.md is a skill name,
                     // however: its own SKILL.md is the file slot to inspect.
                     _ if name == planned.spec.skill_file
-                        && !(relative.as_os_str().is_empty() && matches!(kind, Type::Directory)) =>
+                        && !(relative.as_os_str().is_empty()
+                            && matches!(kind, Type::Directory)) =>
                     {
                         self.push_candidate(
                             planned,
