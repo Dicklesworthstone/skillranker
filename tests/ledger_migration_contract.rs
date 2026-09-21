@@ -522,16 +522,26 @@ fn cli_ledger_subcommands_e2e() {
     assert_eq!(val["status"], "already_current");
     assert_eq!(val["schema_version"], 1);
 
-    // 4. Status reports needs_migration because target is 2
+    // 4. Status reports ready with upgrade_available: 2 because target is 2
     let out = Command::new(bin)
         .args(["ledger", "status", "--dir", dir_str, "--json"])
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(0));
     let val: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(val["status"], "needs_migration");
+    assert_eq!(val["status"], "ready");
     assert_eq!(val["schema_version"], 1);
     assert_eq!(val["target_version"], 2);
+    assert_eq!(val["upgrade_available"], 2);
+
+    let out_hr = Command::new(bin)
+        .args(["ledger", "status", "--dir", dir_str])
+        .output()
+        .unwrap();
+    assert_eq!(out_hr.status.code(), Some(0));
+    let text = String::from_utf8(out_hr.stdout).unwrap();
+    assert!(text.contains("Ledger Status: ready"));
+    assert!(text.contains("Upgrade Available: 2"));
 
     // 5. Migrate preview (without --apply)
     let out = Command::new(bin)
@@ -555,7 +565,7 @@ fn cli_ledger_subcommands_e2e() {
     assert_eq!(val["to_version"], 2);
     assert_eq!(val["applied_migrations"][0], "v2-add-audit-log");
 
-    // 7. Status now reports ready
+    // 7. Status now reports ready with no upgrade_available
     let out = Command::new(bin)
         .args(["ledger", "status", "--dir", dir_str, "--json"])
         .output()
@@ -565,6 +575,7 @@ fn cli_ledger_subcommands_e2e() {
     assert_eq!(val["status"], "ready");
     assert_eq!(val["schema_version"], 2);
     assert_eq!(val["target_version"], 2);
+    assert!(val.get("upgrade_available").is_none() || val["upgrade_available"].is_null());
 }
 
 #[test]
@@ -593,3 +604,50 @@ fn concurrent_writer_fences_stale_stamp() {
     let res = store.record_roster_snapshot(invocation.clock(), &cx, &snap, stale_stamp);
     assert_eq!(res, Err(StoreError::StaleGeneration));
 }
+
+#[test]
+fn incompatible_schema_store_reports_needs_migration_in_status() {
+    let dir = temp_private_dir("incompatible-schema");
+    let (invocation, cx) = test_invocation();
+
+    // Initialize a valid store first (creates directory and file with 0600 permissions)
+    let init = init_ledger(&invocation, &cx, LedgerLocation::Directory(dir.clone())).unwrap();
+    assert_eq!(init.status, InitStatus::Created);
+
+    // Downgrade schema version to 0 (< LEDGER_SCHEMA_VERSION = 1)
+    let db_path = dir.join(LEDGER_FILE);
+    {
+        let conn = Connection::open(&db_path).unwrap();
+        conn.pragma_update(None, "user_version", 0).unwrap();
+    }
+
+    // Inspect via ledger_status: reports needs_migration
+    let status = ledger_status(&invocation, &cx, LedgerLocation::Directory(dir.clone())).unwrap();
+    assert_eq!(status.status, "needs_migration");
+    assert_eq!(status.schema_version, Some(0));
+    assert_eq!(status.target_version, LEDGER_TARGET_SCHEMA_VERSION);
+    assert_eq!(status.upgrade_available, Some(LEDGER_TARGET_SCHEMA_VERSION));
+
+    // CLI status also reports needs_migration
+    let bin = env!("CARGO_BIN_EXE_sr");
+    let dir_str = dir.to_str().unwrap();
+    let out = Command::new(bin)
+        .args(["ledger", "status", "--dir", dir_str, "--json"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let val: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(val["status"], "needs_migration");
+    assert_eq!(val["schema_version"], 0);
+    assert_eq!(val["upgrade_available"], 2);
+
+    let out_hr = Command::new(bin)
+        .args(["ledger", "status", "--dir", dir_str])
+        .output()
+        .unwrap();
+    assert_eq!(out_hr.status.code(), Some(0));
+    let text = String::from_utf8(out_hr.stdout).unwrap();
+    assert!(text.contains("Ledger Status: needs_migration"));
+    assert!(text.contains("Upgrade Available: 2"));
+}
+

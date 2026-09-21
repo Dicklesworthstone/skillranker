@@ -1823,7 +1823,7 @@ fn ledger_command(
                     .map(|s| format!("{s}\n"))
                     .map_err(|e| (9u8, "storage-failure", e.to_string()))
             } else {
-                Ok(format!(
+                let mut out = format!(
                     "Ledger Status: {}\nPath: {}\nSchema Version: {}\nTarget Version: {}\nRead Only: {}\n",
                     status_report.status,
                     status_report.database_path.display(),
@@ -1833,7 +1833,11 @@ fn ledger_command(
                         .unwrap_or_else(|| "none".into()),
                     status_report.target_version,
                     status_report.is_read_only
-                ))
+                );
+                if let Some(up) = status_report.upgrade_available {
+                    out.push_str(&format!("Upgrade Available: {}\n", up));
+                }
+                Ok(out)
             }
         }
         "prune" => {

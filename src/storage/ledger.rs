@@ -672,6 +672,8 @@ pub struct LedgerStatusReport {
     pub status: &'static str,
     pub schema_version: Option<u32>,
     pub target_version: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upgrade_available: Option<u32>,
     pub schema_generation: Option<u64>,
     pub data_generation: Option<u64>,
     pub is_read_only: bool,
@@ -2300,6 +2302,7 @@ pub fn ledger_status(
                     status: "missing",
                     schema_version: None,
                     target_version: LEDGER_TARGET_SCHEMA_VERSION,
+                    upgrade_available: None,
                     schema_generation: None,
                     data_generation: None,
                     is_read_only: false,
@@ -2318,6 +2321,7 @@ pub fn ledger_status(
                         status: "read_only",
                         schema_version: ver,
                         target_version: LEDGER_TARGET_SCHEMA_VERSION,
+                        upgrade_available: None,
                         schema_generation: Some(stamp.schema_generation),
                         data_generation: Some(stamp.data_generation),
                         is_read_only: true,
@@ -2328,10 +2332,11 @@ pub fn ledger_status(
                 Ok(LedgerOpen::Ready(store)) => {
                     let stamp = store.stamp();
                     let ver = store.schema_version().ok();
-                    let status = if ver == Some(LEDGER_TARGET_SCHEMA_VERSION) {
-                        "ready"
-                    } else {
-                        "needs_migration"
+                    let upgrade_available = match ver {
+                        Some(v) if v < LEDGER_TARGET_SCHEMA_VERSION => {
+                            Some(LEDGER_TARGET_SCHEMA_VERSION)
+                        }
+                        _ => None,
                     };
                     let now_ms = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
@@ -2339,9 +2344,10 @@ pub fn ledger_status(
                         .as_millis() as i64;
                     let cleanup_debt = store.cleanup_debt(now_ms).ok();
                     Ok(LedgerStatusReport {
-                        status,
+                        status: "ready",
                         schema_version: ver,
                         target_version: LEDGER_TARGET_SCHEMA_VERSION,
+                        upgrade_available,
                         schema_generation: Some(stamp.schema_generation),
                         data_generation: Some(stamp.data_generation),
                         is_read_only: false,
@@ -2353,6 +2359,7 @@ pub fn ledger_status(
                     status: "disabled",
                     schema_version: None,
                     target_version: LEDGER_TARGET_SCHEMA_VERSION,
+                    upgrade_available: None,
                     schema_generation: None,
                     data_generation: None,
                     is_read_only: false,
@@ -2363,12 +2370,40 @@ pub fn ledger_status(
                     status: "wrong_store",
                     schema_version: None,
                     target_version: LEDGER_TARGET_SCHEMA_VERSION,
+                    upgrade_available: None,
                     schema_generation: None,
                     data_generation: None,
                     is_read_only: false,
                     database_path,
                     cleanup_debt: None,
                 }),
+                Err(StoreError::IncompatibleSchema) => {
+                    let (ver, stamp) = Connection::open_with_flags(
+                        &database_path,
+                        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+                    )
+                    .ok()
+                    .map(|conn| {
+                        let v: Option<u32> = conn
+                            .pragma_query_value(None, "user_version", |r| r.get(0))
+                            .ok()
+                            .map(|x: i64| x as u32);
+                        let s = read_stamp(&conn).ok();
+                        (v, s)
+                    })
+                    .unwrap_or((None, None));
+                    Ok(LedgerStatusReport {
+                        status: "needs_migration",
+                        schema_version: ver,
+                        target_version: LEDGER_TARGET_SCHEMA_VERSION,
+                        upgrade_available: Some(LEDGER_TARGET_SCHEMA_VERSION),
+                        schema_generation: stamp.as_ref().map(|s| s.schema_generation),
+                        data_generation: stamp.as_ref().map(|s| s.data_generation),
+                        is_read_only: false,
+                        database_path,
+                        cleanup_debt: None,
+                    })
+                }
                 Err(e) => Err(e),
             }
         },

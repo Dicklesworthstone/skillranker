@@ -801,21 +801,23 @@ fn doctor_reports_cleanup_debt_when_ledger_has_expired_records() {
     assert!(debt.has_debt);
     assert_eq!(debt.expired_events, 1);
 
-    // Inspect via ledger_status (before migration: status is needs_migration, cleanup debt reported)
+    // Inspect via ledger_status (before migration: status is ready with upgrade_available, cleanup debt reported)
     let status_pre =
         ledger_status(&invocation, &cx, LedgerLocation::Directory(dir.clone())).unwrap();
-    assert_eq!(status_pre.status, "needs_migration");
+    assert_eq!(status_pre.status, "ready");
+    assert_eq!(status_pre.upgrade_available, Some(2));
     let reported_debt = status_pre
         .cleanup_debt
         .expect("expected cleanup debt in status");
     assert!(reported_debt.has_debt);
     assert_eq!(reported_debt.expired_events, 1);
 
-    // After migration: status is ready, cleanup debt still reported
+    // After migration: status is ready, upgrade_available is None, cleanup debt still reported
     store.migrate_apply(invocation.clock(), &cx).unwrap();
     let status_post =
         ledger_status(&invocation, &cx, LedgerLocation::Directory(dir.clone())).unwrap();
     assert_eq!(status_post.status, "ready");
+    assert_eq!(status_post.upgrade_available, None);
     let reported_debt_post = status_post
         .cleanup_debt
         .expect("expected cleanup debt in status");

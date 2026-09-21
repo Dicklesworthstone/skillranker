@@ -1258,7 +1258,8 @@ unit_property_tests = [
     "tests/ledger_migration_contract.rs::migration_preflight_quota_failure_aborts_before_mutation_or_backup",
     "tests/ledger_migration_contract.rs::hooks_and_rank_never_silently_initialize_or_migrate_ledger",
     "tests/ledger_migration_contract.rs::cli_ledger_subcommands_e2e",
-    "tests/ledger_migration_contract.rs::concurrent_writer_fences_stale_stamp"
+    "tests/ledger_migration_contract.rs::concurrent_writer_fences_stale_stamp",
+    "tests/ledger_migration_contract.rs::incompatible_schema_store_reports_needs_migration_in_status"
 ]
 e2e_suite = "replay"
 e2e_cases = ["ledger-init-migration", "ledger-wal-backup-recover"]

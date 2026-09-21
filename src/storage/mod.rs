@@ -17,8 +17,8 @@ pub use export::{
 pub use ledger::{
     CandidateStage, CleanupDebt, ClearPreview, ClearReport, CursorKind, DEFAULT_RETENTION_MS,
     DecisionKind, EvidenceState, ExposureState, FeedbackError, FeedbackOutcome, FeedbackRequest,
-    InitReport, InitStatus, JudgmentLabel, LEDGER_FILE, LEDGER_MAINTENANCE_RESERVE_BYTES,
-    LEDGER_MUTATION_RESERVE_BYTES, LEDGER_QUOTA_BYTES, LEDGER_RECORDING_CEILING_BYTES,
+    InitReport, InitStatus, JudgmentLabel, LEDGER_APPLICATION_ID, LEDGER_FILE,
+    LEDGER_MAINTENANCE_RESERVE_BYTES, LEDGER_MUTATION_RESERVE_BYTES, LEDGER_QUOTA_BYTES,
     LEDGER_SCHEMA_ID, LEDGER_SCHEMA_VERSION, LEDGER_TARGET_SCHEMA_VERSION, LedgerAccess,
     LedgerCapacityReport, LedgerLocation, LedgerOpen, LedgerStamp, LedgerStatusReport, LedgerStore,
     MaintenanceError, MaintenanceKind, MaintenancePreflight, MembershipCoverage, MigrationError,
