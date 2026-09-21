@@ -308,17 +308,7 @@ fn explicit_cancellation_terminates_live_child() {
 #[cfg(target_os = "linux")]
 fn terminated_by(pid: i32, deadline: Instant) -> std::io::Result<bool> {
     loop {
-        let stat = match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
-            Ok(stat) => stat,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(true),
-            Err(error) => return Err(error),
-        };
-        let state = stat
-            .rsplit_once(") ")
-            .and_then(|(_, suffix)| suffix.as_bytes().first())
-            .copied()
-            .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::InvalidData))?;
-        if matches!(state, b'Z' | b'X') {
+        if proc_stat_terminated(std::fs::read_to_string(format!("/proc/{pid}/stat")))? {
             return Ok(true);
         }
         let remaining = deadline.saturating_duration_since(Instant::now());
@@ -327,6 +317,75 @@ fn terminated_by(pid: i32, deadline: Instant) -> std::io::Result<bool> {
         }
         std::thread::sleep(remaining.min(Duration::from_millis(1)));
     }
+}
+
+#[cfg(target_os = "linux")]
+fn proc_stat_terminated(stat: std::io::Result<String>) -> std::io::Result<bool> {
+    let stat = match stat {
+        Ok(stat) => stat,
+        // Opening an absent proc entry returns ENOENT. If the task disappears
+        // after open but before read, the still-open stat descriptor returns
+        // ESRCH instead. Both observations establish absence at that instant.
+        Err(error)
+            if error.kind() == std::io::ErrorKind::NotFound
+                || error.raw_os_error() == Some(nix::errno::Errno::ESRCH as i32) =>
+        {
+            return Ok(true);
+        }
+        Err(error) => return Err(error),
+    };
+    let state = stat
+        .rsplit_once(") ")
+        .and_then(|(_, suffix)| suffix.as_bytes().first())
+        .copied()
+        .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::InvalidData))?;
+    Ok(matches!(state, b'Z' | b'X'))
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn termination_observer_accepts_a_proc_descriptor_whose_task_was_reaped() {
+    use std::io::{Read, Seek};
+
+    let mut child = std::process::Command::new("/bin/sleep")
+        .env_clear()
+        .arg("10")
+        .spawn()
+        .unwrap();
+    // Hold the descriptor across exit to force the open/read race without
+    // sleeps or probabilistic scheduling. Clean up before any assertions.
+    let opened = std::fs::File::open(format!("/proc/{}/stat", child.id()));
+    let mut live_stat = String::new();
+    let mut opened = opened.map(|mut file| {
+        let live_read = file.read_to_string(&mut live_stat);
+        (file, live_read)
+    });
+    child.kill().unwrap();
+    child.wait().unwrap();
+    let (file, live_read) = opened.as_mut().unwrap();
+    assert!(live_read.is_ok());
+    assert!(!proc_stat_terminated(Ok(live_stat)).unwrap());
+    file.rewind().unwrap();
+    let mut after_exit = String::new();
+    let error = file.read_to_string(&mut after_exit).unwrap_err();
+    assert_eq!(error.raw_os_error(), Some(nix::errno::Errno::ESRCH as i32));
+    assert!(proc_stat_terminated(Err(error)).unwrap());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn termination_observer_preserves_other_errors_and_nonterminal_states() {
+    for errno in [nix::errno::Errno::EACCES, nix::errno::Errno::EIO] {
+        let error = std::io::Error::from_raw_os_error(errno as i32);
+        assert_eq!(
+            proc_stat_terminated(Err(error)).unwrap_err().raw_os_error(),
+            Some(errno as i32)
+        );
+    }
+    for state in ['R', 'S', 'T', 't', 'D'] {
+        assert!(!proc_stat_terminated(Ok(format!("123 (fixture) {state} 0"))).unwrap());
+    }
+    assert!(proc_stat_terminated(Ok("malformed".into())).is_err());
 }
 
 #[cfg(target_os = "linux")]
