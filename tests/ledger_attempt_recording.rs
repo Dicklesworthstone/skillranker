@@ -357,6 +357,38 @@ impl Provider {
 }
 
 #[test]
+fn pre_admission_refusals_finalize_the_inflight_event() {
+    for offline in [true, false] {
+        let f = Fixture::new();
+        f.claude_session("pre-admission", TASK);
+        f.ledger_init();
+        std::fs::write(f.root.join("config/sr/config.toml"), "").unwrap();
+        let mut args = vec!["rank", "--json", "--timeout-ms", "12000"];
+        if offline {
+            args.push("--offline");
+        }
+        let provider = Provider::start(&f, "useful");
+        let out = f.command(provider.port, &args).output().unwrap();
+        assert_eq!(provider.finish(), 0, "refusal must precede any send");
+        assert!(!out.status.success(), "expected refusal, offline={offline}");
+        let document: Value = serde_json::from_slice(&out.stdout).unwrap();
+        let reason = document["error"]["kind"].as_str().unwrap();
+        let events = f.events();
+        assert_eq!(events.len(), 1, "offline={offline}: {events:?}");
+        assert_eq!(events[0].1, "unavailable");
+        assert_eq!(events[0].3, reason, "offline={offline}");
+        let conn = rusqlite::Connection::open(f.ledger_db()).unwrap();
+        let exposure: String = conn
+            .query_row("SELECT exposure_state FROM ranking_events", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(exposure, "prepared", "offline={offline}");
+        assert!(f.attempts().is_empty(), "a refusal admitted no attempts");
+    }
+}
+
+#[test]
 fn disabled_ledger_records_neither_success_nor_failure() {
     for flag in ["--no-ledger", "--no-persist"] {
         for scenario in ["useful", "always-503"] {

@@ -305,12 +305,12 @@ pub async fn execute_pipeline(
     let effects = args.gate.receipt();
     let mut progress = Progress::default();
     let result = rank_once(invocation, clock, cx, args, transport, &mut progress).await;
-    // A failing run publishes no decision, so nothing else would record what its
-    // attempts cost. Recording is optional and best effort: a store that cannot
-    // take the row does not change the failure the caller sees.
+    // Finalize every armed failure, including refusals before attempt admission:
+    // those runs have finished and must not retain their generated/in-flight row.
+    // Recording is optional and best effort; failure to write does not change
+    // the error the caller sees. Disabled ledger policy never arms this state.
     if let Err(error) = result.as_ref()
         && let Some(recording) = progress.failed_recording.take()
-        && !recording.attempts.is_empty()
     {
         record_failed_attempts(
             invocation,
