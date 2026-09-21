@@ -17,19 +17,37 @@ fn run(args: &[&str]) -> (Option<i32>, Value) {
 
 #[test]
 fn a_planned_command_names_the_phase_it_waits_for() {
-    for (command, phase) in [("stats", "P5"), ("calibrate", "P8")] {
-        let (code, value) = run(&[command, "--json"]);
-        assert_eq!(code, Some(2), "{command}: {value}");
-        assert_eq!(
-            value["error"]["kind"], "invalid-usage",
-            "{command}: {value}"
-        );
-        let message = value["error"]["message"].as_str().unwrap_or_default();
-        assert!(
-            message.contains(phase) && message.contains("sr capabilities"),
-            "{command} must name {phase} and the inventory: {message}"
-        );
-    }
+    let (code, value) = run(&["calibrate", "--json"]);
+    assert_eq!(code, Some(2), "{value}");
+    assert_eq!(value["error"]["kind"], "invalid-usage", "{value}");
+    let message = value["error"]["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("P8") && message.contains("sr capabilities"),
+        "calibrate must name P8 and the inventory: {message}"
+    );
+}
+
+#[test]
+fn implemented_stats_reaches_storage_instead_of_a_planned_refusal() {
+    // Explicitly select a missing store so this does not depend on the user's
+    // real platform data. Populated-store success is exercised separately.
+    let missing = std::env::temp_dir().join(format!(
+        "sr-planned-stats-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let (code, value) = run(&["stats", "--json", "--dir", missing.to_str().unwrap()]);
+    assert_eq!(code, Some(9), "{value}");
+    assert_eq!(value["error"]["kind"], "storage-failure", "{value}");
+    assert!(
+        !value["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("planned for phase")
+    );
 }
 
 #[test]

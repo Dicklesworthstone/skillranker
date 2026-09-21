@@ -858,11 +858,9 @@ fn by_skill_breakdown_orders_by_recommendations_and_shortlist() {
         Some("ev-bs1"),
         base_time + 300,
     );
-    for observation in [o1] {
-        store
-            .record_observation(inv.clock(), &cx, &observation, stamp)
-            .expect("obs");
-    }
+    store
+        .record_observation(inv.clock(), &cx, &o1, stamp)
+        .expect("obs");
 
     // Judgment: "review" useful
     let j1 = judgment_fixture(
