@@ -18,7 +18,12 @@
 # Usage:
 #   scripts/prepush_gates.sh            # all gates
 #   scripts/prepush_gates.sh --fast     # skip the full test run (still fmt/check/clippy/ubs)
-#   SR_GATES_LOCAL=1 scripts/prepush_gates.sh   # never use rch, even if present
+#   PREPUSH_GATES_LOCAL=1 scripts/prepush_gates.sh   # never use rch, even if present
+#
+# The variable is deliberately NOT named SR_*: src/config.rs treats that prefix as a strict
+# namespace, so an unrecognised SR_ variable makes every `sr` invocation fail with
+# "unknown setting" — including the ones the test suite spawns. This script found that by
+# failing its own `cargo test` gate when the variable was called SR_GATES_LOCAL.
 #
 # Honors RCH when available, per AGENTS.md: "In standalone environments without RCH, the
 # underlying Cargo commands are the gates."
@@ -32,14 +37,14 @@ FAST=0
 for arg in "$@"; do
   case "$arg" in
     --fast) FAST=1 ;;
-    -h|--help) sed -n '1,26p' "$0"; exit 0 ;;
+    -h|--help) sed -n '1,29p' "$0"; exit 0 ;;
     *) echo "unknown argument: $arg" >&2; exit 2 ;;
   esac
 done
 
 # rch is for expensive builds on the shared fleet. fmt, ubs and the Python validators are
 # local by nature and are never wrapped.
-if [ "${SR_GATES_LOCAL:-0}" = "1" ] || ! command -v rch >/dev/null 2>&1; then
+if [ "${PREPUSH_GATES_LOCAL:-0}" = "1" ] || ! command -v rch >/dev/null 2>&1; then
   CARGO_PREFIX=()
   LANE="local cargo"
 else
@@ -47,6 +52,7 @@ else
   LANE="rch exec"
 fi
 
+LAST_LOG=""
 FAILED=()
 PASSED=()
 SKIPPED=()
@@ -59,9 +65,13 @@ gate() {
   local name="$1"; shift
   local log
   log=$(mktemp "${TMPDIR:-/tmp}/sr-gate-XXXXXX.log")
+  LAST_LOG="$log"
   printf '\n=== %s ===\n' "$name"
   if "$@" >"$log" 2>&1; then
-    printf '  PASS  %s\n' "$name"
+    # Kept on success, not only on failure. A passing gate is the one you quote, and a receipt
+    # that says "tests passed" without the counts is the kind of claim this script exists to
+    # discourage.
+    printf '  PASS  %s  (output: %s)\n' "$name" "$log"
     PASSED+=("$name")
   else
     local status=$?
@@ -72,7 +82,6 @@ gate() {
     FAILED+=("$name")
     return 0
   fi
-  rm -f "$log"
 }
 
 printf 'Gates for %s\n' "$ROOT"
@@ -88,6 +97,15 @@ if [ "$FAST" = "1" ]; then
   SKIPPED+=("cargo test --locked")
 else
   gate "cargo test --locked" "${CARGO_PREFIX[@]}" cargo test --locked
+  # The aggregate across every target, printed so a receipt can carry counts rather than a word.
+  if [ -f "$LAST_LOG" ]; then
+    tr '\r' '\n' <"$LAST_LOG" | awk '
+      match($0, /([0-9]+) passed; ([0-9]+) failed; ([0-9]+) ignored/, m) {
+        n++; p += m[1]; f += m[2]; i += m[3]
+      }
+      END { if (n > 0) printf "  %d report(s) | %d passed | %d failed | %d ignored\n", n, p, f, i }
+    '
+  fi
 fi
 
 if command -v ubs >/dev/null 2>&1; then
