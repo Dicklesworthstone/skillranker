@@ -208,3 +208,43 @@ fn candidate_metadata_uses_the_open_directory_not_a_replaced_parent_path() {
     );
     assert!(roots.read_bounded(0, candidate.relative(), crate::limits::SKILL_FILE_BYTES).is_err());
 }
+
+#[test]
+fn shallower_skills_in_every_root_precede_another_roots_nested_support_files() {
+    let project = tree();
+    let personal = tree();
+    let configured = tree();
+    for root in [&project, &personal, &configured] {
+        fs::create_dir(root.join("alpha")).unwrap();
+        fs::write(root.join("alpha/SKILL.md"), "body").unwrap();
+    }
+    let references = project.join("alpha/references");
+    fs::create_dir(&references).unwrap();
+    for index in 0..100 {
+        fs::write(references.join(format!("note-{index}")), "note").unwrap();
+    }
+    // 3 root entries + 3 SKILL.md entries + 1 references directory.
+    // The next entry is the sole overflow sentinel, not another skill.
+    for order in [[0, 1, 2], [2, 1, 0]] {
+        let roots = [&project, &personal, &configured];
+        let mut plan = DiscoveryPlan::new(HarnessId::new("claude_code").unwrap());
+        for index in order {
+            plan.push_root(
+                PlannedRoot::open(spec(&format!("root-{index}")), roots[index])
+                    .unwrap()
+                    .unwrap(),
+            );
+        }
+        let discovery = plan.discover_with(limits(7, 100));
+        assert_eq!(discovery.candidates().len(), 3);
+        assert_eq!(discovery.entries_examined(), 8);
+        assert_eq!(discovery.diagnostics(), &[Diagnostic::EntryLimitReached]);
+        let sources: Vec<_> = discovery.candidates().iter().map(|c| c.source().as_str()).collect();
+        assert_eq!(sources, vec!["root-0", "root-1", "root-2"]);
+        assert_eq!(
+            discovery.candidates(),
+            plan.discover_with(limits(7, 100)).candidates(),
+            "fresh streams preserve the same bounded snapshot"
+        );
+    }
+}

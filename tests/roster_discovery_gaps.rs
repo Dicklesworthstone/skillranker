@@ -153,7 +153,7 @@ fn skipped_directory_and_dangling_skill_link_withhold_only_their_names() {
 }
 
 #[test]
-fn real_entry_ceiling_preserves_resolved_names_but_not_an_unseen_winners_loser() {
+fn real_entry_ceiling_preserves_names_and_resolves_shallow_personal_overrides() {
     let workspace = tree();
     for name in ["alpha", "beta", "gamma"] {
         skill(&workspace, name, &format!("# {name}\n\nbody"));
@@ -174,20 +174,34 @@ fn real_entry_ceiling_preserves_resolved_names_but_not_an_unseen_winners_loser()
     assert_advice(&roster, &["alpha", "beta", "gamma"]);
     assert!(roster.source_diagnostics().contains(&Diagnostic::EntryLimitReached));
 
-    // The shared enumeration budget is already spent before the personal
-    // root. We must probe it, not assume a project singleton is the winner.
+    // The global queue reaches personal skills before the project's nested
+    // support files. Resolve the real winner rather than withholding its name.
     let home = tree();
     skill(
         &home,
         "beta",
         "---\nname: Beta\ndisable-model-invocation: true\n---\nbody",
     );
+    skill(&home, "delta", "# Personal only\n\nbody");
     let plan = claude_code_plan(&workspace, Some(&home), verified()).unwrap();
     let discovery = plan.discover();
-    assert!(discovery.candidates().iter().all(|c| c.source().as_str() != "claude_code.user"));
+    assert_eq!(discovery.candidates().len(), 5);
+    assert_eq!(discovery.entries_examined(), DISCOVERY_FILES.max() + 1);
+    assert!(discovery.diagnostics().contains(&Diagnostic::EntryLimitReached));
     let roster = resolve(&plan);
-    assert_advice(&roster, &["alpha", "gamma"]);
-    assert_withheld(&roster, "beta");
+    assert_advice(&roster, &["alpha", "gamma", "delta"]);
+    assert!(matches!(
+        roster.exact_name("beta"),
+        ExactResolution::Resolved { kind: InvocationKind::ManualOnly, .. }
+    ));
+    let project_beta = roster.skills().iter().flat_map(|s| s.bindings()).find(|binding| {
+        binding.source.as_str() == "claude_code.project" && binding.invocation.as_str() == "beta"
+    }).unwrap();
+    assert_eq!(roster.exact_id(&project_beta.id), ExactResolution::Shadowed);
+    assert_eq!(
+        OptionMap::new(&roster, std::slice::from_ref(&project_beta.id)).unwrap_err(),
+        ResolutionError::IneligibleOption
+    );
 }
 
 #[test]
@@ -208,6 +222,29 @@ fn byte_ceiling_keeps_clean_names_without_reading_the_skipped_file() {
     assert_advice(&roster, &["helpful"]);
     assert_eq!(roster.exact_name("overflow"), ExactResolution::Missing);
     assert!(roster.source_diagnostics().contains(&Diagnostic::ByteLimitReached));
+}
+
+#[test]
+fn byte_ceiling_never_promotes_an_unobserved_competing_binding() {
+    let workspace = tree();
+    let home = tree();
+    skill(&workspace, "helpful", "# Helpful\n\nbody");
+    skill(&workspace, "blocked", "# Lower priority\n\nbody");
+    let skipped = skill(&home, "blocked", "# Not admitted\n\nbody");
+    fs::OpenOptions::new()
+        .write(true)
+        .open(skipped)
+        .unwrap()
+        .set_len(DISCOVERY_PARSED_BYTES.max() as u64 + 1)
+        .unwrap();
+    let plan = claude_code_plan(&workspace, Some(&home), verified()).unwrap();
+    let discovery = plan.discover();
+    assert_eq!(discovery.candidates().len(), 2);
+    assert!(discovery.diagnostics().contains(&Diagnostic::ByteLimitReached));
+    let roster = resolve(&plan);
+    assert!(roster.is_partial());
+    assert_advice(&roster, &["helpful"]);
+    assert_withheld(&roster, "blocked");
 }
 
 #[test]

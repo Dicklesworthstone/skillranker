@@ -4,7 +4,8 @@
 //! checks are offline and have no credentials or persisted ranking results.
 
 use serde_json::{Value, json};
-use skillranker::limits::DISCOVERY_FILES;
+use skillranker::identity::ContentHash;
+use skillranker::limits::{DISCOVERY_FILES, DISCOVERY_PARSED_BYTES};
 use std::collections::BTreeSet;
 use std::fs;
 use std::os::unix::fs::{DirBuilderExt, symlink};
@@ -194,7 +195,7 @@ fn one_unrelated_directory_link_never_turns_three_skills_into_empty_roster() {
 }
 
 #[test]
-fn real_walk_ceiling_retains_clean_names_but_blocks_an_unseen_competitor() {
+fn real_walk_ceiling_retains_clean_names_and_the_actual_personal_winner() {
     let fixture = Fixture::new();
     for name in ["alpha", "beta", "gamma"] {
         fixture.skill("workspace", name, "");
@@ -212,11 +213,38 @@ fn real_walk_ceiling_retains_clean_names_but_blocks_an_unseen_competitor() {
     assert!(partial["source_causes"]["entry-limit"].as_u64().unwrap() > 0);
     fixture.assert_explicit("alpha");
 
-    // Discovery has spent its shared budget before reaching the personal
-    // root. It must not silently promote the observed project beta instead.
+    // Personal skill directories are visited before the project's nested
+    // support files. Beta remains manual-only, and delta is no longer missed.
     fixture.skill("home", "beta", "disable-model-invocation: true\n");
-    fixture.assert_cache_miss(2);
+    fixture.skill("home", "delta", "");
+    fixture.assert_cache_miss(3); // alpha, gamma, delta; never project beta.
     fixture.assert_explicit("gamma");
+    fixture.assert_explicit("delta");
+    let (output, value) = fixture.rank(&["--require-skill", "beta"]);
+    assert_eq!(output.status.code(), Some(0), "{value}");
+    assert_eq!(value["decision"], "explicit");
+    assert_eq!(value["skills"][0]["invocation_name"], "beta");
+    let personal = fs::read(fixture.root.join("home/.claude/skills/beta/SKILL.md")).unwrap();
+    assert_eq!(value["skills"][0]["content_hash"], ContentHash::from_bytes(&personal).as_str());
+    assert_eq!(value["usage"]["http_attempts"], 0);
+}
+
+#[test]
+fn an_unobserved_oversized_personal_competitor_still_blocks_project_fallback() {
+    let fixture = Fixture::new();
+    fixture.skill("workspace", "alpha", "");
+    fixture.skill("workspace", "beta", "");
+    fixture.skill("home", "beta", "disable-model-invocation: true\n");
+    fs::OpenOptions::new()
+        .write(true)
+        .open(fixture.root.join("home/.claude/skills/beta/SKILL.md"))
+        .unwrap()
+        .set_len(DISCOVERY_PARSED_BYTES.max() as u64 + 1)
+        .unwrap();
+    fixture.assert_cache_miss(1);
+    fixture.assert_explicit("alpha");
+    let partial = fixture.listing();
+    assert_eq!(partial["source_causes"]["byte-limit"], 1);
     let (output, value) = fixture.rank(&["--require-skill", "beta"]);
     assert_ne!(output.status.code(), Some(0), "{value}");
     assert_ne!(value["decision"], "explicit");

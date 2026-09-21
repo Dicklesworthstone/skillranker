@@ -249,13 +249,7 @@ impl DiscoveryPlan {
                 .push(Diagnostic::SourceNotEnumerated(source.clone()));
             discovery.partial = true;
         }
-        for planned in &self.roots {
-            checkpoint()?;
-            if discovery.stopped {
-                break;
-            }
-            discovery.walk_root(planned, limits, &mut checkpoint)?;
-        }
+        discovery.walk_roots(&self.roots, limits, &mut checkpoint)?;
         checkpoint()?;
         discovery.candidates.sort_by(|left, right| {
             right
@@ -460,22 +454,28 @@ impl Discovery {
         }
     }
 
-    fn walk_root<E>(
+    fn walk_roots<E>(
         &mut self,
-        planned: &PlannedRoot,
+        planned_roots: &[PlannedRoot],
         limits: DiscoveryLimits,
         checkpoint: &mut impl FnMut() -> Result<(), E>,
     ) -> Result<(), E> {
         checkpoint()?;
-        let Some(root) = planned.root.as_ref() else {
-            self.note(Diagnostic::RootUnreadable(planned.spec.source.clone()));
-            return Ok(());
-        };
-        // Queue names, not open sibling directories: macOS commonly permits
-        // only 256 descriptors. Reopen each component from the pinned root
-        // with NOFOLLOW so a queued directory replaced by a symlink is refused.
-        let mut queue = VecDeque::from([(PathBuf::new(), 0usize)]);
-        while let Some((relative, depth)) = queue.pop_front() {
+        // One breadth-first queue for the entire plan. A project's nested
+        // reference/script tree must not exhaust the shared budget before a
+        // personal or configured root's shallower skill directories are seen.
+        // Keep names, not open sibling directories, so descriptor use stays
+        // constant beyond the roots the plan already pins.
+        let mut queue = VecDeque::new();
+        for planned in planned_roots {
+            checkpoint()?;
+            if let Some(root) = planned.root.as_ref() {
+                queue.push_back((planned, root, PathBuf::new(), 0usize));
+            } else {
+                self.note(Diagnostic::RootUnreadable(planned.spec.source.clone()));
+            }
+        }
+        while let Some((planned, root, relative, depth)) = queue.pop_front() {
             checkpoint()?;
             let flags = OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC;
             // A fresh stream relative to the pinned root avoids shared dup()
@@ -557,7 +557,7 @@ impl Discovery {
                             self.note(Diagnostic::DepthLimitReached(planned.spec.source.clone()));
                             continue;
                         }
-                        queue.push_back((relative.join(name), depth + 1));
+                        queue.push_back((planned, root, relative.join(name), depth + 1));
                     }
                     Type::Symlink => {
                         // Only file links can be candidates. The authorized
