@@ -1010,6 +1010,26 @@ impl std::str::FromStr for DecisionKind {
     }
 }
 
+/// How far a recommendation got toward the agent that asked for it.
+///
+/// Only two of these have a producer in v1, and a reader that counts the others
+/// is counting nothing (sr-ect5):
+///
+/// - `Prepared` is what `try_record_ledger` writes for every recorded ranking.
+/// - `Emitted` is what `record_emission` advances to once bytes were written.
+/// - `Generated` has no writer. Recording happens after a decision exists, so the
+///   pre-decision state is never the state a row is stored in.
+/// - `Acknowledged` has no writer either, because nothing available establishes
+///   delivery. `record_acknowledgment` exists and is tested, and it requires a
+///   `verified_delivery_key`: evidence that the harness received the advisory.
+///   Claude's `UserPromptSubmit` protocol returns no such confirmation.
+///
+/// **An observed load must not be used to synthesize `Acknowledged`.** It is
+/// tempting, because load attribution already links an observation to an emission,
+/// but a load is consistent with delivery and also with the agent reaching for that
+/// skill on its own; treating it as confirmation would turn correlational evidence
+/// into a delivery claim. A reporting consumer should render the two producerless
+/// states as not recorded rather than as a measured zero.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum ExposureState {
     Generated,
