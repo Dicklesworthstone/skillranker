@@ -1,235 +1,202 @@
-//! Contract and verification tests for evaluation batches (P5, sr-roadmap-l1i.6.19).
-//!
-//! Required by sr-roadmap-l1i.6.19:
-//! - Bounded evaluation batches defaulting to offline replay with zero network access.
-//! - Explicitly budgeted live evaluation requiring `--online`, trusted network consent,
-//!   and an explicit `--max-requests N` cap.
-//! - Batch deadline (`--max-runtime-ms`, default 600,000 ms) and per-case deadline.
-//! - Preflight bounds checking on dataset files.
-//! - Stopping scheduling when request cap or deadline is reached, reporting all
-//!   unfinished cases honestly.
-//! - `run_status: complete|partial` and `gate_status: passed|failed|not-established|not-applicable`.
-//! - Missing recorded stages report `not_estimable` without silent dropping.
-//! - Attempted operational failures receive loss 2 and remain in common-loss denominator.
-//! - Validates against `OutputDocument` artifact contract.
+//! Batch execution must use actual replay inputs, never manufacture observations
+//! from an oracle. A successful offline replay is not a relevance quality gate.
 
+use serde_json::{Value, json};
 use skillranker::evaluation::batch::{
     BatchConfig, CaseExecutionStatus, EvidenceOrigin, execute_evaluation_batch,
 };
 use skillranker::output::{GateStatus, OutputKind, RunStatus};
-use skillranker::runtime::ProcessInvocation;
+use skillranker::replay::ReplayCase;
+use skillranker::runtime::EntryClock;
 use std::io::Cursor;
 
-fn test_invocation() -> ProcessInvocation {
-    ProcessInvocation::enter().expect("process invocation enter")
+fn replay_case() -> Value {
+    let historical: Value =
+        serde_json::from_str(include_str!("fixtures/output-ranked.v1.json")).unwrap();
+    let candidates: Vec<_> = historical["skills"].as_array().unwrap().iter().map(|skill| json!({
+        "skill_id": skill["skill_id"], "invocation_name": skill["invocation_name"],
+        "content_hash": skill["content_hash"], "source": "workspace", "usage_kind": "workflow"
+    })).collect();
+    let value = json!({
+        "schema_version": 1, "case_id": "recorded-case", "created_at_unix_ms": 1726700000000_u64,
+        "manifest": {"evidence_origin": "recorded", "adapter": "claude_code", "stages_recorded": ["wide", "rerank"]},
+        "captured_request": {"candidate_options": candidates},
+        "recorded_responses": {
+            "wide": {"choice": "s_01", "choices_probability": 0.6, "gate_score": 0.8,
+                "distribution": [{"option_id":"s_01","probability":0.6},{"option_id":"s_02","probability":0.3},{"option_id":"__none__","probability":0.1}]},
+            "rerank": {"choice": "s_01", "choices_probability": 0.6, "stated_confidence": 0.8,
+                "fits": [{"skill_id":"s_01","fit":0.8},{"skill_id":"s_02","fit":0.5}],
+                "distribution": [{"option_id":"s_01","probability":0.6},{"option_id":"s_02","probability":0.3},{"option_id":"__none__","probability":0.1}]}
+        },
+        "local_evidence": {"as_of_unix_ms":1726700000000_u64,"active_snoozes":[],"loaded_references":[],
+            "scoring_profile":{"gate_threshold":0.3,"fit_threshold":0.3,"w_fit":1.0,"w_prior":0.0,"w_phase":0.0,"top_k":5}},
+        "historical_decision": historical
+    });
+    ReplayCase::from_value(value.clone()).expect("fixture must be valid replay evidence");
+    value
+}
+
+fn run(
+    value: Value,
+    config: &BatchConfig,
+) -> skillranker::evaluation::batch::EvaluationBatchReport {
+    execute_evaluation_batch(
+        Cursor::new(serde_json::to_vec(&value).unwrap()),
+        config,
+        &EntryClock::capture().unwrap(),
+    )
+    .unwrap()
 }
 
 #[test]
 fn offline_replay_batch_zero_network_completes_and_validates_document() {
-    let invocation = test_invocation();
-    let clock = invocation.clock();
-
-    // Ingest the frozen synthetic cases fixture
-    let synthetic_path = "tests/eval/synthetic_cases.v1.jsonl";
-    let data = std::fs::read(synthetic_path).expect("read synthetic cases fixture");
-
-    let config = BatchConfig {
-        max_requests: None,
-        max_runtime_ms: 600_000,
-        per_case_timeout_ms: None,
-        online: false,
-        allow_network: false,
-        evidence_origin: EvidenceOrigin::Synthetic,
-        policy: None,
-        compare_policy: None,
-    };
-
-    let report = execute_evaluation_batch(Cursor::new(data), &config, clock)
-        .expect("batch execution should succeed");
-
+    let report = run(replay_case(), &BatchConfig::default());
     assert_eq!(report.run_status, RunStatus::Complete);
-    assert_eq!(report.gate_status, GateStatus::NotApplicable); // Synthetic sets are not promotion evidence
-    assert_eq!(report.evidence_origin, "synthetic");
-    assert_eq!(report.accounting.http_attempts, 0, "offline replay makes zero HTTP attempts");
+    assert_eq!(report.gate_status, GateStatus::NotEstablished);
+    assert_eq!(report.evidence_origin, "recorded");
+    assert_eq!(report.accounting.http_attempts, 0);
     assert_eq!(report.accounting.requests, 0);
-    assert_eq!(report.completeness.cases_requested, 12);
-    assert_eq!(report.completeness.cases_completed, 12);
+    assert_eq!(report.completeness.cases_requested, 1);
+    assert_eq!(report.completeness.cases_completed, 1);
+    assert_eq!(report.completeness.stages_completed, 2);
     assert!(report.completeness.evidence_compatible);
-
-    // Verify it passes full OutputDocument contract validation
-    let doc = report.to_document().expect("report must satisfy OutputDocument schema");
-    assert_eq!(doc.kind(), OutputKind::Artifact(skillranker::output::ArtifactKind::Report));
+    assert!(
+        matches!(&report.cases[0].status, CaseExecutionStatus::Completed { decision, loss: None, normalized_loss: None, .. } if decision == "ranked")
+    );
+    assert_eq!(
+        report.to_document().unwrap().kind(),
+        OutputKind::Artifact(skillranker::output::ArtifactKind::Report)
+    );
 }
 
 #[test]
 fn online_mode_without_network_consent_is_refused_with_privacy_error() {
-    let invocation = test_invocation();
-    let clock = invocation.clock();
-
-    let data = b"{\"schema_version\":1,\"case_id\":\"c1\"}\n";
-
     let config = BatchConfig {
-        max_requests: Some(10),
-        max_runtime_ms: 600_000,
-        per_case_timeout_ms: None,
         online: true,
-        allow_network: false, // Network NOT consented!
-        evidence_origin: EvidenceOrigin::Live,
-        policy: None,
-        compare_policy: None,
+        max_requests: Some(10),
+        ..Default::default()
     };
-
-    let err = execute_evaluation_batch(Cursor::new(data), &config, clock)
-        .expect_err("online without network consent must fail");
-
+    let err = execute_evaluation_batch(Cursor::new(b""), &config, &EntryClock::capture().unwrap())
+        .unwrap_err();
     assert!(err.to_string().contains("requires --allow-network"));
 }
 
 #[test]
 fn online_mode_without_explicit_request_cap_is_refused_with_usage_error() {
-    let invocation = test_invocation();
-    let clock = invocation.clock();
-
-    let data = b"{\"schema_version\":1,\"case_id\":\"c1\"}\n";
-
     let config = BatchConfig {
-        max_requests: None, // Missing explicit cap!
-        max_runtime_ms: 600_000,
-        per_case_timeout_ms: None,
         online: true,
         allow_network: true,
-        evidence_origin: EvidenceOrigin::Live,
-        policy: None,
-        compare_policy: None,
+        ..Default::default()
     };
-
-    let err = execute_evaluation_batch(Cursor::new(data), &config, clock)
-        .expect_err("online without max_requests cap must fail");
-
+    let err = execute_evaluation_batch(Cursor::new(b""), &config, &EntryClock::capture().unwrap())
+        .unwrap_err();
     assert!(err.to_string().contains("--max-requests cap"));
 }
 
 #[test]
-fn missing_required_recorded_stage_reports_not_estimable_without_silent_dropping() {
-    let invocation = test_invocation();
-    let clock = invocation.clock();
-
-    // A replay case missing wide recorded response
-    let raw_case = serde_json::json!({
-        "schema_version": 1,
-        "case_id": "case-missing-wide",
-        "historical_decision": { "decision": "ranked" },
-        "recorded_responses": {},
-        "local_evidence": {
-            "scoring_profile": {
-                "gate_threshold": 0.3,
-                "fit_threshold": 0.3,
-                "w_fit": 1.0,
-                "w_prior": 0.0,
-                "w_phase": 0.0,
-                "top_k": 5
-            }
-        }
-    });
-
-    let mut line = raw_case.to_string();
-    line.push('\n');
-
-    let config = BatchConfig::default();
-    let report = execute_evaluation_batch(Cursor::new(line.as_bytes()), &config, clock)
-        .expect("batch execution should succeed");
-
-    assert_eq!(report.completeness.cases_requested, 1);
-    assert_eq!(report.loss_summary.not_estimable_cases, 1);
-    assert_eq!(report.loss_summary.attempted_cases, 0);
-
-    let case_report = &report.cases[0];
-    assert!(matches!(
-        case_report.status,
-        CaseExecutionStatus::NotEstimable { .. }
-    ));
+fn online_execution_does_not_report_success_until_a_provider_executor_exists() {
+    let config = BatchConfig {
+        online: true,
+        allow_network: true,
+        max_requests: Some(10),
+        ..Default::default()
+    };
+    let err = execute_evaluation_batch(Cursor::new(b""), &config, &EntryClock::capture().unwrap())
+        .unwrap_err();
+    assert!(err.to_string().contains("not implemented"));
 }
 
 #[test]
-fn batch_deadline_exhaustion_stops_scheduling_and_reports_unfinished_cases() {
-    let invocation = test_invocation();
-    let clock = invocation.clock();
+fn missing_required_recorded_stage_reports_not_estimable_without_silent_dropping() {
+    for stage in ["wide", "rerank"] {
+        let mut case = replay_case();
+        case["recorded_responses"]
+            .as_object_mut()
+            .unwrap()
+            .remove(stage);
+        let report = run(case, &BatchConfig::default());
+        assert_eq!(report.run_status, RunStatus::Partial);
+        assert_eq!(report.gate_status, GateStatus::NotEstablished);
+        assert_eq!(report.completeness.cases_requested, 1);
+        assert_eq!(report.completeness.cases_completed, 0);
+        assert_eq!(report.loss_summary.not_estimable_cases, 1);
+        assert_eq!(report.loss_summary.attempted_cases, 0);
+        assert_eq!(report.loss_summary.mean_loss, None);
+        assert!(!report.completeness.evidence_compatible);
+        assert!(matches!(
+            report.cases[0].status,
+            CaseExecutionStatus::NotEstimable { .. }
+        ));
+    }
+}
 
-    // Provide 5 cases with a max runtime of 0 (expired immediately)
-    let synthetic_path = "tests/eval/synthetic_cases.v1.jsonl";
-    let data = std::fs::read(synthetic_path).expect("read synthetic cases fixture");
-
+#[test]
+fn zero_batch_deadline_is_not_unlimited() {
     let config = BatchConfig {
-        max_requests: None,
-        max_runtime_ms: 0, // Expired immediately!
-        per_case_timeout_ms: None,
-        online: false,
-        allow_network: false,
-        evidence_origin: EvidenceOrigin::Synthetic,
-        policy: None,
-        compare_policy: None,
+        max_runtime_ms: 0,
+        ..Default::default()
     };
-
-    // Note: BatchBounds rejects 0 ms max_runtime via LimitError::ZeroIsNotUnlimited
-    let err = execute_evaluation_batch(Cursor::new(data), &config, clock)
-        .expect_err("zero runtime must fail bound validation");
+    let err = execute_evaluation_batch(Cursor::new(b""), &config, &EntryClock::capture().unwrap())
+        .unwrap_err();
     assert!(err.to_string().contains("batch_runtime must be positive"));
 }
 
 #[test]
-fn common_loss_computation_preserves_honest_denominators() {
-    let invocation = test_invocation();
-    let clock = invocation.clock();
+fn replayed_decisions_are_not_their_own_correctness_labels() {
+    let report = run(replay_case(), &BatchConfig::default());
+    assert_eq!(report.loss_summary.attempted_cases, 0);
+    assert_eq!(report.loss_summary.mean_loss, None);
+    assert_eq!(report.loss_summary.mean_normalized_loss, None);
+    assert_eq!(report.gate_status, GateStatus::NotEstablished);
+}
 
-    // 4 synthetic cases: positive (loss 0), no-match (loss 0), operational failure (loss 2)
-    let cases = [
-        serde_json::json!({
-            "schema_version": 1,
-            "case_id": "c1",
-            "case_kind": "positive_advisory",
-            "oracle": { "expected_correct_top_one": "skill-1" }
-        }),
-        serde_json::json!({
-            "schema_version": 1,
-            "case_id": "c2",
-            "case_kind": "no_match_advisory",
-            "oracle": { "expected_correct_abstain_loss": 0 }
-        }),
-        serde_json::json!({
-            "schema_version": 1,
-            "case_id": "c3",
-            "case_kind": "operational_failure_semantics",
-            "oracle": { "attempted_operational_failure_loss": 2 }
-        }),
-    ];
+#[test]
+fn synthetic_provenance_cannot_be_overridden_by_default_recorded_config() {
+    let mut case = replay_case();
+    case["manifest"]["evidence_origin"] = json!("synthetic");
+    let report = run(case, &BatchConfig::default());
+    assert_eq!(report.evidence_origin, "synthetic");
+    assert_eq!(report.gate_status, GateStatus::NotApplicable);
+    assert_eq!(report.run_status, RunStatus::Complete);
+}
 
-    let mut stream = String::new();
-    for c in &cases {
-        stream.push_str(&c.to_string());
-        stream.push('\n');
-    }
+#[test]
+fn duplicate_valid_replay_case_ids_are_rejected() {
+    let line = replay_case().to_string();
+    let err = execute_evaluation_batch(
+        Cursor::new(format!("{line}\n{line}\n")),
+        &BatchConfig::default(),
+        &EntryClock::capture().unwrap(),
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("duplicate replay case ID"));
+}
 
+#[test]
+fn low_gate_case_needs_only_the_wide_stage() {
+    let mut case = replay_case();
+    case["recorded_responses"]["wide"]["gate_score"] = json!(0.1);
+    case["recorded_responses"]
+        .as_object_mut()
+        .unwrap()
+        .remove("rerank");
+    let report = run(case, &BatchConfig::default());
+    assert_eq!(report.run_status, RunStatus::Complete);
+    assert_eq!(report.completeness.stages_required, 1);
+    assert_eq!(report.completeness.stages_completed, 1);
+    assert!(
+        matches!(&report.cases[0].status, CaseExecutionStatus::Completed { decision, .. } if decision == "abstain")
+    );
+}
+
+#[test]
+fn offline_mode_cannot_claim_live_origin() {
     let config = BatchConfig {
-        evidence_origin: EvidenceOrigin::Recorded,
+        evidence_origin: EvidenceOrigin::Live,
         ..Default::default()
     };
-
-    let report = execute_evaluation_batch(Cursor::new(stream.as_bytes()), &config, clock)
-        .expect("batch execution should succeed");
-
-    assert_eq!(report.completeness.cases_requested, 3);
-    assert_eq!(report.completeness.cases_completed, 3);
-    assert_eq!(report.loss_summary.attempted_cases, 3);
-    assert_eq!(report.loss_summary.total_loss, 2); // 0 + 0 + 2 = 2
-    assert_eq!(report.loss_summary.operational_failures, 1);
-
-    let mean = report.loss_summary.mean_loss.unwrap();
-    assert!((mean - (2.0 / 3.0)).abs() < 1e-6);
-
-    let norm = report.loss_summary.mean_normalized_loss.unwrap();
-    assert!((norm - (1.0 / 3.0)).abs() < 1e-6);
-
-    // Document validation check
-    let doc = report.to_document().expect("must serialize to valid OutputDocument");
-    assert_eq!(doc.kind(), OutputKind::Artifact(skillranker::output::ArtifactKind::Report));
+    assert!(
+        execute_evaluation_batch(Cursor::new(b""), &config, &EntryClock::capture().unwrap())
+            .is_err()
+    );
 }

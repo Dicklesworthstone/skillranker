@@ -1,28 +1,19 @@
-//! Offline replay and explicitly budgeted live evaluation batches (P5, sr-roadmap-l1i.6.19).
-//!
-//! Provides:
-//! 1. Bounded batch execution over evaluation datasets (`.jsonl`).
-//! 2. Default offline replay with zero network access.
-//! 3. Explicitly budgeted live evaluation requiring `--online`, network consent,
-//!    and a strict `--max-requests` cap counting HTTP attempts across the entire batch.
-//! 4. Preflight bounds checking, batch deadline (`--max-runtime-ms`, default 600,000 ms),
-//!    and per-case deadline clamping.
-//! 5. Stopping scheduling immediately when runtime or request caps are exhausted,
-//!    reporting all unfinished cases honestly.
-//! 6. Reporting `run_status: complete|partial` and `gate_status: passed|failed|not-established|not-applicable`.
-//!    Partial batches never promote or pass quality gates.
-//! 7. Common 0/1/2 evaluation loss computation matching `evaluation_policy.v1.json`.
+//! Bounded offline replay batches. Recorded decisions are observations, not
+//! independent usefulness labels: replay success cannot pass a quality gate.
+//! Live execution remains unsupported until provider admission and accounting
+//! are connected to the batch runner.
 
-use crate::evaluation::{EvaluationCaseRecord, EvaluationError, EvaluationMetrics};
+use crate::evaluation::{EvaluationError, EvaluationMetrics, read_bounded_line};
 use crate::limits::{
-    BatchBounds, DEFAULT_EVAL_BATCH_RUNTIME_MS, DurationMillis, EVALUATION_CASE_RECORDS,
-    EVALUATION_DATASET_BYTES, EVALUATION_DATASET_DEPTH, MonotonicMillis,
+    DEFAULT_EVAL_BATCH_RUNTIME_MS, EVALUATION_CASE_RECORDS, EVALUATION_DATASET_BYTES,
+    EVALUATION_DATASET_DEPTH,
 };
 use crate::output::{GateStatus, OutputDocument, RunStatus, SCHEMA_VERSION};
-use crate::replay::{ReplayCase, ReplayError, ReplayPolicy, execute_replay_comparison};
+use crate::replay::{ReplayCase, ReplayPolicy, execute_replay_comparison};
 use crate::runtime::EntryClock;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::BTreeSet;
 use std::io::BufRead;
 
 /// Origin class of evidence evaluated in the batch.
@@ -95,9 +86,7 @@ pub enum CaseExecutionStatus {
         normalized_loss: Option<f64>,
     },
     /// A required recorded stage was missing, making the case not estimable.
-    NotEstimable {
-        reason: String,
-    },
+    NotEstimable { reason: String },
     /// Case suffered an operational failure (timeout, network drop, etc.).
     OperationalFailure {
         error_kind: String,
@@ -105,9 +94,7 @@ pub enum CaseExecutionStatus {
         normalized_loss: f64,
     },
     /// Case was not started because the batch runtime deadline or request cap was exhausted.
-    Unfinished {
-        reason: String,
-    },
+    Unfinished { reason: String },
 }
 
 /// Detailed execution report for a single case in the batch.
@@ -184,35 +171,27 @@ pub struct EvaluationBatchReport {
 impl EvaluationBatchReport {
     /// Validate and serialize this report into an official [`OutputDocument`].
     pub fn to_document(&self) -> Result<OutputDocument, crate::output::ContractError> {
-        let val = serde_json::to_value(self).map_err(|_| crate::output::ContractError::InvalidJson)?;
+        let val =
+            serde_json::to_value(self).map_err(|_| crate::output::ContractError::InvalidJson)?;
         OutputDocument::from_value(val)
     }
 }
 
-/// Represents an item read from an evaluation dataset stream.
-enum RawCaseItem {
-    Replay(Box<ReplayCase>),
-    EvaluationRecord(Box<EvaluationCaseRecord>),
-    Synthetic(Value),
-}
-
-/// Read and parse evaluation cases from a streaming reader with strict bounds.
-fn read_cases_streaming<R: BufRead>(mut reader: R) -> Result<Vec<(String, Option<String>, RawCaseItem)>, EvaluationError> {
+/// Parse only executable replay evidence, never an oracle or an unjudged row.
+fn read_cases_streaming<R: BufRead>(mut reader: R) -> Result<Vec<ReplayCase>, EvaluationError> {
     let mut items = Vec::new();
-    let mut total_bytes = 0usize;
+    let mut ids = BTreeSet::new();
+    let mut total_bytes = 0;
     let mut line = String::new();
-
-    while reader.read_line(&mut line)? > 0 {
-        total_bytes = total_bytes.saturating_add(line.len());
-        if total_bytes > EVALUATION_DATASET_BYTES.max() {
-            return Err(EvaluationError::OversizedDataset {
-                len: total_bytes,
-                max: EVALUATION_DATASET_BYTES.max(),
-            });
-        }
-        let trimmed = line.trim();
+    while read_bounded_line(
+        &mut reader,
+        &mut line,
+        &mut total_bytes,
+        EVALUATION_DATASET_BYTES.max(),
+    )? > 0
+    {
+        let trimmed = line.trim_matches([' ', '\t', '\r', '\n']);
         if trimmed.is_empty() {
-            line.clear();
             continue;
         }
         if items.len() >= EVALUATION_CASE_RECORDS.max() {
@@ -221,465 +200,226 @@ fn read_cases_streaming<R: BufRead>(mut reader: R) -> Result<Vec<(String, Option
                 max: EVALUATION_CASE_RECORDS.max(),
             });
         }
-
-        let val = crate::evaluation::parse_bounded_json(trimmed.as_bytes(), EVALUATION_DATASET_DEPTH.max())?;
-        let obj = val.as_object().ok_or_else(|| {
-            EvaluationError::InvalidField("case record must be a JSON object".into())
-        })?;
-
-        let case_id = obj
-            .get("case_id")
-            .and_then(Value::as_str)
-            .map(str::to_owned)
-            .or_else(|| {
-                obj.get("key")
-                    .and_then(|k| k.get("case_id"))
-                    .and_then(Value::as_str)
-                    .map(str::to_owned)
-            })
-            .unwrap_or_else(|| format!("case-{}", items.len() + 1));
-
-        let family_id = obj
-            .get("family_id")
-            .and_then(Value::as_str)
-            .map(str::to_owned)
-            .or_else(|| {
-                obj.get("key")
-                    .and_then(|k| k.get("family_id"))
-                    .and_then(Value::as_str)
-                    .map(str::to_owned)
-            });
-
-        // Determine if it's a ReplayCase, EvaluationCaseRecord, or SyntheticCase
-        if obj.contains_key("recorded_responses") && obj.contains_key("local_evidence") {
-            let rc = ReplayCase::from_value(val).map_err(|e| EvaluationError::InvalidField(format!("malformed replay case: {e}")))?;
-            items.push((case_id, family_id, RawCaseItem::Replay(Box::new(rc))));
-        } else if obj.contains_key("roster_skills") || obj.contains_key("fits") {
-            let er: EvaluationCaseRecord = serde_json::from_value(val).map_err(|e| EvaluationError::InvalidField(format!("malformed evaluation record: {e}")))?;
-            items.push((case_id, family_id, RawCaseItem::EvaluationRecord(Box::new(er))));
-        } else {
-            items.push((case_id, family_id, RawCaseItem::Synthetic(val)));
+        let value = crate::evaluation::parse_bounded_json(
+            trimmed.as_bytes(),
+            EVALUATION_DATASET_DEPTH.max(),
+        )?;
+        let case = ReplayCase::from_value(value)
+            .map_err(|e| EvaluationError::InvalidField(format!("malformed replay case: {e}")))?;
+        if case.case_id.trim().is_empty() || !ids.insert(case.case_id.clone()) {
+            return Err(EvaluationError::CardinalityViolation(
+                "empty or duplicate replay case ID".into(),
+            ));
         }
-
-        line.clear();
+        items.push(case);
     }
-
     Ok(items)
 }
 
-/// Execute an evaluation batch according to the provided configuration and bounds.
+// A local explicit resolution consumes no model stages. Otherwise a missing
+// wide answer cannot establish that rerank was unnecessary. Use the stricter
+// policy when comparing two policies over the same recorded evidence.
+fn required_stages(case: &ReplayCase, config: &BatchConfig) -> usize {
+    if case
+        .historical_decision
+        .get("decision")
+        .and_then(Value::as_str)
+        == Some("explicit")
+    {
+        return 0;
+    }
+    let required_for = |policy: Option<&ReplayPolicy>| {
+        let threshold = policy
+            .and_then(|p| p.gate_threshold)
+            .unwrap_or(case.local_evidence.scoring_profile.gate_threshold);
+        let gate = case.recorded_responses.wide.as_ref().map(|wide| {
+            wide.gate_score.unwrap_or_else(|| {
+                1.0 - wide
+                    .distribution
+                    .iter()
+                    .find(|d| d.option_id == "__none__")
+                    .map_or(0.0, |d| d.probability)
+            })
+        });
+        if gate.is_some_and(|score| score < threshold) {
+            1
+        } else {
+            2
+        }
+    };
+    let base = required_for(config.policy.as_ref());
+    config
+        .compare_policy
+        .as_ref()
+        .map_or(base, |p| base.max(required_for(Some(p))))
+}
+
+/// Recompute validated recorded cases without network or persistence effects.
+/// Independent judgments are not part of ReplayCase; quality loss stays unknown.
 pub fn execute_evaluation_batch<R: BufRead>(
     reader: R,
     config: &BatchConfig,
     clock: &EntryClock,
 ) -> Result<EvaluationBatchReport, EvaluationError> {
-    // 1. Enforce privacy and budget gates for live mode
     if config.online {
         if !config.allow_network {
             return Err(EvaluationError::InvalidField(
-                "online live evaluation requires --allow-network or trusted network consent (exit 8)".into(),
+                "online live evaluation requires --allow-network or trusted network consent".into(),
             ));
         }
-        match config.max_requests {
-            None | Some(0) => {
-                return Err(EvaluationError::InvalidField(
-                    "online live evaluation requires an explicit --max-requests cap (exit 2)".into(),
-                ));
-            }
-            _ => {}
+        if config.max_requests.is_none_or(|n| n == 0) {
+            return Err(EvaluationError::InvalidField(
+                "online live evaluation requires an explicit --max-requests cap".into(),
+            ));
         }
-    }
-
-    if config.max_runtime_ms == 0 {
         return Err(EvaluationError::InvalidField(
-            "batch_runtime must be positive; zero is not unlimited".into(),
+            "live batch execution is not implemented; supply recorded replay cases in offline mode"
+                .into(),
         ));
     }
-
-    // 2. Setup batch bounds
-    let start = MonotonicMillis::from_millis(clock.now().as_millis());
-    let bounds = if config.online {
-        let max_runtime = DurationMillis::new(
-            "batch_runtime",
-            config.max_runtime_ms,
-            config.max_runtime_ms.max(86_400_000),
-        )
-        .map_err(|e| EvaluationError::InvalidField(format!("invalid batch bounds: {e}")))?;
-        BatchBounds::live(start, max_runtime, config.max_requests.unwrap())
-            .map_err(|e| EvaluationError::InvalidField(format!("invalid batch bounds: {e}")))?
-    } else {
-        BatchBounds::replay_default(start)
-            .map_err(|e| EvaluationError::InvalidField(format!("invalid batch bounds: {e}")))?
+    if config.evidence_origin == EvidenceOrigin::Live {
+        return Err(EvaluationError::InvalidField(
+            "offline replay cannot claim fresh live evidence".into(),
+        ));
+    }
+    if config.max_runtime_ms == 0 || config.max_runtime_ms > 86_400_000 {
+        return Err(EvaluationError::InvalidField(
+            "batch_runtime must be positive and at most 86400000 ms".into(),
+        ));
+    }
+    if config.per_case_timeout_ms == Some(0) {
+        return Err(EvaluationError::InvalidField(
+            "per-case timeout must be positive".into(),
+        ));
+    }
+    let expires = clock
+        .now()
+        .as_millis()
+        .saturating_add(config.max_runtime_ms);
+    let cases = read_cases_streaming(reader)?;
+    let synthetic = config.evidence_origin == EvidenceOrigin::Synthetic
+        || cases
+            .iter()
+            .any(|c| c.manifest.evidence_origin == "synthetic");
+    let mut completeness = CompletenessReport {
+        cases_requested: cases.len(),
+        cases_completed: 0,
+        stages_required: cases.iter().map(|c| required_stages(c, config)).sum(),
+        stages_completed: 0,
+        evidence_compatible: true,
     };
-
-    let batch_expires_at = if config.online {
-        bounds
-            .expires_at()
-            .map_err(|e| EvaluationError::InvalidField(format!("invalid deadline: {e}")))?
-    } else {
-        MonotonicMillis::from_millis(start.as_millis().saturating_add(config.max_runtime_ms))
-    };
-
-    // 3. Ingest cases streaming with strict bounds
-    let raw_cases = read_cases_streaming(reader)?;
-    let cases_requested = raw_cases.len();
-    let stages_required = cases_requested.saturating_mul(2);
-
-    let mut case_reports = Vec::with_capacity(cases_requested);
-    let mut accounting = BatchAccounting::default();
-    let mut total_loss = 0u32;
-    let mut attempted_cases = 0usize;
-    let mut not_estimable_cases = 0usize;
-    let mut unfinished_cases = 0usize;
-    let mut operational_failures = 0usize;
-    let mut cases_completed = 0usize;
-    let mut stages_completed = 0usize;
-
-    let mut interrupted_reason: Option<String> = None;
-    let mut report_error: Option<ReportError> = None;
-
-    // 4. Iterate over cases and execute
-    for (case_id, family_id, raw_case) in raw_cases {
-        let now_ms = clock.now().as_millis();
-        let now = MonotonicMillis::from_millis(now_ms);
-
-        // Check if batch runtime deadline has expired
-        if now >= batch_expires_at && interrupted_reason.is_none() {
-            interrupted_reason = Some("batch runtime deadline expired".into());
-            report_error = Some(ReportError {
+    let mut loss_summary = BatchLossSummary::default();
+    let mut reports = Vec::with_capacity(cases.len());
+    let mut error = None;
+    for case in cases {
+        let started = clock.now().as_millis();
+        let required = required_stages(&case, config);
+        let status = if started >= expires {
+            loss_summary.unfinished_cases += 1;
+            error = Some(ReportError {
                 code: 6,
                 kind: "deadline-expired".into(),
                 message: "Evaluation batch exceeded max-runtime-ms deadline".into(),
                 hint: "Increase --max-runtime-ms or reduce dataset size".into(),
                 retryable: false,
             });
-        }
-
-        // Check if online attempt cap is exhausted
-        if config.online
-            && accounting.http_attempts >= config.max_requests.unwrap() as usize
-            && interrupted_reason.is_none()
-        {
-            interrupted_reason = Some("batch request cap exhausted".into());
-            report_error = Some(ReportError {
-                code: 4,
-                kind: "request-budget".into(),
-                message: "Evaluation batch exhausted authorized HTTP attempt budget".into(),
-                hint: "Increase --max-requests cap".into(),
-                retryable: false,
-            });
-        }
-
-        if let Some(reason) = &interrupted_reason {
-            unfinished_cases += 1;
-            case_reports.push(BatchCaseReport {
-                case_id,
-                family_id,
-                status: CaseExecutionStatus::Unfinished {
-                    reason: reason.clone(),
-                },
-                elapsed_ms: 0,
-            });
-            continue;
-        }
-
-        let case_start_ms = clock.now().as_millis();
-
-        match raw_case {
-            RawCaseItem::Replay(rc) => {
-                // Check if the case is missing recorded responses required by policy
-                let missing_rerank = rc.recorded_responses.rerank.is_none();
-                let missing_wide = rc.recorded_responses.wide.is_none();
-
-                if missing_wide {
-                    not_estimable_cases += 1;
-                    case_reports.push(BatchCaseReport {
-                        case_id,
-                        family_id,
-                        status: CaseExecutionStatus::NotEstimable {
-                            reason: "missing wide recorded response in replay case".into(),
-                        },
-                        elapsed_ms: clock.now().as_millis().saturating_sub(case_start_ms),
-                    });
-                    continue;
+            CaseExecutionStatus::Unfinished {
+                reason: "batch runtime deadline expired".into(),
+            }
+        } else if required > 0 && case.recorded_responses.wide.is_none() {
+            loss_summary.not_estimable_cases += 1;
+            completeness.evidence_compatible = false;
+            CaseExecutionStatus::NotEstimable {
+                reason: "missing wide recorded response".into(),
+            }
+        } else {
+            let outcome = execute_replay_comparison(
+                &case,
+                config.policy.as_ref(),
+                config.compare_policy.as_ref(),
+            );
+            let case_expires = config
+                .per_case_timeout_ms
+                .map_or(expires, |ms| started.saturating_add(ms).min(expires));
+            if clock.now().as_millis() >= case_expires {
+                // Actual replay work started but missed its deadline. It cannot
+                // publish a late success, and remains in the failure denominator.
+                loss_summary.operational_failures += 1;
+                loss_summary.attempted_cases += 1;
+                loss_summary.total_loss += 2;
+                CaseExecutionStatus::OperationalFailure {
+                    error_kind: "deadline-expired".into(),
+                    loss: 2,
+                    normalized_loss: 1.0,
                 }
-
-                match execute_replay_comparison(&rc, config.policy.as_ref(), config.compare_policy.as_ref()) {
-                    Ok(outcome) => {
-                        cases_completed += 1;
-                        let stages_in_case = if missing_rerank { 1 } else { 2 };
-                        stages_completed += stages_in_case;
-
-                        let decision = outcome.recomputed_decision.unwrap_or(outcome.historical_decision);
-                        let loss = compute_replay_case_loss(&decision, &rc);
-                        let norm = loss.map(|l| l as f64 / 2.0);
-
-                        if let Some(l) = loss {
-                            attempted_cases += 1;
-                            total_loss += l;
+            } else {
+                completeness.stages_completed +=
+                    usize::from(required >= 1 && case.recorded_responses.wide.is_some())
+                        + usize::from(required >= 2 && case.recorded_responses.rerank.is_some());
+                match outcome {
+                    Ok(outcome)
+                        if outcome.run_status == RunStatus::Complete
+                            && outcome.recomputed_decision.is_some() =>
+                    {
+                        completeness.cases_completed += 1;
+                        CaseExecutionStatus::Completed {
+                            decision: outcome.recomputed_decision.unwrap(),
+                            recomputed: outcome.explanation,
+                            loss: None,
+                            normalized_loss: None,
                         }
-
-                        case_reports.push(BatchCaseReport {
-                            case_id,
-                            family_id,
-                            status: CaseExecutionStatus::Completed {
-                                decision: decision.clone(),
-                                recomputed: outcome.explanation,
-                                loss,
-                                normalized_loss: norm,
-                            },
-                            elapsed_ms: clock.now().as_millis().saturating_sub(case_start_ms),
-                        });
                     }
-                    Err(ReplayError::IncompatiblePolicy(msg)) | Err(ReplayError::NotReplayable(msg)) => {
-                        not_estimable_cases += 1;
-                        case_reports.push(BatchCaseReport {
-                            case_id,
-                            family_id,
-                            status: CaseExecutionStatus::NotEstimable { reason: msg },
-                            elapsed_ms: clock.now().as_millis().saturating_sub(case_start_ms),
-                        });
-                    }
-                    Err(other) => {
-                        operational_failures += 1;
-                        attempted_cases += 1;
-                        total_loss += 2;
-                        case_reports.push(BatchCaseReport {
-                            case_id,
-                            family_id,
-                            status: CaseExecutionStatus::OperationalFailure {
-                                error_kind: other.kind().as_str().to_owned(),
-                                loss: 2,
-                                normalized_loss: 1.0,
-                            },
-                            elapsed_ms: clock.now().as_millis().saturating_sub(case_start_ms),
-                        });
+                    other => {
+                        loss_summary.not_estimable_cases += 1;
+                        completeness.evidence_compatible = false;
+                        let reason = match other {
+                            Ok(outcome) => outcome
+                                .explanation
+                                .unwrap_or_else(|| "recorded evidence is incomplete".into()),
+                            Err(err) => err.to_string(),
+                        };
+                        CaseExecutionStatus::NotEstimable { reason }
                     }
                 }
             }
-            RawCaseItem::Synthetic(val) => {
-                cases_completed += 1;
-                stages_completed += 2;
-                let (status, loss) = evaluate_synthetic_case(&val);
-                if let Some(l) = loss {
-                    attempted_cases += 1;
-                    total_loss += l;
-                }
-                case_reports.push(BatchCaseReport {
-                    case_id,
-                    family_id,
-                    status,
-                    elapsed_ms: clock.now().as_millis().saturating_sub(case_start_ms),
-                });
-            }
-            RawCaseItem::EvaluationRecord(record) => {
-                cases_completed += 1;
-                stages_completed += 2;
-                let loss = if record.operational_failure {
-                    operational_failures += 1;
-                    attempted_cases += 1;
-                    total_loss += 2;
-                    Some(2)
-                } else if record.decision == "abstain" {
-                    None
-                } else {
-                    Some(0)
-                };
-
-                let norm = loss.map(|l| l as f64 / 2.0);
-                case_reports.push(BatchCaseReport {
-                    case_id,
-                    family_id,
-                    status: CaseExecutionStatus::Completed {
-                        decision: record.decision.clone(),
-                        recomputed: None,
-                        loss,
-                        normalized_loss: norm,
-                    },
-                    elapsed_ms: clock.now().as_millis().saturating_sub(case_start_ms),
-                });
-            }
-        }
+        };
+        reports.push(BatchCaseReport {
+            case_id: case.case_id,
+            family_id: None,
+            status,
+            elapsed_ms: clock.now().as_millis().saturating_sub(started),
+        });
     }
-
-    // 5. Compute loss summary
-    let mean_loss = if attempted_cases > 0 {
-        Some(total_loss as f64 / attempted_cases as f64)
-    } else {
-        None
-    };
-    let mean_normalized_loss = mean_loss.map(|m| m / 2.0);
-
-    let loss_summary = BatchLossSummary {
-        attempted_cases,
-        total_loss,
-        mean_loss,
-        mean_normalized_loss,
-        not_estimable_cases,
-        unfinished_cases,
-        operational_failures,
-    };
-
-    // 6. Completeness report
-    let complete = cases_completed == cases_requested
-        && stages_completed == stages_required
-        && unfinished_cases == 0;
-
-    let completeness = CompletenessReport {
-        cases_requested,
-        cases_completed,
-        stages_required,
-        stages_completed,
-        evidence_compatible: true,
-    };
-
-    // 7. Gate status determination
-    let run_status = if complete {
-        RunStatus::Complete
-    } else {
-        RunStatus::Partial
-    };
-
-    let gate_status = match run_status {
-        RunStatus::Partial => GateStatus::NotEstablished,
-        RunStatus::Complete => match config.evidence_origin {
-            EvidenceOrigin::Synthetic => GateStatus::NotApplicable,
-            EvidenceOrigin::Recorded | EvidenceOrigin::Live => {
-                if operational_failures == 0 && mean_loss.is_some_and(|m| m <= 0.5) {
-                    GateStatus::Passed
-                } else {
-                    GateStatus::Failed
-                }
-            }
-        },
-    };
-
-    Ok(EvaluationBatchReport {
+    // No mean over the failures alone: successfully replayed cases remain
+    // unjudged, so such a denominator would not represent the requested cohort.
+    let complete = completeness.cases_completed == completeness.cases_requested
+        && completeness.stages_completed == completeness.stages_required;
+    let report = EvaluationBatchReport {
         schema_version: SCHEMA_VERSION,
         kind: "report".into(),
         actionable: false,
-        run_status,
-        gate_status,
-        evidence_origin: config.evidence_origin.as_str().into(),
+        run_status: if complete {
+            RunStatus::Complete
+        } else {
+            RunStatus::Partial
+        },
+        gate_status: if synthetic && complete {
+            GateStatus::NotApplicable
+        } else {
+            GateStatus::NotEstablished
+        },
+        evidence_origin: if synthetic { "synthetic" } else { "recorded" }.into(),
         completeness,
         loss_summary,
-        accounting,
+        accounting: BatchAccounting::default(),
         metrics: None,
-        cases: case_reports,
-        error: report_error,
-    })
-}
-
-/// Compute 0/1/2 loss for a replayed case against its historical expectation.
-fn compute_replay_case_loss(decision: &str, case: &ReplayCase) -> Option<u32> {
-    if decision == "unavailable" {
-        return Some(2);
-    }
-    let hist_decision = case
-        .historical_decision
-        .get("decision")
-        .and_then(Value::as_str)
-        .unwrap_or("unavailable");
-
-    if hist_decision == "abstain" {
-        if decision == "abstain" {
-            Some(0)
-        } else {
-            Some(2)
-        }
-    } else if hist_decision == "ranked" || hist_decision == "explicit" {
-        if decision == "abstain" {
-            Some(1)
-        } else if decision == hist_decision {
-            Some(0)
-        } else {
-            Some(2)
-        }
-    } else {
-        None
-    }
-}
-
-/// Evaluate synthetic cases matching `tests/eval/synthetic_cases.v1.jsonl`.
-fn evaluate_synthetic_case(val: &Value) -> (CaseExecutionStatus, Option<u32>) {
-    let case_kind = val.get("case_kind").and_then(Value::as_str).unwrap_or("");
-    let oracle = val.get("oracle").and_then(Value::as_object);
-
-    if case_kind == "operational_failure_semantics" {
-        if oracle.and_then(|o| o.get("missing_replay_response_status")).is_some() {
-            return (
-                CaseExecutionStatus::NotEstimable {
-                    reason: "missing replay response in synthetic case".into(),
-                },
-                None,
-            );
-        }
-        let loss = oracle
-            .and_then(|o| o.get("attempted_operational_failure_loss"))
-            .and_then(Value::as_u64)
-            .unwrap_or(2) as u32;
-        return (
-            CaseExecutionStatus::OperationalFailure {
-                error_kind: "synthetic-operational-failure".into(),
-                loss,
-                normalized_loss: loss as f64 / 2.0,
-            },
-            Some(loss),
-        );
-    }
-
-    if case_kind == "no_match_advisory" {
-        let loss = oracle
-            .and_then(|o| o.get("expected_correct_abstain_loss"))
-            .and_then(Value::as_u64)
-            .unwrap_or(0) as u32;
-        return (
-            CaseExecutionStatus::Completed {
-                decision: "abstain".into(),
-                recomputed: None,
-                loss: Some(loss),
-                normalized_loss: Some(loss as f64 / 2.0),
-            },
-            Some(loss),
-        );
-    }
-
-    if case_kind == "positive_advisory" || case_kind == "multiple_valid_advisory" || case_kind == "planning_or_explanation" {
-        let expected_top1 = oracle
-            .and_then(|o| o.get("expected_correct_top_one"))
-            .and_then(Value::as_str)
-            .unwrap_or("skill");
-        let loss = 0u32;
-        return (
-            CaseExecutionStatus::Completed {
-                decision: "ranked".into(),
-                recomputed: Some(expected_top1.into()),
-                loss: Some(loss),
-                normalized_loss: Some(0.0),
-            },
-            Some(loss),
-        );
-    }
-
-    if case_kind == "explicit_request" {
-        return (
-            CaseExecutionStatus::Completed {
-                decision: "explicit".into(),
-                recomputed: None,
-                loss: Some(0),
-                normalized_loss: Some(0.0),
-            },
-            Some(0),
-        );
-    }
-
-    (
-        CaseExecutionStatus::Completed {
-            decision: "abstain".into(),
-            recomputed: None,
-            loss: Some(0),
-            normalized_loss: Some(0.0),
-        },
-        Some(0),
-    )
+        cases: reports,
+        error,
+    };
+    report.to_document().map_err(|e| {
+        EvaluationError::InvalidField(format!(
+            "batch report exceeds or violates output contract: {e}"
+        ))
+    })?;
+    Ok(report)
 }
