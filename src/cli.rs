@@ -12,7 +12,9 @@ use std::ffi::OsString;
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
-const HELP: &str = "SkillRanker — powered by TypeSafe.ai Jev\n\nUsage: sr [rank] [--context FILE | --transcript FILE --harness NAME | --session PATH | --latest]\n                 [--roster FILE] [--require-skill ID] [--dry-run [--shortlist-ids ID,...]]\n                 [--offline | --allow-network] [--json | --table]\n                 [--top N] [--shortlist M] [--gate FLOAT] [--fits FLOAT]\n                 [--explain] [--why-not ID] [--cursor TOKEN] [--no-tools] [--no-cache]\n                 [--save-case FILE]\n       sr doctor [--json | --table] [--offline | --allow-network]\n       sr doctor --config [--json | --table] [--top N] [--shortlist N]\n       sr roster [--json] [--limit N] [--cursor TOKEN]\n       sr roster --snapshot FILE | --diff FILE\n       sr capabilities [--json]\n       sr demo --case <useful|none|explicit|unavailable> [--json | --table]\n       sr replay FILE [--policy FILE] [--compare-policy FILE] [--json | --table]\n       sr feedback <EVENT_ID> --skill ID [--instead ID] [--verdict <useful|not-useful|unknown>] [--reason CODE] [--provenance TEXT] [--expected-version GEN] [--dir DIR] [--json]\n       sr ledger <init|migrate|status|prune|clear> [--before TIME] [--apply] [--json]\n       sr observe [--context FILE | --transcript FILE --harness NAME | --session PATH] [--branch NAME] [--roster FILE] [--dir DIR] [--json]\n       sr hook <claude> [--shadow] [--offline | --allow-network] [--dir DIR]\n       sr install-hook <claude> [--settings FILE] [--target-dir DIR] [--apply] [--json]\n       sr uninstall-hook <claude> [--settings FILE] [--target-dir DIR] [--apply] [--json]\n       sr --help | --version\n\nRank the next step of an agent session using TypeSafe Jev.\nRequires your own TypeSafe API key (TYPESAFE_API_KEY) and network consent (--allow-network).\n";
+const HELP: &str = "SkillRanker — powered by TypeSafe.ai Jev\n\nUsage: sr [rank] [--context FILE | --transcript FILE --harness NAME | --session PATH | --latest]\n                 [--roster FILE] [--require-skill ID] [--dry-run [--shortlist-ids ID,...]]\n                 [--offline | --allow-network] [--json | --table]\n                 [--top N] [--shortlist M] [--gate FLOAT] [--fits FLOAT]\n                 [--explain] [--why-not ID] [--cursor TOKEN] [--no-tools] [--no-cache]\n                 [--save-case FILE]\n       sr doctor [--json | --table] [--offline | --allow-network]\n       sr doctor --config [--json | --table] [--top N] [--shortlist N]\n       sr roster [--json] [--limit N] [--cursor TOKEN]\n       sr roster --snapshot FILE | --diff FILE\n       sr capabilities [--json]\n       sr demo --case <useful|none|explicit|unavailable> [--json | --table]\n       sr replay FILE [--policy FILE] [--compare-policy FILE] [--json | --table]\n       sr feedback <EVENT_ID> --skill ID [--instead ID] [--verdict <useful|not-useful|unknown>] [--reason CODE] [--provenance TEXT] [--expected-version GEN] [--dir DIR] [--json]\n       sr ledger <init|migrate|status|prune|clear> [--before TIME] [--apply] [--json]\n       sr observe [--context FILE | --transcript FILE --harness NAME | --session PATH] [--branch NAME] [--roster FILE] [--dir DIR] [--json]\n       sr stats [--since DURATION] [--by-skill] [--dir DIR] [--json | --table]\n       sr hook <claude> [--shadow] [--offline | --allow-network] [--dir DIR]\n       sr install-hook <claude> [--settings FILE] [--target-dir DIR] [--apply] [--json]\n       sr uninstall-hook <claude> [--settings FILE] [--target-dir DIR] [--apply] [--json]\n       sr --help | --version\n\nRank the next step of an agent session using TypeSafe Jev.\nRequires your own TypeSafe API key (TYPESAFE_API_KEY) and network consent (--allow-network).\n";
+
+const STATS_HELP: &str = "sr stats [--since DURATION] [--by-skill] [--dir DIR] [--json | --table]\n\nReport observation and operational metrics across honest cohorts (evaluations, suggestions, abstentions, latency, loads, judgments, tokens, and cost).\n";
 
 const FEEDBACK_HELP: &str = "sr feedback <EVENT_ID> --skill ID [--instead ID] [--verdict <useful|not-useful|unknown>] [--reason CODE] [--provenance TEXT] [--expected-version GEN] [--dir DIR] [--json]\n\nRecord explicit feedback or paired corrective labels for a historical ranking event.\n";
 
@@ -674,6 +676,42 @@ fn command() -> Command {
                         ),
                 ),
         )
+        .subcommand(
+            Command::new("stats")
+                .disable_help_flag(true)
+                .arg(
+                    Arg::new("help")
+                        .long("help")
+                        .short('h')
+                        .action(ArgAction::SetTrue),
+                )
+                .arg(
+                    Arg::new("since")
+                        .long("since")
+                        .value_name("DURATION")
+                        .help("Time window cutoff, e.g. 7d, 24h, 30m, or ISO timestamp")
+                        .action(ArgAction::Set),
+                )
+                .arg(
+                    Arg::new("by-skill")
+                        .long("by-skill")
+                        .help("Break down metrics per skill")
+                        .action(ArgAction::SetTrue),
+                )
+                .arg(
+                    Arg::new("dir")
+                        .long("dir")
+                        .help("Custom ledger directory")
+                        .action(ArgAction::Set),
+                )
+                .arg(
+                    Arg::new("json")
+                        .long("json")
+                        .conflicts_with("table")
+                        .action(ArgAction::SetTrue),
+                )
+                .arg(Arg::new("table").long("table").action(ArgAction::SetTrue)),
+        )
 }
 
 fn is_hook_claude_invocation(args: &[OsString]) -> bool {
@@ -961,6 +999,12 @@ fn execute(clock: &EntryClock, mut args: Vec<OsString>) -> Result<String, Failur
             return Ok(OBSERVE_HELP.into());
         }
         return observe_command(clock, observe_matches);
+    }
+    if let Some(("stats", stats_matches)) = matches.subcommand() {
+        if stats_matches.get_flag("help") {
+            return Ok(STATS_HELP.into());
+        }
+        return stats_command(clock, stats_matches);
     }
     if let Some(("hook", hook_matches)) = matches.subcommand() {
         if hook_matches.get_flag("help") && hook_matches.subcommand().is_none() {
@@ -1615,6 +1659,187 @@ fn observe_command(clock: &EntryClock, matches: &clap::ArgMatches) -> Result<Str
     };
 
     finish_invocation(invocation, Ok(out))
+}
+
+fn stats_command(
+    clock: &EntryClock,
+    matches: &clap::ArgMatches,
+) -> Result<String, Failure> {
+    timely(clock)?;
+    let invocation = crate::runtime::ProcessInvocation::from_clock(*clock)
+        .map_err(|_| (6u8, "timeout", "Local runtime unavailable".into()))?;
+    let cx = invocation
+        .request_cx()
+        .map_err(|_| (6u8, "timeout", "Local runtime unavailable".into()))?;
+
+    let location = if let Some(dir) = matches.get_one::<String>("dir") {
+        crate::storage::LedgerLocation::Directory(PathBuf::from(dir))
+    } else {
+        crate::storage::LedgerLocation::Platform
+    };
+
+    let now_ms = clock.now().as_millis() as i64;
+    let since_ms = if let Some(s) = matches.get_one::<String>("since") {
+        crate::storage::parse_cutoff_to_unix_ms(s, now_ms)
+            .map_err(|err| (2u8, "invalid-arguments", err))?
+    } else {
+        0i64
+    };
+
+    let by_skill = matches.get_flag("by-skill");
+    let wants_json = matches.get_flag("json") || (!matches.get_flag("table") && !io::stdout().is_terminal());
+
+    let report = crate::storage::ledger_stats(&invocation, &cx, location, since_ms, by_skill)
+        .map_err(|err| match err {
+            crate::storage::StoreError::Missing => (
+                9u8,
+                "storage-failure",
+                "Ledger store is missing; run sr ledger init first".into(),
+            ),
+            crate::storage::StoreError::Permissions => (
+                9u8,
+                "storage-failure",
+                "Ledger store is disabled or read-only".into(),
+            ),
+            e => (
+                9u8,
+                "storage-failure",
+                format!("Failed to compute stats report: {e}"),
+            ),
+        })?;
+
+    let out = if wants_json {
+        serde_json::to_string_pretty(&report)
+            .map(|s| format!("{s}\n"))
+            .map_err(|e| (9u8, "storage-failure", e.to_string()))?
+    } else {
+        format_stats_report(&report)
+    };
+
+    finish_invocation(invocation, Ok(out))
+}
+
+fn format_stats_report(report: &crate::storage::StatsValueReport) -> String {
+    use std::fmt::Write;
+    let mut out = String::new();
+    let _ = writeln!(out, "SkillRanker Value & Operational Report");
+    let _ = writeln!(
+        out,
+        "Window: {} .. {}",
+        crate::storage::format_unix_ms(report.since_unix_ms),
+        crate::storage::format_unix_ms(report.as_of_unix_ms)
+    );
+    let _ = writeln!(out);
+
+    let _ = writeln!(out, "--- Evaluated Turns & Interruption ---");
+    let _ = writeln!(out, "Total turns evaluated:    {}", report.turns.total_evaluated);
+    let _ = writeln!(out, "Emitted suggestions:      {}", report.turns.emitted_suggestions);
+    let _ = writeln!(out, "Valid abstentions:        {}", report.turns.valid_abstentions);
+    let _ = writeln!(out, "Muted or suppressed:      {}", report.turns.muted_or_suppressed);
+    let _ = writeln!(out, "Operational failures:     {}", report.turns.operational_failures);
+    let _ = writeln!(out, "Explicit requirements:    {}", report.turns.explicit_requirements);
+
+    if !report.turns.by_channel.is_empty() {
+        let _ = writeln!(out, "\nBy Channel:");
+        for c in &report.turns.by_channel {
+            let _ = writeln!(
+                out,
+                "  [{}] evaluated: {}, emitted: {}, abstain: {}, muted: {}, unavailable: {}",
+                c.channel, c.evaluated_turns, c.emitted, c.abstain, c.muted, c.unavailable
+            );
+        }
+    }
+
+    let _ = writeln!(out, "\n--- Latency ---");
+    let _ = writeln!(
+        out,
+        "Mean: {} ms | Median: {} ms | P95: {} ms | Range: {} .. {} ms",
+        report.latency.mean_ms,
+        report.latency.median_ms,
+        report.latency.p95_ms,
+        report.latency.min_ms,
+        report.latency.max_ms
+    );
+
+    let _ = writeln!(out, "\n--- Observations & Adoption ---");
+    let _ = writeln!(out, "Total observations:       {}", report.observations.total_observations);
+    let _ = writeln!(out, "Observed loads:           {}", report.observations.observed_loads);
+    let _ = writeln!(out, "Attempted loads:          {}", report.observations.attempted_loads);
+    let _ = writeln!(out, "Censored observations:    {}", report.observations.censored_observations);
+    let _ = writeln!(out, "Attributed loads:         {}", report.observations.attributed_loads);
+    let _ = writeln!(out, "Unattributed loads:       {}", report.observations.unattributed_loads);
+    if let Some(rate) = report.observations.observation_coverage {
+        let _ = writeln!(out, "Observation coverage:     {:.1}%", rate * 100.0);
+    }
+    if let Some(rate) = report.observations.suggestion_adoption_rate {
+        let _ = writeln!(out, "Suggestion adoption rate: {:.1}%", rate * 100.0);
+    }
+    let _ = writeln!(out, "Note: {}", report.observations.caveat);
+
+    let _ = writeln!(out, "\n--- Judgments (Judged Cohort) ---");
+    let _ = writeln!(out, "Total judgments:          {}", report.judgments.total_judgments);
+    let _ = writeln!(out, "Useful:                   {}", report.judgments.useful);
+    let _ = writeln!(out, "Harmful:                  {}", report.judgments.harmful);
+    let _ = writeln!(out, "Neutral:                  {}", report.judgments.neutral);
+    let _ = writeln!(out, "Distinct judged events:   {}", report.judgments.distinct_judged_events);
+    if let Some(cov) = report.judgments.label_coverage_rate {
+        let _ = writeln!(out, "Label coverage rate:      {:.1}%", cov * 100.0);
+    }
+    if let Some(ratio) = report.judgments.useful_ratio_in_judged {
+        let _ = writeln!(out, "Useful ratio in judged:   {:.1}%", ratio * 100.0);
+    }
+
+    let _ = writeln!(out, "\n--- Provider Usage & Cost ---");
+    let _ = writeln!(
+        out,
+        "Total attempts:           {} (completed: {}, failed: {}, unknown: {})",
+        report.provider.total_attempts,
+        report.provider.completed_attempts,
+        report.provider.failed_attempts,
+        report.provider.unknown_attempts
+    );
+    let _ = writeln!(
+        out,
+        "Known tokens:             {} (input: {}, output: {})",
+        report.provider.known_total_tokens,
+        report.provider.known_input_tokens,
+        report.provider.known_output_tokens
+    );
+    let _ = writeln!(out, "Unknown usage attempts:   {}", report.provider.unknown_usage_attempts);
+    let _ = writeln!(out, "Cache-served events:      {}", report.provider.cache_served_events);
+    if let Some(rate) = report.provider.cache_hit_rate {
+        let _ = writeln!(out, "Cache hit rate:           {:.1}%", rate * 100.0);
+    }
+    let _ = writeln!(out, "Cost per useful suggestion: {}", report.provider.cost_per_useful_suggestion);
+
+    if let Some(skills) = &report.by_skill {
+        let _ = writeln!(out, "\n--- Skill Breakdown ---");
+        if skills.is_empty() {
+            let _ = writeln!(out, "No skill activity recorded in window.");
+        } else {
+            let _ = writeln!(
+                out,
+                "{:<24} {:>6} {:>10} {:>10} {:>10} {:>7} {:>8} {:>8}",
+                "Skill ID", "Top-1", "Shortlist", "Obs Loads", "Attr Loads", "Useful", "Harmful", "Neutral"
+            );
+            for s in skills {
+                let _ = writeln!(
+                    out,
+                    "{:<24} {:>6} {:>10} {:>10} {:>10} {:>7} {:>8} {:>8}",
+                    s.skill_id,
+                    s.top1_recommendations,
+                    s.shortlist_appearances,
+                    s.observed_loads,
+                    s.attributed_loads,
+                    s.judged_useful,
+                    s.judged_harmful,
+                    s.judged_neutral
+                );
+            }
+        }
+    }
+
+    out
 }
 
 fn ledger_command(

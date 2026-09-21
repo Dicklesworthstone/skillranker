@@ -528,6 +528,108 @@ pub struct RetainedStats {
     pub active_snapshots: u64,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ChannelStats {
+    pub channel: String,
+    pub evaluated_turns: u64,
+    pub emitted: u64,
+    pub abstain: u64,
+    pub muted: u64,
+    pub unavailable: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct LatencySummary {
+    pub mean_ms: u64,
+    pub median_ms: u64,
+    pub p95_ms: u64,
+    pub min_ms: u64,
+    pub max_ms: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct TurnMetrics {
+    pub total_evaluated: u64,
+    pub emitted_suggestions: u64,
+    pub valid_abstentions: u64,
+    pub muted_or_suppressed: u64,
+    pub operational_failures: u64,
+    pub explicit_requirements: u64,
+    pub by_channel: Vec<ChannelStats>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ObservationMetrics {
+    pub total_observations: u64,
+    pub observed_loads: u64,
+    pub attempted_loads: u64,
+    pub censored_observations: u64,
+    pub attributed_loads: u64,
+    pub unattributed_loads: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub observation_coverage: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub suggestion_adoption_rate: Option<f64>,
+    pub caveat: &'static str,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct JudgmentMetrics {
+    pub total_judgments: u64,
+    pub useful: u64,
+    pub harmful: u64,
+    pub neutral: u64,
+    pub distinct_judged_events: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label_coverage_rate: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub useful_ratio_in_judged: Option<f64>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ProviderMetrics {
+    pub total_attempts: u64,
+    pub completed_attempts: u64,
+    pub failed_attempts: u64,
+    pub unknown_attempts: u64,
+    pub known_input_tokens: u64,
+    pub known_output_tokens: u64,
+    pub known_total_tokens: u64,
+    pub unknown_usage_attempts: u64,
+    pub cache_served_events: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_hit_rate: Option<f64>,
+    pub cost_per_useful_suggestion: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tokens_per_useful_suggestion: Option<f64>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct SkillStatSummary {
+    pub skill_id: String,
+    pub top1_recommendations: u64,
+    pub shortlist_appearances: u64,
+    pub observed_loads: u64,
+    pub attributed_loads: u64,
+    pub judged_useful: u64,
+    pub judged_harmful: u64,
+    pub judged_neutral: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct StatsValueReport {
+    pub as_of_unix_ms: i64,
+    pub since_unix_ms: i64,
+    pub turns: TurnMetrics,
+    pub latency: LatencySummary,
+    pub observations: ObservationMetrics,
+    pub judgments: JudgmentMetrics,
+    pub provider: ProviderMetrics,
+    pub retained: RetainedStats,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub by_skill: Option<Vec<SkillStatSummary>>,
+}
+
 /// Formats a unix millisecond timestamp as ISO-8601 UTC string (e.g. `2026-09-01T00:00:00Z`).
 pub fn format_unix_ms(ms: i64) -> String {
     let secs = ms.div_euclid(1000);
@@ -596,6 +698,15 @@ pub fn parse_cutoff_to_unix_ms(input: &str, now_unix_ms: i64) -> Result<i64, Str
             .map_err(|_| format!("Invalid hours duration: '{trimmed}'"))?;
         let ms = hours
             .checked_mul(3_600_000)
+            .ok_or_else(|| "Duration overflow".to_string())?;
+        return Ok(now_unix_ms.saturating_sub(ms));
+    }
+    if let Some(min_str) = trimmed.strip_suffix('m') {
+        let mins = min_str
+            .parse::<i64>()
+            .map_err(|_| format!("Invalid minutes duration: '{trimmed}'"))?;
+        let ms = mins
+            .checked_mul(60_000)
             .ok_or_else(|| "Duration overflow".to_string())?;
         return Ok(now_unix_ms.saturating_sub(ms));
     }
@@ -2412,6 +2523,41 @@ pub fn ledger_status(
     .value
 }
 
+pub fn ledger_stats(
+    invocation: &ProcessInvocation,
+    cx: &Cx,
+    location: LedgerLocation,
+    since_unix_ms: i64,
+    by_skill: bool,
+) -> Result<StatsValueReport, StoreError> {
+    let clock = invocation.clock();
+    let child = cx.clone();
+    let now_ms = clock.now().as_millis() as i64;
+    run_blocking_leaf(
+        invocation,
+        cx,
+        BlockingLeafKind::Database,
+        false,
+        move || {
+            let open = open_blocking(
+                clock,
+                &child,
+                LedgerAccess::ExistingOnly,
+                location,
+            )?;
+            let store = match open {
+                LedgerOpen::Ready(s) => s,
+                LedgerOpen::ReadOnly(s) => s,
+                LedgerOpen::Missing => return Err(StoreError::Missing),
+                LedgerOpen::Disabled => return Err(StoreError::Uninitialized),
+            };
+            store.query_value_stats(since_unix_ms, now_ms, by_skill)
+        },
+    )
+    .map_err(StoreError::Runtime)?
+    .value
+}
+
 // -----------------------------------------------------------------------------
 // LedgerStore Implementations
 // -----------------------------------------------------------------------------
@@ -2822,6 +2968,360 @@ impl LedgerStore {
             active_judgments: active_judgments as u64,
             active_observations: active_observations as u64,
             active_snapshots: active_snapshots as u64,
+        })
+    }
+
+    /// Queries compact value report metrics over ranking events, observations, judgments, and provider attempts.
+    pub fn query_value_stats(
+        &self,
+        since_unix_ms: i64,
+        as_of_unix_ms: i64,
+        by_skill: bool,
+    ) -> Result<StatsValueReport, StoreError> {
+        let retained = self.query_retained_stats(as_of_unix_ms)?;
+
+        // 1. Turns
+        let total_evaluated: i64 = self.connection.query_row(
+            "SELECT count(*) FROM ranking_events WHERE created_at_unix_ms >= ?1 AND created_at_unix_ms <= ?2",
+            [since_unix_ms, as_of_unix_ms],
+            |r| r.get(0),
+        )?;
+        let emitted_suggestions: i64 = self.connection.query_row(
+            "SELECT count(*) FROM ranking_events WHERE created_at_unix_ms >= ?1 AND created_at_unix_ms <= ?2 AND decision = 'ranked' AND exposure_state IN ('emitted', 'acknowledged')",
+            [since_unix_ms, as_of_unix_ms],
+            |r| r.get(0),
+        )?;
+        let valid_abstentions: i64 = self.connection.query_row(
+            "SELECT count(*) FROM ranking_events WHERE created_at_unix_ms >= ?1 AND created_at_unix_ms <= ?2 AND decision = 'abstain'",
+            [since_unix_ms, as_of_unix_ms],
+            |r| r.get(0),
+        )?;
+        let muted_or_suppressed: i64 = self.connection.query_row(
+            "SELECT count(*) FROM ranking_events WHERE created_at_unix_ms >= ?1 AND created_at_unix_ms <= ?2 AND exposure_state IN ('generated', 'prepared')",
+            [since_unix_ms, as_of_unix_ms],
+            |r| r.get(0),
+        )?;
+        let operational_failures: i64 = self.connection.query_row(
+            "SELECT count(*) FROM ranking_events WHERE created_at_unix_ms >= ?1 AND created_at_unix_ms <= ?2 AND decision = 'unavailable'",
+            [since_unix_ms, as_of_unix_ms],
+            |r| r.get(0),
+        )?;
+        let explicit_requirements: i64 = self.connection.query_row(
+            "SELECT count(*) FROM ranking_events WHERE created_at_unix_ms >= ?1 AND created_at_unix_ms <= ?2 AND decision = 'explicit'",
+            [since_unix_ms, as_of_unix_ms],
+            |r| r.get(0),
+        )?;
+
+        // Channels
+        let mut channel_stmt = self.connection.prepare(
+            "SELECT mode_channel, count(*), \
+             sum(CASE WHEN decision = 'ranked' AND exposure_state IN ('emitted', 'acknowledged') THEN 1 ELSE 0 END), \
+             sum(CASE WHEN decision = 'abstain' THEN 1 ELSE 0 END), \
+             sum(CASE WHEN exposure_state IN ('generated', 'prepared') THEN 1 ELSE 0 END), \
+             sum(CASE WHEN decision = 'unavailable' THEN 1 ELSE 0 END) \
+             FROM ranking_events WHERE created_at_unix_ms >= ?1 AND created_at_unix_ms <= ?2 \
+             GROUP BY mode_channel ORDER BY mode_channel",
+        )?;
+        let channel_rows = channel_stmt.query_map([since_unix_ms, as_of_unix_ms], |row| {
+            Ok(ChannelStats {
+                channel: row.get(0)?,
+                evaluated_turns: row.get::<_, i64>(1)? as u64,
+                emitted: row.get::<_, i64>(2)? as u64,
+                abstain: row.get::<_, i64>(3)? as u64,
+                muted: row.get::<_, i64>(4)? as u64,
+                unavailable: row.get::<_, i64>(5)? as u64,
+            })
+        })?;
+        let mut by_channel = Vec::new();
+        for ch in channel_rows {
+            by_channel.push(ch?);
+        }
+
+        let turns = TurnMetrics {
+            total_evaluated: total_evaluated as u64,
+            emitted_suggestions: emitted_suggestions as u64,
+            valid_abstentions: valid_abstentions as u64,
+            muted_or_suppressed: muted_or_suppressed as u64,
+            operational_failures: operational_failures as u64,
+            explicit_requirements: explicit_requirements as u64,
+            by_channel,
+        };
+
+        // 2. Latency
+        let mut lat_stmt = self.connection.prepare(
+            "SELECT elapsed_ms FROM ranking_events WHERE created_at_unix_ms >= ?1 AND created_at_unix_ms <= ?2 ORDER BY elapsed_ms ASC",
+        )?;
+        let lat_rows = lat_stmt.query_map([since_unix_ms, as_of_unix_ms], |row| row.get::<_, i64>(0))?;
+        let mut latencies: Vec<u64> = Vec::new();
+        let mut sum_lat: u64 = 0;
+        for l in lat_rows {
+            let val = l? as u64;
+            sum_lat = sum_lat.saturating_add(val);
+            latencies.push(val);
+        }
+        let latency = if latencies.is_empty() {
+            LatencySummary {
+                mean_ms: 0,
+                median_ms: 0,
+                p95_ms: 0,
+                min_ms: 0,
+                max_ms: 0,
+            }
+        } else {
+            let len = latencies.len();
+            let p95_idx = ((len as f64 * 0.95).ceil() as usize).saturating_sub(1).min(len - 1);
+            LatencySummary {
+                mean_ms: sum_lat / (len as u64),
+                median_ms: latencies[len / 2],
+                p95_ms: latencies[p95_idx],
+                min_ms: latencies[0],
+                max_ms: latencies[len - 1],
+            }
+        };
+
+        // 3. Observations
+        let total_obs: i64 = self.connection.query_row(
+            "SELECT count(*) FROM observations WHERE observed_at_unix_ms >= ?1 AND observed_at_unix_ms <= ?2",
+            [since_unix_ms, as_of_unix_ms],
+            |r| r.get(0),
+        )?;
+        let observed_loads: i64 = self.connection.query_row(
+            "SELECT count(*) FROM observations WHERE observed_at_unix_ms >= ?1 AND observed_at_unix_ms <= ?2 AND evidence_state = 'loaded'",
+            [since_unix_ms, as_of_unix_ms],
+            |r| r.get(0),
+        )?;
+        let attempted_loads: i64 = self.connection.query_row(
+            "SELECT count(*) FROM observations WHERE observed_at_unix_ms >= ?1 AND observed_at_unix_ms <= ?2 AND evidence_state = 'attempted'",
+            [since_unix_ms, as_of_unix_ms],
+            |r| r.get(0),
+        )?;
+        let censored_obs: i64 = self.connection.query_row(
+            "SELECT count(*) FROM observations WHERE observed_at_unix_ms >= ?1 AND observed_at_unix_ms <= ?2 AND evidence_state = 'censored'",
+            [since_unix_ms, as_of_unix_ms],
+            |r| r.get(0),
+        )?;
+        let attributed_loads: i64 = self.connection.query_row(
+            "SELECT count(*) FROM observations WHERE observed_at_unix_ms >= ?1 AND observed_at_unix_ms <= ?2 AND evidence_state = 'loaded' AND attributed_event_id IS NOT NULL",
+            [since_unix_ms, as_of_unix_ms],
+            |r| r.get(0),
+        )?;
+        let unattributed_loads = (observed_loads as u64).saturating_sub(attributed_loads as u64);
+        let observation_coverage = if total_obs > 0 {
+            Some(attributed_loads as f64 / total_obs as f64)
+        } else {
+            None
+        };
+        let suggestion_adoption_rate = if emitted_suggestions > 0 {
+            Some(attributed_loads as f64 / emitted_suggestions as f64)
+        } else {
+            None
+        };
+        let observations = ObservationMetrics {
+            total_observations: total_obs as u64,
+            observed_loads: observed_loads as u64,
+            attempted_loads: attempted_loads as u64,
+            censored_observations: censored_obs as u64,
+            attributed_loads: attributed_loads as u64,
+            unattributed_loads,
+            observation_coverage,
+            suggestion_adoption_rate,
+            caveat: "Adoption is not task success; a recommendation can cause its own observed load without proving counterfactual benefit.",
+        };
+
+        // 4. Judgments
+        let (total_judgments, useful, harmful, neutral, distinct_judged): (i64, i64, i64, i64, i64) = self.connection.query_row(
+            "SELECT count(*), \
+             coalesce(sum(CASE WHEN j.label = 'useful' THEN 1 ELSE 0 END), 0), \
+             coalesce(sum(CASE WHEN j.label = 'harmful' THEN 1 ELSE 0 END), 0), \
+             coalesce(sum(CASE WHEN j.label = 'neutral' THEN 1 ELSE 0 END), 0), \
+             count(DISTINCT j.attributed_event_id) \
+             FROM judgments j JOIN ranking_events e ON j.attributed_event_id = e.event_id \
+             WHERE e.created_at_unix_ms >= ?1 AND e.created_at_unix_ms <= ?2",
+            [since_unix_ms, as_of_unix_ms],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        )?;
+        let label_coverage_rate = if emitted_suggestions > 0 {
+            Some(distinct_judged as f64 / emitted_suggestions as f64)
+        } else {
+            None
+        };
+        let useful_ratio_in_judged = if total_judgments > 0 {
+            Some(useful as f64 / total_judgments as f64)
+        } else {
+            None
+        };
+        let judgments = JudgmentMetrics {
+            total_judgments: total_judgments as u64,
+            useful: useful as u64,
+            harmful: harmful as u64,
+            neutral: neutral as u64,
+            distinct_judged_events: distinct_judged as u64,
+            label_coverage_rate,
+            useful_ratio_in_judged,
+        };
+
+        // 5. Provider Attempts & Cost
+        let (tot_attempts, comp_attempts, fail_attempts, unk_attempts, in_tokens, out_tokens, unk_usage_attempts): (i64, i64, i64, i64, i64, i64, i64) = self.connection.query_row(
+            "SELECT count(*), \
+             coalesce(sum(CASE WHEN a.status = 'completed' THEN 1 ELSE 0 END), 0), \
+             coalesce(sum(CASE WHEN a.status = 'failed' THEN 1 ELSE 0 END), 0), \
+             coalesce(sum(CASE WHEN a.status NOT IN ('completed', 'failed') THEN 1 ELSE 0 END), 0), \
+             coalesce(sum(coalesce(a.input_tokens, 0)), 0), \
+             coalesce(sum(coalesce(a.output_tokens, 0)), 0), \
+             coalesce(sum(CASE WHEN a.input_tokens IS NULL OR a.output_tokens IS NULL OR a.status != 'completed' THEN 1 ELSE 0 END), 0) \
+             FROM provider_attempts a JOIN ranking_events e ON a.owner_event_id = e.event_id \
+             WHERE e.created_at_unix_ms >= ?1 AND e.created_at_unix_ms <= ?2",
+            [since_unix_ms, as_of_unix_ms],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?)),
+        )?;
+        let cache_served_events: i64 = self.connection.query_row(
+            "SELECT count(*) FROM ranking_events e WHERE e.created_at_unix_ms >= ?1 AND e.created_at_unix_ms <= ?2 AND NOT EXISTS (SELECT 1 FROM provider_attempts a WHERE a.owner_event_id = e.event_id)",
+            [since_unix_ms, as_of_unix_ms],
+            |r| r.get(0),
+        )?;
+        let cache_hit_rate = if total_evaluated > 0 {
+            Some(cache_served_events as f64 / total_evaluated as f64)
+        } else {
+            None
+        };
+
+        // Judged cohort attempts & tokens
+        let (judged_cohort_tokens, judged_cohort_attempts): (i64, i64) = self.connection.query_row(
+            "SELECT coalesce(sum(coalesce(a.input_tokens, 0) + coalesce(a.output_tokens, 0)), 0), count(*) \
+             FROM provider_attempts a JOIN judgments j ON a.owner_event_id = j.attributed_event_id JOIN ranking_events e ON j.attributed_event_id = e.event_id \
+             WHERE e.created_at_unix_ms >= ?1 AND e.created_at_unix_ms <= ?2",
+            [since_unix_ms, as_of_unix_ms],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+
+        let cost_per_useful_suggestion = if useful == 0 {
+            "not estimable (0 useful labels in judged cohort)".to_string()
+        } else {
+            format!(
+                "pricing configuration absent; {} attempts / {} tokens per useful suggestion across judged cohort",
+                (judged_cohort_attempts as f64 / useful as f64).round() as u64,
+                (judged_cohort_tokens as f64 / useful as f64).round() as u64
+            )
+        };
+        let tokens_per_useful_suggestion = if useful > 0 {
+            Some(judged_cohort_tokens as f64 / useful as f64)
+        } else {
+            None
+        };
+
+        let provider = ProviderMetrics {
+            total_attempts: tot_attempts as u64,
+            completed_attempts: comp_attempts as u64,
+            failed_attempts: fail_attempts as u64,
+            unknown_attempts: unk_attempts as u64,
+            known_input_tokens: in_tokens as u64,
+            known_output_tokens: out_tokens as u64,
+            known_total_tokens: (in_tokens + out_tokens) as u64,
+            unknown_usage_attempts: unk_usage_attempts as u64,
+            cache_served_events: cache_served_events as u64,
+            cache_hit_rate,
+            cost_per_useful_suggestion,
+            tokens_per_useful_suggestion,
+        };
+
+        // 6. By Skill (optional)
+        let by_skill_data = if by_skill {
+            let mut skill_set = std::collections::BTreeSet::new();
+            {
+                let mut stmt = self.connection.prepare(
+                    "SELECT DISTINCT c.skill_id FROM ranking_candidates c JOIN ranking_events e ON c.event_id = e.event_id WHERE e.created_at_unix_ms >= ?1 AND e.created_at_unix_ms <= ?2",
+                )?;
+                let rows = stmt.query_map([since_unix_ms, as_of_unix_ms], |r| r.get::<_, String>(0))?;
+                for s in rows {
+                    skill_set.insert(s?);
+                }
+            }
+            {
+                let mut stmt = self.connection.prepare(
+                    "SELECT DISTINCT skill_id FROM observations WHERE observed_at_unix_ms >= ?1 AND observed_at_unix_ms <= ?2",
+                )?;
+                let rows = stmt.query_map([since_unix_ms, as_of_unix_ms], |r| r.get::<_, String>(0))?;
+                for s in rows {
+                    skill_set.insert(s?);
+                }
+            }
+            {
+                let mut stmt = self.connection.prepare(
+                    "SELECT DISTINCT j.skill_id FROM judgments j JOIN ranking_events e ON j.attributed_event_id = e.event_id WHERE e.created_at_unix_ms >= ?1 AND e.created_at_unix_ms <= ?2",
+                )?;
+                let rows = stmt.query_map([since_unix_ms, as_of_unix_ms], |r| r.get::<_, String>(0))?;
+                for s in rows {
+                    skill_set.insert(s?);
+                }
+            }
+
+            let mut skills = Vec::new();
+            for skill_id in skill_set {
+                let top1: i64 = self.connection.query_row(
+                    "SELECT count(*) FROM ranking_candidates c JOIN ranking_events e ON c.event_id = e.event_id \
+                     WHERE e.created_at_unix_ms >= ?1 AND e.created_at_unix_ms <= ?2 AND c.skill_id = ?3 \
+                     AND c.stage = 'rerank' AND c.rank_position = 1 AND e.decision = 'ranked' AND e.exposure_state IN ('emitted', 'acknowledged')",
+                    rusqlite::params![since_unix_ms, as_of_unix_ms, &skill_id],
+                    |r| r.get(0),
+                )?;
+                let shortlist: i64 = self.connection.query_row(
+                    "SELECT count(*) FROM ranking_candidates c JOIN ranking_events e ON c.event_id = e.event_id \
+                     WHERE e.created_at_unix_ms >= ?1 AND e.created_at_unix_ms <= ?2 AND c.skill_id = ?3 AND c.stage = 'rerank'",
+                    rusqlite::params![since_unix_ms, as_of_unix_ms, &skill_id],
+                    |r| r.get(0),
+                )?;
+                let obs_loads: i64 = self.connection.query_row(
+                    "SELECT count(*) FROM observations WHERE observed_at_unix_ms >= ?1 AND observed_at_unix_ms <= ?2 AND skill_id = ?3 AND evidence_state = 'loaded'",
+                    rusqlite::params![since_unix_ms, as_of_unix_ms, &skill_id],
+                    |r| r.get(0),
+                )?;
+                let attr_loads: i64 = self.connection.query_row(
+                    "SELECT count(*) FROM observations WHERE observed_at_unix_ms >= ?1 AND observed_at_unix_ms <= ?2 AND skill_id = ?3 AND evidence_state = 'loaded' AND attributed_event_id IS NOT NULL",
+                    rusqlite::params![since_unix_ms, as_of_unix_ms, &skill_id],
+                    |r| r.get(0),
+                )?;
+                let (useful, harmful, neutral): (i64, i64, i64) = self.connection.query_row(
+                    "SELECT coalesce(sum(CASE WHEN j.label = 'useful' THEN 1 ELSE 0 END), 0), \
+                     coalesce(sum(CASE WHEN j.label = 'harmful' THEN 1 ELSE 0 END), 0), \
+                     coalesce(sum(CASE WHEN j.label = 'neutral' THEN 1 ELSE 0 END), 0) \
+                     FROM judgments j JOIN ranking_events e ON j.attributed_event_id = e.event_id \
+                     WHERE e.created_at_unix_ms >= ?1 AND e.created_at_unix_ms <= ?2 AND j.skill_id = ?3",
+                    rusqlite::params![since_unix_ms, as_of_unix_ms, &skill_id],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )?;
+
+                skills.push(SkillStatSummary {
+                    skill_id,
+                    top1_recommendations: top1 as u64,
+                    shortlist_appearances: shortlist as u64,
+                    observed_loads: obs_loads as u64,
+                    attributed_loads: attr_loads as u64,
+                    judged_useful: useful as u64,
+                    judged_harmful: harmful as u64,
+                    judged_neutral: neutral as u64,
+                });
+            }
+            skills.sort_by(|a, b| {
+                b.top1_recommendations
+                    .cmp(&a.top1_recommendations)
+                    .then_with(|| b.shortlist_appearances.cmp(&a.shortlist_appearances))
+                    .then_with(|| a.skill_id.cmp(&b.skill_id))
+            });
+            Some(skills)
+        } else {
+            None
+        };
+
+        Ok(StatsValueReport {
+            as_of_unix_ms,
+            since_unix_ms,
+            turns,
+            latency,
+            observations,
+            judgments,
+            provider,
+            retained,
+            by_skill: by_skill_data,
         })
     }
 

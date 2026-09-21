@@ -1368,6 +1368,30 @@ features = []
 status = "executed"
 
 [[boundaries]]
+id = "p5_stats_value_report"
+owner_bead = "sr-roadmap-l1i.6.13"
+member_beads = ["sr-roadmap-l1i.6.13"]
+phase = "P5"
+title = "Report usefulness, interruption, provider metrics and cost in sr stats"
+unit_property_tests = [
+    "tests/stats_value_report_contract.rs::empty_ledger_stats_reports_clean_zeros_and_not_estimable",
+    "tests/stats_value_report_contract.rs::mixed_cohorts_and_channels_preserve_distinct_denominators",
+    "tests/stats_value_report_contract.rs::latency_summary_computes_accurate_percentiles",
+    "tests/stats_value_report_contract.rs::provider_metrics_tracks_tokens_and_cache_served_events",
+    "tests/stats_value_report_contract.rs::observations_and_adoption_rate_tracked_with_caveats",
+    "tests/stats_value_report_contract.rs::judgments_and_cost_per_useful_suggestion_calculated",
+    "tests/stats_value_report_contract.rs::by_skill_breakdown_orders_by_recommendations_and_shortlist",
+    "tests/stats_value_report_contract.rs::time_window_filtering_respects_since_duration",
+    "tests/stats_value_report_contract.rs::cli_stats_json_and_table_output_and_missing_store_handled"
+]
+e2e_suite = "replay"
+e2e_cases = ["stats-value-report"]
+assertion_ids = ["stats_value_report_enforced"]
+platforms = ["linux"]
+features = []
+status = "executed"
+
+[[boundaries]]
 id = "p5_offline_replay"
 owner_bead = "sr-roadmap-l1i.6.16"
 member_beads = ["sr-roadmap-l1i.6.16"]
