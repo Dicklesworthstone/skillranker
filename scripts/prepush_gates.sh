@@ -47,6 +47,14 @@ done
 if [ "${PREPUSH_GATES_LOCAL:-0}" = "1" ] || ! command -v rch >/dev/null 2>&1; then
   CARGO_PREFIX=()
   LANE="local cargo"
+  # A plain `cargo` is not necessarily a local cargo. When rch's managed shim is ahead on PATH
+  # it wraps every cargo invocation, and on a dispatcher box it is fail-closed: if the fleet has
+  # no admissible worker the build is REFUSED (exit 103) rather than run here. Asking for the
+  # local lane and then getting three gates refused by the fleet is worse than useless, because
+  # the refusal is reported per gate and looks like a compilation failure. So the local lane
+  # bypasses the shim explicitly.
+  export RCH_CARGO_WRAPPER_BYPASS=1
+  export RCH_ENABLED=0
 else
   CARGO_PREFIX=(rch exec --)
   LANE="rch exec"
@@ -96,7 +104,11 @@ if [ "$FAST" = "1" ]; then
   printf '\n=== cargo test --locked ===\n  SKIP  requested with --fast\n'
   SKIPPED+=("cargo test --locked")
 else
-  gate "cargo test --locked" "${CARGO_PREFIX[@]}" cargo test --locked
+  # --no-fail-fast because the gate's job is to tell you everything that is wrong, not the
+  # first thing. Without it cargo stops at the first failing binary, so one flaky deadline
+  # test under load hides every suite after it: a run that reported 71 of 86 binaries looked
+  # exactly like a run that reported all of them.
+  gate "cargo test --locked" "${CARGO_PREFIX[@]}" cargo test --locked --no-fail-fast
   # The aggregate across every target, printed so a receipt can carry counts rather than a word.
   if [ -f "$LAST_LOG" ]; then
     tr '\r' '\n' <"$LAST_LOG" | awk '
