@@ -21,7 +21,7 @@ use crate::identity::{
     TurnId,
 };
 use serde_json::Value;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 mod association;
 mod dispatch;
@@ -398,6 +398,36 @@ impl SkillEvidenceResolver for SimpleSkillResolver {
     }
 }
 
+/// Select by the same qualified identity used for call association. A bare
+/// event ID is not a membership proof: a different agent or branch may reuse it.
+/// Filter before joining results so foreign evidence cannot be relabeled with
+/// the selected session identity or borrow its compaction epoch.
+fn active_tool_events<'a>(
+    events: &'a [NormalizedEvent],
+    active_branch: Option<&'a ActiveBranch>,
+) -> impl Iterator<Item = &'a NormalizedEvent> {
+    let identities = active_branch.map(|branch| {
+        branch
+            .events
+            .iter()
+            .filter_map(|event| {
+                Some((
+                    event.agent_id.as_ref(),
+                    event.branch_id.as_ref(),
+                    event.event_id.as_ref()?,
+                ))
+            })
+            .collect::<BTreeSet<_>>()
+    });
+    events.iter().filter(move |event| {
+        identities.as_ref().is_none_or(|ids| {
+            event.event_id.as_ref().is_some_and(|id| {
+                ids.contains(&(event.agent_id.as_ref(), event.branch_id.as_ref(), id))
+            })
+        })
+    })
+}
+
 /// Extract local skill load observations from normalized events.
 ///
 /// Guarantees:
@@ -417,11 +447,7 @@ pub fn extract_load_observations(
     // upgrade an active invocation even when branch labels are absent.
     let active_ids = active_branch.map(|b| b.event_id_set());
     let associated = associate_tool_event_iter(
-        events.iter().filter(|event| {
-            active_ids
-                .as_ref()
-                .is_none_or(|ids| event.event_id.as_ref().is_some_and(|id| ids.contains(id)))
-        }),
+        active_tool_events(events, active_branch),
         DEFAULT_TOOL_EXCERPT_CHARS,
     );
     let mut observations = Vec::new();
@@ -498,11 +524,7 @@ pub fn extract_loaded_skill_records(
 ) -> Vec<LoadedSkillRecord> {
     let active_ids = active_branch.map(|b| b.event_id_set());
     let associated = associate_tool_event_iter(
-        events.iter().filter(|event| {
-            active_ids
-                .as_ref()
-                .is_none_or(|ids| event.event_id.as_ref().is_some_and(|id| ids.contains(id)))
-        }),
+        active_tool_events(events, active_branch),
         DEFAULT_TOOL_EXCERPT_CHARS,
     );
     let epochs = active_branch.map(super::branch::event_epochs);
