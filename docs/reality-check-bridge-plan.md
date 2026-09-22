@@ -1,10 +1,11 @@
 # SkillRanker reality check and bridge plan
 
-Latest assessment: 2026-09-21 UTC, second executable-journey pass at `a82abbb`. Earlier reviews and receipts are retained below as
+Latest assessment: 2026-09-21 UTC, second executable-journey pass at `a82abbb`, plus a 2026-09-22 execution addendum (beads closed, shadow deployment live). Earlier reviews and receipts are retained below as
 history. Inventory and ownership statements describe their stated snapshots, not
 a frozen release or a product-completion percentage.
 
-## Current assessment — 2026-09-21 UTC, second executable-journey pass
+## Current assessment — 2026-09-21 UTC, second executable-journey pass (plus 2026-09-22 execution addendum)
+
 
 **The two defects the morning review filed that had owners free have been fixed and are verified
 closed in this pass; the two strategic data-acquisition beads it filed remain the critical path.
@@ -124,6 +125,24 @@ and no readings yet — rows 2 and 3 are the entire ballgame.**
 This update revises the existing bridge in place. Its current-state claims retire when the next
 revision-bound assessment supersedes them. The sections below are historical snapshots and must
 not be read as the current implementation inventory.
+
+### Execution addendum — 2026-09-22 (ProudBison)
+
+Acting on the ordering above, in one working session:
+
+| Item | Outcome |
+|---|---|
+| `sr-83cc` hook outer timeout | **Closed.** Default now 4 s with strict deadline-plus-reserve validation; the hook's clamp budget derives from the installed entry instead of a hardcoded 3000 ms. Verified live; 14/14 installer tests. |
+| `sr-488b` owner-only refusal | **Closed.** Peer implementation verified live: refusal names the offending path, actual mode, the rule, and the exact `chmod` remedy. |
+| `sr-oufi` judgment identity | **Verified** at 39c6d3b (fix merged): stable-id judgments join correctly; name lookups without a roster snapshot refuse honestly. Closure left to owner. |
+| `sr-uv2v` relevance corpus | **Engineering half delivered** (`16f75cc`): pre-registered rubric/frame/split contract in `docs/relevance-corpus-contract.md` plus the mechanical corpus validator (`scripts/validate_corpus.py`, 18/18 tests). Remaining is maintainer adjudication + the pilot, best fed by shadow traffic. |
+| `sr-1uf4` self-hosted shadow | **DEPLOYED** (receipt in `docs/self-host-shadow-deployment.md`). The smoke exposed a fatal chain: the hook could not read any real current-version transcript (sr-j4k9 — unmodeled harness records fatal, thinking-only blocks fatal, sidechain leaves unresolvable, metadata-only system records fatal, lineage shattered through attachment nodes). All fixed and verified live; a real two-stage Jev evaluation completed over the real provider. Without this attempt, shadow traffic would have recorded nothing while looking healthy. |
+| `sr-5n0b` deadline-test flake | **Closed.** Recurring full-suite failure traced to near-expiry drain windows; tests now use `shutdown_within` with a fresh bounded window. Full suite **1318/1318/0 twice**, second run under load ~81. |
+| New defects filed | `sr-e8vm` (deduplicated redelivery accounting: real spend attaches to an unavailable-looking event row), `sr-ksjn` (a test wrote into the operator's real ledger). |
+
+Gates at `ae5d101`: full suite 1318 passed / 0 failed / 10 ignored (twice),
+fmt and clippy `-D warnings` clean, `validate_public_contracts.py` passed.
+RCH artifact transfer remains broken (local cargo used throughout).
 
 ## Historical assessment — 2026-09-21 UTC, executable-journey review
 
