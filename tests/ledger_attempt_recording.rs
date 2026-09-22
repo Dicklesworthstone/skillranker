@@ -1029,8 +1029,26 @@ fn the_documented_adoption_loop_reports_one_skill_as_one_row() {
     f.claude_session("adoption-loop", TASK);
     f.ledger_init();
 
+    // Name-based feedback requires complete historical membership. Native discovery
+    // cannot enumerate every plugin/managed source, so declare this fixture's exact
+    // visible roster while retaining the real files and their discovery identities.
+    let roster = f.root.join("adoption-roster.json");
+    std::fs::write(
+        &roster,
+        serde_json::to_vec(&json!({
+            "schema": "sr.roster.v1",
+            "harness": "claude_code",
+            "mode": "authorized_files",
+            "skills": [
+                {"source": "claude_code.project", "path": "alpha/SKILL.md"},
+                {"source": "claude_code.project", "path": "beta/SKILL.md"}
+            ]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
     let provider = Provider::start(&f, "useful");
-    let ranked = f.rank(provider.port);
+    let ranked = f.rank_with(provider.port, &["--roster", roster.to_str().unwrap()]);
     provider.finish();
     assert!(
         ranked.status.success(),

@@ -3,8 +3,7 @@
 
 use skillranker::context::{
     CurrentRequest, EventKind, NormalizedContext, NormalizedEvent, PrivateText,
-    RenderContextOptions, Role, ToolEvent, ToolStatus, render_context,
-    render_context_and_receipt,
+    RenderContextOptions, Role, ToolEvent, ToolStatus, render_context, render_context_and_receipt,
 };
 use skillranker::identity::{AgentId, EventId, HarnessId};
 use skillranker::output::ContextQuality;
@@ -86,8 +85,11 @@ fn sibling_tool_bodies_are_excluded_in_every_input_order_with_receipt_parity() {
         assert_eq!(receipt.disclosed_bytes, bytes.len());
         assert_eq!(receipt.disclosed_scalars, payload.total_message_scalars());
         assert_eq!(receipt.context_quality, payload.context_quality);
-        let tools = receipt.categories.iter()
-            .find(|category| category.category == SourceCategory::ToolEvents).unwrap();
+        let tools = receipt
+            .categories
+            .iter()
+            .find(|category| category.category == SourceCategory::ToolEvents)
+            .unwrap();
         assert_eq!(tools.included_count, 1);
         assert_eq!(tools.omitted_count, 1);
         assert_eq!(receipt.total_omitted, 1);
@@ -106,11 +108,18 @@ fn foreign_reused_ids_cannot_disclose_bodies_or_hide_omissions() {
     foreign.agent_id = Some(AgentId::new("other-agent").unwrap());
     foreign.tool.as_mut().unwrap().result = Some(PrivateText::new("FOREIGN_BODY_CANARY"));
     let input = context(vec![
-        event("root", None, "Active history"), active,
-        event("current", Some("read"), "Explain Rust lifetimes"), foreign,
+        event("root", None, "Active history"),
+        active,
+        event("current", Some("read"), "Explain Rust lifetimes"),
+        foreign,
     ]);
-    let (payload, receipt) = render_context_and_receipt(&input, &RenderContextOptions::default()).unwrap();
-    assert!(!String::from_utf8(payload.to_json_bytes().unwrap()).unwrap().contains("FOREIGN_BODY_CANARY"));
+    let (payload, receipt) =
+        render_context_and_receipt(&input, &RenderContextOptions::default()).unwrap();
+    assert!(
+        !String::from_utf8(payload.to_json_bytes().unwrap())
+            .unwrap()
+            .contains("FOREIGN_BODY_CANARY")
+    );
     assert_eq!(receipt.total_omitted, 1);
 }
 
@@ -121,11 +130,19 @@ fn sibling_volume_cannot_evict_active_context_from_the_message_window() {
         event("current", Some("root"), "Explain Rust lifetimes"),
     ]);
     for index in 0..100 {
-        input.events.push(event(&format!("sibling-{index}"), Some("root"), "PRIVATE_WINDOW_CANARY"));
+        input.events.push(event(
+            &format!("sibling-{index}"),
+            Some("root"),
+            "PRIVATE_WINDOW_CANARY",
+        ));
     }
-    let (payload, receipt) = render_context_and_receipt(&input, &RenderContextOptions::default()).unwrap();
+    let (payload, receipt) =
+        render_context_and_receipt(&input, &RenderContextOptions::default()).unwrap();
     assert_eq!(payload.recent_messages.len(), 1);
-    assert_eq!(payload.recent_messages[0].text.as_deref(), Some("ACTIVE_ANTECEDENT_CANARY"));
+    assert_eq!(
+        payload.recent_messages[0].text.as_deref(),
+        Some("ACTIVE_ANTECEDENT_CANARY")
+    );
     assert_eq!(receipt.total_omitted, 100);
     assert_eq!(payload.context_quality, ContextQuality::Complete);
 }
@@ -140,7 +157,10 @@ fn incomplete_lineage_is_partial_and_receipt_bytes_describe_the_final_payload() 
     let (payload, receipt) = render_context_and_receipt(&input, &options).unwrap();
     assert_eq!(payload.context_quality, ContextQuality::Partial);
     assert_eq!(receipt.context_quality, ContextQuality::Partial);
-    assert_eq!(receipt.disclosed_bytes, payload.to_json_bytes().unwrap().len());
+    assert_eq!(
+        receipt.disclosed_bytes,
+        payload.to_json_bytes().unwrap().len()
+    );
     assert_eq!(render_context(&input, &options).unwrap(), payload);
 }
 
@@ -152,10 +172,16 @@ fn unresolved_graph_is_refused_in_both_profiles_and_both_entry_points() {
         event("right", Some("root"), "PRIVATE_RIGHT_CANARY"),
     ]);
     for profile in [ContextProfile::Standard, ContextProfile::Minimal] {
-        let options = RenderContextOptions { context_profile: profile, ..Default::default() };
+        let options = RenderContextOptions {
+            context_profile: profile,
+            ..Default::default()
+        };
         let error = render_context(&input, &options).unwrap_err();
         assert!(!error.to_string().contains("CANARY"));
-        assert_eq!(render_context_and_receipt(&input, &options).unwrap_err(), error);
+        assert_eq!(
+            render_context_and_receipt(&input, &options).unwrap_err(),
+            error
+        );
     }
 }
 
@@ -168,12 +194,22 @@ fn profile_omissions_and_scope_omissions_are_reconciled_without_double_counting(
         tool("sibling-result", "root", "PRIVATE_TOOL_CANARY"),
         event("current", Some("active-result"), "Explain Rust lifetimes"),
     ]);
-    let options = RenderContextOptions { context_profile: ContextProfile::Minimal, ..Default::default() };
+    let options = RenderContextOptions {
+        context_profile: ContextProfile::Minimal,
+        ..Default::default()
+    };
     let (payload, receipt) = render_context_and_receipt(&input, &options).unwrap();
     assert!(payload.recent_messages.is_empty());
     assert_eq!(receipt.total_omitted, 4);
     assert_eq!(receipt.total_included, 1);
-    assert_eq!(receipt.total_omitted, receipt.categories.iter().map(|c| c.omitted_count).sum::<usize>());
+    assert_eq!(
+        receipt.total_omitted,
+        receipt
+            .categories
+            .iter()
+            .map(|c| c.omitted_count)
+            .sum::<usize>()
+    );
 }
 
 #[cfg(unix)]
@@ -185,15 +221,22 @@ fn production_dry_run_contains_active_history_but_no_sibling_prose() {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     let root = std::env::temp_dir().join(format!(
-        "sr-render-history-{}-{}", std::process::id(),
-        SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos(),
+        "sr-render-history-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos(),
     ));
     fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
     for path in ["workspace/.claude/skills/alpha", "home", "config/sr"] {
         fs::create_dir_all(root.join(path)).unwrap();
     }
-    fs::write(root.join("workspace/.claude/skills/alpha/SKILL.md"),
-        "---\nname: alpha\ndescription: Explain Rust lifetimes\n---\nReference text.\n").unwrap();
+    fs::write(
+        root.join("workspace/.claude/skills/alpha/SKILL.md"),
+        "---\nname: alpha\ndescription: Explain Rust lifetimes\n---\nReference text.\n",
+    )
+    .unwrap();
     let mut input = context(vec![
         event("root", None, "ACTIVE_CONTEXT_CANARY"),
         tool("sibling", "root", "PRIVATE_PREVIEW_CANARY"),
@@ -201,7 +244,11 @@ fn production_dry_run_contains_active_history_but_no_sibling_prose() {
     ]);
     let workspace = root.join("workspace");
     input.workspace_root = PrivateText::new(workspace.to_str().unwrap());
-    fs::write(workspace.join("context.json"), serde_json::to_vec(&input).unwrap()).unwrap();
+    fs::write(
+        workspace.join("context.json"),
+        serde_json::to_vec(&input).unwrap(),
+    )
+    .unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_sr"))
         .env_clear()
         .env("HOME", root.join("home"))
@@ -209,8 +256,17 @@ fn production_dry_run_contains_active_history_but_no_sibling_prose() {
         .env("XDG_CACHE_HOME", root.join("cache"))
         .env("XDG_DATA_HOME", root.join("data"))
         .current_dir(&workspace)
-        .args(["rank", "--context", "context.json", "--dry-run", "--json", "--timeout-ms", "10000"])
-        .output().unwrap();
+        .args([
+            "rank",
+            "--context",
+            "context.json",
+            "--dry-run",
+            "--json",
+            "--timeout-ms",
+            "10000",
+        ])
+        .output()
+        .unwrap();
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(output.status.code(), Some(0), "{value}");
     assert_eq!(value["kind"], "preview");

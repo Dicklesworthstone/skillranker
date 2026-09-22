@@ -39,10 +39,14 @@ static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 /// timing out. Four seconds is also what README documents (sr-83cc).
 pub const DEFAULT_HOOK_TIMEOUT_SECS: u32 = 4;
 
+/// Seconds reserved between the installed outer timeout and the internal
+/// ranking deadline for process startup before the entry clock begins.
+pub const HOOK_STARTUP_RESERVE_SECS: u32 = 1;
+
 /// The smallest harness timeout that can bound a given internal deadline.
 ///
 /// Ceiling of the deadline in whole seconds, plus one: a 3,000 ms deadline needs 4 s, and a 3,200 ms
-/// deadline also needs 4 s. The extra second is the startup headroom described above, and expressing
+/// deadline needs 5 s. The extra second is the startup headroom described above, and expressing
 /// it as a function rather than a constant means a later deadline change cannot silently invalidate
 /// the installed entry — which is exactly what AGENTS.md forbids.
 pub const fn minimum_hook_timeout_secs(deadline_ms: u64) -> u32 {
@@ -62,9 +66,9 @@ impl std::fmt::Display for TimeoutTooTight {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "a harness timeout of {}s cannot bound sr's own {} ms deadline: the internal clock \
-             starts after process startup, so the harness must allow at least {}s or it can kill \
-             the run inside the window reserved for writing its answer",
+            "--timeout-secs {} cannot bound sr's own {} ms deadline: the internal clock \
+             starts after process startup, so install with at least --timeout-secs {} or the harness \
+             can kill the run inside the window reserved for writing its answer",
             self.requested_secs, self.deadline_ms, self.minimum_secs
         )
     }
@@ -81,6 +85,36 @@ pub fn check_hook_timeout(requested_secs: u32, deadline_ms: u64) -> Result<(), T
         deadline_ms,
         minimum_secs,
     })
+}
+
+/// The internal ranking budget implied by the installed managed entry:
+/// its outer timeout minus the startup reserve, in milliseconds. `None`
+/// when no exactly matching managed entry is installed or its settings
+/// cannot be read; callers fall back to the conservative default budget.
+pub fn installed_hook_budget_ms(
+    harness: HookHarness,
+    binary_path_override: Option<PathBuf>,
+) -> Option<u64> {
+    let settings_path = resolve_settings_file(harness, None).ok()?;
+    let (settings, _, _) = read_and_parse_settings(&settings_path).ok()?;
+    let entries = settings.get("hooks")?.get("UserPromptSubmit")?.as_array()?;
+    let binary_path = resolve_binary_path(binary_path_override).ok()?;
+    let command = make_command_string(&binary_path);
+    for item in entries {
+        let Some(hooks) = item.get("hooks").and_then(Value::as_array) else {
+            continue;
+        };
+        let Some(hook) = hooks.iter().find(|h| {
+            h.get("command")
+                .and_then(Value::as_str)
+                .is_some_and(|cmd| cmd == command)
+        }) else {
+            continue;
+        };
+        let timeout_secs = hook.get("timeout").and_then(Value::as_u64)?;
+        return Some(timeout_secs.saturating_sub(u64::from(HOOK_STARTUP_RESERVE_SECS)) * 1_000);
+    }
+    None
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]

@@ -3441,7 +3441,19 @@ fn hook_claude_command(clock: &EntryClock, m: &clap::ArgMatches) -> Result<Strin
                     resolved.effective().timeout_ms()
                 })
         });
-    let installed_budget_ms = 3000u64;
+    // Clamp the internal deadline below the installed outer timeout: the
+    // harness kills the process at the entry's timeout, and the internal
+    // deadline must never exceed that installed budget. Derived from the
+    // actual managed entry when readable; otherwise the conservative
+    // default-entry budget applies.
+    let installed_budget_ms =
+        crate::installer::installed_hook_budget_ms(crate::installer::HookHarness::Claude, None)
+            .unwrap_or(
+                u64::from(
+                    crate::installer::DEFAULT_HOOK_TIMEOUT_SECS
+                        - crate::installer::HOOK_STARTUP_RESERVE_SECS,
+                ) * 1_000,
+            );
     let timeout_ms = if timeout_ms > installed_budget_ms {
         let _ = writeln!(
             io::stderr().lock(),
@@ -3593,16 +3605,6 @@ fn install_hook_command(clock: &EntryClock, m: &clap::ArgMatches) -> Result<Stri
         .get_one::<String>("timeout-secs")
         .and_then(|s| s.parse::<u32>().ok())
         .unwrap_or(crate::installer::DEFAULT_HOOK_TIMEOUT_SECS);
-    // A harness timeout that does not strictly exceed the internal deadline can kill the run inside
-    // the window reserved for writing its answer, because the internal clock starts only after
-    // process startup. Refuse it here, with the numbers, rather than installing an entry that looks
-    // fine and truncates a reply under load (sr-83cc).
-    if let Err(refusal) = crate::installer::check_hook_timeout(
-        timeout_secs,
-        crate::limits::DEFAULT_INVOCATION_DEADLINE_MS,
-    ) {
-        return Err((2u8, "invalid-usage", refusal.to_string()));
-    }
 
     let workspace = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let user_root = user_config_root().unwrap_or(None);
@@ -3617,10 +3619,23 @@ fn install_hook_command(clock: &EntryClock, m: &clap::ArgMatches) -> Result<Stri
         }
     }
     let config_files = ConfigFiles::new(workspace, user_root);
-    let effective_mode = config_files
-        .load(clock, sources)
+    let resolved = config_files.load(clock, sources);
+    let effective_mode = resolved
+        .as_ref()
         .map(|c| c.effective().hook_mode())
         .unwrap_or(crate::config::HookMode::Shadow);
+    let deadline_ms = resolved.map_or(crate::limits::DEFAULT_INVOCATION_DEADLINE_MS, |c| {
+        c.effective().timeout_ms()
+    });
+
+    // The installed outer timeout must strictly cover the effective internal
+    // deadline plus the startup reserve: the harness clock starts at spawn,
+    // the internal clock at process entry, and an equal outer timeout can
+    // kill sr during its output reserve. The effective deadline, not only the
+    // product default, decides the minimum.
+    if let Err(refusal) = crate::installer::check_hook_timeout(timeout_secs, deadline_ms) {
+        return Err((2, "invalid-usage", refusal.to_string()));
+    }
 
     let options = crate::installer::InstallOptions {
         apply,

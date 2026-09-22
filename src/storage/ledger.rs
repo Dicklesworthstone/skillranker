@@ -5114,6 +5114,13 @@ impl LedgerStore {
             .map_err(FeedbackError::Store)?
             .ok_or(FeedbackError::MissingSnapshot)?;
         let members = Self::parse_snapshot_members(&snapshot).map_err(FeedbackError::Store)?;
+        // A retained stable id proves membership even in a partial snapshot.
+        // A name needs complete membership: an omitted skill may share it.
+        if snapshot.membership_coverage != MembershipCoverage::Complete
+            && !members.iter().any(|member| member.skill_id == supplied)
+        {
+            return Err(FeedbackError::MissingSnapshot);
+        }
         Self::match_reference_in_members(&members, supplied)?.ok_or_else(|| {
             FeedbackError::InvalidSkillId(format!(
                 "'{supplied}' matches no skill id or invocation name in this event's roster \

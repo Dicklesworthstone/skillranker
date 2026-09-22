@@ -297,38 +297,92 @@ fn ordinary_two_consumer_success_incurs_one_pair_and_subsequent_exact_offline_re
     assert_eq!(val_c["usage"]["requests"], 0);
 }
 
+/// Invocation budget for a follower that must reach the lease wait.
+///
+/// A fixed 600ms total dies in local inspection when the suite is parallel,
+/// before any usage envelope exists. Measure that admission on this machine,
+/// then add a short wait. The total stays below the leader's 4s hold and the
+/// 5s lease so the follower cannot take over or observe the leader's answer.
+fn follower_timeout_after_admission(admission_ms: u128) -> u64 {
+    let admission = u64::try_from(admission_ms).unwrap_or(1_500);
+    admission
+        .saturating_mul(2)
+        .saturating_add(800)
+        .clamp(1_500, 3_200)
+}
+
+fn admission_millis() -> u128 {
+    // A separate fixture, so the probe cannot take the leader's lease or session.
+    let probe = Fixture::new(CONSENT);
+    probe.claude_session("session-admission-probe", TASK);
+    let started = std::time::Instant::now();
+    let out = probe
+        .sr_command_at(9, &["--offline", "--timeout-ms", "8000"])
+        .output()
+        .unwrap();
+    let elapsed = started.elapsed().as_millis();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("\"decision\""),
+        "admission probe produced no decision ({} ms, status {:?}): {}\n{}",
+        elapsed,
+        out.status.code(),
+        stdout,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    elapsed
+}
+
 #[test]
 fn follower_nearing_deadline_while_leader_active_makes_zero_provider_attempts() {
     let f = Fixture::new(CONSENT);
     f.claude_session("session-coord-2", TASK);
     let marker = f.root.join("follower-wide-started");
+    // Longer than the follower's whole budget, shorter than the 5s lease.
+    let admission_ms = admission_millis();
     let provider = Provider::start(
         &f,
         "slow-wide+write-on-wide",
-        &[marker.as_os_str(), "2.5".as_ref()],
+        &[marker.as_os_str(), "4".as_ref()],
     );
+    let follower_timeout_ms = follower_timeout_after_admission(admission_ms);
+    let follower_timeout = follower_timeout_ms.to_string();
 
-    // Leader starts with 6s timeout
-    let mut cmd_leader = f.sr_command(&provider, &["--timeout-ms", "6000"]);
+    let mut cmd_leader = f.sr_command(&provider, &["--timeout-ms", "10000"]);
     let child_leader = cmd_leader.stdout(Stdio::piped()).spawn().unwrap();
 
     wait_for_marker(&marker);
 
-    // Follower starts with tight 600ms timeout
-    let mut cmd_follower = f.sr_command(&provider, &["--timeout-ms", "600"]);
+    let mut cmd_follower = f.sr_command(&provider, &["--timeout-ms", &follower_timeout]);
     let out_follower = cmd_follower.output().unwrap();
 
-    // Follower must finish within ~1s without calling provider
     let out_leader = child_leader.wait_with_output().unwrap();
-    assert_eq!(out_leader.status.code(), Some(0));
+    assert_eq!(
+        out_leader.status.code(),
+        Some(0),
+        "leader stderr: {}",
+        String::from_utf8_lossy(&out_leader.stderr)
+    );
 
     let served = provider.finish();
-    // Only the leader called the provider (1 wide, 1 rerank)
     assert_eq!(stages(&served), ["wide", "rerank"]);
 
-    assert_eq!(out_follower.status.code(), Some(6));
+    assert_eq!(
+        out_follower.status.code(),
+        Some(6),
+        "follower stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out_follower.stdout),
+        String::from_utf8_lossy(&out_follower.stderr)
+    );
     let val_f: Value = serde_json::from_slice(&out_follower.stdout).unwrap();
     assert_eq!(val_f["decision"], "unavailable");
+    let message = val_f["error"]["message"].as_str().unwrap_or("");
+    assert!(
+        message.contains("owned by active leader"),
+        "follower must time out in the coordination wait, not local inspection \
+         (admission {admission_ms} ms, timeout {follower_timeout_ms} ms): {val_f}; stderr: {}",
+        String::from_utf8_lossy(&out_follower.stderr)
+    );
     assert_eq!(
         val_f["usage"]["http_attempts"],
         0,
@@ -336,6 +390,13 @@ fn follower_nearing_deadline_while_leader_active_makes_zero_provider_attempts() 
         String::from_utf8_lossy(&out_follower.stderr)
     );
     assert_eq!(val_f["usage"]["requests"], 0);
+    let elapsed = val_f["elapsed_ms"].as_u64().unwrap_or(0);
+    let waited_until = follower_timeout_ms.saturating_sub(450);
+    assert!(
+        elapsed + 400 >= waited_until,
+        "follower elapsed {elapsed} ms; coordination wait should consume the budget \
+         down to the cleanup reserve (admission {admission_ms} ms, timeout {follower_timeout_ms} ms)"
+    );
 }
 
 fn wait_for_marker(marker: &std::path::Path) {
