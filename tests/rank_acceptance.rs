@@ -34,6 +34,55 @@ use std::process::{Child, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
+
+/// Provider-backed scenarios allowed to run at once in this binary.
+///
+/// libtest starts one test per core. On the shared 128-core host at load ~120,
+/// fifty-odd scenarios each starting a TLS server and a runtime at the same time
+/// starved one another inside their own deadlines: the 2 s late-rerank case sent
+/// nothing (`stages == []`) or abandoned a handshake in four of five in-binary runs,
+/// and passed alone (sr-87gj). The slot is taken before any scenario clock starts,
+/// so every budget and assertion stays exactly as strict; only the overlap drops.
+const CONCURRENT_SCENARIOS: usize = 4;
+static SCENARIOS_RUNNING: std::sync::Mutex<usize> = std::sync::Mutex::new(0);
+static SCENARIO_FREED: std::sync::Condvar = std::sync::Condvar::new();
+std::thread_local! {
+    static SLOTS_HELD: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// One running scenario's claim, reentrant per test thread so a case that starts a
+/// second provider does not wait on itself.
+struct ScenarioSlot;
+
+impl ScenarioSlot {
+    fn acquire() -> Self {
+        if SLOTS_HELD.get() == 0 {
+            let mut running = SCENARIOS_RUNNING
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            while *running >= CONCURRENT_SCENARIOS {
+                running = SCENARIO_FREED
+                    .wait(running)
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+            }
+            *running += 1;
+        }
+        SLOTS_HELD.set(SLOTS_HELD.get() + 1);
+        Self
+    }
+}
+
+impl Drop for ScenarioSlot {
+    fn drop(&mut self) {
+        SLOTS_HELD.set(SLOTS_HELD.get() - 1);
+        if SLOTS_HELD.get() == 0 {
+            *SCENARIOS_RUNNING
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) -= 1;
+            SCENARIO_FREED.notify_one();
+        }
+    }
+}
 const CONSENT: &str = "[network]\nenabled = true\n";
 /// Network-capable runs with no persistent state.
 const UNCACHED: EffectFlags = EffectFlags {
@@ -265,10 +314,25 @@ struct Provider {
     child: Child,
     lines: BufReader<ChildStdout>,
     port: u16,
+    _slot: Option<ScenarioSlot>,
 }
 
 impl Provider {
     fn start(f: &Fixture, scenario: &str, extra: &[&std::ffi::OsStr]) -> Self {
+        let slot = ScenarioSlot::acquire();
+        Self::spawn(f, scenario, extra, Some(slot))
+    }
+    /// Outside the scenario cap, for the diagnostic that measures contention on
+    /// purpose.
+    fn start_uncapped(f: &Fixture, scenario: &str, extra: &[&std::ffi::OsStr]) -> Self {
+        Self::spawn(f, scenario, extra, None)
+    }
+    fn spawn(
+        f: &Fixture,
+        scenario: &str,
+        extra: &[&std::ffi::OsStr],
+        slot: Option<ScenarioSlot>,
+    ) -> Self {
         let directory = f
             .root
             .join(format!("provider-{}", NEXT.fetch_add(1, Ordering::Relaxed)));
@@ -304,7 +368,12 @@ impl Provider {
         lines.read_line(&mut line).unwrap();
         let hello: Value = serde_json::from_str(&line).unwrap();
         let port = u16::try_from(hello["port"].as_u64().unwrap()).unwrap();
-        Self { child, lines, port }
+        Self {
+            child,
+            lines,
+            port,
+            _slot: slot,
+        }
     }
     fn client(&self) -> JevClient {
         let endpoint =
@@ -1027,8 +1096,11 @@ fn late_rerank_shutdown_contention_diagnostic() {
                     // Release the barrier even if provider setup panics.
                     let setup = std::panic::catch_unwind(|| {
                         let f = Fixture::new(CONSENT);
-                        let provider =
-                            Provider::start(&f, "late-rerank", &["".as_ref(), "4".as_ref()]);
+                        let provider = Provider::start_uncapped(
+                            &f,
+                            "late-rerank",
+                            &["".as_ref(), "4".as_ref()],
+                        );
                         (f, provider)
                     });
                     barrier.wait();
@@ -1322,6 +1394,11 @@ fn run_bare(f: &Fixture, provider: &Provider, extra: &[&str]) -> (Option<i32>, V
     )
 }
 
+/// Runs `sr rank` over the fixture context with the generous budget `run_bare`
+/// gives, for the same reason: these cases are about trust, previews, caching and
+/// usage, and at load ~130 the default 3 s let a case time out in cleanup or
+/// before its one TLS attempt (sr-87gj). A caller's own `--timeout-ms` wins, and
+/// `the_sr_binary_honors_a_longer_configured_deadline` runs without either.
 fn run_sr_with(
     f: &Fixture,
     provider: &Provider,
@@ -1330,6 +1407,13 @@ fn run_sr_with(
     extra: &[&str],
 ) -> (Option<i32>, Value) {
     let mut command = sr_command(f, provider, trust_fixture, request, extra);
+    if !extra.contains(&"--timeout-ms") {
+        command.args(["--timeout-ms", "20000"]);
+    }
+    run_output(command)
+}
+
+fn run_output(mut command: Command) -> (Option<i32>, Value) {
     let output = command.output().unwrap();
     let text = String::from_utf8_lossy(&output.stdout).into_owned()
         + &String::from_utf8_lossy(&output.stderr);
@@ -1350,7 +1434,8 @@ fn the_sr_binary_honors_a_longer_configured_deadline() {
     let f = Fixture::new(&format!("{CONSENT}[ranking]\ntimeout_ms = 15000\n"));
     std::fs::create_dir_all(f.root.join("home")).unwrap();
     let provider = Provider::start(&f, "slow-wide", &["".as_ref(), "3.5".as_ref()]);
-    let (code, value) = run_sr_with(&f, &provider, true, TASK, &[]);
+    // No `--timeout-ms`: the configured value is what is under test.
+    let (code, value) = run_output(sr_command(&f, &provider, true, TASK, &[]));
     let served = provider.finish();
     assert_eq!(stages(&served), ["wide", "rerank"]);
     assert_eq!(code, Some(0), "{value}");

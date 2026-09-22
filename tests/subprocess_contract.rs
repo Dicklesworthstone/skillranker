@@ -44,7 +44,7 @@ fn symlinked_executable_resolves_inside_trusted_root_only() {
 /// An invocation whose work budget survived its own construction.
 ///
 /// 400 ms total against a 200 ms reserve leaves a 200 ms work budget, and that is
-/// the budget these cases are about: it is what forces a sleeping child to be
+/// the budget the kill cases are about: it is what forces a sleeping child to be
 /// killed. Construction spends from it, and `from_clock` admits work before it
 /// builds, so a build that stalls past the budget still returns `Ok` and every
 /// case here then dies in `request_cx` before a child exists (sr-5n0b). That is an
@@ -54,10 +54,33 @@ fn symlinked_executable_resolves_inside_trusted_root_only() {
 /// need, and throws a starved attempt away instead of reporting it. If no attempt
 /// wins, the panic says so rather than blaming the boundary under test.
 fn invocation() -> ProcessInvocation {
+    invocation_with(400)
+}
+
+/// For cases whose child is meant to finish. Their assertions are about output,
+/// limits, environment and descendant cleanup, not the deadline, and on a loaded
+/// host spawning and reaping even `/bin/echo` alongside the rest of this binary
+/// overran the 200 ms kill budget: `DeadlineExceeded` in place of `OutputLimit`, or
+/// an `unwrap` on `Err(DeadlineExceeded)`, in four of five in-binary runs at load
+/// ~120 (sr-87gj). A 1,600 ms work budget stays inside the two-second bounds those
+/// cases still assert.
+fn completing_invocation() -> ProcessInvocation {
+    invocation_with(1800)
+}
+
+/// Drain window for the kill cases. They end at their deadline on purpose, so
+/// `shutdown()` would get only the 200 ms cleanup reserve, which a loaded host
+/// could not schedule into: `invocation.shutdown()` false after a correct kill,
+/// 5 of 12 in-binary runs at load ~135 (sr-87gj). Same remedy as the acceptance
+/// harness's fresh bounded drain window (sr-5n0b); a wedged runtime still fails.
+const KILL_DRAIN: Duration = Duration::from_millis(1_000);
+
+fn invocation_with(total_ms: u64) -> ProcessInvocation {
+    let work_ms = total_ms - 200;
     for attempt in 1..=16 {
         let invocation = ProcessInvocation::from_clock(
             EntryClock::capture_with(
-                DurationMillis::new("total", 400, 3000).unwrap(),
+                DurationMillis::new("total", total_ms, 3000).unwrap(),
                 DurationMillis::new("cleanup", 200, 3000).unwrap(),
             )
             .unwrap(),
@@ -66,11 +89,11 @@ fn invocation() -> ProcessInvocation {
         if invocation.request_cx().is_ok() {
             return invocation;
         }
-        eprintln!("sr-5n0b: construction spent the 200ms work budget; retry {attempt}");
+        eprintln!("sr-5n0b: construction spent the {work_ms}ms work budget; retry {attempt}");
         let _ = invocation.shutdown();
     }
     panic!(
-        "no attempt in 16 left any of the 200ms work budget after constructing a runtime; \
+        "no attempt in 16 left any of the {work_ms}ms work budget after constructing a runtime; \
          this host is too loaded to run these cases, and nothing here is evidence about \
          subprocess behaviour"
     );
@@ -87,11 +110,11 @@ fn sleeping_child_is_killed_and_reaped_before_two_seconds() {
     ));
     assert_eq!(result.unwrap_err(), SubprocessError::DeadlineExceeded);
     assert!(start.elapsed() < Duration::from_secs(2));
-    assert!(invocation.shutdown());
+    assert!(invocation.shutdown_within(KILL_DRAIN));
 }
 #[test]
 fn successful_child_output_is_preserved() {
-    let invocation = invocation();
+    let invocation = completing_invocation();
     let cx = invocation.request_cx().unwrap();
     let output = invocation
         .runtime()
@@ -108,7 +131,7 @@ fn successful_child_output_is_preserved() {
 }
 #[test]
 fn simultaneous_pipe_limits_and_environment_refusal() {
-    let invocation = invocation();
+    let invocation = completing_invocation();
     let cx = invocation.request_cx().unwrap();
     let mut child = request("/bin/echo", &["more than cap"]);
     child.stdout_limit = 2;
@@ -187,7 +210,7 @@ fn stderr_overflow_and_early_stdin_close_are_observable() {
 
 #[test]
 fn child_environment_has_no_inherited_variables() {
-    let invocation = invocation();
+    let invocation = completing_invocation();
     let cx = invocation.request_cx().unwrap();
     let output = invocation
         .runtime()
@@ -212,12 +235,12 @@ fn ignored_term_cannot_extend_deadline() {
         SubprocessError::DeadlineExceeded
     );
     assert!(start.elapsed() < Duration::from_secs(2));
-    assert!(invocation.shutdown());
+    assert!(invocation.shutdown_within(KILL_DRAIN));
 }
 
 #[test]
 fn descendant_holding_pipes_is_terminated_after_parent_exits() {
-    let invocation = invocation();
+    let invocation = completing_invocation();
     let cx = invocation.request_cx().unwrap();
     let start = Instant::now();
     let child = request("/bin/sh", &["-c", "/bin/sleep 10 & printf '%s' $!; exit 0"]);
