@@ -242,3 +242,62 @@ fn observation_cursor_does_not_advance_across_unread_bytes() {
     assert!(snap.cursor.byte_offset < fs::metadata(&path).unwrap().len());
     fs::remove_file(&path).unwrap();
 }
+
+/// A resumed observation read rewinds a bounded overlap behind its cursor and no further
+/// (sr-jgez). Records are 64 KiB so the byte overlap, not the record budget, is what binds:
+/// the window must re-read the records just behind the watermark (so a tool pair straddling
+/// it can be repaired), must not reach back past the overlap, and must still deliver what was
+/// appended after it.
+#[test]
+fn a_resumed_observation_window_rewinds_exactly_the_bounded_overlap() {
+    use skillranker::context::jsonl::OBSERVATION_REPAIR_OVERLAP_BYTES;
+    let path = temp_path("overlap");
+    let filler = "c".repeat(64 * 1024);
+    let record = |id: &str| {
+        format!(
+            "{{\"event_id\":\"{id}\",\"role\":\"user\",\"kind\":\"message\",\"text\":\"{filler}\"}}\n"
+        )
+    };
+    let record_len = record("o00").len() as u64;
+    let old: Vec<String> = (0..40).map(|i| format!("o{i:02}")).collect();
+    write_file(&path, &old.iter().map(|id| record(id)).collect::<String>());
+    let first = read(&path, None, CursorKind::Observation);
+    assert_eq!(first.events.len(), 40);
+    assert!(!first.unread_backlog);
+    let watermark = first.cursor.byte_offset;
+    assert_eq!(watermark, fs::metadata(&path).unwrap().len());
+    assert!(
+        watermark > 2 * OBSERVATION_REPAIR_OVERLAP_BYTES,
+        "the file must be large enough for the overlap to bind"
+    );
+
+    append_file(&path, &(record("n0") + &record("n1")));
+    let second = read(&path, Some(&first.cursor), CursorKind::Observation);
+    assert!(!second.rebuilt, "a valid cursor is resumed, not rebuilt");
+    let ids: Vec<&str> = second
+        .events
+        .iter()
+        .map(|event| event.event_id.as_ref().unwrap().as_str())
+        .collect();
+    let reread: Vec<&&str> = ids.iter().filter(|id| id.starts_with('o')).collect();
+    assert!(
+        ids.contains(&"o39"),
+        "the record just behind the watermark is re-read: {ids:?}"
+    );
+    assert!(
+        ids.ends_with(&["n0", "n1"]),
+        "appended records still arrive: {ids:?}"
+    );
+    assert!(
+        !ids.contains(&"o00"),
+        "nothing beyond the overlap is re-read: {ids:?}"
+    );
+    let max_reread = OBSERVATION_REPAIR_OVERLAP_BYTES.div_ceil(record_len);
+    assert!(
+        !reread.is_empty() && reread.len() as u64 <= max_reread,
+        "re-read {} old records; the {OBSERVATION_REPAIR_OVERLAP_BYTES}-byte overlap holds at most \
+         {max_reread}",
+        reread.len()
+    );
+    fs::remove_file(&path).unwrap();
+}
