@@ -916,16 +916,34 @@ fn parse_blocks(
                 kind = EventKind::ToolResult;
                 role = Role::Tool;
             }
-            "thinking" => {
-                let _ = block_obj.get("thinking").and_then(Value::as_str)?;
-            }
+            // Reasoning blocks are dropped by policy, never fatal; the field
+            // may be absent, empty, or redacted by the harness.
+            "thinking" | "redacted_thinking" => {}
             "image" => {}
+            // A block type this build does not model is harness evolution in
+            // context records: the block is dropped and the event survives
+            // with the content this build understands. In a USER record the
+            // request is authoritative, so unmodelled content stays fatal —
+            // it cannot be silently dropped from the user's own instruction.
+            _ if role != Role::User => {}
             _ => return None,
         }
     }
 
     if text_parts.is_empty() && tool_event.is_none() {
-        return None;
+        // A context record whose content was entirely droppable
+        // (reasoning-only, image-only) still carries lineage identity for
+        // branch resolution. A user record with no usable content is
+        // essential-missing input, not an empty request.
+        if role == Role::User {
+            return None;
+        }
+        return Some(ParsedContent {
+            role,
+            kind,
+            text: String::new(),
+            tool: None,
+        });
     }
 
     Some(ParsedContent {

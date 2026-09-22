@@ -386,6 +386,51 @@ fn unsupported_essential_shapes_are_rejected_not_silently_accepted() {
 }
 
 #[test]
+fn droppable_blocks_never_fail_context_records_but_user_content_stays_strict() {
+    // A thinking-only assistant record is policy-dropped content, not
+    // corruption: the event survives with empty text so lineage is intact.
+    let thinking_only = parse(json!({
+        "type": "assistant",
+        "uuid": "asst-thinking",
+        "message": {"role": "assistant", "content": [
+            {"type": "thinking", "thinking": "", "signature": "CAIS"}
+        ]}
+    }));
+    let event = thinking_only.expect("thinking-only assistant record must parse");
+    assert_eq!(event.text.as_str(), "");
+
+    // Unknown block types in context records are harness evolution: dropped,
+    // with the understood content preserved.
+    let mixed = parse(json!({
+        "type": "assistant",
+        "uuid": "asst-mixed",
+        "message": {"role": "assistant", "content": [
+            {"type": "future_block_kind", "val": 1},
+            {"type": "text", "text": "visible answer"}
+        ]}
+    }));
+    assert_eq!(
+        mixed
+            .expect("unknown context block must be dropped")
+            .text
+            .as_str(),
+        "visible answer"
+    );
+
+    // Honest counterpart: unmodelled content in a USER record is the
+    // authoritative request and stays fatal rather than being guessed.
+    let user_unknown = parse(json!({
+        "type": "user",
+        "uuid": "user-unknown",
+        "message": {"role": "user", "content": [
+            {"type": "future_block_kind", "val": 1},
+            {"type": "text", "text": "visible request"}
+        ]}
+    }));
+    assert_eq!(user_unknown, Err(SkipKind::Corrupt));
+}
+
+#[test]
 fn descriptor_bound_snapshot_detects_path_traversal() {
     use skillranker::context::jsonl::{CursorKind, JsonlError, snapshot_jsonl};
     use skillranker::runtime::ProcessInvocation;
