@@ -111,7 +111,10 @@ fn documented_rank_examples_are_valid_contracts() {
 fn every_stable_error_kind_has_the_documented_exit_category() {
     let expected = [
         (2, "invalid-usage invalid-configuration"),
-        (3, "missing-session ambiguous-session superseded"),
+        (
+            3,
+            "missing-session ambiguous-session ambiguous-branch superseded",
+        ),
         (
             4,
             "provider-failure authentication credential-absent network-failure request-budget provider-cooldown budget-state",
@@ -126,7 +129,7 @@ fn every_stable_error_kind_has_the_documented_exit_category() {
             "malformed-input oversized-input unsupported-input unsupported-source-mode insufficient-context output-limit",
         ),
         (8, "network-denied"),
-        (9, "storage-failure"),
+        (9, "storage-failure revision-conflict"),
         (10, "invalid-provider-response"),
         (11, "cache-miss"),
     ];

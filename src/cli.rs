@@ -1312,8 +1312,8 @@ fn feedback_command(
                 )
             }
             crate::storage::FeedbackError::RevisionConflict { expected, actual } => (
-                11u8,
-                "revision-conflict",
+                crate::output::ErrorKind::RevisionConflict.exit_code() as u8,
+                crate::output::ErrorKind::RevisionConflict.as_str(),
                 format!("Ledger revision conflict: expected {expected}, actual {actual}"),
             ),
             crate::storage::FeedbackError::IdenticalSkills => (
@@ -1335,7 +1335,11 @@ fn feedback_command(
                 format!("Ranking event '{id}' not found in ledger"),
             ),
             crate::storage::FeedbackError::StaleStamp => {
-                (11u8, "revision-conflict", "Ledger stamp is stale".into())
+                (
+                    crate::output::ErrorKind::RevisionConflict.exit_code() as u8,
+                    crate::output::ErrorKind::RevisionConflict.as_str(),
+                    "Ledger stamp is stale".into(),
+                )
             }
             crate::storage::FeedbackError::Store(err) => (
                 9u8,
@@ -1826,8 +1830,8 @@ fn observe_command(clock: &EntryClock, matches: &clap::ArgMatches) -> Result<Str
     )
     .map_err(|err| match err {
         crate::storage::StoreError::RecordConflict => (
-            11u8,
-            "revision-conflict",
+            crate::output::ErrorKind::RevisionConflict.exit_code() as u8,
+            crate::output::ErrorKind::RevisionConflict.as_str(),
             "Concurrent transcript observation or cursor conflict".into(),
         ),
         crate::storage::StoreError::Missing => (

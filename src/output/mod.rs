@@ -132,6 +132,7 @@ error_kinds! {
     InvalidConfiguration => ("invalid-configuration", Usage),
     MissingSession => ("missing-session", Session),
     AmbiguousSession => ("ambiguous-session", Session),
+    AmbiguousBranch => ("ambiguous-branch", Session),
     Superseded => ("superseded", Session),
     ProviderFailure => ("provider-failure", Provider),
     Authentication => ("authentication", Provider),
@@ -156,6 +157,7 @@ error_kinds! {
     OutputLimit => ("output-limit", Input),
     NetworkDenied => ("network-denied", Privacy),
     StorageFailure => ("storage-failure", Storage),
+    RevisionConflict => ("revision-conflict", Storage),
     InvalidProviderResponse => ("invalid-provider-response", ProviderContract),
     CacheMiss => ("cache-miss", CacheMiss),
 }

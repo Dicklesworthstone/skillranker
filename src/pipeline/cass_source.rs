@@ -11,6 +11,7 @@ use crate::context::cass::{CassAdapter, CassError, MAX_LISTING, default_config};
 use crate::context::source::SourcePolicy;
 use crate::context::{CurrentRequest, EventKind, NormalizedContext, PrivateText, Role};
 use crate::identity::HarnessId;
+use crate::output::ErrorKind;
 use crate::runtime::EntryClock;
 use crate::subprocess::SubprocessError;
 use asupersync::Cx;
@@ -47,8 +48,7 @@ pub(super) async fn read(
         .find(|session| session.selection.path() == selected.as_path())
     else {
         return Err(failure(
-            3,
-            "missing-session",
+            ErrorKind::MissingSession,
             "The selected cass session is not recorded for this workspace",
         ));
     };
@@ -59,8 +59,7 @@ pub(super) async fn read(
     };
     let harness = HarnessId::new(harness).map_err(|_| {
         failure(
-            7,
-            "unsupported-input",
+            ErrorKind::UnsupportedInput,
             "The cass session names an invalid agent",
         )
     })?;
@@ -100,11 +99,13 @@ fn cass_failure(error: CassError) -> PipelineFailure {
     let message = error.to_string();
     match error {
         CassError::UnsupportedSourceMode | CassError::NotInstalled => {
-            failure(7, "unsupported-source-mode", message)
+            failure(ErrorKind::UnsupportedSourceMode, message)
         }
-        CassError::InvalidResponse => failure(7, "malformed-input", message),
-        CassError::LimitExceeded => failure(7, "oversized-input", message),
-        CassError::Process(SubprocessError::DeadlineExceeded) => failure(6, "timeout", message),
-        _ => failure(7, "unsupported-input", message),
+        CassError::InvalidResponse => failure(ErrorKind::MalformedInput, message),
+        CassError::LimitExceeded => failure(ErrorKind::OversizedInput, message),
+        CassError::Process(SubprocessError::DeadlineExceeded) => {
+            failure(ErrorKind::Timeout, message)
+        }
+        _ => failure(ErrorKind::UnsupportedInput, message),
     }
 }

@@ -105,19 +105,22 @@ with fixed diagnostics. Optional unresolved references contain `reference` and a
 | Exit | Stable `error.kind` values |
 | --- | --- |
 | 2 | `invalid-usage`, `invalid-configuration` |
-| 3 | `missing-session`, `ambiguous-session`, `superseded` |
+| 3 | `missing-session`, `ambiguous-session`, `ambiguous-branch`, `superseded` |
 | 4 | `provider-failure`, `authentication`, `credential-absent`, `network-failure`, `request-budget`, `provider-cooldown`, `budget-state` |
 | 5 | `empty-roster`, `unusable-roster`, `unresolved-explicit`, `incomplete-roster`, `roster-changed`, `retrieval-empty`, `retrieval-failure` |
 | 6 | `timeout` |
 | 7 | `malformed-input`, `oversized-input`, `unsupported-input`, `unsupported-source-mode`, `insufficient-context`, `output-limit` |
 | 8 | `network-denied` |
-| 9 | `storage-failure` |
+| 9 | `storage-failure`, `revision-conflict` |
 | 10 | `invalid-provider-response` |
 | 11 | `cache-miss` |
 
 Codes and kinds must agree. A TypeSafe credential absent from the environment is
 `credential-absent`; a credential the provider rejects is `authentication`.
-Credentials themselves do not grant network consent. Retryability describes a
+Credentials themselves do not grant network consent. `ambiguous-branch` means the
+session's active agent branch could not be resolved from its transcript.
+`revision-conflict` means an explicit mutation lost its `--expected-version` or
+stamp check: re-read and rebase rather than retry. Retryability describes a
 fresh invocation with the intended inputs, not permission to retry past policy
 or deadline limits. Signals and broken pipes remain platform outcomes.
 

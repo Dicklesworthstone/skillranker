@@ -110,6 +110,7 @@ fn test_all_28_error_kinds_and_documented_exit_categories() {
         // Category 3: Session
         (3u8, ErrorKind::MissingSession, "missing-session"),
         (3u8, ErrorKind::AmbiguousSession, "ambiguous-session"),
+        (3u8, ErrorKind::AmbiguousBranch, "ambiguous-branch"),
         (3u8, ErrorKind::Superseded, "superseded"),
         // Category 4: Provider / Network / Budget
         (4u8, ErrorKind::ProviderFailure, "provider-failure"),
@@ -144,6 +145,7 @@ fn test_all_28_error_kinds_and_documented_exit_categories() {
         (8u8, ErrorKind::NetworkDenied, "network-denied"),
         // Category 9: Storage
         (9u8, ErrorKind::StorageFailure, "storage-failure"),
+        (9u8, ErrorKind::RevisionConflict, "revision-conflict"),
         // Category 10: Provider Contract
         (
             10u8,
