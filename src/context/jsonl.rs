@@ -579,7 +579,6 @@ fn is_unmodeled_record(value: &Value) -> bool {
         .and_then(Value::as_str)
         .is_some_and(|native_type| !MODELED_NATIVE_TYPES.contains(&native_type))
 }
-
 fn event_from_value(value: &Value) -> Option<NormalizedEvent> {
     let object = value.as_object()?;
     if object.contains_key("role") && object.contains_key("kind") {
@@ -610,7 +609,19 @@ fn event_from_value(value: &Value) -> Option<NormalizedEvent> {
         });
     }
 
-    let parsed = parse_native_content(object, default_role, default_kind)?;
+    let parsed = match parse_native_content(object, default_role, default_kind) {
+        Some(parsed) => parsed,
+        // System-typed records without message content are harness metadata
+        // (turn duration, API status, boundaries): keep an empty system
+        // event for structure instead of declaring the transcript corrupt.
+        None if native_type == "system" => ParsedContent {
+            role: Role::System,
+            kind: default_kind,
+            text: String::new(),
+            tool: None,
+        },
+        None => return None,
+    };
     // A user message the user did not submit is context, never the request.
     let role = if parsed.role == Role::User
         && parsed.kind == EventKind::Message

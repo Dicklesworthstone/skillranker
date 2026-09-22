@@ -431,6 +431,20 @@ fn droppable_blocks_never_fail_context_records_but_user_content_stays_strict() {
 }
 
 #[test]
+fn metadata_only_system_records_are_empty_events_not_corruption() {
+    let duration = parse(json!({
+        "parentUuid": "p1",
+        "type": "system",
+        "subtype": "turn_duration",
+        "durationMs": 1560506,
+        "uuid": "sys-duration",
+        "sessionId": "s-1"
+    }));
+    let event = duration.expect("metadata-only system record must parse");
+    assert_eq!(event.text.as_str(), "");
+}
+
+#[test]
 fn descriptor_bound_snapshot_detects_path_traversal() {
     use skillranker::context::jsonl::{CursorKind, JsonlError, snapshot_jsonl};
     use skillranker::runtime::ProcessInvocation;
