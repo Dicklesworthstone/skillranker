@@ -122,12 +122,22 @@ impl TestContext {
         ))
     }
 
+    /// Drains within the invocation's remaining time, unless a scenario deliberately ran to its
+    /// deadline and left less than a schedulable window. Then the drain gets its own fresh 1 s
+    /// bound, as the acceptance harness does (sr-5n0b): the slow-handshake case left 178 ms and
+    /// failed under full-suite load while passing alone (sr-87gj). A wedged runtime still fails.
     #[track_caller]
     fn finish(self) {
+        const MIN_SCENARIO_DRAIN_MS: u64 = 250;
         let started_ms = self.clock.now().as_millis();
         let remaining_ms = self.clock.remaining_until_expiry().as_millis();
+        let drained = if remaining_ms >= MIN_SCENARIO_DRAIN_MS {
+            self.invocation.shutdown()
+        } else {
+            self.invocation.shutdown_within(Duration::from_secs(1))
+        };
         assert!(
-            self.invocation.shutdown(),
+            drained,
             "Runtime shutdown failed: start_ms={started_ms} remaining_ms={remaining_ms} finish_ms={}",
             self.clock.now().as_millis()
         );
