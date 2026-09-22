@@ -386,6 +386,40 @@ fn unsupported_essential_shapes_are_rejected_not_silently_accepted() {
 }
 
 #[test]
+fn malformed_system_content_is_not_metadata() {
+    for content in [json!(42), json!({"unexpected": true}), json!([])] {
+        assert_eq!(
+            parse(json!({"type":"system", "uuid":"system-bad",
+                "message":{"role":"system", "content":content}})),
+            Err(SkipKind::Corrupt),
+        );
+    }
+    for field in ["message", "content", "text"] {
+        let mut record = json!({"type":"system", "uuid":"system-bad"});
+        record[field] = json!(42);
+        assert_eq!(parse(record), Err(SkipKind::Corrupt));
+    }
+}
+
+#[test]
+fn unknown_user_blocks_refuse_independently_of_tool_result_order() {
+    let tool = json!({"type":"tool_result", "tool_use_id":"call-1",
+        "content":"result", "is_error":false});
+    let unknown = json!({"type":"future_block_kind", "val":1});
+    for blocks in [json!([tool, unknown]), json!([unknown, tool])] {
+        assert_eq!(
+            parse(json!({"type":"user", "uuid":"user-mixed",
+            "message":{"role":"user", "content":blocks}})),
+            Err(SkipKind::Corrupt)
+        );
+    }
+    let valid = parse(json!({"type":"user", "uuid":"user-tool",
+        "message":{"role":"user", "content":[tool]}}))
+    .unwrap();
+    assert_eq!(valid.role, skillranker::context::Role::Tool);
+}
+
+#[test]
 fn droppable_blocks_never_fail_context_records_but_user_content_stays_strict() {
     // A thinking-only assistant record is policy-dropped content, not
     // corruption: the event survives with empty text so lineage is intact.
