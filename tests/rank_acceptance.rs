@@ -1649,7 +1649,8 @@ fn persistence_reports_disabled_only_when_the_user_disabled_it() {
     let provider = Provider::start(&f, "low-need", &[]);
     // --no-ledger (and --no-persist) disable recording.
     let disabled = rank_args(&provider, f.args(TASK), 10_000).expect("abstain");
-    // By default recording is wanted, but this build has no ledger yet.
+    // Recording is wanted but the private ledger directory was never
+    // initialised, so nothing could be recorded.
     let default = EffectFlags {
         no_ledger: false,
         ..CACHED
@@ -1660,9 +1661,28 @@ fn persistence_reports_disabled_only_when_the_user_disabled_it() {
         10_000,
     )
     .expect("abstain");
+    // With an initialised ledger an abstention commits its event, which is
+    // exactly what `recorded` claims. sr-hwnw's intermittent `recorded` was
+    // this case: a `None` ledger directory resolved the operator's real,
+    // initialised ledger (sr-ksjn).
+    let mut initialised = f.args_with(TASK, "session-2", default, None);
+    let ledger = initialised.ledger_dir.clone().unwrap();
+    {
+        let invocation = ProcessInvocation::enter().unwrap();
+        skillranker::storage::init_ledger(
+            &invocation,
+            &invocation.request_cx().unwrap(),
+            skillranker::storage::LedgerLocation::Directory(ledger.clone()),
+        )
+        .unwrap();
+    }
+    initialised.ledger_dir = Some(ledger);
+    let recorded = rank_args(&provider, initialised, 10_000).expect("abstain");
     provider.finish();
     assert_eq!(disabled["persistence"], "disabled", "{disabled}");
     assert_eq!(wanted["persistence"], "unavailable", "{wanted}");
+    assert_eq!(recorded["decision"], "abstain", "{recorded}");
+    assert_eq!(recorded["persistence"], "recorded", "{recorded}");
 }
 
 #[test]
