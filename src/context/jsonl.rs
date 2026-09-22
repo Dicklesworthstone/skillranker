@@ -614,12 +614,18 @@ fn event_from_value(value: &Value) -> Option<NormalizedEvent> {
         // System-typed records without message content are harness metadata
         // (turn duration, API status, boundaries): keep an empty system
         // event for structure instead of declaring the transcript corrupt.
-        None if native_type == "system" => ParsedContent {
-            role: Role::System,
-            kind: default_kind,
-            text: String::new(),
-            tool: None,
-        },
+        None if native_type == "system"
+            && !object.contains_key("message")
+            && !object.contains_key("content")
+            && !object.contains_key("text") =>
+        {
+            ParsedContent {
+                role: Role::System,
+                kind: default_kind,
+                text: String::new(),
+                tool: None,
+            }
+        }
         None => return None,
     };
     // A user message the user did not submit is context, never the request.
@@ -936,7 +942,7 @@ fn parse_blocks(
             // with the content this build understands. In a USER record the
             // request is authoritative, so unmodelled content stays fatal —
             // it cannot be silently dropped from the user's own instruction.
-            _ if role != Role::User => {}
+            _ if default_role != Role::User => {}
             _ => return None,
         }
     }
