@@ -266,14 +266,9 @@ fn the_undocumented_kinds_are_only_the_known_gap_and_it_has_not_grown() {
 
 /// The undocumented kinds in `src/cli.rs`, which unlike pipeline.rs's are **reachable by a user**.
 ///
-/// Two of these publish something materially untrue, because `src/cli.rs` cannot find the string in
-/// `ErrorKind::ALL` and falls back to guessing from the exit code:
+/// These fall back to a guessed kind because `src/cli.rs` cannot find the string in
+/// `ErrorKind::ALL`:
 ///
-/// - `missing-snapshot` (10) is published as **`invalid-provider-response`**. It is raised when the
-///   roster snapshot retained for an event is incomplete, which is a local coverage condition with
-///   nothing to do with the provider. Reached by walking the documented adoption loop: rank natively,
-///   observe, then `sr feedback --skill <invocation name>`. The documented set already contains
-///   `incomplete-roster` (5), which says exactly what happened.
 /// - `revision-conflict` (11) is published as **`cache-miss`**. Exit 11 is documented as an
 ///   offline/cache-only miss, so a caller told its explicit feedback mutation lost a revision check
 ///   hears "nothing was cached" and may retry rather than re-read. There is no documented conflict
@@ -287,7 +282,6 @@ const KNOWN_UNDOCUMENTED_CLI_KINDS: &[&str] = &[
     "event-not-found",
     "ineligible-alternative",
     "invalid-arguments",
-    "missing-snapshot",
     "revision-conflict",
     "serialization-failure",
     "skill-not-found",
