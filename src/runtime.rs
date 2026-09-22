@@ -91,6 +91,31 @@ impl EntryClock {
         })
     }
 
+    /// The same deadline with half of the cleanup reserve returned to work, for recording
+    /// that this invocation failed.
+    ///
+    /// A run that fails at its work deadline has nothing left to record the failure with, so
+    /// every timeout used to vanish from the ledger, and timeouts are exactly the operational
+    /// failures an availability measure has to count (sr-73b6). Finalizing one typed
+    /// `unavailable` row is cleanup, not new work: it publishes no result, and the other half
+    /// of the reserve stays for output and runtime shutdown. Nothing else may use this clock.
+    pub fn for_failure_finalization(self) -> Self {
+        let reserve = self.deadline.cleanup_reserve().as_millis();
+        let deadline = DurationMillis::new(
+            "failure_finalization_reserve",
+            (reserve / 2).max(1),
+            reserve,
+        )
+        .and_then(|reserve| {
+            InvocationDeadline::new(self.deadline.start(), self.deadline.total(), reserve)
+        })
+        .expect("half of a valid cleanup reserve is a valid cleanup reserve");
+        Self {
+            started: self.started,
+            deadline,
+        }
+    }
+
     pub fn now(&self) -> MonotonicMillis {
         let elapsed = self.started.elapsed();
         let ms = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX);

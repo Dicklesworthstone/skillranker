@@ -251,9 +251,11 @@ session mismatch, branch resolution) is still one `unavailable` row, with
 `agent_branch = "unresolved"` and event id `pre-context-<prompt_id>`, so a failing
 redelivery is not a second turn. The prefix keeps it apart from the full row a later
 successful delivery writes. Without a `prompt_id` the row is keyed to the invocation
-and a redelivery counts again. An invocation whose payload never parses
-has no turn identity and is not recorded: it is the one unmeasured residual of the
-operational-failure denominator.
+and a redelivery counts again. A failure at the work deadline is still recorded: the
+failure row alone may use half of the cleanup reserve. Two residuals stay unmeasured
+and must be declared by any availability report: an invocation whose payload never
+parses (it has no turn identity), and one starved past its own total deadline (there
+is no time left to write without risking the harness's outer timeout).
 
 `latency` reports `mean_ms`, `median_ms`, `p95_ms`, `min_ms`, `max_ms` over turns that
 finished, plus `excluded_unfinished`. An unfinished turn's recorded duration is a

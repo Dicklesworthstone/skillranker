@@ -7,7 +7,9 @@
 //! Every mutation is fenced by store incarnation, schema generation, and data generation.
 
 use super::platform::{DirectoryIdentity, local_filesystem, storage_path};
-use crate::blocking::{BlockingLeafKind, remaining_busy_wait, run_blocking_leaf};
+use crate::blocking::{
+    BlockingLeafKind, remaining_busy_wait, run_blocking_leaf, run_blocking_leaf_with_clock,
+};
 use crate::jev::admission::{AttemptFailure, AttemptOutcome, AttemptProvenance, RankingStage};
 use crate::limits::MonotonicMillis;
 use crate::runtime::{EntryClock, ProcessInvocation};
@@ -5893,6 +5895,7 @@ pub fn record_ranking(
 ) -> Result<bool, StoreError> {
     record_ranking_with_attempts(
         invocation,
+        invocation.clock(),
         cx,
         access,
         location,
@@ -5904,9 +5907,13 @@ pub fn record_ranking(
 }
 
 /// Record a ranking event and the provider attempts it owns, in one transaction.
+///
+/// `clock` bounds every step of the write. It is the invocation's own clock except when
+/// finalizing a failure, which runs on [`EntryClock::for_failure_finalization`].
 #[allow(clippy::too_many_arguments)]
 pub fn record_ranking_with_attempts(
     invocation: &ProcessInvocation,
+    clock: EntryClock,
     cx: &Cx,
     access: LedgerAccess,
     location: LedgerLocation,
@@ -5918,14 +5925,14 @@ pub fn record_ranking_with_attempts(
     if access == LedgerAccess::Disabled {
         return Ok(false);
     }
-    let clock = invocation.clock();
     let child = cx.clone();
     let event = event.clone();
     let candidates = candidates.to_vec();
     let snapshot = snapshot.cloned();
     let attempts = attempts.to_vec();
-    let res = run_blocking_leaf(
+    let res = run_blocking_leaf_with_clock(
         invocation,
+        clock,
         cx,
         BlockingLeafKind::Database,
         false,

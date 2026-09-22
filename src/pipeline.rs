@@ -423,7 +423,6 @@ pub async fn execute_pipeline(
     {
         record_failed_attempts(
             invocation,
-            cx,
             &recording,
             error.1,
             clock.now().as_millis(),
@@ -4033,6 +4032,7 @@ fn record_inflight_ranking(
     matches!(
         crate::storage::record_ranking_with_attempts(
             invocation,
+            invocation.clock(),
             cx,
             crate::storage::LedgerAccess::ExistingOnly,
             location,
@@ -4053,7 +4053,6 @@ fn record_inflight_ranking(
 /// so nothing free-form reaches the ledger.
 fn record_failed_attempts(
     invocation: &ProcessInvocation,
-    cx: &Cx,
     recording: &FailureRecording,
     reason: &str,
     elapsed_ms: u64,
@@ -4081,9 +4080,13 @@ fn record_failed_attempts(
         Some(dir) => crate::storage::LedgerLocation::Directory(dir.to_path_buf()),
         None => crate::storage::LedgerLocation::Platform,
     };
+    // The run may have failed because its work deadline passed, which would refuse this
+    // write too and drop the failure from the availability denominator. Record it inside
+    // the cleanup reserve on a cleanup context instead (sr-73b6).
     let _ = crate::storage::record_ranking_with_attempts(
         invocation,
-        cx,
+        invocation.clock().for_failure_finalization(),
+        &invocation.request_cleanup_cx(),
         crate::storage::LedgerAccess::ExistingOnly,
         location,
         &event,
@@ -4351,6 +4354,7 @@ fn try_record_ledger(
 
     crate::storage::record_ranking_with_attempts(
         invocation,
+        invocation.clock(),
         cx,
         crate::storage::LedgerAccess::ExistingOnly,
         location,
