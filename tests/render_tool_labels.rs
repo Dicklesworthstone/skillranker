@@ -58,7 +58,11 @@ fn context(name: &str) -> NormalizedContext {
         events: vec![
             event("root", None, "ACTIVE_TASK_CANARY"),
             call,
-            event("current", Some("call"), "Explain the Rust compiler diagnostics"),
+            event(
+                "current",
+                Some("call"),
+                "Explain the Rust compiler diagnostics",
+            ),
         ],
         explicit_skill_references: Vec::new(),
         supplied_loads: Vec::new(),
@@ -106,7 +110,10 @@ fn an_oversized_unicode_label_cannot_evict_the_task_or_result() {
     assert!(wire.contains("ACTIVE_RESULT_CANARY"));
     assert_eq!(payload.context_quality, ContextQuality::Partial);
     assert_eq!(
-        receipt.category(SourceCategory::ToolEvents).unwrap().truncated_count,
+        receipt
+            .category(SourceCategory::ToolEvents)
+            .unwrap()
+            .truncated_count,
         1
     );
     receipt.verify_against_payload(&payload).unwrap();
@@ -144,7 +151,12 @@ fn omitted_labels_do_not_trigger_scanning_or_claim_redactions() {
         },
     ] {
         let (payload, receipt) = render_context_and_receipt(&input, &options).unwrap();
-        assert!(payload.recent_messages.iter().all(|message| message.tool.is_none()));
+        assert!(
+            payload
+                .recent_messages
+                .iter()
+                .all(|message| message.tool.is_none())
+        );
         let tools = receipt.category(SourceCategory::ToolEvents).unwrap();
         assert_eq!(tools.included_count, 0);
         assert_eq!(tools.omitted_count, 1);
@@ -220,7 +232,11 @@ fn production_dry_run_redacts_tool_labels_and_no_tools_omits_them() {
     let secret = "ghp_123456789012345678901234567890123456";
     let mut input = context(secret);
     input.workspace_root = PrivateText::new(workspace.to_str().unwrap());
-    fs::write(workspace.join("context.json"), serde_json::to_vec(&input).unwrap()).unwrap();
+    fs::write(
+        workspace.join("context.json"),
+        serde_json::to_vec(&input).unwrap(),
+    )
+    .unwrap();
     for no_tools in [false, true] {
         let mut command = Command::new(env!("CARGO_BIN_EXE_sr"));
         command

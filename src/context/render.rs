@@ -8,8 +8,8 @@ mod session;
 pub use payload::{
     IMAGE_OMISSION_MARKER, MEDIA_OMISSION_MARKER, RenderContextError, RenderContextOptions,
     RenderedContextPayload, RenderedLoadedReference, RenderedMessage, RenderedProjectSignals,
-    RenderedSessionState, detect_languages_from_markers, is_sr_advisory_text,
-    sanitize_media_data, strip_advisory_from_non_user, strip_thinking_blocks,
+    RenderedSessionState, detect_languages_from_markers, is_sr_advisory_text, sanitize_media_data,
+    strip_advisory_from_non_user, strip_thinking_blocks,
 };
 
 pub use labels::TOOL_LABEL_SCALARS;

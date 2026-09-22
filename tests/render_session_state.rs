@@ -49,7 +49,10 @@ fn secrets_in_reference_names_summaries_and_exclusions_are_redacted_not_rejected
     for profile in [ContextProfile::Standard, ContextProfile::Minimal] {
         let options = RenderContextOptions {
             context_profile: profile,
-            loaded_references: vec![reference(&format!("docs-{key}"), &format!("Use {aws} here"))],
+            loaded_references: vec![reference(
+                &format!("docs-{key}"),
+                &format!("Use {aws} here"),
+            )],
             explicit_exclusions: vec![key.to_owned()],
             ..RenderContextOptions::default()
         };
@@ -79,7 +82,10 @@ fn secrets_in_reference_names_summaries_and_exclusions_are_redacted_not_rejected
 #[test]
 fn full_field_redaction_precedes_reference_summary_truncation() {
     let secret = "ghp_123456789012345678901234567890123456";
-    let summary = format!("{} {secret} END", "x".repeat(SESSION_REFERENCE_SUMMARY_SCALARS));
+    let summary = format!(
+        "{} {secret} END",
+        "x".repeat(SESSION_REFERENCE_SUMMARY_SCALARS)
+    );
     let options = RenderContextOptions {
         loaded_references: vec![reference("docs", &summary)],
         ..RenderContextOptions::default()
@@ -107,7 +113,10 @@ fn mandatory_exclusions_are_preserved_before_optional_reference_allocation() {
         ..RenderContextOptions::default()
     };
     let (payload, receipt) = render_context_and_receipt(&context(), &options).unwrap();
-    assert_eq!(payload.session_state.explicit_exclusions, vec![exclusion.clone()]);
+    assert_eq!(
+        payload.session_state.explicit_exclusions,
+        vec![exclusion.clone()]
+    );
     assert!(payload.session_state.loaded_references.is_empty());
     assert_eq!(options.explicit_exclusions, vec![exclusion]);
     let state = receipt.category(SourceCategory::SessionState).unwrap();
@@ -134,14 +143,20 @@ fn unrepresentable_mandatory_constraints_fail_without_truncating_their_names() {
 fn reference_names_are_whole_and_a_large_name_does_not_starve_later_evidence() {
     let options = RenderContextOptions {
         loaded_references: vec![
-            reference(&"x".repeat(SESSION_STATE_SCALARS), "Not a shortened invocation"),
+            reference(
+                &"x".repeat(SESSION_STATE_SCALARS),
+                "Not a shortened invocation",
+            ),
             reference("compiler-reference", "Useful bounded evidence"),
         ],
         ..RenderContextOptions::default()
     };
     let (payload, receipt) = render_context_and_receipt(&context(), &options).unwrap();
     assert_eq!(payload.session_state.loaded_references.len(), 1);
-    assert_eq!(payload.session_state.loaded_references[0].name, "compiler-reference");
+    assert_eq!(
+        payload.session_state.loaded_references[0].name,
+        "compiler-reference"
+    );
     let state = receipt.category(SourceCategory::SessionState).unwrap();
     assert_eq!(state.omitted_count, 1);
     assert_eq!(state.truncated_count, 0);
@@ -179,7 +194,10 @@ fn unicode_session_text_has_a_shared_scalar_budget_and_honest_omissions() {
     assert_eq!(counts.included_count + counts.omitted_count, 41);
     assert_eq!(counts.truncated_count, state.loaded_references.len());
     assert!(counts.omitted_count > 0);
-    assert_eq!(payload.latest_user_request, "Help repair the failing Rust tests");
+    assert_eq!(
+        payload.latest_user_request,
+        "Help repair the failing Rust tests"
+    );
     assert_eq!(payload.context_quality, ContextQuality::Partial);
     receipt.verify_against_payload(&payload).unwrap();
 }
@@ -193,7 +211,10 @@ fn a_reference_record_bound_also_limits_zero_length_summaries() {
         ..RenderContextOptions::default()
     };
     let (payload, receipt) = render_context_and_receipt(&context(), &options).unwrap();
-    assert_eq!(payload.session_state.loaded_references.len(), SESSION_REFERENCE_RECORDS);
+    assert_eq!(
+        payload.session_state.loaded_references.len(),
+        SESSION_REFERENCE_RECORDS
+    );
     let state = receipt.category(SourceCategory::SessionState).unwrap();
     assert_eq!(state.omitted_count, 1);
     assert_eq!(state.truncated_count, 0);
@@ -217,7 +238,10 @@ fn source_byte_and_item_bounds_apply_before_cloning_or_serialization() {
         },
         RenderContextOptions {
             loaded_references: vec![
-                reference("a", &"x".repeat(NORMALIZED_CONTEXT_JSON_BYTES.max() / 2));
+                reference(
+                    "a",
+                    &"x".repeat(NORMALIZED_CONTEXT_JSON_BYTES.max() / 2)
+                );
                 2
             ],
             ..RenderContextOptions::default()
