@@ -1,4 +1,6 @@
 //! Regression for explanation-only failures at legal shortlist sizes.
+mod support;
+
 use asupersync::Cx;
 use serde_json::json;
 use skillranker::config::{ConfigSources, RawValue};
@@ -221,7 +223,7 @@ fn check_capacity(count: usize) {
             workspace: workspace.clone(),
             user_config_root: None,
             home: None,
-            cache_dir: None,
+            cache_dir: Some(support::private_store_dir("cache")),
             sources: sources.clone(),
             gate,
             source_options: SourceOptions {
@@ -238,7 +240,7 @@ fn check_capacity(count: usize) {
             output_table: false,
             dry_run: false,
             save_case: None,
-            ledger_dir: None,
+            ledger_dir: Some(support::private_store_dir("ledger")),
         };
         let doc = invocation
             .runtime()

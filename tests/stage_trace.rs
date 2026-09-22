@@ -2,6 +2,8 @@
 //!
 //! Satisfies contract boundary `p4_explain_exclusion_stages` (sr-roadmap-l1i.5.14).
 
+mod support;
+
 use asupersync::Cx;
 use serde_json::json;
 use skillranker::config::ConfigSources;
@@ -315,7 +317,7 @@ fn test_paired_runs_identical_evaluation_with_and_without_explain() {
         workspace: workspace.clone(),
         user_config_root: None,
         home: None,
-        cache_dir: None,
+        cache_dir: Some(support::private_store_dir("cache")),
         sources: sources.clone(),
         gate,
         source_options: source_options.clone(),
@@ -329,7 +331,7 @@ fn test_paired_runs_identical_evaluation_with_and_without_explain() {
         output_table: false,
         dry_run: false,
         save_case: None,
-        ledger_dir: None,
+        ledger_dir: Some(support::private_store_dir("ledger")),
     };
     let doc_a = inv_a
         .runtime()
@@ -345,7 +347,7 @@ fn test_paired_runs_identical_evaluation_with_and_without_explain() {
         workspace: workspace.clone(),
         user_config_root: None,
         home: None,
-        cache_dir: None,
+        cache_dir: Some(support::private_store_dir("cache")),
         sources: sources.clone(),
         gate,
         source_options: source_options.clone(),
@@ -359,7 +361,7 @@ fn test_paired_runs_identical_evaluation_with_and_without_explain() {
         output_table: false,
         dry_run: false,
         save_case: None,
-        ledger_dir: None,
+        ledger_dir: Some(support::private_store_dir("ledger")),
     };
     let doc_b = inv_b
         .runtime()
@@ -375,7 +377,7 @@ fn test_paired_runs_identical_evaluation_with_and_without_explain() {
         workspace: workspace.clone(),
         user_config_root: None,
         home: None,
-        cache_dir: None,
+        cache_dir: Some(support::private_store_dir("cache")),
         sources,
         gate,
         source_options,
@@ -389,7 +391,7 @@ fn test_paired_runs_identical_evaluation_with_and_without_explain() {
         output_table: false,
         dry_run: false,
         save_case: None,
-        ledger_dir: None,
+        ledger_dir: Some(support::private_store_dir("ledger")),
     };
     let doc_c = inv_c
         .runtime()
@@ -475,7 +477,7 @@ fn test_unknown_skill_id_produces_not_in_snapshot_without_broadening_discovery()
         workspace: workspace.clone(),
         user_config_root: None,
         home: None,
-        cache_dir: None,
+        cache_dir: Some(support::private_store_dir("cache")),
         sources,
         gate,
         source_options,
@@ -489,7 +491,7 @@ fn test_unknown_skill_id_produces_not_in_snapshot_without_broadening_discovery()
         output_table: false,
         dry_run: false,
         save_case: None,
-        ledger_dir: None,
+        ledger_dir: Some(support::private_store_dir("ledger")),
     };
 
     let doc = inv
@@ -584,7 +586,7 @@ fn test_early_exclusion_marks_subsequent_stages_not_evaluated() {
         workspace: workspace.clone(),
         user_config_root: None,
         home: None,
-        cache_dir: None,
+        cache_dir: Some(support::private_store_dir("cache")),
         sources,
         gate,
         source_options,
@@ -598,7 +600,7 @@ fn test_early_exclusion_marks_subsequent_stages_not_evaluated() {
         output_table: false,
         dry_run: false,
         save_case: None,
-        ledger_dir: None,
+        ledger_dir: Some(support::private_store_dir("ledger")),
     };
 
     let doc = inv
@@ -680,7 +682,7 @@ fn test_every_exclusion_reason_with_success_twin() {
         workspace: workspace.clone(),
         user_config_root: None,
         home: None,
-        cache_dir: None,
+        cache_dir: Some(support::private_store_dir("cache")),
         sources: sources.clone(),
         gate,
         source_options: source_options.clone(),
@@ -694,7 +696,7 @@ fn test_every_exclusion_reason_with_success_twin() {
         output_table: false,
         dry_run: false,
         save_case: None,
-        ledger_dir: None,
+        ledger_dir: Some(support::private_store_dir("ledger")),
     };
     let doc_ex = inv_ex
         .runtime()
@@ -721,7 +723,7 @@ fn test_every_exclusion_reason_with_success_twin() {
         workspace: workspace.clone(),
         user_config_root: None,
         home: None,
-        cache_dir: None,
+        cache_dir: Some(support::private_store_dir("cache")),
         sources,
         gate,
         source_options,
@@ -735,7 +737,7 @@ fn test_every_exclusion_reason_with_success_twin() {
         output_table: false,
         dry_run: false,
         save_case: None,
-        ledger_dir: None,
+        ledger_dir: Some(support::private_store_dir("ledger")),
     };
     let doc_el = inv_el
         .runtime()
@@ -791,7 +793,7 @@ fn test_stage_trace_contract_and_round_trip() {
         workspace: workspace.clone(),
         user_config_root: None,
         home: None,
-        cache_dir: None,
+        cache_dir: Some(support::private_store_dir("cache")),
         sources,
         gate,
         source_options,
@@ -805,7 +807,7 @@ fn test_stage_trace_contract_and_round_trip() {
         output_table: false,
         dry_run: false,
         save_case: None,
-        ledger_dir: None,
+        ledger_dir: Some(support::private_store_dir("ledger")),
     };
 
     let doc = inv
@@ -871,7 +873,7 @@ fn test_table_view_trace_rendering_and_recovery_hints() {
         workspace: workspace.clone(),
         user_config_root: None,
         home: None,
-        cache_dir: None,
+        cache_dir: Some(support::private_store_dir("cache")),
         sources,
         gate,
         source_options,
@@ -885,7 +887,7 @@ fn test_table_view_trace_rendering_and_recovery_hints() {
         output_table: true,
         dry_run: false,
         save_case: None,
-        ledger_dir: None,
+        ledger_dir: Some(support::private_store_dir("ledger")),
     };
 
     let doc = inv

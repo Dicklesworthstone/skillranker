@@ -3,6 +3,8 @@
 //! is replaced: real discovery, reads, option maps, both codecs, eligibility,
 //! scoring and publication revalidation run. No provider is contacted.
 
+mod support;
+
 use asupersync::Cx;
 use serde_json::json;
 use skillranker::config::ConfigSources;
@@ -243,8 +245,8 @@ impl Fixture {
             workspace: self.workspace.clone(),
             user_config_root: Some(self.root.join("config")),
             home: Some(self.home.clone()),
-            cache_dir: None,
-            ledger_dir: None,
+            cache_dir: Some(support::private_store_dir("cache")),
+            ledger_dir: Some(support::private_store_dir("ledger")),
             sources,
             gate,
             source_options: SourceOptions {

@@ -11,6 +11,8 @@
 //! it binds a real one. No-claim: the `sr` binary itself cannot trust a
 //! fixture CA, so this proves pipeline branches over real TLS with an injected
 //! client, not the binary's own client or live Jev behavior.
+mod support;
+
 use asupersync::tls::Certificate;
 use serde_json::{Value, json};
 use skillranker::config::ConfigSources;
@@ -232,7 +234,7 @@ impl Fixture {
             user_config_root: Some(self.root.join("config")),
             home: None,
             cache_dir,
-            ledger_dir: None,
+            ledger_dir: Some(support::private_store_dir("ledger")),
             sources: ConfigSources {
                 environment: vec![(
                     OsString::from("TYPESAFE_API_KEY"),
@@ -371,7 +373,11 @@ fn rank_args(provider: &Provider, args: RankArgs, total_ms: u64) -> Outcome {
         DurationMillis::new("acceptance-cleanup", 200, 30_000).unwrap(),
     )
     .unwrap();
-    let invocation = ProcessInvocation::from_clock(clock).unwrap();
+    // A small pool keeps drain cost deterministic: shutdown joins workers
+    // serially, and on a 64-core host under load a 64-worker runtime cannot
+    // drain inside any honest window. These tests need concurrency, not
+    // breadth.
+    let invocation = ProcessInvocation::from_clock_with_blocking_pool(clock, 1, 4).unwrap();
     let startup_ms = clock.now().as_millis();
     let cx = invocation.request_cx().unwrap();
     let client = provider.client();

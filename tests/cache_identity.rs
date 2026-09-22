@@ -2,6 +2,8 @@
 //! produced it, which agent it belongs to and which native branch is active.
 //! Identical redacted requests from different producers, agents, forks or
 //! source kinds must never share a cached answer or a single-flight lease.
+mod support;
+
 use asupersync::Cx;
 use serde_json::{Value, json};
 use skillranker::cache::{
@@ -285,7 +287,7 @@ impl Workspace {
             user_config_root: Some(self.root.join("config")),
             home: None,
             cache_dir: Some(self.cache()),
-            ledger_dir: None,
+            ledger_dir: Some(support::private_store_dir("ledger")),
             sources: ConfigSources {
                 environment: vec![(
                     std::ffi::OsString::from("TYPESAFE_API_KEY"),

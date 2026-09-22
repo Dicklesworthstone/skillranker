@@ -3,6 +3,8 @@
 //!
 //! Satisfies contract boundary `p4_two_stage_pipeline` (sr-roadmap-l1i.5.11).
 
+mod support;
+
 use asupersync::Cx;
 use serde_json::{Value, json};
 use skillranker::config::ConfigSources;
@@ -178,7 +180,7 @@ fn test_explicit_directive_bypasses_inference() {
         workspace: workspace.clone(),
         user_config_root: None,
         home: None,
-        cache_dir: None,
+        cache_dir: Some(support::private_store_dir("cache")),
         sources: ConfigSources::default(),
         gate,
         source_options,
@@ -192,7 +194,7 @@ fn test_explicit_directive_bypasses_inference() {
         output_table: false,
         dry_run: false,
         save_case: None,
-        ledger_dir: None,
+        ledger_dir: Some(support::private_store_dir("ledger")),
     };
 
     let doc = invocation
@@ -358,7 +360,7 @@ fn test_ranked_flow_with_mock_jev() {
         workspace: workspace.clone(),
         user_config_root: None,
         home: None,
-        cache_dir: None,
+        cache_dir: Some(support::private_store_dir("cache")),
         sources,
         gate,
         source_options,
@@ -372,7 +374,7 @@ fn test_ranked_flow_with_mock_jev() {
         output_table: false,
         dry_run: false,
         save_case: None,
-        ledger_dir: None,
+        ledger_dir: Some(support::private_store_dir("ledger")),
     };
 
     let doc = invocation
@@ -492,7 +494,7 @@ fn test_low_need_abstention() {
         workspace: workspace.clone(),
         user_config_root: None,
         home: None,
-        cache_dir: None,
+        cache_dir: Some(support::private_store_dir("cache")),
         sources,
         gate,
         source_options,
@@ -506,7 +508,7 @@ fn test_low_need_abstention() {
         output_table: false,
         dry_run: false,
         save_case: None,
-        ledger_dir: None,
+        ledger_dir: Some(support::private_store_dir("ledger")),
     };
 
     let doc = invocation
@@ -564,7 +566,7 @@ fn test_dry_run_preview_without_network() {
         workspace: workspace.clone(),
         user_config_root: None,
         home: None,
-        cache_dir: None,
+        cache_dir: Some(support::private_store_dir("cache")),
         sources: ConfigSources::default(),
         gate,
         source_options,
@@ -578,7 +580,7 @@ fn test_dry_run_preview_without_network() {
         output_table: false,
         dry_run: true,
         save_case: None,
-        ledger_dir: None,
+        ledger_dir: Some(support::private_store_dir("ledger")),
     };
 
     let doc = invocation
@@ -792,7 +794,7 @@ fn test_low_fit_abstention() {
         workspace: workspace.clone(),
         user_config_root: None,
         home: None,
-        cache_dir: None,
+        cache_dir: Some(support::private_store_dir("cache")),
         sources,
         gate,
         source_options,
@@ -806,7 +808,7 @@ fn test_low_fit_abstention() {
         output_table: false,
         dry_run: false,
         save_case: None,
-        ledger_dir: None,
+        ledger_dir: Some(support::private_store_dir("ledger")),
     };
 
     let doc = invocation
@@ -959,7 +961,7 @@ fn test_none_winner_abstention() {
         workspace: workspace.clone(),
         user_config_root: None,
         home: None,
-        cache_dir: None,
+        cache_dir: Some(support::private_store_dir("cache")),
         sources,
         gate,
         source_options,
@@ -973,7 +975,7 @@ fn test_none_winner_abstention() {
         output_table: false,
         dry_run: false,
         save_case: None,
-        ledger_dir: None,
+        ledger_dir: Some(support::private_store_dir("ledger")),
     };
 
     let doc = invocation

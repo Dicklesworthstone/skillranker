@@ -9,6 +9,8 @@
 //! structured JSON / table outputs, offline demo, dry-run guarantees, and
 //! fenced coordination response cache satisfy all foundational invariants.
 
+mod support;
+
 use asupersync::Cx;
 use serde_json::json;
 use skillranker::cache::{
@@ -166,8 +168,8 @@ fn gate_rank_args(
         workspace,
         user_config_root: None,
         home: None,
-        cache_dir: None,
-        ledger_dir: None,
+        cache_dir: Some(support::private_store_dir("cache")),
+        ledger_dir: Some(support::private_store_dir("ledger")),
         sources: ConfigSources::default(),
         gate,
         source_options,

@@ -26,6 +26,8 @@
 //!      resulting unavailable document preserves provider request and HTTP attempt
 //!      metrics incurred during inference.
 
+mod support;
+
 use asupersync::tls::Certificate;
 use serde_json::{Value, json};
 use skillranker::config::ConfigSources;
@@ -509,8 +511,8 @@ fn make_pipeline_args(root: &Path, save_case: Option<PathBuf>) -> RankArgs {
         workspace: root.join("workspace"),
         user_config_root: Some(root.join("config")),
         home: Some(root.join("home")),
-        cache_dir: None,
-        ledger_dir: None,
+        cache_dir: Some(support::private_store_dir("cache")),
+        ledger_dir: Some(support::private_store_dir("ledger")),
         sources: ConfigSources {
             environment: vec![(
                 OsString::from("TYPESAFE_API_KEY"),

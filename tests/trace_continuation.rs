@@ -1,5 +1,7 @@
 //! Satisfies contract boundary `p4_explain_exclusion_stages` (sr-roadmap-l1i.5.14).
 
+mod support;
+
 use asupersync::Cx;
 use serde_json::{Value, json};
 use skillranker::config::{ConfigSources, RawValue};
@@ -381,7 +383,7 @@ fn test_trace_continuation_full_pagination() {
             output_table: false,
             dry_run: false,
             save_case: None,
-            ledger_dir: None,
+            ledger_dir: Some(support::private_store_dir("ledger")),
         };
         invocation
             .runtime()
@@ -495,7 +497,7 @@ fn test_trace_continuation_rejects_changed_snapshot() {
         workspace: workspace.clone(),
         user_config_root: None,
         home: None,
-        cache_dir: None,
+        cache_dir: Some(support::private_store_dir("cache")),
         sources: sources.clone(),
         gate,
         source_options: SourceOptions {
@@ -512,7 +514,7 @@ fn test_trace_continuation_rejects_changed_snapshot() {
         output_table: false,
         dry_run: false,
         save_case: None,
-        ledger_dir: None,
+        ledger_dir: Some(support::private_store_dir("ledger")),
     };
     let doc = invocation
         .runtime()
@@ -539,7 +541,7 @@ fn test_trace_continuation_rejects_changed_snapshot() {
         workspace: workspace.clone(),
         user_config_root: None,
         home: None,
-        cache_dir: None,
+        cache_dir: Some(support::private_store_dir("cache")),
         sources: sources.clone(),
         gate,
         source_options: SourceOptions {
@@ -556,7 +558,7 @@ fn test_trace_continuation_rejects_changed_snapshot() {
         output_table: false,
         dry_run: false,
         save_case: None,
-        ledger_dir: None,
+        ledger_dir: Some(support::private_store_dir("ledger")),
     };
     let doc = invocation2
         .runtime()
@@ -631,7 +633,7 @@ fn test_trace_continuation_rejects_changed_query() {
         workspace: workspace.clone(),
         user_config_root: None,
         home: None,
-        cache_dir: None,
+        cache_dir: Some(support::private_store_dir("cache")),
         sources: sources.clone(),
         gate,
         source_options: SourceOptions {
@@ -648,7 +650,7 @@ fn test_trace_continuation_rejects_changed_query() {
         output_table: false,
         dry_run: false,
         save_case: None,
-        ledger_dir: None,
+        ledger_dir: Some(support::private_store_dir("ledger")),
     };
     let doc = invocation
         .runtime()
@@ -669,7 +671,7 @@ fn test_trace_continuation_rejects_changed_query() {
         workspace: workspace.clone(),
         user_config_root: None,
         home: None,
-        cache_dir: None,
+        cache_dir: Some(support::private_store_dir("cache")),
         sources: sources.clone(),
         gate,
         source_options: SourceOptions {
@@ -686,7 +688,7 @@ fn test_trace_continuation_rejects_changed_query() {
         output_table: false,
         dry_run: false,
         save_case: None,
-        ledger_dir: None,
+        ledger_dir: Some(support::private_store_dir("ledger")),
     };
     let doc = invocation2
         .runtime()
@@ -780,7 +782,7 @@ fn test_trace_continuation_rejects_out_of_bounds_offset() {
         output_table: false,
         dry_run: false,
         save_case: None,
-        ledger_dir: None,
+        ledger_dir: Some(support::private_store_dir("ledger")),
     };
     let doc = invocation
         .runtime()
@@ -817,7 +819,7 @@ fn test_trace_continuation_rejects_out_of_bounds_offset() {
         output_table: false,
         dry_run: false,
         save_case: None,
-        ledger_dir: None,
+        ledger_dir: Some(support::private_store_dir("ledger")),
     };
     let doc = invocation2
         .runtime()
@@ -910,7 +912,7 @@ fn test_trace_continuation_rejects_changed_history() {
         output_table: false,
         dry_run: false,
         save_case: None,
-        ledger_dir: None,
+        ledger_dir: Some(support::private_store_dir("ledger")),
     };
     let doc = invocation
         .runtime()
@@ -962,7 +964,7 @@ fn test_trace_continuation_rejects_changed_history() {
         output_table: false,
         dry_run: false,
         save_case: None,
-        ledger_dir: None,
+        ledger_dir: Some(support::private_store_dir("ledger")),
     };
     let doc = invocation2
         .runtime()
@@ -1050,7 +1052,7 @@ fn test_trace_continuation_rejects_changed_provider_answer() {
         output_table: false,
         dry_run: false,
         save_case: None,
-        ledger_dir: None,
+        ledger_dir: Some(support::private_store_dir("ledger")),
     };
     let doc = invocation
         .runtime()
@@ -1105,7 +1107,7 @@ fn test_trace_continuation_rejects_changed_provider_answer() {
         output_table: false,
         dry_run: false,
         save_case: None,
-        ledger_dir: None,
+        ledger_dir: Some(support::private_store_dir("ledger")),
     };
     let doc = invocation2
         .runtime()
@@ -1205,7 +1207,7 @@ fn test_trace_continuation_rejects_changed_model_or_policy() {
         output_table: false,
         dry_run: false,
         save_case: None,
-        ledger_dir: None,
+        ledger_dir: Some(support::private_store_dir("ledger")),
     };
     let doc = invocation
         .runtime()
@@ -1248,7 +1250,7 @@ fn test_trace_continuation_rejects_changed_model_or_policy() {
         output_table: false,
         dry_run: false,
         save_case: None,
-        ledger_dir: None,
+        ledger_dir: Some(support::private_store_dir("ledger")),
     };
     let doc = invocation2
         .runtime()
@@ -1319,7 +1321,7 @@ fn test_trace_continuation_refuses_when_no_cache() {
         workspace: workspace.clone(),
         user_config_root: None,
         home: None,
-        cache_dir: None,
+        cache_dir: Some(support::private_store_dir("cache")),
         sources: sources.clone(),
         gate,
         source_options: SourceOptions {
@@ -1336,7 +1338,7 @@ fn test_trace_continuation_refuses_when_no_cache() {
         output_table: false,
         dry_run: false,
         save_case: None,
-        ledger_dir: None,
+        ledger_dir: Some(support::private_store_dir("ledger")),
     };
     let doc = invocation
         .runtime()
@@ -1356,7 +1358,7 @@ fn test_trace_continuation_refuses_when_no_cache() {
         workspace: workspace.clone(),
         user_config_root: None,
         home: None,
-        cache_dir: None,
+        cache_dir: Some(support::private_store_dir("cache")),
         sources,
         gate,
         source_options: SourceOptions {
@@ -1373,7 +1375,7 @@ fn test_trace_continuation_refuses_when_no_cache() {
         output_table: false,
         dry_run: false,
         save_case: None,
-        ledger_dir: None,
+        ledger_dir: Some(support::private_store_dir("ledger")),
     };
     let doc = invocation2
         .runtime()
@@ -1435,7 +1437,7 @@ fn test_trace_continuation_explicit_local_success() {
         workspace: workspace.clone(),
         user_config_root: None,
         home: None,
-        cache_dir: None,
+        cache_dir: Some(support::private_store_dir("cache")),
         sources: sources.clone(),
         gate,
         source_options: SourceOptions {
@@ -1452,7 +1454,7 @@ fn test_trace_continuation_explicit_local_success() {
         output_table: false,
         dry_run: false,
         save_case: None,
-        ledger_dir: None,
+        ledger_dir: Some(support::private_store_dir("ledger")),
     };
     let doc = invocation
         .runtime()
@@ -1484,7 +1486,7 @@ fn test_trace_continuation_explicit_local_success() {
         workspace: workspace.clone(),
         user_config_root: None,
         home: None,
-        cache_dir: None,
+        cache_dir: Some(support::private_store_dir("cache")),
         sources,
         gate,
         source_options: SourceOptions {
@@ -1501,7 +1503,7 @@ fn test_trace_continuation_explicit_local_success() {
         output_table: false,
         dry_run: false,
         save_case: None,
-        ledger_dir: None,
+        ledger_dir: Some(support::private_store_dir("ledger")),
     };
     let doc2 = invocation2
         .runtime()
