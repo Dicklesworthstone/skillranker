@@ -102,6 +102,11 @@ pub enum SkipKind {
     Oversize,
     Corrupt,
     DuplicateKey,
+    /// Valid JSON whose declared record type is not a conversation event this
+    /// reader models: harness-internal records such as attachments, queue
+    /// operations, titles, or mode markers. Expected on real transcripts and
+    /// not evidence of corruption or missing conversation content.
+    Unmodeled,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -546,7 +551,33 @@ pub fn parse_line(line: &[u8]) -> Result<NormalizedEvent, SkipKind> {
             AdapterError::DuplicateKey => SkipKind::DuplicateKey,
             _ => SkipKind::Corrupt,
         })?;
+    if is_unmodeled_record(&value) {
+        return Err(SkipKind::Unmodeled);
+    }
     event_from_value(&value).ok_or(SkipKind::Corrupt)
+}
+
+/// Record types this reader models as conversation events. A record whose
+/// declared `type` is anything else is harness-internal metadata, not a
+/// malformed event: current Claude transcripts interleave attachment, queue,
+/// title, and mode records with conversation records.
+const MODELED_NATIVE_TYPES: &[&str] = &[
+    "user",
+    "assistant",
+    "tool_use",
+    "tool_invocation",
+    "tool_result",
+    "compaction",
+    "resume",
+    "system",
+];
+
+fn is_unmodeled_record(value: &Value) -> bool {
+    value
+        .as_object()
+        .and_then(|object| object.get("type"))
+        .and_then(Value::as_str)
+        .is_some_and(|native_type| !MODELED_NATIVE_TYPES.contains(&native_type))
 }
 
 fn event_from_value(value: &Value) -> Option<NormalizedEvent> {
