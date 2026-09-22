@@ -123,3 +123,15 @@ fast successful calls is forbidden by AGENTS.md.
 - Credential environment: agent sessions launched without
   `TYPESAFE_API_KEY` record honest credential-absent turns; sessions needing
   live evaluations must be launched with the maintainer `.env` sourced.
+
+## Scope correction — 2026-09-22 (sr-shadow-consent-scope-ne8b)
+
+The initial install put the managed entry in the **global**
+`~/.claude/settings.json`, which recorded sessions from every project on the
+machine — wider than §1's one-repository consent. The hook now lives only in
+`/data/projects/skillranker/.claude/settings.local.json` (gitignored), so only
+this repository's sessions are recorded or transmitted; the global file keeps
+just the pre-existing compact-check hook. Sessions recorded while out of
+scope remain in the ledger pending an explicit maintainer retention decision;
+physical removal is an explicit ledger operation, not something done
+unilaterally. A peer audit (`b07403e`) identified the scope violation.
