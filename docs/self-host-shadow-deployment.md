@@ -96,3 +96,30 @@ p50/p95/p99 latency across cold, warm-network, and exact-cache strata;
 memory; requests and known/unknown token counts; the declared population
 statement from §2; the binary revision and roster size range. Reporting only
 fast successful calls is forbidden by AGENTS.md.
+
+
+## Deployment receipt — 2026-09-22 (executed)
+
+- Binary: `~/.local/bin/sr`, SHA256
+  `badfa6a9a9bb5711a51873a86b15389d192ac89b4fe59b9fea342464c2df39ed`, built
+  `--release --locked` from `5dcdb9a` (the same session's overlay/parser fixes;
+  earlier binary backed up to `~/.local/bin/sr.backup-20260921`).
+- Ledger: initialized at `~/.local/share/sr/ledger.sqlite3` (schema 1).
+- Config: `~/.config/sr/config.toml` carries `[network] enabled = true`
+  (trusted-user consent); hook mode remains shadow (built-in default).
+- Hook: managed entry applied to `~/.claude/settings.json` (timeout 4,
+  existing compact-check entry preserved; backup in `~/.local/state/sr/backups`).
+- Smoke: three overlay/parser defects were found and fixed before the hook
+  could process a real transcript (sr-j4k9 plus follow-ups): unmodeled
+  harness records were fatal, thinking-only/unknown blocks were fatal, and
+  subagent sidechain leaves made branch resolution fail. Post-fix smoke on a
+  real 79 MB session transcript: overlay succeeds, and with
+  `TYPESAFE_API_KEY` present a full two-stage Jev evaluation completed and
+  recorded 21,738 known tokens across two attempts. Shadow mode emitted zero
+  bytes throughout.
+- Known gaps found by the smoke, filed as beads: sr-e8vm (deduplicated
+  redelivery accounting), sr-ksjn (a test wrote into the operator's real
+  ledger).
+- Credential environment: agent sessions launched without
+  `TYPESAFE_API_KEY` record honest credential-absent turns; sessions needing
+  live evaluations must be launched with the maintainer `.env` sourced.

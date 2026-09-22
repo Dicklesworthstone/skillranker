@@ -19,7 +19,7 @@ use crate::adapter::{ClaudeUserPromptSubmit, decode_json};
 use crate::authorized_read::{AuthorizedRoot, AuthorizedRoots, FileKind, ReadError};
 use crate::context::branch::{ActiveBranch, BranchResolutionTarget, resolve_active_branch};
 use crate::context::jsonl::{SkipKind, parse_line};
-use crate::context::{CurrentRequest, EventKind, NormalizedEvent, Role};
+use crate::context::{CurrentRequest, EventKind, NormalizedEvent, PrivateText, Role};
 use crate::identity::{BranchId, EventId, SessionId};
 use crate::limits::{
     NATIVE_TRANSCRIPT_TAIL_BYTES, NATIVE_TRANSCRIPT_TAIL_RECORDS, ONE_TRANSCRIPT_RECORD_BYTES,
@@ -252,32 +252,7 @@ pub fn apply_claude_prompt_overlay_before(
     let mut event_ids = BTreeSet::new();
     let mut sidechain_ids: BTreeSet<EventId> = BTreeSet::new();
     let mut native_lineage = false;
-    for line in lines {
-        checkpoint(clock)?;
-        // Harness-internal records (attachments, queue operations, titles,
-        // mode markers) are expected in real transcripts and carry no
-        // conversation event for this overlay; genuine malformation stays
-        // fatal because the overlay binds the authoritative prompt.
-        let event = match parse_line(line) {
-            Ok(event) => event,
-            Err(SkipKind::Unmodeled) => continue,
-            Err(kind) => {
-                return Err(match kind {
-                    SkipKind::Corrupt => malformed("corrupt transcript JSON record"),
-                    SkipKind::DuplicateKey => malformed("duplicate key in transcript record"),
-                    SkipKind::Oversize => malformed("transcript record exceeds byte limit"),
-                    SkipKind::Unmodeled => unreachable!("handled above"),
-                });
-            }
-        };
-        let value = decode_json(line, ONE_TRANSCRIPT_RECORD_BYTES.max())
-            .map_err(|_| malformed("corrupt, duplicate or oversized transcript record"))?;
-        if value.get("isSidechain").and_then(Value::as_bool) == Some(true)
-            && let Some(id) = &event.event_id
-        {
-            sidechain_ids.insert(id.clone());
-        }
-        native_lineage |= value.get("parentUuid").is_some();
+    let check_session = |value: &Value| -> Result<(), OverlayError> {
         for key in ["sessionId", "session_id"] {
             if let Some(observed) = value.get(key) {
                 let observed = observed
@@ -296,6 +271,84 @@ pub fn apply_claude_prompt_overlay_before(
                 }
             }
         }
+        Ok(())
+    };
+    for line in lines {
+        checkpoint(clock)?;
+        // Harness-internal records (attachments, queue operations, titles,
+        // mode markers) carry no conversation content for this overlay, but
+        // they ARE lineage nodes: current transcripts chain parentUuid
+        // through them, so dropping the node would shatter the graph into
+        // hundreds of one-event sub-chains. They become empty system events
+        // that preserve the edge; genuine malformation stays fatal because
+        // the overlay binds the authoritative prompt.
+        let event = match parse_line(line) {
+            Err(SkipKind::Oversize) => {
+                return Err(malformed("transcript record exceeds byte limit"));
+            }
+            Err(SkipKind::DuplicateKey) => {
+                return Err(malformed("duplicate key in transcript record"));
+            }
+            Err(SkipKind::Corrupt) => {
+                return Err(malformed("corrupt transcript JSON record"));
+            }
+            Ok(event) => event,
+            Err(SkipKind::Unmodeled) => {
+                // Lineage pass-through: the record carries no conversation
+                // content, but current transcripts chain parentUuid through
+                // harness-internal records, so the node must survive as an
+                // empty system event or the graph shatters into one-event
+                // sub-chains.
+                let value = decode_json(line, ONE_TRANSCRIPT_RECORD_BYTES.max())
+                    .map_err(|_| malformed("corrupt, duplicate or oversized transcript record"))?;
+                check_session(&value)?;
+                let Some(event_id) = value
+                    .get("uuid")
+                    .or_else(|| value.get("event_id"))
+                    .and_then(Value::as_str)
+                    .and_then(|v| EventId::new(v.to_owned()).ok())
+                else {
+                    continue;
+                };
+                if value.get("isSidechain").and_then(Value::as_bool) == Some(true) {
+                    sidechain_ids.insert(event_id.clone());
+                }
+                native_lineage |= value.get("parentUuid").is_some();
+                let parent_id = value
+                    .get("parentUuid")
+                    .or_else(|| value.get("parent_id"))
+                    .and_then(Value::as_str)
+                    .and_then(|v| EventId::new(v.to_owned()).ok());
+                let placeholder = NormalizedEvent {
+                    event_id: Some(event_id),
+                    parent_id,
+                    turn_id: None,
+                    agent_id: None,
+                    branch_id: None,
+                    role: Role::System,
+                    kind: EventKind::Message,
+                    timestamp_unix_ms: None,
+                    text: PrivateText::new(String::new()),
+                    tool: None,
+                };
+                if let Some(id) = &placeholder.event_id
+                    && !event_ids.insert(id.clone())
+                {
+                    return Err(malformed("duplicate transcript event identity"));
+                }
+                parsed_events.push(placeholder);
+                continue;
+            }
+        };
+        let value = decode_json(line, ONE_TRANSCRIPT_RECORD_BYTES.max())
+            .map_err(|_| malformed("corrupt, duplicate or oversized transcript record"))?;
+        if value.get("isSidechain").and_then(Value::as_bool) == Some(true)
+            && let Some(id) = &event.event_id
+        {
+            sidechain_ids.insert(id.clone());
+        }
+        native_lineage |= value.get("parentUuid").is_some();
+        check_session(&value)?;
         if let Some(id) = &event.event_id
             && !event_ids.insert(id.clone())
         {
