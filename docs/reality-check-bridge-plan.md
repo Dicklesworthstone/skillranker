@@ -1,10 +1,165 @@
 # SkillRanker reality check and bridge plan
 
-Latest assessment: 2026-09-21 UTC, second executable-journey pass at `a82abbb`, plus a 2026-09-22 execution addendum (beads closed, shadow deployment live). Earlier reviews and receipts are retained below as
+Latest assessment: 2026-09-22 UTC evening, live-deployment audit at `09f93b8`. Earlier reviews and receipts are retained below as
 history. Inventory and ownership statements describe their stated snapshots, not
 a frozen release or a product-completion percentage.
 
-## Current assessment — 2026-09-21 UTC, second executable-journey pass (plus 2026-09-22 execution addendum)
+## Current assessment — 2026-09-22 UTC evening, live-deployment audit at `09f93b8`
+
+**The previous pass framed the self-hosted shadow deployment as live, and the
+measured cohort as the whole ballgame. The deployment is installed, but it has
+not yet produced one usable reading.** Every hook turn it has recorded is a
+credential-absent failure. The one real two-stage Jev evaluation is the manual
+smoke, and a known defect records even that as a failure. Worse, even with the
+credential fixed, a transcript shape that is routine on this fleet makes
+sessions drop out of the hook silently, and the availability gate cannot see
+those drops. The core CLI remains in good shape. The distance to the product
+claim is unchanged; what changed is that the path to the first reading is now
+concrete: three defects and one maintainer decision.
+
+### Scope and evidence boundaries
+
+Read AGENTS.md and README.md in full, plus the previous current assessment and
+the deployment receipt. Inspected the **real** installed state read-only:
+`~/.local/bin/sr` (SHA256 matches the receipt, built from `5dcdb9a`), the
+managed `UserPromptSubmit` entry in `~/.claude/settings.json`,
+`~/.config/sr/config.toml`, and `~/.local/share/sr/ledger.sqlite3`, the last
+opened with SQLite `mode=ro`. Matched every Claude user prompt since
+installation against ledger rows. Replayed `sr hook claude` on real session
+transcripts with the deployed binary and with a HEAD build, in an isolated
+XDG config/data/cache sandbox with no credential and no network consent, so
+nothing reached TypeSafe or the real ledger. A parallel agent audited every
+README command/flag against the CLI dispatch. Nothing here measures Jev's
+answer quality.
+
+### Gates at `09f93b8`
+
+| Gate | Result |
+|---|---|
+| `cargo fmt --check` | clean |
+| `python3 scripts/validate_public_contracts.py` | passed |
+| `cargo test --locked --no-fail-fast` | **1,307 passed, 11 failed, 10 ignored** at host load 95–167. RCH had no admissible workers, so the run was local. |
+| Failing binaries rerun alone at load 55–61 | `cass_session` and `project_signals` pass. `rank_acceptance::a_late_rerank_answer_is_never_published` failed **6/6** runs inside its binary and passes alone. `subprocess_contract` failed 2/3 runs inside its binary and passes alone. These are contention failures, not demonstrated product defects, but `sr-5n0b`'s closure does not hold. Filed as `sr-suite-red-under-contention-87gj`. |
+| clippy, `ubs --diff` | not run in this pass (documentation/tracker-only change) |
+
+### What the live deployment has actually produced
+
+`sr stats --json` against the real ledger at 17:58Z, about 11.5 h after the
+DEPLOYED receipt:
+
+| Channel | Turns | Ranked | Abstain | Unavailable |
+|---|---:|---:|---:|---:|
+| shadow (hook) | 11 | 0 | 0 | **11, all `authentication`** |
+| cli (smoke/tests) | 3 | 0 | 1 | 2 |
+
+- All 3 provider attempts ever recorded (21,738 tokens) belong to event
+  `ev-cfacde23bc2d0024`, the manual smoke. It ran a full wide + rerank pass:
+  8 shortlisted, one survivor (`commit-and-release`, rerank 0.46, fit 0.67),
+  six excluded `not-above-none`, one `low-fit`. The eligibility machinery
+  behaved as designed on real input. Its event row reads
+  `unavailable / authentication` (`sr-e8vm`), so a cohort report built today
+  would count the deployment's only success as a failure.
+- **`authentication` here means the key is absent.** `src/privacy/mod.rs:269`
+  maps `MissingCredential` to `ErrorKind::Authentication`. The agent shell of
+  the Claude session running this review has no `TYPESAFE_API_KEY`, and hook
+  children inherit the same environment. The receipt named this as operator
+  discipline, and nothing owned it. → `sr-hook-credential-env-3i1n`. The
+  ledger cannot tell this apart from TypeSafe rejecting a key, yet the
+  pre-registration's §7 requires that separation.
+  → `sr-credential-absent-reason-70jm`.
+- **Consent scope does not match the pre-registration.** The pre-registration
+  consents to sessions in *this repository* and declares a one-repo, Rust-only
+  population. The hook is user-global, and shadow rows already come from
+  `destructive_command_guard`, `hedge_fund_skills_directory`,
+  `jazz_chord_progression_editor_html` and `/data/projects`. Once the
+  credential problem is fixed, their redacted sessions go to TypeSafe. The
+  product has neither a project-scoped install nor workspace-scoped network
+  consent. → `sr-shadow-consent-scope-ne8b` (maintainer decision; blocks the
+  credential bead).
+
+### New defect: routine sessions silently drop out of the hook
+
+Of 18 real prompts since installation, 11 produced ledger rows. The 05:28–05:43Z
+wave produced none; that was the pre-fix `sr-t034` binary. After the fix, some
+prompts still left no trace. Replaying them showed a shape the `sr-t034` work
+did not cover. Every `PreToolUse` hook that emits output writes an
+`attachment/hook_success` record, and on this fleet RCH's cargo interception
+does so constantly. That record is a dead-end child of a node whose main chain
+continues. Since `00c75b3`, unmodeled records are lineage pass-through nodes,
+so each dead end competes as a leaf. The overlay needs a unique leaf for a
+not-yet-recorded prompt (`src/context/overlay.rs:410-425`), so it fails with
+`Transcript branch cannot be resolved`: exit 0, empty stdout, no ledger row.
+
+Reproduced on the deployed binary **and** on HEAD, for session `e2edf818`
+(683 tail nodes: 4 `hook_success` dead ends plus 1 real leaf) and for this
+review's own session (421 nodes, the same pattern). The real hook recorded the
+latter successfully at 17:57:55Z, before it had run any cargo command. A
+session without dead ends in its tail (`3f99ab81`) passes. No source, test or
+bead mentioned `hook_success`. → **`sr-hook-success-dead-ends-yphr` (P0)**:
+prune pass-through dead ends from leaf candidacy. Genuine message forks must
+stay ambiguous, and no physical-order tie-breaking may be introduced.
+
+Because context failures return before the first ledger write
+(`pipeline.rs:1083-1115` versus `record_inflight_ranking` at 2330), they are
+invisible to `sr stats`. The .8.4 gate ("≤5% fallback over ≥500 hook
+invocations") would be computed over only the sessions the hook managed to
+record. → `sr-count-prerecording-failures-73b6`. One drop (`a83ca4ec` at
+17:28:12Z) did not reproduce at lower load and remains unexplained.
+
+### Product surface, audited against the README
+
+Everything on the core path does real work: rank with all four source modes,
+explicit resolution, the privacy/persistence flags, `--why-not`, `--dry-run`
+(including `--shortlist-ids`), `--save-case`, `replay --compare-policy`, roster
+snapshot/diff, doctor, capabilities, install/uninstall-hook, the shadow hook,
+stats, observe, feedback (including `--instead`), and ledger
+init/migrate/prune/clear.
+
+`snooze` and `budget` (P6), `calibrate` including `--rollback` (P8), `tui`,
+`gaps` and `doctor --descriptions` (P9), and `eval --sample-size/--seed/--explain`
+(P5) are refused, with the phase named and listed as planned in
+`capabilities`. That is the intended split between the finished-product README
+and the honest capability registry. Two exceptions:
+
+- `sr eval --online` always fails with a generic invalid-usage error and is
+  missing from `PLANNED_FLAGS`, the only place where `capabilities` overstates
+  the build. → `sr-eval-online-planned-flag-hc6b`.
+- `sr doctor` reports `no-advisory-candidates` (205 skills, 0 advisory, 205
+  unverified) and makes that its first next step, while `rank` has ranked
+  unverified-visibility skills since `20269ff`. The readiness tool calls a
+  working roster useless. → `sr-doctor-unverified-roster-ql9l`.
+- The circuit breaker and shared allowance are types without producers (no
+  code constructs a cooldown, and nothing shares a budget across processes).
+  This was known and is owned by `.7.4`–`.7.8`. It matters now because the
+  deployment has no automated spend cap once the credential works. Its
+  pre-registration §3 accepted that; keep it in view before scaling traffic.
+
+### Bridge, in order
+
+| Order | Work | Why first |
+|---|---|---|
+| 1 | `sr-shadow-consent-scope-ne8b` decision | Cheap. Must precede any credentialed hook traffic. |
+| 2 | `sr-hook-success-dead-ends-yphr` (P0), then rebuild and redeploy the hook binary from main with a new receipt | Without it, most Rust sessions drop out silently. The installed binary also predates `4408087` and `00c75b3`. |
+| 3 | `sr-hook-credential-env-3i1n` | Turns the recorded failures into evaluations. |
+| 4 | `sr-count-prerecording-failures-73b6`, `sr-credential-absent-reason-70jm`, `sr-e8vm` | Makes the operational cohort countable and honestly classified. All three block .8.4 or its report. |
+| 5 | 24 h soak, then the first cohort readout (§7 of the deployment doc) | The first real measurement this project will have. |
+| 6 | `sr-uv2v` adjudication on sessions from the soak, then `.6.20`–`.6.28` and `.8.1`–`.8.4` | Unchanged: the relevance and harm gates remain the only answer to "does it help?". |
+| 7 | `sr-suite-red-under-contention-87gj`, `sr-eval-online-planned-flag-hc6b`, `sr-doctor-unverified-roster-ql9l` | Honesty and CI robustness; cheap and independent. |
+
+The eight beads named above were created in this pass, with these dependencies: `sr-1uf4` now depends
+on the dead-end, credential and counting beads; the credential bead depends on
+the scope decision; `.8.4` depends on the counting and reason beads. Evidence
+comments were added to `sr-1uf4`, `sr-t034`, `sr-5n0b` and `sr-e8vm`. Backlog:
+92 open before this pass, no dependency cycles after it.
+
+**One-sentence answer:** the CLI is real and honest about its limits, but the
+self-hosted deployment has so far only proven that it can fail quietly. The
+next useful step is the scope decision, then the P0 branch fix, then the key. A soak after that yields the first operational reading.
+
+This update revises the existing bridge in place. The sections below, including
+the previous current assessment, are historical snapshots.
+
+## Historical assessment — 2026-09-21 UTC, second executable-journey pass (plus 2026-09-22 execution addendum)
 
 
 **The two defects the morning review filed that had owners free have been fixed and are verified
