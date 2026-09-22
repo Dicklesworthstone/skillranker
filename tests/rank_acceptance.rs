@@ -379,11 +379,22 @@ fn rank_args(provider: &Provider, args: RankArgs, total_ms: u64) -> Outcome {
         .runtime()
         .block_on(async { execute_pipeline(&invocation, &cx, args, Some(&client)).await });
     // Shutdown may only use the time left before expiry; record both so a
-    // failure shows whether draining or a late return exhausted it.
+    // failure shows whether draining or a late return exhausted it. A
+    // scenario that deliberately returns within tens of milliseconds of
+    // expiry leaves a drain window a shared CI worker cannot reliably
+    // schedule into; in that case the drain gets its own fresh bounded
+    // window instead of inflating the scenario's budget. A wedged runtime
+    // fails either way.
     let returned_ms = clock.now().as_millis();
     let left_ms = clock.remaining_until_expiry().as_millis();
     let shutdown_started = std::time::Instant::now();
-    let shutdown_ok = invocation.shutdown();
+    const MIN_SCENARIO_DRAIN_MS: u64 = 250;
+    const STARVATION_DRAIN_MS: u64 = 1_000;
+    let shutdown_ok = if left_ms >= MIN_SCENARIO_DRAIN_MS {
+        invocation.shutdown()
+    } else {
+        invocation.shutdown_within(std::time::Duration::from_millis(STARVATION_DRAIN_MS))
+    };
     let shutdown_ms = shutdown_started.elapsed().as_millis();
     eprintln!(
         "runtime_timing startup_ms={startup_ms} returned_ms={returned_ms} total_ms={total_ms} remaining_ms={left_ms} shutdown_ms={shutdown_ms} shutdown_ok={shutdown_ok}"

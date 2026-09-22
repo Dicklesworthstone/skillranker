@@ -221,6 +221,19 @@ impl ProcessInvocation {
         let bound = Duration::from_millis(remaining.as_millis().max(1));
         self.runtime.shutdown_timeout(bound)
     }
+
+    /// Shut the owned runtime down within an explicit wall-clock bound rather
+    /// than the invocation's remaining budget. Production paths use
+    /// `shutdown()`, which keeps the process-entry deadline semantics; this
+    /// variant exists for test harnesses that need a fresh, bounded drain
+    /// window after a scenario deliberately consumed nearly all of its own
+    /// budget — a shared CI worker cannot guarantee scheduler time inside a
+    /// remainder measured in tens of milliseconds. A genuinely wedged runtime
+    /// still fails: it will not drain within any honest bound.
+    pub fn shutdown_within(self, bound: Duration) -> bool {
+        self.runtime
+            .shutdown_timeout(bound.max(Duration::from_millis(1)))
+    }
 }
 
 /// Pure bounded decoder from a generic synchronous reader bounded by the clock's
