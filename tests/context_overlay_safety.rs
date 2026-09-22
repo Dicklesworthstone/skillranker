@@ -1,7 +1,9 @@
 //! Real-file adversarial checks of the production Claude overlay boundary.
 use serde_json::json;
 use skillranker::adapter::{ClaudeUserPromptSubmit, UnknownFieldPolicy};
-use skillranker::context::overlay::{ClaudeOverlayRequest, apply_claude_prompt_overlay};
+use skillranker::context::overlay::{
+    ClaudeOverlayRequest, OverlayError, apply_claude_prompt_overlay,
+};
 use skillranker::output::ContextQuality;
 use std::{
     fs,
@@ -10,6 +12,12 @@ use std::{
 };
 
 fn request(records: &[serde_json::Value], prompt_id: &str) -> ClaudeOverlayRequest {
+    let lines: Vec<String> = records.iter().map(ToString::to_string).collect();
+    request_lines(&lines, prompt_id)
+}
+
+/// Like [`request`], from raw JSONL lines, for records `json!` cannot build.
+fn request_lines(lines: &[String], prompt_id: &str) -> ClaudeOverlayRequest {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let root = std::env::temp_dir().join(format!(
         "sr-overlay-safety-{}-{}-{}",
@@ -22,7 +30,7 @@ fn request(records: &[serde_json::Value], prompt_id: &str) -> ClaudeOverlayReque
     ));
     fs::create_dir(&root).unwrap();
     let path = root.join("session.jsonl");
-    let bytes = records.iter().map(|v| format!("{v}\n")).collect::<String>();
+    let bytes = lines.iter().map(|l| format!("{l}\n")).collect::<String>();
     fs::write(&path, bytes).unwrap();
     let hook = json!({"hook_event_name":"UserPromptSubmit","session_id":"expected-session","prompt_id":prompt_id,"prompt":"current request","transcript_path":path});
     ClaudeOverlayRequest {
@@ -449,6 +457,66 @@ fn a_compaction_boundary_continues_the_pre_compaction_tip() {
         .unwrap()
         .remove("logicalParentUuid");
     assert!(apply_claude_prompt_overlay(&request(&records, "new")).is_err());
+}
+
+/// A chain whose middle tool result is over the 256 KiB record limit.
+fn oversized_result_chain() -> Vec<serde_json::Value> {
+    let mut big = tool_result("big-result", "call");
+    big["toolUseResult"] = json!({ "stdout": "x".repeat(300_000) });
+    // Real Claude records carry both session key spellings.
+    big["session_id"] = json!("expected-session");
+    vec![
+        event("root", None),
+        tool_call("call", "root"),
+        big,
+        json!({"type":"assistant","uuid":"reply","parentUuid":"big-result","sessionId":"expected-session",
+               "message":{"role":"assistant","content":[{"type":"text","text":"read it"}]}}),
+    ]
+}
+
+#[test]
+fn an_oversized_record_keeps_its_lineage_and_reports_partial_context() {
+    let result = apply_claude_prompt_overlay(&request(&oversized_result_chain(), "new"))
+        .expect("an oversized tool result is over the parse limit, not malformed");
+    let ids: Vec<_> = result
+        .events
+        .iter()
+        .filter_map(|e| e.event_id.as_ref().map(|id| id.as_str().to_owned()))
+        .collect();
+    assert_eq!(ids, ["root", "call", "big-result", "reply", "new"]);
+    assert_eq!(result.context_quality, ContextQuality::Partial);
+    let big = &result.events[2];
+    assert!(big.text.as_str().is_empty() && big.tool.is_none());
+    // The same chain under the limit is complete: partial comes from the drop.
+    let mut small = oversized_result_chain();
+    small[2]["toolUseResult"] = json!({ "stdout": "x" });
+    let result = apply_claude_prompt_overlay(&request(&small, "new")).unwrap();
+    assert_eq!(result.context_quality, ContextQuality::Complete);
+}
+
+#[test]
+fn an_oversized_record_still_proves_its_session_and_identity() {
+    // Another session's record stays a cross-session read, however large,
+    // under either session key.
+    let mut foreign = oversized_result_chain();
+    foreign[2]["session_id"] = json!("foreign-session");
+    assert!(matches!(
+        apply_claude_prompt_overlay(&request(&foreign, "new")),
+        Err(OverlayError::SessionMismatch { .. })
+    ));
+    let lines: Vec<String> = oversized_result_chain()
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    // A repeated identity key is not a record this reader can trust.
+    let mut duplicate = lines.clone();
+    duplicate[2] = duplicate[2].replacen("{", "{\"uuid\":\"other\",", 1);
+    assert!(apply_claude_prompt_overlay(&request_lines(&duplicate, "new")).is_err());
+    // Truncated JSON is corruption, not an oversized record.
+    let mut truncated = lines;
+    let cut = truncated[2].len() - 2;
+    truncated[2].truncate(cut);
+    assert!(apply_claude_prompt_overlay(&request_lines(&truncated, "new")).is_err());
 }
 
 #[test]
