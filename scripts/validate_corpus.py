@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import stat
 import sys
@@ -29,6 +30,7 @@ MAX_MANIFEST_BYTES = 1024 * 1024
 MAX_CASES_BYTES = 256 * 1024 * 1024
 MAX_RECORD_BYTES = 1024 * 1024
 MAX_CASES = 10_000
+MAX_NESTING = 64
 SPLIT_NAMES = ("training", "validation", "holdout")
 CASE_KINDS = ("positive_advisory", "no_match_advisory", "near_miss_advisory")
 
@@ -67,16 +69,52 @@ def regular_file(path: Path, max_bytes: int, label: str):
         yield handle
 
 
+def decode_bounded_json(raw: bytes, label: str) -> Any:
+    # Scan before constructing nested Python containers. Delimiters in strings
+    # (including escaped quotes and backslashes) do not contribute to depth.
+    depth = 0
+    quoted = False
+    escaped = False
+    for byte in raw:
+        if quoted:
+            if escaped:
+                escaped = False
+            elif byte == 92:
+                escaped = True
+            elif byte == 34:
+                quoted = False
+        elif byte == 34:
+            quoted = True
+        elif byte in (91, 123):
+            depth += 1
+            require(depth <= MAX_NESTING, f"{label} exceeds the nesting bound")
+        elif byte in (93, 125):
+            depth -= 1
+
+    def reject_constant(_value: str) -> None:
+        raise Reject(f"{label} contains a non-finite JSON constant")
+
+    def finite_float(value: str) -> float:
+        parsed = float(value)
+        require(math.isfinite(parsed), f"{label} contains a non-finite JSON number")
+        return parsed
+
+    try:
+        return json.loads(
+            raw.decode("utf-8"),
+            object_pairs_hook=unique_object,
+            parse_constant=reject_constant,
+            parse_float=finite_float,
+        )
+    except (RecursionError, UnicodeDecodeError, ValueError) as error:
+        raise Reject(f"{label} is not valid bounded UTF-8 JSON") from error
+
+
 def load_json(path: Path, max_bytes: int, label: str) -> Any:
     with regular_file(path, max_bytes, label) as handle:
-        try:
-            return json.load(handle, object_pairs_hook=unique_object)
-        except RecursionError:
-            fail(f"{label} exceeds the nesting bound")
-        except Reject as error:
-            fail(f"{label}: {error}")
-        except json.JSONDecodeError as error:
-            fail(f"{label} is not valid JSON: {error}")
+        raw = handle.read(max_bytes + 1)
+        require(len(raw) <= max_bytes, f"{label} exceeds its byte bound")
+        return decode_bounded_json(raw, label)
 
 
 def canonical_digest(value: Any) -> str:
@@ -99,6 +137,8 @@ def main() -> None:
         run(args.manifest, args.cases)
     except Reject as error:
         fail(str(error))
+    except OSError as error:
+        fail(f"cannot read corpus input: {error.strerror}")
 
 
 def run(manifest_path: Path, cases_path: Path) -> None:
@@ -133,6 +173,10 @@ def run(manifest_path: Path, cases_path: Path) -> None:
         require(adj_id not in adjudicator_ids, f"duplicate adjudicator {adj_id}")
         forbidden = entry.get("forbidden_sessions", [])
         require(isinstance(forbidden, list), "adjudicator.forbidden_sessions must be a list")
+        require(
+            all(isinstance(value, str) and value for value in forbidden),
+            "adjudicator.forbidden_sessions must contain non-empty strings",
+        )
         adjudicator_ids[adj_id] = set(forbidden)
     require(
         selector_identity not in adjudicator_ids,
@@ -174,7 +218,11 @@ def run(manifest_path: Path, cases_path: Path) -> None:
     double_judged = 0
 
     with regular_file(cases_path, MAX_CASES_BYTES, "cases") as handle:
-        for line_number, raw in enumerate(handle, start=1):
+        total_bytes = 0
+        records = iter(lambda: handle.readline(MAX_RECORD_BYTES + 1), b"")
+        for line_number, raw in enumerate(records, start=1):
+            total_bytes += len(raw)
+            require(total_bytes <= MAX_CASES_BYTES, "cases exceeds its byte bound")
             if len(raw) > MAX_RECORD_BYTES:
                 fail(f"case record at line {line_number} exceeds its byte bound")
             line = raw.strip()
@@ -182,12 +230,7 @@ def run(manifest_path: Path, cases_path: Path) -> None:
                 continue
             if len(cases) >= MAX_CASES:
                 fail("case count exceeds its bound")
-            try:
-                case = json.loads(line, object_pairs_hook=unique_object)
-            except Reject as error:
-                fail(f"case at line {line_number}: {error}")
-            except json.JSONDecodeError as error:
-                fail(f"case at line {line_number} is not valid JSON: {error}")
+            case = decode_bounded_json(line, f"case at line {line_number}")
             require(isinstance(case, dict), f"case at line {line_number} must be an object")
             require(
                 case.get("schema_version") == CASE_SCHEMA,
@@ -326,11 +369,19 @@ def check_case(
     acceptable = case.get("acceptable_additional_invocations_y")
     require(isinstance(acceptable, list), f"{case_id}.acceptable_additional_invocations_y")
     require(
+        all(isinstance(value, str) and value for value in acceptable),
+        f"{case_id}.acceptable_additional_invocations_y must contain non-empty strings",
+    )
+    require(
         len(acceptable) == len(set(acceptable)),
         f"{case_id} names an acceptable skill twice",
     )
     near_miss = case.get("near_miss_skill_ids")
     require(isinstance(near_miss, list), f"{case_id}.near_miss_skill_ids")
+    require(
+        all(isinstance(value, str) and value for value in near_miss),
+        f"{case_id}.near_miss_skill_ids must contain non-empty strings",
+    )
     require(len(near_miss) == len(set(near_miss)), f"{case_id} names a near-miss skill twice")
 
     unjudgeable = case.get("unjudgeable", False)

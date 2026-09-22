@@ -115,14 +115,21 @@ class CorpusValidatorTest(unittest.TestCase):
         print(f"synthetic corpus fixtures retained at {cls.tmp}")
 
     def run_validator(self, manifest, cases):
+        return self.run_raw_validator(
+            json.dumps(manifest).encode(),
+            "".join(json.dumps(c) + "\n" for c in cases).encode(),
+        )
+
+    def run_raw_validator(self, manifest, cases):
         manifest_path = self.tmp / "manifest.json"
         cases_path = self.tmp / "cases.jsonl"
-        manifest_path.write_text(json.dumps(manifest))
-        cases_path.write_text("".join(json.dumps(c) + "\n" for c in cases))
+        manifest_path.write_bytes(manifest)
+        cases_path.write_bytes(cases)
         return subprocess.run(
             [sys.executable, str(VALIDATOR), "--manifest", str(manifest_path), "--cases", str(cases_path)],
             capture_output=True,
             text=True,
+            timeout=10,
         )
 
     def assert_fails_with(self, manifest, cases, needle):
@@ -133,6 +140,129 @@ class CorpusValidatorTest(unittest.TestCase):
             result.stderr + result.stdout,
             f"failure for {needle!r} must name its cause: {result.stderr}",
         )
+
+    def test_deep_json_is_rejected_before_decoding(self):
+        for target in ("manifest", "case"):
+            for nesting in (64, 65):
+                with self.subTest(target=target, nesting=nesting):
+                    manifest, cases = valid_corpus()
+                    value = 0
+                    # The surrounding manifest/case object contributes one level.
+                    for _ in range(nesting - 1):
+                        value = [value]
+                    (manifest if target == "manifest" else cases[0])["extra"] = value
+                    result = self.run_validator(manifest, cases)
+                    if nesting == 64:
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                    else:
+                        self.assertNotEqual(result.returncode, 0)
+                        self.assertIn("nesting bound", result.stderr)
+                        self.assertNotIn("Traceback", result.stderr)
+
+    def test_exponent_overflow_and_huge_integer_refuse_without_traceback(self):
+        manifest, cases = valid_corpus()
+        for number in (b"1e9999", b"-1e9999", b"9" * 5000):
+            with self.subTest(number=number[:20]):
+                raw = json.dumps(cases[0]).encode()[:-1] + b',"extra":' + number + b'}\n'
+                result = self.run_raw_validator(json.dumps(manifest).encode(), raw)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("corpus validation failed", result.stderr)
+                self.assertNotIn("Traceback", result.stderr)
+
+    def test_invalid_utf8_refuses_without_echoing_input(self):
+        manifest, _ = valid_corpus()
+        result = self.run_raw_validator(
+            json.dumps(manifest).encode(), b'{"extra":"private\xff"}\n'
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("UTF-8", result.stderr)
+        self.assertNotIn("private", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+
+    def test_record_byte_limit_counts_blank_lines_and_accepts_exact_limit(self):
+        manifest, cases = valid_corpus()
+        rest = "".join(json.dumps(c) + "\n" for c in cases[1:]).encode()
+        first = json.dumps(cases[0]).encode()
+        limit = 1024 * 1024
+        exact = first + b" " * (limit - len(first) - 1) + b"\n"
+        result = self.run_raw_validator(json.dumps(manifest).encode(), exact + rest)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for oversized in (exact[:-1] + b" \n", b" " * limit + b"\n"):
+            result = self.run_raw_validator(json.dumps(manifest).encode(), oversized + rest)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("byte bound", result.stderr)
+            self.assertNotIn("Traceback", result.stderr)
+
+    def test_file_growth_after_metadata_check_stays_bounded(self):
+        # Deterministically append to actual regular files after fstat, at the
+        # context-manager boundary. The original open/read operations still run.
+        manifest, cases = valid_corpus()
+        self.assertEqual(self.run_validator(manifest, cases).returncode, 0)
+        script = '''
+import importlib.util, sys
+from contextlib import contextmanager
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("validator", sys.argv[1])
+v = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(v)
+manifest, cases, target = Path(sys.argv[2]), Path(sys.argv[3]), sys.argv[4]
+original = v.regular_file
+bound = (manifest if target == "manifest" else cases).stat().st_size
+if target == "cases":
+    v.MAX_CASES_BYTES = bound
+@contextmanager
+def grow(path, max_bytes, label):
+    with original(path, max_bytes, label) as handle:
+        if label == target:
+            with path.open("ab") as writer:
+                writer.write(b" " * (max_bytes + 1) if target == "manifest" else b"\\n")
+        yield handle
+v.regular_file = grow
+try:
+    if target == "manifest":
+        v.load_json(manifest, bound, "manifest")
+    else:
+        v.run(manifest, cases)
+except v.Reject as error:
+    assert "byte bound" in str(error), str(error)
+else:
+    raise AssertionError("growing file escaped its byte bound")
+'''
+        for target in ("manifest", "cases"):
+            self.assertEqual(self.run_validator(manifest, cases).returncode, 0)
+            result = subprocess.run(
+                [sys.executable, "-c", script, str(VALIDATOR),
+                 str(self.tmp / "manifest.json"), str(self.tmp / "cases.jsonl"), target],
+                capture_output=True, text=True, timeout=10,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_nonfinite_constants_are_not_json_evidence(self):
+        for value in (float("nan"), float("inf"), -float("inf")):
+            manifest, cases = valid_corpus()
+            cases[0]["extra"] = value
+            self.assert_fails_with(manifest, cases, "non-finite")
+
+    def test_malformed_identifier_lists_refuse_without_traceback(self):
+        for field in ("acceptable_additional_invocations_y", "near_miss_skill_ids"):
+            manifest, cases = valid_corpus()
+            cases[0][field] = [{}]
+            result = self.run_validator(manifest, cases)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("non-empty strings", result.stderr)
+            self.assertNotIn("Traceback", result.stderr)
+        manifest, cases = valid_corpus()
+        manifest["adjudicators"][0]["forbidden_sessions"] = [{}]
+        result = self.run_validator(manifest, cases)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("non-empty strings", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+
+    def test_string_delimiters_do_not_count_as_nesting(self):
+        manifest, cases = valid_corpus()
+        cases[0]["extra"] = ('[{' + chr(34) + chr(92)) * 100
+        result = self.run_validator(manifest, cases)
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_valid_corpus_passes(self):
         manifest, cases = valid_corpus()
@@ -258,6 +388,7 @@ class CorpusValidatorTest(unittest.TestCase):
             [sys.executable, str(VALIDATOR), "--manifest", str(manifest_path), "--cases", str(cases_path)],
             capture_output=True,
             text=True,
+            timeout=10,
         )
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("duplicate", result.stderr + result.stdout)
