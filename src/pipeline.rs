@@ -2257,7 +2257,11 @@ async fn rank_once(
                 )
                 .await;
                 cached = lookup_pair(&mut store);
+                // Take over only with a second left for our own evaluation.
+                // A shorter remainder means the leader is still the owner:
+                // do not acquire and send.
                 if cached.is_none()
+                    && clock.remaining_before_cleanup().as_millis() >= 1_000
                     && let Some(LeaseAcquisition::Leading(leader)) =
                         persistent::acquire(invocation, cx, clock, &leases, key).await
                 {
@@ -3304,8 +3308,14 @@ mod persistent {
         }
     }
 
-    /// Wait for a leader's lease to settle, within the lease and while at
-    /// least a second of this invocation's budget remains for its own work.
+    /// Wait while the leader's lease is active.
+    ///
+    /// The one-second remainder is a takeover reserve, not a reason to stop
+    /// waiting. Returning as soon as less than a second remained made a short
+    /// follower skip the wait and left a contended start no time to arrive.
+    /// While the lease is still held, wait until it settles or this
+    /// invocation's cleanup reserve. Once it has settled or expired, return
+    /// so a follower that still has a second can take over.
     pub(super) async fn wait_for_leader(
         invocation: &ProcessInvocation,
         cx: &Cx,
@@ -3316,14 +3326,16 @@ mod persistent {
     ) {
         let path = path.to_path_buf();
         loop {
-            if cx.is_cancel_requested()
-                || clock.remaining_before_cleanup().as_millis() < 1_000
-                || wall_clock_ms() >= expires_at_unix_ms
-                || settled(invocation, cx, &path, key)
-            {
+            if cx.is_cancel_requested() || wall_clock_ms() >= expires_at_unix_ms {
                 return;
             }
-            asupersync::time::sleep(asupersync::time::wall_now(), Duration::from_millis(25)).await;
+            let remaining = clock.remaining_before_cleanup().as_millis();
+            if remaining < 25 || settled(invocation, cx, &path, key) {
+                return;
+            }
+            let slice = remaining.min(25);
+            asupersync::time::sleep(asupersync::time::wall_now(), Duration::from_millis(slice))
+                .await;
         }
     }
 
