@@ -152,6 +152,25 @@ the scope decision; `.8.4` depends on the counting and reason beads. Evidence
 comments were added to `sr-1uf4`, `sr-t034`, `sr-5n0b` and `sr-e8vm`. Backlog:
 92 open before this pass, no dependency cycles after it.
 
+### Same-day execution update — 2026-09-22 20:15Z
+
+| Bridge row | State |
+|---|---|
+| 1 consent scope | Hook moved to the repository's gitignored `.claude/settings.local.json` (peer, `1be8004`); retention of the out-of-scope rows awaits a maintainer decision |
+| 2 branch fix + redeploy | `e261dd4`: side branches (harness attachments, system notices, parallel-call results) no longer block the pending prompt. Replay over all 10 recent real transcripts: 6/10 → 9/10 past context capture. Installed binary redeployed at frozen `c6999c3` (`d60e872` receipt) |
+| 3 credential | Guarded shell-rc sourcing for newly launched sessions (peer, `bf46bdb`) |
+| 4 honest counting | Pre-recording failures counted, credential-absent split, `sr-e8vm` fixed (peers, `4c96fae`) |
+| 7 doctor / eval honesty | `b9b3165` doctor mirrors rank; `eval --online` declared planned (peer) |
+
+An isolated credentialed smoke of the installed binary on a real session
+ranked end to end (2 attempts, 21,275 tokens, 1,475 ms at load ~130). The live
+cohort still holds **zero organic credentialed rows**. The in-repo prompts
+since the scope change came from a session started before the credential
+change and ran the pre-redeploy binary. Row 5 (the soak and first readout) is
+now purely waiting on new sessions in this repository. The remaining overlay
+residual, interleaved tool batches that look like a rewind, is
+`sr-interleaved-tool-batches-nwhu`.
+
 **One-sentence answer:** the CLI is real and honest about its limits, but the
 self-hosted deployment has so far only proven that it can fail quietly. The
 next useful step is the scope decision, then the P0 branch fix, then the key. A soak after that yields the first operational reading.
