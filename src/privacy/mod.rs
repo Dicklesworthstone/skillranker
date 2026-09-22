@@ -266,7 +266,7 @@ impl ProviderAdmissionRefusal {
         match self {
             Self::Offline => ErrorKind::CacheMiss,
             Self::DryRun | Self::NetworkNotAuthorized => ErrorKind::NetworkDenied,
-            Self::MissingCredential => ErrorKind::Authentication,
+            Self::MissingCredential => ErrorKind::CredentialAbsent,
         }
     }
 }

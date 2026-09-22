@@ -1325,9 +1325,9 @@ fn failures_map_onto_output_error_kinds_and_exit_codes() {
         ),
         (
             ProviderAdmissionRefusal::MissingCredential,
-            ErrorKind::Authentication,
+            ErrorKind::CredentialAbsent,
             CliExit::Provider,
-            "authentication",
+            "credential-absent",
         ),
     ] {
         assert_eq!(refusal.kind(), kind, "{refusal:?}");

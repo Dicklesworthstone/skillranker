@@ -67,6 +67,19 @@ pub const PLANNED_FLAGS: &[PlannedFlag] = &[
         phase: PhaseGate::P5,
         takes_value: false,
     },
+    // Live batches: remove both entries when eval executes fresh Jev requests.
+    PlannedFlag {
+        command: "eval",
+        flag: "online",
+        phase: PhaseGate::P5,
+        takes_value: false,
+    },
+    PlannedFlag {
+        command: "eval",
+        flag: "max-requests",
+        phase: PhaseGate::P5,
+        takes_value: true,
+    },
 ];
 
 /// The phase a named command is planned for, when this build does not implement

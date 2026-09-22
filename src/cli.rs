@@ -13,9 +13,9 @@ use std::ffi::OsString;
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
-const HELP: &str = "SkillRanker — powered by TypeSafe.ai Jev\n\nUsage: sr [rank] [--context FILE | --transcript FILE --harness NAME | --session PATH | --latest]\n                 [--roster FILE] [--require-skill ID] [--dry-run [--shortlist-ids ID,...]]\n                 [--offline | --allow-network] [--json | --table]\n                 [--top N] [--shortlist M] [--gate FLOAT] [--fits FLOAT]\n                 [--explain] [--why-not ID] [--cursor TOKEN] [--no-tools] [--no-cache]\n                 [--save-case FILE]\n       sr doctor [--json | --table] [--offline | --allow-network]\n       sr doctor --config [--json | --table] [--top N] [--shortlist N]\n       sr roster [--json] [--limit N] [--cursor TOKEN]\n       sr roster --snapshot FILE | --diff FILE\n       sr capabilities [--json]\n       sr demo --case <useful|none|explicit|unavailable> [--json | --table]\n       sr replay FILE [--policy FILE] [--compare-policy FILE] [--json | --table]\n       sr eval --dataset FILE [--online] [--allow-network] [--max-requests N] [--max-runtime-ms MS] [--timeout-ms MS] [--policy FILE] [--compare-policy FILE] [--json | --table]\n       sr feedback <EVENT_ID> --skill ID [--instead ID] [--verdict <useful|not-useful|unknown>] [--reason CODE] [--provenance TEXT] [--expected-version GEN] [--dir DIR] [--json]\n       sr ledger <init|migrate|status|prune|clear> [--before TIME] [--apply] [--json]\n       sr observe [--context FILE | --transcript FILE --harness NAME | --session PATH] [--branch NAME] [--roster FILE] [--dir DIR] [--json]\n       sr stats [--since DURATION] [--by-skill] [--dir DIR] [--json | --table]\n       sr hook <claude> [--shadow] [--offline | --allow-network] [--dir DIR]\n       sr install-hook <claude> [--settings FILE] [--target-dir DIR] [--apply] [--json]\n       sr uninstall-hook <claude> [--settings FILE] [--target-dir DIR] [--apply] [--json]\n       sr --help | --version\n\nRank the next step of an agent session using TypeSafe Jev.\nRequires your own TypeSafe API key (TYPESAFE_API_KEY) and network consent (--allow-network).\n";
+const HELP: &str = "SkillRanker — powered by TypeSafe.ai Jev\n\nUsage: sr [rank] [--context FILE | --transcript FILE --harness NAME | --session PATH | --latest]\n                 [--roster FILE] [--require-skill ID] [--dry-run [--shortlist-ids ID,...]]\n                 [--offline | --allow-network] [--json | --table]\n                 [--top N] [--shortlist M] [--gate FLOAT] [--fits FLOAT]\n                 [--explain] [--why-not ID] [--cursor TOKEN] [--no-tools] [--no-cache]\n                 [--save-case FILE]\n       sr doctor [--json | --table] [--offline | --allow-network]\n       sr doctor --config [--json | --table] [--top N] [--shortlist N]\n       sr roster [--json] [--limit N] [--cursor TOKEN]\n       sr roster --snapshot FILE | --diff FILE\n       sr capabilities [--json]\n       sr demo --case <useful|none|explicit|unavailable> [--json | --table]\n       sr replay FILE [--policy FILE] [--compare-policy FILE] [--json | --table]\n       sr eval --dataset FILE [--allow-network] [--max-runtime-ms MS] [--timeout-ms MS] [--policy FILE] [--compare-policy FILE] [--json | --table]\n       sr feedback <EVENT_ID> --skill ID [--instead ID] [--verdict <useful|not-useful|unknown>] [--reason CODE] [--provenance TEXT] [--expected-version GEN] [--dir DIR] [--json]\n       sr ledger <init|migrate|status|prune|clear> [--before TIME] [--apply] [--json]\n       sr observe [--context FILE | --transcript FILE --harness NAME | --session PATH] [--branch NAME] [--roster FILE] [--dir DIR] [--json]\n       sr stats [--since DURATION] [--by-skill] [--dir DIR] [--json | --table]\n       sr hook <claude> [--shadow] [--offline | --allow-network] [--dir DIR]\n       sr install-hook <claude> [--settings FILE] [--target-dir DIR] [--apply] [--json]\n       sr uninstall-hook <claude> [--settings FILE] [--target-dir DIR] [--apply] [--json]\n       sr --help | --version\n\nRank the next step of an agent session using TypeSafe Jev.\nRequires your own TypeSafe API key (TYPESAFE_API_KEY) and network consent (--allow-network).\n";
 
-const EVAL_HELP: &str = "sr eval --dataset FILE [--online] [--allow-network] [--max-requests N] [--max-runtime-ms MS] [--timeout-ms MS] [--policy FILE] [--compare-policy FILE] [--json | --table]\n\nEvaluate recorded or synthetic replay batches against local or comparison policies with bounded runtime and explicit accounting.\n";
+const EVAL_HELP: &str = "sr eval --dataset FILE [--allow-network] [--max-runtime-ms MS] [--timeout-ms MS] [--policy FILE] [--compare-policy FILE] [--json | --table]\n\nEvaluate recorded or synthetic replay batches against local or comparison policies with bounded runtime and explicit accounting.\n";
 
 const STATS_HELP: &str = "sr stats [--since DURATION] [--by-skill] [--dir DIR] [--json | --table]\n\nReport observation and operational metrics across honest cohorts (evaluations, suggestions, abstentions, latency, loads, judgments, tokens, and cost).\n";
 
@@ -325,25 +325,10 @@ fn command() -> Command {
                         .action(ArgAction::Set),
                 )
                 .arg(
-                    Arg::new("online")
-                        .long("online")
-                        .help("Enable live evaluation against provider")
-                        .action(ArgAction::SetTrue),
-                )
-                .arg(
                     Arg::new("allow-network")
                         .long("allow-network")
                         .help("Explicit network authorization consent")
                         .action(ArgAction::SetTrue),
-                )
-                .arg(
-                    Arg::new("max-requests")
-                        .long("max-requests")
-                        .value_name("N")
-                        .help(
-                            "Maximum HTTP attempts across the batch (required for live evaluation)",
-                        )
-                        .action(ArgAction::Set),
                 )
                 .arg(
                     Arg::new("max-runtime-ms")
@@ -2007,6 +1992,13 @@ fn format_stats_report(report: &crate::storage::StatsValueReport) -> String {
         report.turns.in_flight_or_killed
     );
 
+    if !report.turns.failure_causes.is_empty() {
+        let _ = writeln!(out, "\nOperational failures by cause:");
+        for cause in &report.turns.failure_causes {
+            let _ = writeln!(out, "  {}: {}", cause.reason, cause.count);
+        }
+    }
+
     if !report.turns.by_channel.is_empty() {
         let _ = writeln!(out, "\nBy Channel:");
         for c in &report.turns.by_channel {
@@ -2780,36 +2772,9 @@ fn eval_command(clock: &EntryClock, eval_matches: &clap::ArgMatches) -> Result<S
             "Missing required argument --dataset".into(),
         )
     })?;
-    let online = eval_matches.get_flag("online");
+    // `--online` and `--max-requests` are planned flags refused before dispatch,
+    // so this build only replays recorded cases.
     let allow_network = eval_matches.get_flag("allow-network");
-    if online && !allow_network {
-        return Err((
-            crate::output::ErrorKind::NetworkDenied.exit_code() as u8,
-            crate::output::ErrorKind::NetworkDenied.as_str(),
-            "Online live evaluation requires explicit network authorization (--allow-network)"
-                .into(),
-        ));
-    }
-
-    let max_requests = if let Some(s) = eval_matches.get_one::<String>("max-requests") {
-        Some(s.parse::<u32>().map_err(|_| {
-            (
-                2,
-                "invalid-usage",
-                "Invalid --max-requests: must be a positive integer".into(),
-            )
-        })?)
-    } else {
-        None
-    };
-
-    if online && max_requests.is_none() {
-        return Err((
-            crate::output::ErrorKind::InvalidUsage.exit_code() as u8,
-            crate::output::ErrorKind::InvalidUsage.as_str(),
-            "Online live evaluation requires an explicit --max-requests cap".into(),
-        ));
-    }
 
     let max_runtime_ms = if let Some(s) = eval_matches.get_one::<String>("max-runtime-ms") {
         s.parse::<u64>().map_err(|_| {
@@ -2836,10 +2801,10 @@ fn eval_command(clock: &EntryClock, eval_matches: &clap::ArgMatches) -> Result<S
     };
 
     let mut config = crate::evaluation::batch::BatchConfig {
-        max_requests,
+        max_requests: None,
         max_runtime_ms,
         per_case_timeout_ms,
-        online,
+        online: false,
         allow_network,
         evidence_origin: crate::evaluation::batch::EvidenceOrigin::Recorded,
         policy: None,

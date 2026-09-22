@@ -327,12 +327,12 @@ fn network_admission_and_refusal_matrix() {
     );
     assert_eq!(refusal_no_consent.kind(), ErrorKind::NetworkDenied);
 
-    // 4.4 Authorized via --allow-network but missing credential -> ErrorKind::Authentication (exit 4)
+    // 4.4 Authorized via --allow-network but missing credential -> ErrorKind::CredentialAbsent (exit 4)
     let consent_allowed = NetworkConsent::Authorized(ConsentSource::AllowNetworkFlag);
     let refusal_no_cred = admit_provider_attempt(consent_allowed, CredentialStatus::Absent)
         .expect_err("must fail auth");
     assert_eq!(refusal_no_cred, ProviderAdmissionRefusal::MissingCredential);
-    assert_eq!(refusal_no_cred.kind(), ErrorKind::Authentication);
+    assert_eq!(refusal_no_cred.kind(), ErrorKind::CredentialAbsent);
 
     // 4.5 Authorized via --allow-network with credential -> Ok(ConsentSource::AllowNetworkFlag)
     let admission_ok =

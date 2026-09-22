@@ -135,6 +135,7 @@ error_kinds! {
     Superseded => ("superseded", Session),
     ProviderFailure => ("provider-failure", Provider),
     Authentication => ("authentication", Provider),
+    CredentialAbsent => ("credential-absent", Provider),
     NetworkFailure => ("network-failure", Provider),
     RequestBudget => ("request-budget", Provider),
     ProviderCooldown => ("provider-cooldown", Provider),
