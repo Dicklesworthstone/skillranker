@@ -29,7 +29,57 @@ use std::time::SystemTime;
 
 static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-pub const DEFAULT_HOOK_TIMEOUT_SECS: u32 = 3;
+/// Default harness timeout for the managed Claude hook entry. Must remain
+/// strictly above the default internal ranking deadline
+/// (`crate::limits::DEFAULT_INVOCATION_DEADLINE_MS`, 3,000 ms) plus the
+/// startup reserve below: the harness clock starts at spawn while the
+/// internal clock starts at process entry, so an outer timeout equal to the
+/// internal deadline can kill `sr` during its output reserve.
+pub const DEFAULT_HOOK_TIMEOUT_SECS: u32 = 4;
+
+/// Seconds reserved between the installed outer timeout and the internal
+/// ranking deadline for process startup before the entry clock begins.
+pub const HOOK_STARTUP_RESERVE_SECS: u32 = 1;
+
+/// The smallest installed outer timeout that keeps the internal deadline
+/// `deadline_ms` strictly inside the harness budget with the startup reserve.
+pub fn min_hook_timeout_secs(deadline_ms: u64) -> u32 {
+    let deadline_secs = u32::try_from(deadline_ms.saturating_add(999) / 1_000).unwrap_or(u32::MAX);
+    deadline_secs.saturating_add(HOOK_STARTUP_RESERVE_SECS)
+}
+
+/// The internal ranking budget implied by the installed managed entry:
+/// its outer timeout minus the startup reserve, in milliseconds. `None`
+/// when no exactly matching managed entry is installed or its settings
+/// cannot be read; callers fall back to the conservative default budget.
+pub fn installed_hook_budget_ms(
+    harness: HookHarness,
+    binary_path_override: Option<PathBuf>,
+) -> Option<u64> {
+    let settings_path = resolve_settings_file(harness, None).ok()?;
+    let (settings, _, _) = read_and_parse_settings(&settings_path).ok()?;
+    let entries = settings
+        .get("hooks")?
+        .get("UserPromptSubmit")?
+        .as_array()?;
+    let binary_path = resolve_binary_path(binary_path_override).ok()?;
+    let command = make_command_string(&binary_path);
+    for item in entries {
+        let Some(hooks) = item.get("hooks").and_then(Value::as_array) else {
+            continue;
+        };
+        let Some(hook) = hooks.iter().find(|h| {
+            h.get("command")
+                .and_then(Value::as_str)
+                .is_some_and(|cmd| cmd == command)
+        }) else {
+            continue;
+        };
+        let timeout_secs = hook.get("timeout").and_then(Value::as_u64)?;
+        return Some(timeout_secs.saturating_sub(u64::from(HOOK_STARTUP_RESERVE_SECS)) * 1_000);
+    }
+    None
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

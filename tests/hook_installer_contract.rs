@@ -150,7 +150,7 @@ fn apply_install_creates_settings_and_backup() {
             .unwrap()
             .contains("hook claude")
     );
-    assert_eq!(entry["hooks"][0]["timeout"], 3);
+    assert_eq!(entry["hooks"][0]["timeout"], 4);
 
     // Backup file must exist in state directory
     assert!(fixture.state_dir().exists());
@@ -161,6 +161,108 @@ fn apply_install_creates_settings_and_backup() {
     assert_eq!(backups.len(), 1);
     let backup_meta = backups[0].metadata().unwrap();
     assert_eq!(backup_meta.permissions().mode() & 0o777, 0o600);
+}
+
+#[test]
+fn install_refuses_timeout_not_above_internal_deadline() {
+    let fixture = InstallerFixture::new();
+
+    // Default internal deadline is 3000ms; outer timeout 3 equals it and
+    // could kill sr during its output reserve. Refused with the minimum named.
+    let out = fixture.run_sr(&["install-hook", "claude", "--timeout-secs", "3"]);
+    assert_eq!(out.status.code(), Some(2));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("--timeout-secs 4"),
+        "refusal names the required minimum: {stdout}"
+    );
+    assert!(!fixture.settings_path().exists());
+
+    // A raised effective internal deadline raises the required outer timeout.
+    let out = Command::new(env!("CARGO_BIN_EXE_sr"))
+        .env_clear()
+        .env("HOME", fixture.home())
+        .env("XDG_CONFIG_HOME", fixture.home().join(".config"))
+        .env("XDG_STATE_HOME", fixture.home().join(".local/state"))
+        .env("SR_TIMEOUT_MS", "10000")
+        .current_dir(fixture.workspace())
+        .args(["install-hook", "claude", "--timeout-secs", "10"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("exec sr");
+    assert_eq!(out.status.code(), Some(2));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("--timeout-secs 11"),
+        "refusal scales with the effective deadline: {stdout}"
+    );
+    assert!(!fixture.settings_path().exists());
+
+    // One second more covers the deadline plus the startup reserve.
+    let out = Command::new(env!("CARGO_BIN_EXE_sr"))
+        .env_clear()
+        .env("HOME", fixture.home())
+        .env("XDG_CONFIG_HOME", fixture.home().join(".config"))
+        .env("XDG_STATE_HOME", fixture.home().join(".local/state"))
+        .env("SR_TIMEOUT_MS", "10000")
+        .current_dir(fixture.workspace())
+        .args(["install-hook", "claude", "--timeout-secs", "11"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("exec sr");
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("\"timeout\": 11"),
+        "previews the accepted timeout: {stdout}"
+    );
+}
+
+#[test]
+fn hook_clamp_budget_comes_from_the_installed_entry() {
+    let fixture = InstallerFixture::new();
+
+    // Install with an outer timeout of 10s: the internal budget becomes
+    // 9000ms, so an 8000ms internal deadline is NOT clamped to 3000ms.
+    let out = fixture.run_sr(&["install-hook", "claude", "--timeout-secs", "10", "--apply"]);
+    assert_eq!(out.status.code(), Some(0));
+
+    let hook_payload = json!({
+        "hook_event_name": "UserPromptSubmit",
+        "prompt": "test prompt",
+        "prompt_id": "p-budget-1",
+        "session_id": "session-budget-1",
+        "cwd": fixture.workspace(),
+    });
+    let mut child = Command::new(env!("CARGO_BIN_EXE_sr"))
+        .env_clear()
+        .env("HOME", fixture.home())
+        .env("XDG_CONFIG_HOME", fixture.home().join(".config"))
+        .env("XDG_STATE_HOME", fixture.home().join(".local/state"))
+        .current_dir(fixture.workspace())
+        .arg("hook")
+        .arg("claude")
+        .arg("--timeout-ms")
+        .arg("8000")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn sr hook claude");
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(&serde_json::to_vec(&hook_payload).unwrap());
+    }
+    let out = child.wait_with_output().expect("wait");
+    assert_eq!(out.status.code(), Some(0));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stderr.contains("exceeds installed hook budget"),
+        "8000ms fits the installed 9000ms budget, no clamp: {stderr}"
+    );
 }
 
 #[test]
