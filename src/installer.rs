@@ -18,7 +18,7 @@ use crate::limits::CONFIG_FILE_BYTES;
 use crate::output::JsonSeed;
 use nix::fcntl::{Flock, FlockArg};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
 #[cfg(unix)]

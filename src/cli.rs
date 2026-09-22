@@ -3446,13 +3446,14 @@ fn hook_claude_command(clock: &EntryClock, m: &clap::ArgMatches) -> Result<Strin
     // deadline must never exceed that installed budget. Derived from the
     // actual managed entry when readable; otherwise the conservative
     // default-entry budget applies.
-    let installed_budget_ms = crate::installer::installed_hook_budget_ms(
-        crate::installer::HookHarness::Claude,
-        None,
-    )
-    .unwrap_or(
-        u64::from(crate::installer::DEFAULT_HOOK_TIMEOUT_SECS - crate::installer::HOOK_STARTUP_RESERVE_SECS) * 1_000,
-    );
+    let installed_budget_ms =
+        crate::installer::installed_hook_budget_ms(crate::installer::HookHarness::Claude, None)
+            .unwrap_or(
+                u64::from(
+                    crate::installer::DEFAULT_HOOK_TIMEOUT_SECS
+                        - crate::installer::HOOK_STARTUP_RESERVE_SECS,
+                ) * 1_000,
+            );
     let timeout_ms = if timeout_ms > installed_budget_ms {
         let _ = writeln!(
             io::stderr().lock(),
@@ -3623,10 +3624,9 @@ fn install_hook_command(clock: &EntryClock, m: &clap::ArgMatches) -> Result<Stri
         .as_ref()
         .map(|c| c.effective().hook_mode())
         .unwrap_or(crate::config::HookMode::Shadow);
-    let deadline_ms = resolved.map_or(
-        crate::limits::DEFAULT_INVOCATION_DEADLINE_MS,
-        |c| c.effective().timeout_ms(),
-    );
+    let deadline_ms = resolved.map_or(crate::limits::DEFAULT_INVOCATION_DEADLINE_MS, |c| {
+        c.effective().timeout_ms()
+    });
 
     // The installed outer timeout must strictly cover the effective internal
     // deadline plus the startup reserve: the harness clock starts at spawn,

@@ -25,7 +25,10 @@ pub(super) fn prepare(
     }
     let mut bytes = 0usize;
     for event in &mut context.events {
-        if !matches!(event.kind, EventKind::ToolInvocation | EventKind::ToolResult) {
+        if !matches!(
+            event.kind,
+            EventKind::ToolInvocation | EventKind::ToolResult
+        ) {
             continue;
         }
         let Some(tool) = event.tool.as_mut() else {

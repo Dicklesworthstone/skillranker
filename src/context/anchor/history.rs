@@ -31,7 +31,10 @@ pub(crate) fn select(
     });
     if !has_current
         && current.is_some_and(|id| {
-            context.events.iter().any(|event| event.event_id.as_ref() == Some(id))
+            context
+                .events
+                .iter()
+                .any(|event| event.event_id.as_ref() == Some(id))
         })
     {
         // A missing scoped event is not permission to select a foreign event

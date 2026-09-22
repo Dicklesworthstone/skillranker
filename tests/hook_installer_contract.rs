@@ -144,10 +144,12 @@ fn apply_install_creates_settings_and_backup() {
     let entry = &hooks[0];
     assert_eq!(entry["matcher"], "");
     assert_eq!(entry["hooks"][0]["type"], "command");
-    assert!(entry["hooks"][0]["command"]
-        .as_str()
-        .unwrap()
-        .contains("hook claude"));
+    assert!(
+        entry["hooks"][0]["command"]
+            .as_str()
+            .unwrap()
+            .contains("hook claude")
+    );
     // Four, not three: the harness timeout must STRICTLY exceed the 3,000 ms internal deadline,
     // because the internal clock starts after process startup and the last 200 ms of it are
     // reserved for writing the answer (sr-83cc). README documents four seconds.
@@ -355,10 +357,12 @@ fn preserves_unrelated_settings_and_other_hooks() {
     assert_eq!(user_prompt_submit[0]["hooks"][0]["command"], "check-git.sh");
 
     // Second hook is our managed hook
-    assert!(user_prompt_submit[1]["hooks"][0]["command"]
-        .as_str()
-        .unwrap()
-        .contains("hook claude"));
+    assert!(
+        user_prompt_submit[1]["hooks"][0]["command"]
+            .as_str()
+            .unwrap()
+            .contains("hook claude")
+    );
 }
 
 #[test]
