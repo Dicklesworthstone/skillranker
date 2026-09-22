@@ -135,3 +135,14 @@ just the pre-existing compact-check hook. Sessions recorded while out of
 scope remain in the ledger pending an explicit maintainer retention decision;
 physical removal is an explicit ledger operation, not something done
 unilaterally. A peer audit (`b07403e`) identified the scope violation.
+
+## Credential delivery — 2026-09-22 (sr-hook-credential-env-3i1n)
+
+The maintainer chose shell-rc sourcing: a guarded block in `~/.zshrc` and
+`~/.bashrc` sources `/data/projects/skillranker/.env` with `set -a` when the
+file exists, so hook processes spawned by any newly launched agent session
+carry `TYPESAFE_API_KEY`. Validated with `zsh -n` / `bash -n` and a fresh
+interactive shell (presence confirmed, value never printed). Long-running
+sessions started before this change keep recording credential-absent turns
+until restarted; those rows must be separated from provider outages in the
+cohort report (§7).
