@@ -3905,11 +3905,17 @@ fn readiness(
     let home = std::env::var_os("HOME")
         .filter(|path| !path.is_empty())
         .map(PathBuf::from);
+    // Readiness answers whether `sr rank` can work, so it resolves the roster
+    // under the same provisional Claude contract rank uses. The report still
+    // labels that visibility unverified.
     let resolved = resolve_workspace_roster(
         clock,
         workspace,
         home.as_deref(),
         config.effective().roster_roots(),
+        crate::roster::Visibility::Verified {
+            contract_version: crate::pipeline::PROVISIONAL_CLAUDE_CONTRACT.into(),
+        },
     );
     let listing = resolved.as_ref().ok().map(crate::roster::inspect::listing);
     let roster = match (&resolved, &listing) {
@@ -4077,6 +4083,7 @@ fn roster_listing(clock: &EntryClock, matches: &clap::ArgMatches) -> Result<Stri
         &workspace,
         home.as_deref(),
         config.effective().roster_roots(),
+        crate::roster::Visibility::Unverified,
     )?;
     if let Some(target) = matches.get_one::<String>("snapshot") {
         let fresh = workspace_snapshot(&roster, &workspace, home.as_deref());
@@ -4112,20 +4119,19 @@ fn roster_listing(clock: &EntryClock, matches: &clap::ArgMatches) -> Result<Stri
     Ok(format!("{}\n", page.to_json()))
 }
 
-/// Discover and resolve the documented Claude roots of `workspace`. The Claude
-/// adapter's visibility is unverified, so no precedence is claimed.
+/// Discover and resolve the documented Claude roots of `workspace` under the
+/// given visibility. `sr roster` claims no precedence (`Unverified`); doctor
+/// uses rank's provisional contract so its readiness matches ranking.
 fn resolve_workspace_roster(
     clock: &EntryClock,
     workspace: &Path,
     home: Option<&Path>,
     configured: &[crate::privacy::SkillRoot],
+    visibility: crate::roster::Visibility,
 ) -> Result<crate::roster::resolution::ResolvedRoster, Failure> {
     let unusable = |message: &str| (5u8, "unusable-roster", message.to_owned());
     let plan = crate::roster::discovery::claude_code_plan_with_roots(
-        workspace,
-        home,
-        crate::roster::Visibility::Unverified,
-        configured,
+        workspace, home, visibility, configured,
     )
     .map_err(|_| unusable("The documented skill roots could not be planned"))?;
     let runtime_failure = |error| {
@@ -4280,7 +4286,13 @@ mod invocation_cleanup_tests {
         .unwrap();
         std::thread::sleep(Duration::from_millis(5));
         let workspace = std::env::current_dir().unwrap();
-        let result = resolve_workspace_roster(&clock, &workspace, None, &[]);
+        let result = resolve_workspace_roster(
+            &clock,
+            &workspace,
+            None,
+            &[],
+            crate::roster::Visibility::Unverified,
+        );
         assert!(matches!(result, Err((6, "timeout", _))), "{result:?}");
     }
 
