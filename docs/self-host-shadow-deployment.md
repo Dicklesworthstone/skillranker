@@ -146,3 +146,22 @@ interactive shell (presence confirmed, value never printed). Long-running
 sessions started before this change keep recording credential-absent turns
 until restarted; those rows must be separated from provider outages in the
 cohort report (§7).
+## Redeployment — 2026-09-22 20:00Z (sr-hook-success-dead-ends-yphr)
+
+- Binary: `~/.local/bin/sr`, SHA256
+  `c8ce3f9ffb739761b1f6ed9e5ee7fe5c741f7fd320201fc8f357b7ec9250d64a`, built
+  `--release --locked` from a clean worktree at the pushed revision `c6999c3`.
+  It includes the side-branch resolver fix (`e261dd4`) and the peers' failure
+  counting and credential-absent split (`4c96fae`). The previous `5dcdb9a`
+  binary is kept as `~/.local/bin/sr.backup.20260922T200000Z-5dcdb9a`.
+- Why: replaying the hook over all 10 recent real transcripts (isolated
+  sandbox, no key, no network, no real ledger), the old binary passed context
+  capture on 6 of 10 sessions and this build passes 9 of 10. Sessions that had
+  run parallel tool calls, or an RCH/dcg-intercepted command, failed silently
+  before. The remaining shape is tracked in `sr-interleaved-tool-batches-nwhu`.
+- Live smoke into an **isolated** ledger (never the cohort store), with the
+  installed binary, the maintainer credential, real TLS to Jev, and this
+  repository's real session transcript: `ranked`, wide + rerank, 2 attempts,
+  21,275 known tokens, 1,475 ms at host load ~130, zero stdout bytes in shadow
+  mode. Only real traffic from sessions launched after the credential change
+  can start the cohort; this smoke is not cohort evidence.
