@@ -5630,7 +5630,7 @@ impl LedgerStore {
         Ok((
             FeedbackOutcome::SingleJudgment {
                 event_id: req.event_id.clone(),
-                skill_id: req.skill_id.clone(),
+                skill_id,
                 verdict: req.verdict,
                 judgment_id,
                 data_generation: new_data_gen,

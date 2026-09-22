@@ -133,3 +133,55 @@ fn complete_names_and_exact_partial_member_ids_remain_usable() {
         assert!(invocation.shutdown());
     }
 }
+
+#[test]
+fn feedback_outcome_matches_durable_identity_for_name_and_id_updates() {
+    let invocation = ProcessInvocation::enter().unwrap();
+    let cx = invocation.request_cx().unwrap();
+    let mut store = fixture(&invocation, &cx, true);
+    let mut previous_judgment_id = None;
+    for (index, reference) in ["review", "stable-alpha", "review"].into_iter().enumerate() {
+        let stamp = store.stamp();
+        let (outcome, updated_stamp) = store
+            .record_single_feedback(invocation.clock(), &cx, &feedback(reference), stamp)
+            .unwrap();
+        let FeedbackOutcome::SingleJudgment {
+            event_id,
+            skill_id,
+            judgment_id,
+            data_generation,
+            ..
+        } = outcome
+        else {
+            panic!("single feedback must return a single judgment")
+        };
+        let conn = Connection::open(store.database_path()).unwrap();
+        let rows: Vec<(String, String, String, u32)> = conn
+            .prepare(
+                "SELECT judgment_id, attributed_event_id, skill_id, label_version FROM judgments",
+            )
+            .unwrap()
+            .query_map([], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(rows.len(), 1, "updates must not split the skill identity");
+        assert_eq!(rows[0].2, "stable-alpha");
+        assert_eq!(
+            skill_id, rows[0].2,
+            "response disagrees with durable identity for {reference}"
+        );
+        assert_eq!(event_id, rows[0].1);
+        assert_eq!(judgment_id, rows[0].0);
+        assert_eq!(rows[0].3, (index + 1) as u32);
+        if let Some(previous) = &previous_judgment_id {
+            assert_eq!(&judgment_id, previous);
+        }
+        previous_judgment_id = Some(judgment_id);
+        assert_eq!(data_generation, updated_stamp.data_generation);
+        assert_eq!(data_generation, stamp.data_generation + 1);
+    }
+    assert!(invocation.shutdown());
+}
