@@ -1384,3 +1384,64 @@ fn a_rewritten_transcript_is_re_read_instead_of_resumed_at_a_stale_offset() {
         "the stale offset must not be trusted: the rewritten file has to be read from its start"
     );
 }
+
+// Small records must retain a repair overlap as well as make forward progress.
+// Exercise both an initial boundary and a later boundary with a nonzero rewind start.
+#[test]
+fn a_small_record_pair_across_the_observation_boundary_is_repaired() {
+    for pair_at in [1_999, 3_999] {
+        let f = Fixture::new();
+        f.long_claude_session("long-session", 4_100, pair_at);
+        let path = f.transcript("long-session");
+        let text = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, text.replace(&"x".repeat(600), "")).unwrap();
+        f.ledger_init();
+        let transcript = f.transcript("long-session");
+        let transcript_str = transcript.to_str().unwrap();
+
+        let mut backlog_seen = false;
+        let mut states: Vec<String> = Vec::new();
+        // The 4,101 small records fit the byte budget. A bounded repair overlap
+        // must leave enough record capacity to converge within these six passes.
+        for pass in 1..=6 {
+            let out = f
+                .command(
+                    1,
+                    &[
+                        "observe",
+                        "--transcript",
+                        transcript_str,
+                        "--harness",
+                        "claude_code",
+                        "--json",
+                    ],
+                )
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "pass {pass} failed: stdout={} stderr={}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+            let document: Value = serde_json::from_slice(&out.stdout).unwrap();
+            if document["unread_backlog"] == true {
+                backlog_seen = true;
+            }
+            states = f.observation_states();
+            if states == vec!["loaded".to_string()] {
+                break;
+            }
+        }
+        assert!(
+            backlog_seen,
+            "a pass that stopped before the end of the transcript must say so; without that a reader \
+         cannot tell an unobserved session from an inactive one"
+        );
+        assert_eq!(
+            states,
+            vec!["loaded".to_string()],
+            "boundary pair at {pair_at} must converge to one successful observation"
+        );
+    }
+}

@@ -42,7 +42,8 @@ pub const PARSER_VERSION: u32 = 2;
 /// re-reading costs nothing but the parse.
 ///
 /// This window IS the pending state: nothing is retained between passes, so the bound is also
-/// the expiry. A pair separated by more than this many bytes is not re-paired and its row stays
+/// the expiry. The overlap also retains at most half the record budget so new records can
+/// advance. A pair outside either overlap bound is not re-paired and its row stays
 /// `attempted`, which undercounts rather than invents. One transcript record is bounded at
 /// 256 KiB, so this holds several maximal records, and it is charged against the same
 /// OBSERVATION_DELTA_BYTES budget as the new bytes.
@@ -261,6 +262,9 @@ fn read_snapshot(
             },
             rebuilt: rebuilt && previous.is_some(),
         },
+        previous
+            .filter(|cursor| !rebuilt && cursor.last_event_id.is_some())
+            .map(|cursor| cursor.byte_offset),
     )?;
 
     // A resumed observation read has to prove the watermark still describes THIS transcript, and
@@ -295,6 +299,7 @@ fn read_snapshot(
                 last_event_id: None,
                 rebuilt: true,
             },
+            None,
         );
     }
 
@@ -327,6 +332,7 @@ fn read_snapshot(
                 last_event_id: cursor.last_event_id.clone(),
                 rebuilt: false,
             },
+            None,
         );
     }
     Ok(snapshot)
@@ -345,7 +351,11 @@ struct ReadWindow {
     rebuilt: bool,
 }
 
-fn read_window(file: &mut File, window: ReadWindow) -> Result<JsonlSnapshot, JsonlError> {
+fn read_window(
+    file: &mut File,
+    window: ReadWindow,
+    overlap_watermark: Option<u64>,
+) -> Result<JsonlSnapshot, JsonlError> {
     let available = window.snapshot_len.saturating_sub(window.start);
     let to_read = available.min(window.cap);
     let unread_backlog = available > to_read;
@@ -356,16 +366,34 @@ fn read_window(file: &mut File, window: ReadWindow) -> Result<JsonlSnapshot, Jso
     let mut buf = vec![0_u8; to_read as usize];
     file.read_exact(&mut buf).map_err(|_| JsonlError::Io)?;
 
+    // Reserve at least half the record budget for forward progress. The byte
+    // rewind alone can contain more than an entire record window when records
+    // are small. Keep the newest bounded overlap rather than abandoning all
+    // pending invocations when that happens. Scan only bytes already read under
+    // the existing byte cap; do not allocate or read a second overlap buffer.
+    let mut offset = 0;
+    if window.kind == CursorKind::Observation
+        && let Some(watermark) = overlap_watermark
+    {
+        let prefix_len = watermark.saturating_sub(window.start).min(buf.len() as u64) as usize;
+        offset = buf[..prefix_len]
+            .iter()
+            .enumerate()
+            .rev()
+            .filter(|(_, byte)| **byte == b'\n')
+            .nth(window.kind.record_cap() / 2)
+            .map_or(0, |(index, _)| index + 1);
+    }
     parse_window(
-        &buf,
-        window.start,
-        window.align_to_record,
+        &buf[offset..],
+        window.start + offset as u64,
+        offset == 0 && window.align_to_record,
         WindowContext {
             identity: window.identity,
             kind: window.kind,
             generation: window.generation,
             last_event_id: window.last_event_id,
-            truncated_history: window.start > 0,
+            truncated_history: window.start > 0 || offset > 0,
             unread_backlog,
             rebuilt: window.rebuilt,
         },
