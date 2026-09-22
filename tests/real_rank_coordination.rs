@@ -19,7 +19,16 @@ use std::os::unix::fs::DirBuilderExt;
 use std::path::PathBuf;
 use std::process::{Child, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
+
+/// One real-process test at a time. Six sibling `sr` processes in this file
+/// are enough to spend a follower's whole budget on startup, so it never
+/// reaches the lease wait the test exists to prove.
+fn one_process_test() -> MutexGuard<'static, ()> {
+    static LOCK: Mutex<()> = Mutex::new(());
+    LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
 const CONSENT: &str = "[network]\nenabled = true\n";
@@ -27,10 +36,12 @@ const TASK: &str = "Please run and repair failing rust tests";
 
 struct Fixture {
     root: PathBuf,
+    _serial: MutexGuard<'static, ()>,
 }
 
 impl Fixture {
     fn new(user_config: &str) -> Self {
+        let _serial = one_process_test();
         let root = std::env::temp_dir().join(format!(
             "sr-real-coord-{}-{}-{}",
             std::process::id(),
@@ -45,7 +56,7 @@ impl Fixture {
         std::fs::create_dir_all(root.join("config/sr")).unwrap();
         std::fs::create_dir_all(root.join("home")).unwrap();
         std::fs::write(root.join("config/sr/config.toml"), user_config).unwrap();
-        let f = Self { root };
+        let f = Self { root, _serial };
         f.skill("alpha", "Runs and repairs failing rust tests.");
         f.skill("beta", "Drafts release notes from git history.");
         f
@@ -297,41 +308,13 @@ fn ordinary_two_consumer_success_incurs_one_pair_and_subsequent_exact_offline_re
     assert_eq!(val_c["usage"]["requests"], 0);
 }
 
-/// Invocation budget for a follower that must reach the lease wait.
+/// Whole-invocation budget for the follower.
 ///
-/// A fixed 600ms total dies in local inspection when the suite is parallel,
-/// before any usage envelope exists. Measure that admission on this machine,
-/// then add a short wait. The total stays below the leader's 4s hold and the
-/// 5s lease so the follower cannot take over or observe the leader's answer.
-fn follower_timeout_after_admission(admission_ms: u128) -> u64 {
-    let admission = u64::try_from(admission_ms).unwrap_or(1_500);
-    admission
-        .saturating_mul(2)
-        .saturating_add(800)
-        .clamp(1_500, 3_200)
-}
-
-fn admission_millis() -> u128 {
-    // A separate fixture, so the probe cannot take the leader's lease or session.
-    let probe = Fixture::new(CONSENT);
-    probe.claude_session("session-admission-probe", TASK);
-    let started = std::time::Instant::now();
-    let out = probe
-        .sr_command_at(9, &["--offline", "--timeout-ms", "8000"])
-        .output()
-        .unwrap();
-    let elapsed = started.elapsed().as_millis();
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(
-        stdout.contains("\"decision\""),
-        "admission probe produced no decision ({} ms, status {:?}): {}\n{}",
-        elapsed,
-        out.status.code(),
-        stdout,
-        String::from_utf8_lossy(&out.stderr)
-    );
-    elapsed
-}
+/// 600ms dies in local inspection when the suite runs in parallel, before a
+/// usage envelope exists. 3.2s still ends before the leader's 4s provider
+/// hold and the 5s lease, so the follower cannot take over or see that answer.
+/// The test then requires the coordination timeout, not the inspection one.
+const FOLLOWER_TIMEOUT_MS: u64 = 3_200;
 
 #[test]
 fn follower_nearing_deadline_while_leader_active_makes_zero_provider_attempts() {
@@ -339,14 +322,12 @@ fn follower_nearing_deadline_while_leader_active_makes_zero_provider_attempts() 
     f.claude_session("session-coord-2", TASK);
     let marker = f.root.join("follower-wide-started");
     // Longer than the follower's whole budget, shorter than the 5s lease.
-    let admission_ms = admission_millis();
     let provider = Provider::start(
         &f,
         "slow-wide+write-on-wide",
         &[marker.as_os_str(), "4".as_ref()],
     );
-    let follower_timeout_ms = follower_timeout_after_admission(admission_ms);
-    let follower_timeout = follower_timeout_ms.to_string();
+    let follower_timeout = FOLLOWER_TIMEOUT_MS.to_string();
 
     let mut cmd_leader = f.sr_command(&provider, &["--timeout-ms", "10000"]);
     let child_leader = cmd_leader.stdout(Stdio::piped()).spawn().unwrap();
@@ -380,7 +361,7 @@ fn follower_nearing_deadline_while_leader_active_makes_zero_provider_attempts() 
     assert!(
         message.contains("owned by active leader"),
         "follower must time out in the coordination wait, not local inspection \
-         (admission {admission_ms} ms, timeout {follower_timeout_ms} ms): {val_f}; stderr: {}",
+         (timeout {FOLLOWER_TIMEOUT_MS} ms): {val_f}; stderr: {}",
         String::from_utf8_lossy(&out_follower.stderr)
     );
     assert_eq!(
@@ -391,11 +372,11 @@ fn follower_nearing_deadline_while_leader_active_makes_zero_provider_attempts() 
     );
     assert_eq!(val_f["usage"]["requests"], 0);
     let elapsed = val_f["elapsed_ms"].as_u64().unwrap_or(0);
-    let waited_until = follower_timeout_ms.saturating_sub(450);
+    let waited_until = FOLLOWER_TIMEOUT_MS.saturating_sub(450);
     assert!(
         elapsed + 400 >= waited_until,
         "follower elapsed {elapsed} ms; coordination wait should consume the budget \
-         down to the cleanup reserve (admission {admission_ms} ms, timeout {follower_timeout_ms} ms)"
+         down to the cleanup reserve (timeout {FOLLOWER_TIMEOUT_MS} ms)"
     );
 }
 
