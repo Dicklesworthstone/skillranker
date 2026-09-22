@@ -251,6 +251,153 @@ fn parallel_tool_results_filed_beside_their_calls_are_side_branches() {
     assert!(!ids.contains(&"result-a") && !ids.contains(&"result-b"));
 }
 
+/// A tool call written as one fragment of the API response `response`.
+fn batch_call(id: &str, parent: &str, response: &str) -> serde_json::Value {
+    let mut call = tool_call(id, parent);
+    call["message"]["id"] = json!(response);
+    call
+}
+
+/// Claude's layout when tools of one response run concurrently: the response
+/// goes on through `b`, while call `a`'s result starts a side branch that
+/// carries three more calls of the same response, each answered.
+fn interleaved_batches() -> Vec<serde_json::Value> {
+    vec![
+        event("root", None),
+        batch_call("a", "root", "msg-1"),
+        batch_call("b", "a", "msg-1"),
+        tool_result("result-a", "a"),
+        hook_success("hook-a", "result-a"),
+        batch_call("c", "hook-a", "msg-1"),
+        batch_call("d", "c", "msg-1"),
+        batch_call("e", "d", "msg-1"),
+        tool_result("result-b", "b"),
+        hook_success("hook-b", "result-b"),
+        batch_call("f", "hook-b", "msg-1"),
+        tool_result("result-c", "c"),
+        hook_success("hook-c", "result-c"),
+        tool_result("result-d", "d"),
+        tool_result("result-e", "e"),
+        hook_success("hook-e", "result-e"),
+        tool_result("result-f", "f"),
+        json!({"type":"assistant","uuid":"reply","parentUuid":"result-f","sessionId":"expected-session",
+               "message":{"id":"msg-2","role":"assistant","content":[{"type":"text","text":"done"}]}}),
+    ]
+}
+
+fn record<'r>(records: &'r mut [serde_json::Value], uuid: &str) -> &'r mut serde_json::Value {
+    records.iter_mut().find(|r| r["uuid"] == uuid).unwrap()
+}
+
+#[test]
+fn an_answered_parallel_batch_of_the_continuing_response_is_a_side_branch() {
+    let result = apply_claude_prompt_overlay(&request(&interleaved_batches(), "new"))
+        .expect("the response continues through b; its answered side batch is no fork");
+    let ids: Vec<_> = result
+        .events
+        .iter()
+        .filter_map(|e| e.event_id.as_ref().map(|id| id.as_str().to_owned()))
+        .collect();
+    assert_eq!(
+        ids,
+        [
+            "root", "a", "b", "result-b", "hook-b", "f", "result-f", "reply", "new"
+        ]
+    );
+}
+
+/// The response goes on through call `a`'s own result, while call `b` heads a
+/// side batch whose calls fork again: `b`'s result and call `c` each end the
+/// nested fork answered, so neither of them continues.
+fn nested_batches() -> Vec<serde_json::Value> {
+    vec![
+        event("root", None),
+        batch_call("a", "root", "msg-1"),
+        batch_call("b", "a", "msg-1"),
+        tool_result("result-a", "a"),
+        batch_call("c", "b", "msg-1"),
+        tool_result("result-b", "b"),
+        hook_success("hook-b", "result-b"),
+        tool_result("result-c", "c"),
+        json!({"type":"assistant","uuid":"reply","parentUuid":"result-a","sessionId":"expected-session",
+               "message":{"id":"msg-2","role":"assistant","content":[{"type":"text","text":"done"}]}}),
+    ]
+}
+
+#[test]
+fn a_nested_side_batch_is_pruned_whole_when_the_calls_own_result_goes_on() {
+    let result = apply_claude_prompt_overlay(&request(&nested_batches(), "new"))
+        .expect("the response continues through a's result; b's batch is finished");
+    let ids: Vec<_> = result
+        .events
+        .iter()
+        .filter_map(|e| e.event_id.as_ref().map(|id| id.as_str().to_owned()))
+        .collect();
+    assert_eq!(ids, ["root", "a", "result-a", "reply", "new"]);
+    // Response identity is what separates this layout from a rewind.
+    let mut records = nested_batches();
+    for record in &mut records {
+        if let Some(message) = record["message"].as_object_mut() {
+            message.remove("id");
+        }
+    }
+    assert!(apply_claude_prompt_overlay(&request(&records, "new")).is_err());
+    // With no later response, both branches are finished batches and neither
+    // shows where the conversation goes.
+    let finished = [
+        event("root", None),
+        batch_call("a", "root", "msg-1"),
+        batch_call("b", "a", "msg-1"),
+        tool_result("result-b", "b"),
+        tool_result("result-a", "a"),
+        hook_success("hook-a", "result-a"),
+        batch_call("d", "hook-a", "msg-1"),
+        tool_result("result-d", "d"),
+    ];
+    assert!(apply_claude_prompt_overlay(&request(&finished, "new")).is_err());
+}
+
+#[test]
+fn an_interleaved_batch_forks_unless_it_belongs_to_the_continuing_response() {
+    // Each twin breaks one condition of the side-batch layout; each must fail.
+    let mut twins = Vec::new();
+    // The side branch holds a fragment of a different response.
+    let mut records = interleaved_batches();
+    record(&mut records, "d")["message"]["id"] = json!("msg-other");
+    twins.push(("foreign response", records));
+    // The response does not continue through the fork's other child.
+    let mut records = interleaved_batches();
+    record(&mut records, "b")["message"]["id"] = json!("msg-other");
+    twins.push(("different continuing response", records));
+    // Without response identity the layout is indistinguishable from a rewind.
+    let mut records = interleaved_batches();
+    for record in &mut records {
+        if let Some(message) = record["message"].as_object_mut() {
+            message.remove("id");
+        }
+    }
+    twins.push(("no response identity", records));
+    // A call of the side branch is still unanswered.
+    let mut records = interleaved_batches();
+    records.retain(|r| r["uuid"] != "result-d");
+    twins.push(("unanswered call", records));
+    // A user message on the side branch is conversation, not a tool batch.
+    let mut records = interleaved_batches();
+    records.push(event("typed", Some("hook-e")));
+    twins.push(("user turn", records));
+    // A result answering a call outside the batch.
+    let mut records = interleaved_batches();
+    record(&mut records, "result-e")["message"]["content"][0]["tool_use_id"] =
+        json!("call-elsewhere");
+    twins.push(("foreign result", records));
+    for (name, records) in twins {
+        assert!(
+            apply_claude_prompt_overlay(&request(&records, "new")).is_err(),
+            "{name} must stay an ambiguous fork"
+        );
+    }
+}
+
 #[test]
 fn a_rewound_tool_exchange_is_still_a_real_fork() {
     // After a rewind, the abandoned branch can end in a tool result whose

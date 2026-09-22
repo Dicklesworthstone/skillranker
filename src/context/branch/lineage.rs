@@ -9,7 +9,7 @@ use super::{
     ActiveBranch, BranchResolution, BranchResolutionTarget, UnresolvedBranchReason, epoch_name,
 };
 use crate::context::{EventKind, NormalizedEvent, Role};
-use crate::identity::{AgentId, BranchId, EventId};
+use crate::identity::{AgentId, BranchId, EventId, ToolCallId};
 use std::collections::{BTreeMap, BTreeSet, btree_map::Entry};
 
 type EventKey<'a> = (Option<&'a AgentId>, Option<&'a BranchId>, &'a EventId);
@@ -19,6 +19,8 @@ struct Index<'a> {
     events: BTreeMap<EventKey<'a>, &'a NormalizedEvent>,
     by_agent: BTreeMap<AgentEventKey<'a>, Vec<EventKey<'a>>>,
     conflicts: BTreeSet<EventKey<'a>>,
+    /// Provider response each event is a fragment of, when the source says.
+    responses: &'a BTreeMap<EventId, String>,
 }
 
 fn key(event: &NormalizedEvent) -> Option<EventKey<'_>> {
@@ -60,12 +62,24 @@ fn answers_own_call(result: &NormalizedEvent, call: Option<&NormalizedEvent>) ->
         && call_id(result) == call_id(call)
 }
 
+/// What the subtree below a tool call of one provider response holds.
+enum Batch<'a> {
+    /// Only fragments of that response, results answering its calls, and
+    /// content-free harness records, with every call answered: the subtree.
+    Answered(Vec<EventKey<'a>>),
+    /// A later response or another turn: the conversation goes on here.
+    Beyond,
+    /// A call still waiting for its result, or a result for another call.
+    Incomplete,
+}
+
 impl<'a> Index<'a> {
-    fn new(events: &'a [NormalizedEvent]) -> Self {
+    fn new(events: &'a [NormalizedEvent], responses: &'a BTreeMap<EventId, String>) -> Self {
         let mut index = Self {
             events: BTreeMap::new(),
             by_agent: BTreeMap::new(),
             conflicts: BTreeSet::new(),
+            responses,
         };
         for event in events {
             let Some(key) = key(event) else {
@@ -203,7 +217,9 @@ impl<'a> Index<'a> {
     /// becomes a candidate once all of its children are pruned. Then a tool
     /// result filed beside its own call while that call's message goes on
     /// through another surviving child (Claude's layout for parallel tool
-    /// calls and for calls a PreToolUse hook blocked).
+    /// calls and for calls a PreToolUse hook blocked). Last, a subtree of
+    /// answered calls from a response that goes on elsewhere (see
+    /// [`Self::answered_side_batches`]).
     fn substantive_leaves(&self, target: &BranchResolutionTarget) -> Vec<&'a NormalizedEvent> {
         let mut children: BTreeMap<EventKey<'a>, usize> = BTreeMap::new();
         let mut parent_of: BTreeMap<EventKey<'a>, EventKey<'a>> = BTreeMap::new();
@@ -271,6 +287,25 @@ impl<'a> Index<'a> {
                 prune(result, &mut children, &mut pruned);
             }
         }
+
+        if !self.responses.is_empty() {
+            let mut kids: BTreeMap<EventKey<'a>, Vec<EventKey<'a>>> = BTreeMap::new();
+            for (&child, &parent) in &parent_of {
+                kids.entry(parent).or_default().push(child);
+            }
+            // Decided on the whole graph, not on what earlier pruning left, so
+            // the outcome does not depend on visiting order.
+            let side_batches: Vec<(EventKey<'a>, Vec<EventKey<'a>>)> = kids
+                .keys()
+                .flat_map(|&fork| self.answered_side_batches(fork, &kids))
+                .collect();
+            for (head, subtree) in side_batches {
+                if !pruned.contains(&head) {
+                    prune(head, &mut children, &mut pruned);
+                }
+                pruned.extend(subtree);
+            }
+        }
         self.events
             .iter()
             .filter(|(key, event)| {
@@ -280,6 +315,103 @@ impl<'a> Index<'a> {
             })
             .map(|(_, event)| *event)
             .collect()
+    }
+
+    /// Children of `fork` that head an answered batch of parallel tool calls,
+    /// with their subtrees, when the response goes on elsewhere. `fork` must be
+    /// a tool call of a known response. A sibling that goes on, either another
+    /// fragment of that response or the result answering `fork`'s call, must
+    /// reach a later response or turn. When every child is a finished batch,
+    /// nothing shows which one continues, so the fork stands.
+    fn answered_side_batches(
+        &self,
+        fork: EventKey<'a>,
+        kids: &BTreeMap<EventKey<'a>, Vec<EventKey<'a>>>,
+    ) -> Vec<(EventKey<'a>, Vec<EventKey<'a>>)> {
+        let (Some(fork_event), Some(response), Some(children)) = (
+            self.events.get(&fork),
+            self.responses.get(fork.2),
+            kids.get(&fork),
+        ) else {
+            return Vec::new();
+        };
+        if fork_event.kind != EventKind::ToolInvocation || children.len() < 2 {
+            return Vec::new();
+        }
+        let own_call = fork_event.tool.as_ref().and_then(|t| t.call_id.as_ref());
+        let batches: Vec<_> = children
+            .iter()
+            .map(|&child| (child, self.batch(child, response, own_call, kids)))
+            .collect();
+        let goes_on = batches.iter().any(|(child, batch)| {
+            matches!(batch, Batch::Beyond)
+                && self.events.get(child).is_some_and(|event| {
+                    self.responses.get(child.2) == Some(response)
+                        || answers_own_call(event, Some(fork_event))
+                })
+        });
+        if !goes_on {
+            return Vec::new();
+        }
+        batches
+            .into_iter()
+            .filter_map(|(child, batch)| match batch {
+                Batch::Answered(subtree) => Some((child, subtree)),
+                Batch::Beyond | Batch::Incomplete => None,
+            })
+            .collect()
+    }
+
+    /// Classify the subtree at `head` below a tool call of `response`.
+    fn batch(
+        &self,
+        head: EventKey<'a>,
+        response: &str,
+        own_call: Option<&ToolCallId>,
+        kids: &BTreeMap<EventKey<'a>, Vec<EventKey<'a>>>,
+    ) -> Batch<'a> {
+        let mut subtree = vec![head];
+        let mut calls = BTreeSet::new();
+        let mut answers = Vec::new();
+        let mut next = 0;
+        while let Some(&key) = subtree.get(next) {
+            next += 1;
+            let Some(event) = self.events.get(&key) else {
+                return Batch::Incomplete;
+            };
+            let call_id = event.tool.as_ref().and_then(|t| t.call_id.as_ref());
+            match (event.role, event.kind) {
+                (Role::Assistant, EventKind::ToolInvocation | EventKind::Message)
+                    if self.responses.get(key.2).is_some_and(|r| r == response) =>
+                {
+                    if event.kind == EventKind::ToolInvocation {
+                        let Some(call_id) = call_id else {
+                            return Batch::Incomplete;
+                        };
+                        calls.insert(call_id);
+                    }
+                }
+                (_, EventKind::ToolResult) => {
+                    let Some(call_id) = call_id else {
+                        return Batch::Incomplete;
+                    };
+                    answers.push(call_id);
+                }
+                _ if carries_no_conversation(event) => {}
+                _ => return Batch::Beyond,
+            }
+            subtree.extend(kids.get(&key).into_iter().flatten().copied());
+        }
+        let answered: BTreeSet<_> = answers.iter().copied().collect();
+        let complete = calls.iter().all(|call| answered.contains(call))
+            && answers
+                .iter()
+                .all(|answer| calls.contains(answer) || own_call == Some(*answer));
+        if complete {
+            Batch::Answered(subtree)
+        } else {
+            Batch::Incomplete
+        }
     }
 
     fn trace(
@@ -361,11 +493,12 @@ impl<'a> Index<'a> {
 pub(super) fn resolve(
     events: &[NormalizedEvent],
     target: &BranchResolutionTarget,
+    responses: &BTreeMap<EventId, String>,
 ) -> BranchResolution {
     if events.is_empty() {
         return BranchResolution::Unresolved(UnresolvedBranchReason::EmptyHistory);
     }
-    let index = Index::new(events);
+    let index = Index::new(events, responses);
     match index
         .select(events, target)
         .and_then(|leaf| index.trace(leaf, target))

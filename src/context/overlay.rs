@@ -17,7 +17,9 @@
 
 use crate::adapter::{ClaudeUserPromptSubmit, decode_json};
 use crate::authorized_read::{AuthorizedRoot, AuthorizedRoots, FileKind, ReadError};
-use crate::context::branch::{ActiveBranch, BranchResolutionTarget, resolve_active_branch};
+use crate::context::branch::{
+    ActiveBranch, BranchResolutionTarget, resolve_active_branch_with_responses,
+};
 use crate::context::jsonl::{SkipKind, parse_line};
 use crate::context::{CurrentRequest, EventKind, NormalizedEvent, PrivateText, Role};
 use crate::identity::{BranchId, EventId, SessionId};
@@ -27,7 +29,7 @@ use crate::limits::{
 use crate::output::ContextQuality;
 use crate::runtime::EntryClock;
 use serde_json::Value;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -251,6 +253,7 @@ pub fn apply_claude_prompt_overlay_before(
     let mut parsed_events = Vec::with_capacity(lines.len());
     let mut event_ids = BTreeSet::new();
     let mut sidechain_ids: BTreeSet<EventId> = BTreeSet::new();
+    let mut responses: BTreeMap<EventId, String> = BTreeMap::new();
     let mut native_lineage = false;
     let check_session = |value: &Value| -> Result<(), OverlayError> {
         for key in ["sessionId", "session_id"] {
@@ -354,6 +357,14 @@ pub fn apply_claude_prompt_overlay_before(
         {
             return Err(malformed("duplicate transcript event identity"));
         }
+        // Claude writes each content block of one API response as its own
+        // record; they share `message.id`.
+        if let Some(id) = &event.event_id
+            && value.get("type").and_then(Value::as_str) == Some("assistant")
+            && let Some(response) = value.pointer("/message/id").and_then(Value::as_str)
+        {
+            responses.insert(id.clone(), response.to_owned());
+        }
         parsed_events.push(event);
     }
 
@@ -408,13 +419,14 @@ pub fn apply_claude_prompt_overlay_before(
         // Even if an earlier turn has identical prompt text, do NOT deduplicate by text:
         // repeated identical user messages are distinct turns!
         let parent_id = if had_parent_links {
-            resolve_active_branch(
+            resolve_active_branch_with_responses(
                 &work_events,
                 &BranchResolutionTarget {
                     target_event_id: None,
                     target_branch_id: None,
                     target_agent_id: None,
                 },
+                &responses,
             )
             .active_branch()
             .ok_or(OverlayError::AmbiguousBranch)?
@@ -461,7 +473,7 @@ pub fn apply_claude_prompt_overlay_before(
     } else {
         None
     };
-    let branch_res = resolve_active_branch(&work_events, &branch_target);
+    let branch_res = resolve_active_branch_with_responses(&work_events, &branch_target, &responses);
     let mut active_branch = branch_res.active_branch().cloned();
     if let (Some(branch), Some(prompt)) = (active_branch.as_mut(), anonymous_prompt) {
         branch.events.push(prompt);
