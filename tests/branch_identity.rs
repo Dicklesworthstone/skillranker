@@ -351,3 +351,85 @@ fn unique_unlabeled_ancestors_keep_their_own_scope_and_epoch() {
     assert_eq!(branch.current_epoch.as_str(), "epoch-1");
     assert!(!branch.ancestor_chain_truncated);
 }
+
+fn placeholder(id: &str, parent: &str) -> NormalizedEvent {
+    let mut event = event(id, Some(parent), None, None);
+    event.role = Role::System;
+    event
+}
+
+fn unresolved(events: &[NormalizedEvent]) -> UnresolvedBranchReason {
+    match resolve_active_branch(events, &target(None, None, None)) {
+        BranchResolution::Resolved(branch) => panic!("expected ambiguity: {branch:?}"),
+        BranchResolution::Unresolved(reason) => reason,
+    }
+}
+
+#[test]
+fn content_free_dead_ends_are_pruned_but_placeholders_on_the_path_are_kept() {
+    let events = [
+        event("root", None, None, None),
+        placeholder("mid", "root"),
+        event("a", Some("mid"), None, None),
+        placeholder("dead", "a"),
+        placeholder("dead-child", "dead"),
+        event("tip", Some("a"), None, None),
+    ];
+    let branch = resolved(&events, &target(None, None, None));
+    let ids: Vec<&str> = branch
+        .events
+        .iter()
+        .filter_map(|e| e.event_id.as_ref().map(|id| id.as_str()))
+        .collect();
+    assert_eq!(ids, ["root", "mid", "a", "tip"]);
+}
+
+#[test]
+fn system_notices_are_not_conversation_leaves_but_assistant_or_user_leaves_are() {
+    // Claude writes harness notices with text as system records: an
+    // "informational" record with no parent at all, and away/turn summaries
+    // hanging off the chain. Neither is where the conversation continues.
+    let mut attached = placeholder("summary", "root");
+    attached.text = PrivateText::new("away summary");
+    let mut orphan = event("informational", None, None, None);
+    orphan.role = Role::System;
+    orphan.text = PrivateText::new("instructions loaded");
+    let events = [
+        orphan,
+        event("root", None, None, None),
+        attached,
+        event("tip", Some("root"), None, None),
+    ];
+    let branch = resolved(&events, &target(None, None, None));
+    assert_eq!(branch.leaf_event_id.unwrap().as_str(), "tip");
+
+    // The invariant pruning must not erode: a second assistant or user leaf
+    // is a real fork, even when it carries no text.
+    for role in [Role::Assistant, Role::User] {
+        let mut sibling = event("sibling", Some("root"), None, None);
+        sibling.role = role;
+        let fork = [
+            event("root", None, None, None),
+            sibling,
+            event("tip", Some("root"), None, None),
+        ];
+        assert!(matches!(
+            unresolved(&fork),
+            UnresolvedBranchReason::AmbiguousSiblingForks { .. }
+        ));
+    }
+    // Dead ends beside a real fork: still unresolved, reported without them.
+    let only_dead_ends = [
+        event("root", None, None, None),
+        placeholder("x", "root"),
+        event("tip", Some("root"), None, None),
+        event("other", Some("root"), None, None),
+    ];
+    match unresolved(&only_dead_ends) {
+        UnresolvedBranchReason::AmbiguousSiblingForks { candidate_leaves } => {
+            let ids: Vec<&str> = candidate_leaves.iter().map(|id| id.as_str()).collect();
+            assert_eq!(ids, ["other", "tip"], "reported forks exclude the dead end");
+        }
+        other => panic!("expected sibling forks: {other:?}"),
+    }
+}

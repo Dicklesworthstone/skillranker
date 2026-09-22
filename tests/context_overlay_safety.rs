@@ -140,6 +140,141 @@ fn pending_prompt_cannot_choose_a_sibling_by_file_order() {
     );
     assert!(apply_claude_prompt_overlay(&bad).is_err());
 }
+/// The real shape from live sessions: a PreToolUse hook (RCH intercepting a
+/// cargo command) writes an `attachment/hook_success` record as a dead-end
+/// child of a node whose conversation continues elsewhere.
+fn hook_success(id: &str, parent: &str) -> serde_json::Value {
+    json!({"type":"attachment","uuid":id,"parentUuid":parent,"isSidechain":false,"sessionId":"expected-session",
+           "attachment":{"type":"hook_success","hookName":"PreToolUse:Bash","hookEvent":"PreToolUse","exitCode":0,"content":"","stdout":"","stderr":""}})
+}
+fn tool_call(id: &str, parent: &str) -> serde_json::Value {
+    json!({"type":"assistant","uuid":id,"parentUuid":parent,"sessionId":"expected-session",
+           "message":{"role":"assistant","content":[{"type":"tool_use","id":format!("call-{id}"),"name":"Bash","input":{"command":"cargo test"}}]}})
+}
+fn tool_result(id: &str, parent: &str) -> serde_json::Value {
+    json!({"type":"user","uuid":id,"parentUuid":parent,"sessionId":"expected-session",
+           "message":{"role":"user","content":[{"type":"tool_result","tool_use_id":format!("call-{parent}"),"is_error":false,"content":"ok"}]}})
+}
+
+#[test]
+fn hook_success_dead_ends_do_not_make_a_pending_prompt_unresolvable() {
+    let mut records = vec![event("root", None)];
+    let mut tip = "root".to_owned();
+    for n in 0..4 {
+        let call = format!("call{n}");
+        let result = format!("result{n}");
+        records.push(tool_call(&call, &tip));
+        records.push(hook_success(&format!("hook{n}"), &call));
+        records.push(tool_result(&result, &call));
+        tip = result;
+    }
+    // A chain of two content-free records is also a dead end.
+    records.push(hook_success("hook-a", "result1"));
+    records.push(hook_success("hook-b", "hook-a"));
+    // A blocked command's hook error, and the parentless informational
+    // record Claude writes when it loads instructions at session start.
+    records.push(json!({"type":"attachment","uuid":"hook-err","parentUuid":"call2","sessionId":"expected-session",
+        "attachment":{"type":"hook_non_blocking_error","hookName":"PreToolUse:Bash","stderr":"BLOCKED"}}));
+    records.push(
+        json!({"type":"system","subtype":"informational","uuid":"info","parentUuid":null,
+        "sessionId":"expected-session","content":"AGENTS.md loaded","level":"info"}),
+    );
+    let result = apply_claude_prompt_overlay(&request(&records, "new"))
+        .expect("content-free dead ends must not block the pending prompt");
+    let ids: Vec<&str> = result
+        .events
+        .iter()
+        .filter_map(|e| e.event_id.as_ref().map(|id| id.as_str()))
+        .collect();
+    assert!(
+        ids.contains(&"result3"),
+        "the real tip is on the branch: {ids:?}"
+    );
+    assert!(
+        !ids.iter().any(|id| id.starts_with("hook")),
+        "dead ends are not part of the resolved lineage: {ids:?}"
+    );
+    assert_eq!(result.current_request.text.as_str(), "current request");
+}
+
+#[test]
+fn a_real_fork_stays_ambiguous_even_beside_hook_dead_ends() {
+    // Pruning removes only content-free leaves. Two leaves that carry
+    // conversation remain a fork, with or without dead ends present.
+    let fork = [
+        event("root", None),
+        tool_call("call", "root"),
+        hook_success("hook", "call"),
+        event("a", Some("call")),
+        event("b", Some("call")),
+    ];
+    assert!(apply_claude_prompt_overlay(&request(&fork, "new")).is_err());
+    let plain_fork = [
+        event("root", None),
+        event("a", Some("root")),
+        event("b", Some("root")),
+    ];
+    assert!(apply_claude_prompt_overlay(&request(&plain_fork, "new")).is_err());
+}
+
+#[test]
+fn parallel_tool_results_filed_beside_their_calls_are_side_branches() {
+    // Claude's layout for one message with three parallel calls: each call's
+    // result is a child of that call, while the next call continues the
+    // chain. Only the last result carries the conversation onward. A call a
+    // PreToolUse hook blocked adds an error attachment under its result.
+    let blocked = json!({"type":"attachment","uuid":"blocked","parentUuid":"b","sessionId":"expected-session",
+        "attachment":{"type":"hook_non_blocking_error","hookName":"PreToolUse:Bash","stderr":"BLOCKED"}});
+    let records = [
+        event("root", None),
+        tool_call("a", "root"),
+        tool_call("b", "a"),
+        tool_result("result-a", "a"),
+        tool_call("c", "b"),
+        tool_result("result-b", "b"),
+        blocked,
+        tool_result("result-c", "c"),
+        json!({"type":"assistant","uuid":"reply","parentUuid":"result-c","sessionId":"expected-session",
+               "message":{"role":"assistant","content":[{"type":"text","text":"done"}]}}),
+    ];
+    let result = apply_claude_prompt_overlay(&request(&records, "new"))
+        .expect("parallel tool results must not make the pending prompt unresolvable");
+    let ids: Vec<&str> = result
+        .events
+        .iter()
+        .filter_map(|e| e.event_id.as_ref().map(|id| id.as_str()))
+        .collect();
+    assert!(
+        ids.contains(&"reply"),
+        "the real tip is on the branch: {ids:?}"
+    );
+    assert!(!ids.contains(&"result-a") && !ids.contains(&"result-b"));
+}
+
+#[test]
+fn a_rewound_tool_exchange_is_still_a_real_fork() {
+    // After a rewind, the abandoned branch can end in a tool result whose
+    // call has no other child. That branch is not a side record of an
+    // ongoing message, so the pending prompt must not pick a side.
+    let rewind = [
+        event("root", None),
+        tool_call("call", "root"),
+        tool_result("abandoned", "call"),
+        event("edited-prompt", Some("root")),
+    ];
+    assert!(apply_claude_prompt_overlay(&request(&rewind, "new")).is_err());
+    // A result that answers a different call is not its call's side record.
+    let mut foreign = tool_result("foreign", "call");
+    foreign["message"]["content"][0]["tool_use_id"] = json!("call-elsewhere");
+    let mismatched = [
+        event("root", None),
+        tool_call("call", "root"),
+        foreign,
+        tool_call("next", "call"),
+    ];
+    assert!(apply_claude_prompt_overlay(&request(&mismatched, "new")).is_err());
+}
+
 #[test]
 fn recorded_prompt_selects_only_its_ancestor_lineage() {
     let req = request(
