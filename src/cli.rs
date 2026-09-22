@@ -1314,9 +1314,9 @@ fn feedback_command(
     let outcome = crate::storage::submit_feedback(&invocation, &cx, location, req).map_err(
         |err| match err {
             crate::storage::FeedbackError::MissingSnapshot => (
-                10u8,
-                "missing-snapshot",
-                "Roster snapshot missing or incomplete for event".into(),
+                crate::output::ErrorKind::IncompleteRoster.exit_code() as u8,
+                crate::output::ErrorKind::IncompleteRoster.as_str(),
+                "Roster snapshot missing or incomplete for event. For a single judgment, supply a retained stable skill ID. Otherwise create a new ranking with an explicit --roster; this cannot repair the old event's history".into(),
             ),
             crate::storage::FeedbackError::IneligibleAlternative { skill_id, reason } => {
                 let r = reason.as_deref().unwrap_or("ineligible");

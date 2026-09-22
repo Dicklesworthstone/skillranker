@@ -185,3 +185,72 @@ fn feedback_outcome_matches_durable_identity_for_name_and_id_updates() {
     }
     assert!(invocation.shutdown());
 }
+
+#[test]
+fn cli_reports_incomplete_history_without_blaming_the_provider() {
+    let invocation = ProcessInvocation::enter().unwrap();
+    let cx = invocation.request_cx().unwrap();
+    let store = fixture(&invocation, &cx, false);
+    let database = store.database_path().to_path_buf();
+    drop(store);
+    assert!(invocation.shutdown());
+    let directory = database.parent().unwrap();
+    let run = |reference: &str| {
+        std::process::Command::new(env!("CARGO_BIN_EXE_sr"))
+            .env_clear()
+            .env("HOME", directory)
+            .env("XDG_CONFIG_HOME", directory)
+            .current_dir(directory)
+            .args([
+                "feedback",
+                "event",
+                "--skill",
+                reference,
+                "--verdict",
+                "useful",
+                "--json",
+                "--dir",
+            ])
+            .arg(directory)
+            .output()
+            .unwrap()
+    };
+    let conn = Connection::open(&database).unwrap();
+    let before: i64 = conn
+        .query_row("SELECT data_generation FROM store_meta", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    let refused = run("review");
+    let document: serde_json::Value = serde_json::from_slice(&refused.stdout).unwrap();
+    assert_eq!(refused.status.code(), Some(5), "{document}");
+    assert_eq!(document["decision"], "unavailable");
+    assert_eq!(document["error"]["code"], 5);
+    assert_eq!(document["error"]["kind"], "incomplete-roster");
+    assert!(
+        document["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("stable skill ID")
+    );
+    let after: i64 = conn
+        .query_row("SELECT data_generation FROM store_meta", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    let count: i64 = conn
+        .query_row("SELECT count(*) FROM judgments", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(after, before);
+    assert_eq!(count, 0);
+    let accepted = run("stable-alpha");
+    assert!(
+        accepted.status.success(),
+        "{}",
+        String::from_utf8_lossy(&accepted.stdout)
+    );
+    let recorded: String = conn
+        .query_row("SELECT skill_id FROM judgments", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(recorded, "stable-alpha");
+}
