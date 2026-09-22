@@ -398,6 +398,59 @@ fn an_interleaved_batch_forks_unless_it_belongs_to_the_continuing_response() {
     }
 }
 
+/// Claude's automatic compaction: the post-compaction chain starts at a
+/// parentless boundary that names the pre-compaction tip only as its
+/// logical parent.
+fn compacted() -> Vec<serde_json::Value> {
+    vec![
+        event("root", None),
+        tool_call("old-call", "root"),
+        tool_result("old-result", "old-call"),
+        hook_success("old-tip", "old-result"),
+        json!({"type":"system","subtype":"compact_boundary","uuid":"boundary","parentUuid":null,
+               "logicalParentUuid":"old-tip","sessionId":"expected-session","content":"Conversation compacted",
+               "compactMetadata":{"trigger":"auto","preservedSegment":{"headUuid":"old-call","anchorUuid":"summary","tailUuid":"old-tip"}}}),
+        json!({"type":"user","uuid":"summary","parentUuid":"boundary","isCompactSummary":true,"sessionId":"expected-session",
+               "message":{"role":"user","content":"summary of the earlier conversation"}}),
+        json!({"type":"assistant","uuid":"reply","parentUuid":"summary","sessionId":"expected-session",
+               "message":{"role":"assistant","content":[{"type":"text","text":"continuing"}]}}),
+    ]
+}
+
+#[test]
+fn a_compaction_boundary_continues_the_pre_compaction_tip() {
+    let result = apply_claude_prompt_overlay(&request(&compacted(), "new"))
+        .expect("the boundary's logical parent is the old tip, not a second leaf");
+    let branch = result.active_branch.expect("resolved branch");
+    let ids: Vec<_> = branch
+        .events
+        .iter()
+        .filter_map(|e| e.event_id.as_ref().map(|id| id.as_str().to_owned()))
+        .collect();
+    assert_eq!(
+        ids,
+        [
+            "root",
+            "old-call",
+            "old-result",
+            "old-tip",
+            "boundary",
+            "summary",
+            "reply",
+            "new"
+        ]
+    );
+    assert_eq!(branch.compaction_count, 1);
+    // Without the logical link the boundary is a second root, and the old
+    // tip stays a leaf the pending prompt cannot choose against.
+    let mut records = compacted();
+    records[4]
+        .as_object_mut()
+        .unwrap()
+        .remove("logicalParentUuid");
+    assert!(apply_claude_prompt_overlay(&request(&records, "new")).is_err());
+}
+
 #[test]
 fn a_rewound_tool_exchange_is_still_a_real_fork() {
     // After a rewind, the abandoned branch can end in a tool result whose

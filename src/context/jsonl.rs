@@ -590,8 +590,19 @@ fn event_from_value(value: &Value) -> Option<NormalizedEvent> {
     let agent_id = native_identity(object, &["agent_id"], AgentId::new)?;
     let branch_id = native_identity(object, &["branch_id"], BranchId::new)?;
     let native_type = string_field(object, &["type"]).unwrap_or("message");
-    let (default_role, default_kind) = map_native_type(native_type);
+    let (default_role, mut default_kind) = map_native_type(native_type);
     let timestamp_unix_ms = object.get("timestamp_unix_ms").and_then(Value::as_i64);
+    // Claude starts the post-compaction chain at a parentless boundary and
+    // names the pre-compaction tip only as its logical parent. Linking the
+    // two keeps the old tip an ancestor, not a second conversation leaf, and
+    // puts the compaction on the lineage so epochs advance.
+    let mut parent_id = parent_id;
+    if native_type == "system" && string_field(object, &["subtype"]) == Some("compact_boundary") {
+        default_kind = EventKind::Compaction;
+        if parent_id.is_none() {
+            parent_id = native_identity(object, &["logicalParentUuid"], EventId::new)?;
+        }
+    }
 
     if matches!(default_kind, EventKind::Compaction | EventKind::Resume) {
         let text = string_field(object, &["text"]).unwrap_or("").to_owned();
