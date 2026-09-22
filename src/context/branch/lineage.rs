@@ -8,7 +8,7 @@
 use super::{
     ActiveBranch, BranchResolution, BranchResolutionTarget, UnresolvedBranchReason, epoch_name,
 };
-use crate::context::{EventKind, NormalizedEvent};
+use crate::context::{EventKind, NormalizedEvent, Role};
 use crate::identity::{AgentId, BranchId, EventId};
 use std::collections::{BTreeMap, BTreeSet, btree_map::Entry};
 
@@ -38,6 +38,26 @@ fn matches_target(event: &NormalizedEvent, target: &BranchResolutionTarget) -> b
             .target_branch_id
             .as_ref()
             .is_none_or(|branch| event.branch_id.as_ref() == Some(branch))
+}
+
+/// A system message with no tool payload: a harness notice (Claude's
+/// informational, turn-duration and away-summary records) or the empty
+/// placeholder the Claude overlay keeps for harness-internal records so parent
+/// links stay intact. The user's conversation never continues from one.
+fn carries_no_conversation(event: &NormalizedEvent) -> bool {
+    event.role == Role::System && event.kind == EventKind::Message && event.tool.is_none()
+}
+
+/// A tool result whose parent is the invocation it answers, matched by call ID.
+fn answers_own_call(result: &NormalizedEvent, call: Option<&NormalizedEvent>) -> bool {
+    let Some(call) = call else {
+        return false;
+    };
+    let call_id = |event: &NormalizedEvent| event.tool.as_ref().and_then(|t| t.call_id.clone());
+    result.kind == EventKind::ToolResult
+        && call.kind == EventKind::ToolInvocation
+        && call_id(result).is_some()
+        && call_id(result) == call_id(call)
 }
 
 impl<'a> Index<'a> {
@@ -152,13 +172,114 @@ impl<'a> Index<'a> {
                 }
                 Err(UnresolvedBranchReason::NoMatchingEvents)
             }
-            _ => Err(UnresolvedBranchReason::AmbiguousSiblingForks {
-                candidate_leaves: leaves
-                    .iter()
-                    .filter_map(|event| event.event_id.clone())
-                    .collect(),
-            }),
+            _ => {
+                // Side branches are not where the conversation continues:
+                // harness records (a PreToolUse hook's `hook_success`
+                // attachment, a parentless informational notice) and a tool
+                // result filed beside its own call while that call's message
+                // goes on elsewhere. Pruning them is structural, not a
+                // file-order guess: two conversation leaves remain a fork.
+                let substantive = self.substantive_leaves(target);
+                match substantive.as_slice() {
+                    [leaf] => Ok(*leaf),
+                    [] => Err(Self::forks(&leaves)),
+                    _ => Err(Self::forks(&substantive)),
+                }
+            }
         }
+    }
+
+    fn forks(leaves: &[&NormalizedEvent]) -> UnresolvedBranchReason {
+        UnresolvedBranchReason::AmbiguousSiblingForks {
+            candidate_leaves: leaves
+                .iter()
+                .filter_map(|event| event.event_id.clone())
+                .collect(),
+        }
+    }
+
+    /// In-scope leaves left after removing side branches that no conversation
+    /// continues from. First, system-message dead ends, repeatedly: a parent
+    /// becomes a candidate once all of its children are pruned. Then a tool
+    /// result filed beside its own call while that call's message goes on
+    /// through another surviving child (Claude's layout for parallel tool
+    /// calls and for calls a PreToolUse hook blocked).
+    fn substantive_leaves(&self, target: &BranchResolutionTarget) -> Vec<&'a NormalizedEvent> {
+        let mut children: BTreeMap<EventKey<'a>, usize> = BTreeMap::new();
+        let mut parent_of: BTreeMap<EventKey<'a>, EventKey<'a>> = BTreeMap::new();
+        for event in self.events.values() {
+            if let (Some(child), Ok(Some(parent))) = (key(event), self.parent(event))
+                && let Some(parent) = key(parent)
+            {
+                *children.entry(parent).or_default() += 1;
+                parent_of.insert(child, parent);
+            }
+        }
+        let is_leaf = |children: &BTreeMap<EventKey<'a>, usize>, key: &EventKey<'a>| {
+            children.get(key).is_none_or(|count| *count == 0)
+        };
+        let mut pruned = BTreeSet::new();
+        let prune = |key: EventKey<'a>,
+                     children: &mut BTreeMap<EventKey<'a>, usize>,
+                     pruned: &mut BTreeSet<EventKey<'a>>| {
+            pruned.insert(key);
+            let parent = parent_of.get(&key).copied()?;
+            let count = children.get_mut(&parent)?;
+            *count -= 1;
+            (*count == 0).then_some(parent)
+        };
+
+        let mut pending: Vec<EventKey<'a>> = self
+            .events
+            .keys()
+            .filter(|key| !children.contains_key(*key))
+            .copied()
+            .collect();
+        while let Some(candidate) = pending.pop() {
+            let notice = self
+                .events
+                .get(&candidate)
+                .is_some_and(|event| carries_no_conversation(event));
+            if pruned.contains(&candidate) || !is_leaf(&children, &candidate) || !notice {
+                continue;
+            }
+            if let Some(parent) = prune(candidate, &mut children, &mut pruned) {
+                pending.push(parent);
+            }
+        }
+
+        let side_results: Vec<EventKey<'a>> = self
+            .events
+            .iter()
+            .filter(|(key, event)| {
+                !pruned.contains(*key)
+                    && is_leaf(&children, key)
+                    && parent_of.get(*key).is_some_and(|parent| {
+                        answers_own_call(event, self.events.get(parent).copied())
+                    })
+            })
+            .map(|(key, _)| *key)
+            .collect();
+        let mut candidates_under: BTreeMap<EventKey<'a>, usize> = BTreeMap::new();
+        for result in &side_results {
+            *candidates_under.entry(parent_of[result]).or_default() += 1;
+        }
+        for result in side_results {
+            let call = parent_of[&result];
+            let surviving = children.get(&call).copied().unwrap_or(0);
+            if surviving > candidates_under[&call] {
+                prune(result, &mut children, &mut pruned);
+            }
+        }
+        self.events
+            .iter()
+            .filter(|(key, event)| {
+                matches_target(event, target)
+                    && !pruned.contains(*key)
+                    && children.get(*key).is_none_or(|count| *count == 0)
+            })
+            .map(|(_, event)| *event)
+            .collect()
     }
 
     fn trace(
