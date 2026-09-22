@@ -886,8 +886,12 @@ async fn rank_once(
     let source_selection = match selection_outcome {
         SelectionOutcome::Selected(sel) => sel,
         SelectionOutcome::NeedsChoice(_) => {
+            // Ambiguity is a session condition, so it exits 3, the same code the typed site a few
+            // lines above derives for `SourceError::AmbiguousSession`. Exit 2 reported it as a
+            // usage error while the published envelope's `error.code` still said 3, because that
+            // field comes from `kind.exit_code()`.
             return Err(failure(
-                2,
+                3,
                 "ambiguous-session",
                 "Multiple sessions available; selection required",
             ));
