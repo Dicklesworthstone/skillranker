@@ -49,6 +49,29 @@ fn wrong_native_session_is_rejected_with_an_honest_matching_twin() {
     assert!(!format!("{error}").contains("foreign-private-session"));
 }
 #[test]
+fn subagent_sidechain_leaves_do_not_make_the_main_chain_unresolvable() {
+    // A session that spawned a subagent has extra leaves: the sidechain's
+    // tip. The overlay advises the main agent, so the pending prompt must
+    // attach to the main-chain tip, not fail on the extra leaf.
+    let sidechain = |id: &str, parent: &str| json!({"type":"assistant","uuid":id,"parentUuid":parent,"isSidechain":true,"sessionId":"expected-session","message":{"role":"assistant","content":[{"type":"text","text":"subagent work"}]}});
+    let req = request(
+        &[
+            event("root", None),
+            json!({"type":"assistant","uuid":"task-call","parentUuid":"root","sessionId":"expected-session","message":{"role":"assistant","content":[{"type":"tool_use","id":"task-1","name":"Task","input":{"prompt":"scout"}}]}}),
+            sidechain("sub-1", "task-call"),
+            sidechain("sub-2", "sub-1"),
+            json!({"type":"user","uuid":"task-result","parentUuid":"task-call","sessionId":"expected-session","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"task-1","is_error":false,"content":"done"}]}}),
+        ],
+        "new",
+    );
+    let outcome = apply_claude_prompt_overlay(&req);
+    assert!(
+        outcome.is_ok(),
+        "sidechain leaves must not make the overlay unresolvable: {outcome:?}"
+    );
+}
+
+#[test]
 fn harness_internal_records_are_skipped_but_corruption_stays_fatal() {
     // Current Claude transcripts interleave attachment, queue, title, and mode
     // records with conversation records; none of them may fail the overlay.

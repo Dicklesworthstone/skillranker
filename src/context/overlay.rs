@@ -20,12 +20,13 @@ use crate::authorized_read::{AuthorizedRoot, AuthorizedRoots, FileKind, ReadErro
 use crate::context::branch::{ActiveBranch, BranchResolutionTarget, resolve_active_branch};
 use crate::context::jsonl::{SkipKind, parse_line};
 use crate::context::{CurrentRequest, EventKind, NormalizedEvent, Role};
-use crate::identity::{BranchId, SessionId};
+use crate::identity::{BranchId, EventId, SessionId};
 use crate::limits::{
     NATIVE_TRANSCRIPT_TAIL_BYTES, NATIVE_TRANSCRIPT_TAIL_RECORDS, ONE_TRANSCRIPT_RECORD_BYTES,
 };
 use crate::output::ContextQuality;
 use crate::runtime::EntryClock;
+use serde_json::Value;
 use std::collections::BTreeSet;
 use std::fmt;
 use std::io::{Read, Seek, SeekFrom};
@@ -249,6 +250,7 @@ pub fn apply_claude_prompt_overlay_before(
     lines.reverse();
     let mut parsed_events = Vec::with_capacity(lines.len());
     let mut event_ids = BTreeSet::new();
+    let mut sidechain_ids: BTreeSet<EventId> = BTreeSet::new();
     let mut native_lineage = false;
     for line in lines {
         checkpoint(clock)?;
@@ -270,6 +272,11 @@ pub fn apply_claude_prompt_overlay_before(
         };
         let value = decode_json(line, ONE_TRANSCRIPT_RECORD_BYTES.max())
             .map_err(|_| malformed("corrupt, duplicate or oversized transcript record"))?;
+        if value.get("isSidechain").and_then(Value::as_bool) == Some(true)
+            && let Some(id) = &event.event_id
+        {
+            sidechain_ids.insert(id.clone());
+        }
         native_lineage |= value.get("parentUuid").is_some();
         for key in ["sessionId", "session_id"] {
             if let Some(observed) = value.get(key) {
@@ -301,15 +308,34 @@ pub fn apply_claude_prompt_overlay_before(
         native_lineage || parsed_events.iter().any(|event| event.parent_id.is_some());
 
     // 3. Overlay the authoritative prompt
-    // Check if the prompt event is already present in the transcript by event ID
-    let mut deduplicated_by_event_id = false;
-    let mut matched_index = None;
 
-    if let Some(ref target_pid) = prompt_event_id {
-        for (idx, ev) in parsed_events.iter().enumerate() {
+    // The overlay advises the main agent, so subagent sidechain records
+    // (isSidechain: true) are out of its scope: they are not the chain a new
+    // user prompt extends, and their leaves would otherwise be
+    // indistinguishable from the main-chain tip, making every session that
+    // ever spawned a subagent unresolvable. Excluding them here — not from
+    // the normalized model, so observation and ranking semantics are
+    // untouched — keeps genuine sibling forks and multiple roots ambiguous,
+    // as they must be.
+    let mut work_events: Vec<NormalizedEvent> = if had_parent_links {
+        parsed_events
+            .into_iter()
+            .filter(|event| {
+                event
+                    .event_id
+                    .as_ref()
+                    .is_none_or(|id| !sidechain_ids.contains(id))
+            })
+            .collect()
+    } else {
+        parsed_events
+    };
+
+    let mut matched_index = None;
+    if let Some(target_pid) = &prompt_event_id {
+        for (idx, ev) in work_events.iter().enumerate() {
             if ev.event_id.as_ref() == Some(target_pid) {
                 matched_index = Some(idx);
-                deduplicated_by_event_id = true;
                 break;
             }
         }
@@ -317,35 +343,34 @@ pub fn apply_claude_prompt_overlay_before(
 
     if let Some(idx) = matched_index {
         // Event identity cannot turn an assistant/tool record into a user turn.
-        if parsed_events[idx].role != Role::User || parsed_events[idx].kind != EventKind::Message {
+        if work_events[idx].role != Role::User || work_events[idx].kind != EventKind::Message {
             return Err(malformed("prompt identity refers to a non-user message"));
         }
         // Prompt is already recorded in the transcript; overlay the authoritative prompt text
-        parsed_events[idx].text = hook.prompt.clone();
-        parsed_events[idx].role = Role::User;
-        parsed_events[idx].kind = EventKind::Message;
+        work_events[idx].text = hook.prompt.clone();
+        work_events[idx].role = Role::User;
+        work_events[idx].kind = EventKind::Message;
     } else {
         // Prompt not yet in transcript.
         // Even if an earlier turn has identical prompt text, do NOT deduplicate by text:
         // repeated identical user messages are distinct turns!
         let parent_id = if had_parent_links {
-            let branch = resolve_active_branch(
-                &parsed_events,
+            resolve_active_branch(
+                &work_events,
                 &BranchResolutionTarget {
                     target_event_id: None,
                     target_branch_id: None,
                     target_agent_id: None,
                 },
-            );
-            branch
-                .active_branch()
-                .ok_or(OverlayError::AmbiguousBranch)?
-                .leaf_event_id
-                .clone()
+            )
+            .active_branch()
+            .ok_or(OverlayError::AmbiguousBranch)?
+            .leaf_event_id
+            .clone()
         } else {
             // Legacy linear normalized records have no parent links. This
             // fallback never resolves an explicit fork by physical file order.
-            parsed_events.iter().rev().find_map(|e| e.event_id.clone())
+            work_events.iter().rev().find_map(|e| e.event_id.clone())
         };
 
         let new_event = NormalizedEvent {
@@ -360,7 +385,7 @@ pub fn apply_claude_prompt_overlay_before(
             text: hook.prompt.clone(),
             tool: None,
         };
-        parsed_events.push(new_event);
+        work_events.push(new_event);
     }
 
     let current_request = CurrentRequest {
@@ -379,11 +404,11 @@ pub fn apply_claude_prompt_overlay_before(
     // A pending prompt without an event ID is not a node in the native DAG.
     // Resolve the historical lineage first, then append that prompt exactly once.
     let anonymous_prompt = if had_parent_links && branch_target.target_event_id.is_none() {
-        parsed_events.pop()
+        work_events.pop()
     } else {
         None
     };
-    let branch_res = resolve_active_branch(&parsed_events, &branch_target);
+    let branch_res = resolve_active_branch(&work_events, &branch_target);
     let mut active_branch = branch_res.active_branch().cloned();
     if let (Some(branch), Some(prompt)) = (active_branch.as_mut(), anonymous_prompt) {
         branch.events.push(prompt);
@@ -396,6 +421,8 @@ pub fn apply_claude_prompt_overlay_before(
             .ok_or(OverlayError::AmbiguousBranch)?;
         partial |= branch.ancestor_chain_truncated;
         parsed_events = branch.events.clone();
+    } else {
+        parsed_events = work_events;
     }
     checkpoint(clock)?;
 
@@ -411,7 +438,7 @@ pub fn apply_claude_prompt_overlay_before(
             ContextQuality::Complete
         },
         prompt_overlaid: true,
-        deduplicated_by_event_id,
+        deduplicated_by_event_id: matched_index.is_some(),
     })
 }
 
