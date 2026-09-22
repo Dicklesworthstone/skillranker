@@ -520,6 +520,42 @@ fn an_oversized_record_still_proves_its_session_and_identity() {
 }
 
 #[test]
+fn an_injected_document_record_is_context_but_a_submitted_one_is_not_dropped() {
+    let with_middle = |middle: serde_json::Value| {
+        vec![
+            event("root", None),
+            middle,
+            json!({"type":"assistant","uuid":"reply","parentUuid":"doc","sessionId":"expected-session",
+                   "message":{"role":"assistant","content":[{"type":"text","text":"read the PDF"}]}}),
+        ]
+    };
+    let document = json!({"type":"document","source":{"type":"base64","media_type":"application/pdf","data":"JVBERi0="}});
+    // Claude injects a document the agent read as a meta user record.
+    let injected = json!({"type":"user","uuid":"doc","parentUuid":"root","isMeta":true,"sessionId":"expected-session",
+                          "message":{"role":"user","content":[document.clone()]}});
+    let result = apply_claude_prompt_overlay(&request(&with_middle(injected), "new"))
+        .expect("an injected document record is dropped media, not corruption");
+    let doc = &result.events[1];
+    assert_eq!(doc.role, skillranker::context::Role::System);
+    assert!(doc.text.as_str().is_empty());
+    // A prompt the user submitted keeps its text when a document is dropped...
+    let submitted = json!({"type":"user","uuid":"doc","parentUuid":"root","sessionId":"expected-session",
+                           "message":{"role":"user","content":[{"type":"text","text":"summarize this"}, document.clone()]}});
+    let result = apply_claude_prompt_overlay(&request(&with_middle(submitted), "new")).unwrap();
+    assert_eq!(result.events[1].text.as_str(), "summarize this");
+    // ...but a submitted prompt with nothing usable, or with content this
+    // build does not model, cannot be silently dropped.
+    for content in [
+        json!([document]),
+        json!([{"type":"text","text":"do this"}, {"type":"future_block"}]),
+    ] {
+        let submitted = json!({"type":"user","uuid":"doc","parentUuid":"root","sessionId":"expected-session",
+                               "message":{"role":"user","content":content}});
+        assert!(apply_claude_prompt_overlay(&request(&with_middle(submitted), "new")).is_err());
+    }
+}
+
+#[test]
 fn a_rewound_tool_exchange_is_still_a_real_fork() {
     // After a rewind, the abandoned branch can end in a tool result whose
     // call has no other child. That branch is not a side record of an
