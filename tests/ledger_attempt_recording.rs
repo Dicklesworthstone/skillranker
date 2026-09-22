@@ -209,6 +209,79 @@ impl Fixture {
             .join(format!("{session}.jsonl"))
     }
 
+    /// A transcript long enough to exceed one observation window, with the skill load placed
+    /// deliberately past it. `turns` records of padded text, and a Skill tool_use/tool_result pair
+    /// after `pair_at` of them. The padding matters: the window is bounded by records AND by
+    /// bytes, and a defect that only shows past one of those bounds is still a defect.
+    fn long_claude_session(&self, session: &str, turns: usize, pair_at: usize) {
+        let workspace = std::fs::canonicalize(self.workspace()).unwrap();
+        let workspace_str = workspace.to_str().unwrap();
+        let directory = self
+            .root
+            .join("home/.claude/projects")
+            .join(workspace_str.replace('/', "-"));
+        std::fs::create_dir_all(&directory).unwrap();
+        let padding = "x".repeat(600);
+        let mut lines = Vec::with_capacity(turns + 2);
+        for n in 0..turns {
+            if n == pair_at {
+                lines.push(
+                    json!({
+                        "type": "assistant",
+                        "uuid": format!("{session}-load"),
+                        "parentUuid": format!("{session}-{}", n - 1),
+                        "cwd": workspace_str,
+                        "sessionId": session,
+                        "timestamp": "2026-09-19T10:00:00Z",
+                        "message": {"role": "assistant", "content": [{
+                            "type": "tool_use",
+                            "id": "toolu-long-1",
+                            "name": "Skill",
+                            "input": {"skill": "alpha"},
+                        }]},
+                    })
+                    .to_string(),
+                );
+                lines.push(
+                    json!({
+                        "type": "user",
+                        "uuid": format!("{session}-load-result"),
+                        "parentUuid": format!("{session}-load"),
+                        "cwd": workspace_str,
+                        "sessionId": session,
+                        "timestamp": "2026-09-19T10:00:01Z",
+                        "message": {"role": "user", "content": [{
+                            "type": "tool_result",
+                            "tool_use_id": "toolu-long-1",
+                            "content": "skill body",
+                            "is_error": false,
+                        }]},
+                    })
+                    .to_string(),
+                );
+                continue;
+            }
+            lines.push(
+                json!({
+                    "type": if n % 2 == 0 { "assistant" } else { "user" },
+                    "uuid": format!("{session}-{n}"),
+                    "parentUuid": if n == 0 { Value::Null } else { json!(format!("{session}-{}", n - 1)) },
+                    "cwd": workspace_str,
+                    "sessionId": session,
+                    "timestamp": "2026-09-19T10:00:00Z",
+                    "message": {"role": if n % 2 == 0 { "assistant" } else { "user" },
+                                "content": [{"type": "text", "text": format!("turn {n} {padding}")}]},
+                })
+                .to_string(),
+            );
+        }
+        std::fs::write(
+            directory.join(format!("{session}.jsonl")),
+            lines.join("\n") + "\n",
+        )
+        .unwrap();
+    }
+
     fn command(&self, port: u16, args: &[&str]) -> Command {
         let ca = self.root.join("fixture-ca.pem");
         std::fs::write(&ca, include_bytes!("fixtures/jev-tls/ca.pem")).unwrap();
@@ -956,8 +1029,26 @@ fn the_documented_adoption_loop_reports_one_skill_as_one_row() {
     f.claude_session("adoption-loop", TASK);
     f.ledger_init();
 
+    // Name-based feedback requires complete historical membership. Native discovery
+    // cannot enumerate every plugin/managed source, so declare this fixture's exact
+    // visible roster while retaining the real files and their discovery identities.
+    let roster = f.root.join("adoption-roster.json");
+    std::fs::write(
+        &roster,
+        serde_json::to_vec(&json!({
+            "schema": "sr.roster.v1",
+            "harness": "claude_code",
+            "mode": "authorized_files",
+            "skills": [
+                {"source": "claude_code.project", "path": "alpha/SKILL.md"},
+                {"source": "claude_code.project", "path": "beta/SKILL.md"}
+            ]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
     let provider = Provider::start(&f, "useful");
-    let ranked = f.rank(provider.port);
+    let ranked = f.rank_with(provider.port, &["--roster", roster.to_str().unwrap()]);
     provider.finish();
     assert!(
         ranked.status.success(),
@@ -1179,5 +1270,135 @@ fn one_session_observed_under_two_branches_keeps_a_row_for_each() {
             ("main".to_string(), "loaded".to_string()),
         ],
         "each branch owns its own observation; neither may collide with or overwrite the other"
+    );
+}
+
+/// A skill load past the first observation window must still be observed (sr-jgez).
+///
+/// `sr observe` used to pass no previous cursor to the reader, so every pass started at byte 0
+/// and the window — bounded by OBSERVATION_DELTA_BYTES or 2,000 records, whichever binds first —
+/// never advanced. A load beyond it was not mis-stated as attempted; it did not exist. Measured
+/// on the installed binary before the fix: with the pair at record 10 the observation was
+/// recorded `loaded`, and with the identical pair at record 2,040 two passes recorded nothing,
+/// both exiting 0 with `"status":"ok"`.
+///
+/// So this case also pins the property that makes the fix usable: repeated passes CONVERGE. Each
+/// pass reads a bounded window from its predecessor's watermark, and the backlog is reported
+/// rather than implied.
+#[test]
+fn a_skill_load_past_the_first_observation_window_is_eventually_observed() {
+    let f = Fixture::new();
+    f.long_claude_session("long-session", 2_100, 2_060);
+    f.ledger_init();
+    let transcript = f.transcript("long-session");
+    let transcript_str = transcript.to_str().unwrap();
+
+    let mut backlog_seen = false;
+    let mut states: Vec<String> = Vec::new();
+    // Bounded: a window is at least 2,000 records or 8 MiB, and the file is ~2,100 records, so a
+    // handful of passes must be enough. If it is not, the read is not advancing and that is the
+    // defect this case exists to catch.
+    for pass in 1..=6 {
+        let out = f
+            .command(
+                1,
+                &[
+                    "observe",
+                    "--transcript",
+                    transcript_str,
+                    "--harness",
+                    "claude_code",
+                    "--json",
+                ],
+            )
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "pass {pass} failed: stdout={} stderr={}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let document: Value = serde_json::from_slice(&out.stdout).unwrap();
+        if document["unread_backlog"] == true {
+            backlog_seen = true;
+        }
+        states = f.observation_states();
+        if !states.is_empty() {
+            break;
+        }
+    }
+    assert!(
+        backlog_seen,
+        "a pass that stopped before the end of the transcript must say so; without that a reader \
+         cannot tell an unobserved session from an inactive one"
+    );
+    assert_eq!(
+        states,
+        vec!["loaded".to_string()],
+        "the load sits past the first window, and repeated passes must reach it"
+    );
+}
+
+/// A replaced transcript must not be read at a stale offset (sr-jgez).
+///
+/// The watermark is persisted as an offset, a generation and the id of the last complete record —
+/// not as (dev, ino), which the ledger has no column for. So a resumed read proves the watermark
+/// by content: the record it names must still be in the window. Rewriting the file under the same
+/// path must therefore force a full re-read rather than a read into the middle of different bytes.
+#[test]
+fn a_rewritten_transcript_is_re_read_instead_of_resumed_at_a_stale_offset() {
+    let f = Fixture::new();
+    f.long_claude_session("rewritten", 2_100, 2_060);
+    f.ledger_init();
+    let transcript = f.transcript("rewritten");
+    let transcript_str = transcript.to_str().unwrap();
+
+    let first = f
+        .command(
+            1,
+            &[
+                "observe",
+                "--transcript",
+                transcript_str,
+                "--harness",
+                "claude_code",
+                "--json",
+            ],
+        )
+        .output()
+        .unwrap();
+    assert!(first.status.success());
+    assert!(
+        f.observation_states().is_empty(),
+        "the load is past the first window, so the first pass sees nothing yet"
+    );
+
+    // The same path, entirely different records, with the load early this time. Every uuid the
+    // watermark could name is gone.
+    f.long_claude_session("rewritten", 40, 5);
+    let second = f
+        .command(
+            1,
+            &[
+                "observe",
+                "--transcript",
+                transcript_str,
+                "--harness",
+                "claude_code",
+                "--json",
+            ],
+        )
+        .output()
+        .unwrap();
+    assert!(
+        second.status.success(),
+        "second pass failed: {}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+    assert_eq!(
+        f.observation_states(),
+        vec!["loaded".to_string()],
+        "the stale offset must not be trusted: the rewritten file has to be read from its start"
     );
 }

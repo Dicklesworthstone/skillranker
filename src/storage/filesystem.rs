@@ -59,6 +59,151 @@ fn trusted_ancestor(stat: &FileStat, uid: u32, leaf: bool) -> Result<(), StoreEr
     Ok(())
 }
 
+/// What an owner-only refusal was actually about.
+///
+/// `StoreError::Permissions` stays a unit variant: it is matched in a dozen places and compared
+/// directly in tests, and widening it would ripple for no benefit. This walks the same chain
+/// `PrivateDirectory::open` walks and applies the same two predicates, then reports the FIRST path
+/// that fails and what it must be, so a person is told which directory to chmod instead of being
+/// pointed at their configuration (sr-488b).
+///
+/// Diagnosis only: it opens nothing for writing and changes nothing. It re-stats by path rather
+/// than reusing the trusted descriptor walk, which is acceptable precisely because it is not the
+/// admission decision — the refusal has already happened, and this only explains it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PermissionRefusal {
+    pub path: PathBuf,
+    pub actual_mode: u32,
+    pub required: RequiredMode,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RequiredMode {
+    /// The store's own directory: owned by this user and exactly 0o700.
+    OwnerOnlyDirectory,
+    /// The store's file: owned by this user and exactly 0o600.
+    OwnerOnlyFile,
+    /// An ancestor: not group- or other-writable, unless it is root-owned and sticky as /tmp is.
+    NotSharedWritable,
+    /// Owned by neither this user nor root.
+    OwnedByAnotherUser,
+}
+
+impl PermissionRefusal {
+    /// The one line a person needs: which path, what it is now, what it must be.
+    pub fn describe(&self) -> String {
+        match self.required {
+            RequiredMode::OwnerOnlyDirectory => format!(
+                "{} is mode {:04o}; the store directory must be owned by you and mode 0700",
+                self.path.display(),
+                self.actual_mode
+            ),
+            RequiredMode::OwnerOnlyFile => format!(
+                "{} is mode {:04o}; the store file must be owned by you and mode 0600",
+                self.path.display(),
+                self.actual_mode
+            ),
+            RequiredMode::NotSharedWritable => format!(
+                "{} is mode {:04o} and is writable by group or others; every directory above the \
+                 store must be owner-only, or root-owned and sticky as /tmp is",
+                self.path.display(),
+                self.actual_mode
+            ),
+            RequiredMode::OwnedByAnotherUser => format!(
+                "{} is owned by another user; the store and every directory above it must be owned \
+                 by you or by root",
+                self.path.display()
+            ),
+        }
+    }
+
+    /// The command that fixes it, which is what the old hint should have said.
+    pub fn remedy(&self) -> Option<String> {
+        match self.required {
+            RequiredMode::OwnerOnlyDirectory => Some(format!("chmod 700 {}", self.path.display())),
+            RequiredMode::OwnerOnlyFile => Some(format!("chmod 600 {}", self.path.display())),
+            RequiredMode::NotSharedWritable => Some(format!("chmod go-w {}", self.path.display())),
+            RequiredMode::OwnedByAnotherUser => None,
+        }
+    }
+}
+
+/// Names the first path in the chain that fails the owner-only rules, or `None` when the chain is
+/// fine and the refusal came from somewhere else — a read-only filesystem, for instance. `None` is
+/// not a claim that nothing is wrong; it means this is not the thing that was wrong.
+pub fn diagnose_owner_only(path: &Path) -> Option<PermissionRefusal> {
+    use std::os::unix::fs::MetadataExt;
+    let uid = nix::unistd::getuid().as_raw();
+    let mut walked = PathBuf::from("/");
+    let components: Vec<_> = path.components().collect();
+    let last = components.len().saturating_sub(1);
+    for (index, component) in components.iter().enumerate() {
+        match component {
+            Component::RootDir => continue,
+            Component::Normal(part) => walked.push(part),
+            // A relative or unnormalized path is not this function's business to interpret.
+            _ => return None,
+        }
+        let Ok(meta) = std::fs::symlink_metadata(&walked) else {
+            // A path that does not exist yet is not a permission problem.
+            return None;
+        };
+        let mode = meta.mode() & 0o7777;
+        let owner = meta.uid();
+        let leaf = index == last;
+        if meta.is_file() {
+            if owner != uid {
+                return Some(PermissionRefusal {
+                    path: walked,
+                    actual_mode: mode,
+                    required: RequiredMode::OwnedByAnotherUser,
+                });
+            }
+            if mode != 0o600 {
+                return Some(PermissionRefusal {
+                    path: walked,
+                    actual_mode: mode,
+                    required: RequiredMode::OwnerOnlyFile,
+                });
+            }
+            continue;
+        }
+        if leaf {
+            if owner != uid {
+                return Some(PermissionRefusal {
+                    path: walked,
+                    actual_mode: mode,
+                    required: RequiredMode::OwnedByAnotherUser,
+                });
+            }
+            if mode != 0o700 {
+                return Some(PermissionRefusal {
+                    path: walked,
+                    actual_mode: mode,
+                    required: RequiredMode::OwnerOnlyDirectory,
+                });
+            }
+        } else {
+            if owner != 0 && owner != uid {
+                return Some(PermissionRefusal {
+                    path: walked,
+                    actual_mode: mode,
+                    required: RequiredMode::OwnedByAnotherUser,
+                });
+            }
+            let sticky_root = owner == 0 && mode & 0o1000 != 0;
+            if mode & 0o022 != 0 && !sticky_root {
+                return Some(PermissionRefusal {
+                    path: walked,
+                    actual_mode: mode,
+                    required: RequiredMode::NotSharedWritable,
+                });
+            }
+        }
+    }
+    None
+}
+
 fn recording_capacity(bytes: u64, available: u128) -> Result<(), StoreError> {
     if bytes > CACHE_QUOTA_BYTES - MAINTENANCE_RESERVE_BYTES - MUTATION_RESERVE_BYTES {
         return Err(StoreError::Quota);

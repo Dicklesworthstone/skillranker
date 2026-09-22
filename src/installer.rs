@@ -18,7 +18,7 @@ use crate::limits::CONFIG_FILE_BYTES;
 use crate::output::JsonSeed;
 use nix::fcntl::{Flock, FlockArg};
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value, json};
+use serde_json::{json, Map, Value};
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
 #[cfg(unix)]
@@ -29,23 +29,62 @@ use std::time::SystemTime;
 
 static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-/// Default harness timeout for the managed Claude hook entry. Must remain
-/// strictly above the default internal ranking deadline
-/// (`crate::limits::DEFAULT_INVOCATION_DEADLINE_MS`, 3,000 ms) plus the
-/// startup reserve below: the harness clock starts at spawn while the
-/// internal clock starts at process entry, so an outer timeout equal to the
-/// internal deadline can kill `sr` during its output reserve.
+/// The harness timeout written into the managed hook entry.
+///
+/// It must STRICTLY exceed the internal deadline, not merely match it. The internal clock starts at
+/// process entry, so everything before it — process spawn, dynamic linking, TLS state, configuration
+/// reads — is outside the deadline but inside the harness timeout. At three seconds against a
+/// 3,000 ms deadline the harness could kill `sr` during the final 200 ms it reserves for writing its
+/// answer and cleaning up, which is the one window where being killed loses work rather than merely
+/// timing out. Four seconds is also what README documents (sr-83cc).
 pub const DEFAULT_HOOK_TIMEOUT_SECS: u32 = 4;
 
 /// Seconds reserved between the installed outer timeout and the internal
 /// ranking deadline for process startup before the entry clock begins.
 pub const HOOK_STARTUP_RESERVE_SECS: u32 = 1;
 
-/// The smallest installed outer timeout that keeps the internal deadline
-/// `deadline_ms` strictly inside the harness budget with the startup reserve.
-pub fn min_hook_timeout_secs(deadline_ms: u64) -> u32 {
-    let deadline_secs = u32::try_from(deadline_ms.saturating_add(999) / 1_000).unwrap_or(u32::MAX);
-    deadline_secs.saturating_add(HOOK_STARTUP_RESERVE_SECS)
+/// The smallest harness timeout that can bound a given internal deadline.
+///
+/// Ceiling of the deadline in whole seconds, plus one: a 3,000 ms deadline needs 4 s, and a 3,200 ms
+/// deadline needs 5 s. The extra second is the startup headroom described above, and expressing
+/// it as a function rather than a constant means a later deadline change cannot silently invalidate
+/// the installed entry — which is exactly what AGENTS.md forbids.
+pub const fn minimum_hook_timeout_secs(deadline_ms: u64) -> u32 {
+    let whole = deadline_ms.div_ceil(1_000);
+    (whole + 1) as u32
+}
+
+/// Why a requested harness timeout cannot be installed.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TimeoutTooTight {
+    pub requested_secs: u32,
+    pub deadline_ms: u64,
+    pub minimum_secs: u32,
+}
+
+impl std::fmt::Display for TimeoutTooTight {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "--timeout-secs {} cannot bound sr's own {} ms deadline: the internal clock \
+             starts after process startup, so install with at least --timeout-secs {} or the harness \
+             can kill the run inside the window reserved for writing its answer",
+            self.requested_secs, self.deadline_ms, self.minimum_secs
+        )
+    }
+}
+
+/// Refuses a harness timeout that does not strictly exceed the internal deadline.
+pub fn check_hook_timeout(requested_secs: u32, deadline_ms: u64) -> Result<(), TimeoutTooTight> {
+    let minimum_secs = minimum_hook_timeout_secs(deadline_ms);
+    if requested_secs >= minimum_secs {
+        return Ok(());
+    }
+    Err(TimeoutTooTight {
+        requested_secs,
+        deadline_ms,
+        minimum_secs,
+    })
 }
 
 /// The internal ranking budget implied by the installed managed entry:
@@ -58,10 +97,7 @@ pub fn installed_hook_budget_ms(
 ) -> Option<u64> {
     let settings_path = resolve_settings_file(harness, None).ok()?;
     let (settings, _, _) = read_and_parse_settings(&settings_path).ok()?;
-    let entries = settings
-        .get("hooks")?
-        .get("UserPromptSubmit")?
-        .as_array()?;
+    let entries = settings.get("hooks")?.get("UserPromptSubmit")?.as_array()?;
     let binary_path = resolve_binary_path(binary_path_override).ok()?;
     let command = make_command_string(&binary_path);
     for item in entries {

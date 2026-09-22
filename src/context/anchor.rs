@@ -18,6 +18,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fmt;
 
+pub(crate) mod history;
+
 /// Standard terse continuation keywords/phrases.
 const TERSE_CONTINUATION_PHRASES: &[&str] = &[
     "continue",
@@ -226,7 +228,7 @@ impl From<RedactionError> for AnchorError {
 ///
 /// Invariants:
 /// 1. If `current_request.text` exceeds `HOOK_STDIN_BYTES` (1 MiB), rejects immediately as `OversizedInput`.
-/// 2. Parses all explicit directives from `current_request.text` AND the full history before windowing.
+/// 2. Selects active history before parsing directives; sibling turns never gain authority.
 /// 3. Detects any contradictory require/exclude directives across history and the current prompt.
 /// 4. If the current request is substantive (not terse), it becomes the anchor with `AnchorProvenance::CurrentRequest`.
 /// 5. If the current request is a terse continuation ("continue", "proceed", etc.):
@@ -249,7 +251,12 @@ pub fn resolve_task_anchor(
         };
     }
 
-    // 2. Extract and check directives across history and current request before any windowing
+    let (history, _) = match history::select(context) {
+        Ok(history) => history,
+        Err(reason) => return AnchorResolution::MissingTaskContext { reason },
+    };
+
+    // 2. Extract and check directives across active history before any windowing
     let mut all_directives: Vec<AnchorDirective> = Vec::new();
     let mut positive_skills: HashSet<String> = HashSet::new();
     let mut negative_skills: HashSet<String> = HashSet::new();
@@ -279,7 +286,7 @@ pub fn resolve_task_anchor(
     };
 
     // Scan history in chronological order
-    for ev in &context.events {
+    for ev in &history {
         if ev.role == Role::User && ev.kind == EventKind::Message {
             let hist_directives = parse_prompt_directives(ev.text.as_str());
             for d in &hist_directives {
@@ -346,7 +353,7 @@ pub fn resolve_task_anchor(
     // 5. Look back through history for the most recent substantive user instruction
     let mut antecedent: Option<(&NormalizedEvent, &str)> = None;
 
-    for ev in context.events.iter().rev() {
+    for ev in history.iter().rev() {
         // Task boundaries demarcate separate user workflows
         if ev.kind == EventKind::TaskBoundary {
             break;

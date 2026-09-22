@@ -896,6 +896,42 @@ pub fn run(clock: EntryClock) -> u8 {
     }
 }
 
+/// Turns a storage refusal into something a person can act on.
+///
+/// The permission case is the one that was undiagnosable: "cache path does not satisfy owner-only
+/// permissions" named no path, and the generic hint said to inspect trusted-user and project
+/// configuration when the fix is a chmod on one directory. Locating it took four attempts in one
+/// review and two in another, both times on a directory the harness had just created (sr-488b).
+///
+/// Everything else keeps its existing wording: this adds a sentence where one was missing rather
+/// than rewriting error text across the CLI.
+fn storage_failure(
+    prefix: &str,
+    error: &crate::storage::StoreError,
+    location: &crate::storage::LedgerLocation,
+) -> String {
+    let base = format!("{prefix}: {error}");
+    if !matches!(error, crate::storage::StoreError::Permissions) {
+        return base;
+    }
+    let path = match location {
+        crate::storage::LedgerLocation::Directory(dir) => Some(dir.clone()),
+        crate::storage::LedgerLocation::Platform => crate::storage::default_ledger_directory().ok(),
+    };
+    // No path, or a chain that passes its own rules, means the refusal came from somewhere this
+    // cannot see -- a read-only filesystem, say. Better to say nothing extra than to guess.
+    let Some(refusal) = path
+        .as_deref()
+        .and_then(crate::storage::diagnose_owner_only)
+    else {
+        return base;
+    };
+    match refusal.remedy() {
+        Some(remedy) => format!("{base}. {}. Fix with: {remedy}", refusal.describe()),
+        None => format!("{base}. {}", refusal.describe()),
+    }
+}
+
 fn try_extract_dir(args: &[OsString]) -> Option<PathBuf> {
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
@@ -1391,6 +1427,9 @@ fn observe_command(clock: &EntryClock, matches: &clap::ArgMatches) -> Result<Str
     let workspace_id = crate::identity::WorkspaceId::new(workspace.to_string_lossy().as_ref())
         .map_err(|_| invalid("Invalid workspace root path"))?;
 
+    // Set by whichever ingestion path runs, so the command can say that it did not reach the end
+    // of its input instead of implying it did.
+    let mut unread_backlog = false;
     let (normalized_context, bytes_scanned) = if let Some(context_path) = context_file {
         let path = PathBuf::from(context_path);
         let bytes = std::fs::read(&path).map_err(|e| {
@@ -1445,11 +1484,59 @@ fn observe_command(clock: &EntryClock, matches: &clap::ArgMatches) -> Result<Str
             .ok()
             .and_then(|outcome| outcome.value)
         };
+        // Resume where the previous observation pass stopped. Passing None here -- which is what
+        // this call did -- meant the read always started at byte 0 and the window, bounded by
+        // OBSERVATION_DELTA_BYTES or 2,000 records, never advanced: a session longer than that
+        // window had everything past it silently unobserved forever, however many times `observe`
+        // ran (sr-jgez).
+        //
+        // The ledger cannot persist the transcript's (dev, ino), so the identity below is the file
+        // as it is right now and the reader proves the watermark by CONTENT instead: the record the
+        // watermark names must still be inside the window, or the read falls back to the beginning.
+        //
+        // The branch is the explicit --branch, or "main". A native Claude transcript carries no
+        // branch id of its own, and the cursor namespace needs a branch before the context has been
+        // parsed, so this is the honest approximation available at this point. Guessing wrong costs
+        // a resume, never correctness: an unmatched cursor row simply yields None and the read
+        // starts at the beginning, exactly as it always did.
+        let resume = session.as_ref().and_then(|session_id| {
+            let branch = matches
+                .get_one::<String>("branch")
+                .cloned()
+                .unwrap_or_else(|| "main".to_string());
+            let key = format!(
+                "native:{}:{}",
+                harness_opt.map_or("", |h| h.as_str()),
+                session_id.as_str()
+            );
+            let stored = crate::storage::get_session_cursor(
+                &invocation,
+                &cx,
+                crate::storage::LedgerAccess::ExistingOnly,
+                location.clone(),
+                workspace.to_string_lossy().as_ref(),
+                &key,
+                &branch,
+                crate::storage::CursorKind::Observation,
+            )
+            .ok()
+            .flatten()?;
+            let meta = std::fs::metadata(&transcript_path).ok()?;
+            Some(crate::context::jsonl::JsonlCursor {
+                kind: crate::context::jsonl::CursorKind::Observation,
+                identity: crate::context::jsonl::FileIdentity::from_metadata(&meta),
+                generation: stored.transcript_generation,
+                byte_offset: stored.last_offset_bytes,
+                last_event_id: crate::identity::EventId::new(stored.last_complete_event_id.clone())
+                    .ok(),
+                parser_version: crate::context::jsonl::PARSER_VERSION,
+            })
+        });
         let snapshot = crate::context::jsonl::snapshot_jsonl(
             &invocation,
             &cx,
             &transcript_path,
-            None,
+            resume.as_ref(),
             crate::context::jsonl::CursorKind::Observation,
         )
         .map_err(|e| {
@@ -1459,6 +1546,10 @@ fn observe_command(clock: &EntryClock, matches: &clap::ArgMatches) -> Result<Str
                 format!("Transcript snapshot failed: {e}"),
             )
         })?;
+        // Partial coverage has to be visible. The reader computes this and nothing used to read
+        // it, so a pass that stopped before the end of the file reported "ok" with no hint that
+        // there was more (AGENTS.md: expose truncation and partial coverage).
+        unread_backlog = snapshot.unread_backlog;
         let bytes_scanned = snapshot.cursor.byte_offset;
         let events = snapshot.events;
         let current = events.iter().rev().find(|e| {
@@ -1761,15 +1852,21 @@ fn observe_command(clock: &EntryClock, matches: &clap::ArgMatches) -> Result<Str
             "observations_recorded": new_observations.len(),
             "cursor_generation": next_generation,
             "last_event_id": last_event_id,
+            "unread_backlog": unread_backlog,
         });
         format!("{}\n", val)
     } else {
         format!(
-            "Recorded {} observation(s) for session {} on branch {} (generation {})\n",
+            "Recorded {} observation(s) for session {} on branch {} (generation {}){}\n",
             new_observations.len(),
             session_id,
             agent_branch,
             next_generation,
+            if unread_backlog {
+                "; input continues past this pass, run observe again to reach it"
+            } else {
+                ""
+            },
         )
     };
 
@@ -2120,12 +2217,13 @@ fn ledger_command(
 
     let outcome: Result<String, Failure> = match sub_name {
         "init" => {
+            let diagnosed = location.clone();
             let report =
                 crate::storage::init_ledger(&invocation, &cx, location).map_err(|err| {
                     (
                         9u8,
                         "storage-failure",
-                        format!("Failed to initialize ledger: {err}"),
+                        storage_failure("Failed to initialize ledger", &err, &diagnosed),
                     )
                 })?;
             if wants_json {
@@ -3533,16 +3631,10 @@ fn install_hook_command(clock: &EntryClock, m: &clap::ArgMatches) -> Result<Stri
     // The installed outer timeout must strictly cover the effective internal
     // deadline plus the startup reserve: the harness clock starts at spawn,
     // the internal clock at process entry, and an equal outer timeout can
-    // kill sr during its output reserve.
-    let min_timeout_secs = crate::installer::min_hook_timeout_secs(deadline_ms);
-    if timeout_secs < min_timeout_secs {
-        return Err((
-            2,
-            "invalid-usage",
-            format!(
-                "--timeout-secs {timeout_secs} cannot cover the {deadline_ms}ms ranking deadline plus startup reserve; install with at least --timeout-secs {min_timeout_secs}"
-            ),
-        ));
+    // kill sr during its output reserve. The effective deadline, not only the
+    // product default, decides the minimum.
+    if let Err(refusal) = crate::installer::check_hook_timeout(timeout_secs, deadline_ms) {
+        return Err((2, "invalid-usage", refusal.to_string()));
     }
 
     let options = crate::installer::InstallOptions {
