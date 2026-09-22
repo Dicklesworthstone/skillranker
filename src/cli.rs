@@ -5,6 +5,7 @@ use crate::config::{
     ConfigSources, MAX_LAYER_ENTRIES, RawValue, ResolvedConfig, SettingKey, ValueSource,
 };
 use crate::limits::{CONFIG_FILE_BYTES, DurationMillis};
+use crate::output::OutputDocument;
 use crate::runtime::EntryClock;
 use clap::{Arg, ArgAction, Command};
 use serde_json::{Value, json};
@@ -1007,6 +1008,24 @@ fn finish_invocation<T>(
             "timeout",
             "Runtime cleanup did not finish within the invocation deadline".into(),
         ))
+    }
+}
+
+/// The work cutoff prevents late advice, not a bounded error receipt. Runtime
+/// shutdown still has to finish before the total deadline in finish_invocation.
+/// In particular, a follower can spend its work budget waiting for its leader;
+/// do not replace that unavailable document and its usage with a preflight error.
+fn validate_rank_completion(
+    completed_in_time: Result<(), Failure>,
+    document: &OutputDocument,
+) -> Result<(), Failure> {
+    if matches!(
+        document.kind(),
+        crate::output::OutputKind::Decision(crate::output::Decision::Unavailable)
+    ) {
+        Ok(())
+    } else {
+        completed_in_time
     }
 }
 
@@ -3248,7 +3267,7 @@ fn rank_command(
     // because its successful cleanup entered that window.
     let completed_in_time = timely(clock);
     let output_doc = finish_invocation(invocation, outcome)?;
-    completed_in_time?;
+    validate_rank_completion(completed_in_time, &output_doc)?;
 
     // An unavailable decision, or a dry-run preview of one, exits with its
     // error category; the full document is still the JSON output.
@@ -4260,6 +4279,32 @@ mod invocation_cleanup_tests {
     use super::*;
     use crate::runtime::ProcessInvocation;
     use std::time::Duration;
+
+    #[test]
+    fn work_cutoff_preserves_unavailable_but_never_late_advice_or_artifacts() {
+        let timeout = (
+            6,
+            "timeout",
+            "Local inspection deadline exceeded".to_owned(),
+        );
+        let unavailable = OutputDocument::failure(crate::output::ErrorKind::Timeout, false);
+        assert!(validate_rank_completion(Err(timeout.clone()), &unavailable).is_ok());
+        for fixture in [
+            include_str!("../tests/fixtures/output-ranked.v1.json"),
+            include_str!("../tests/fixtures/output-explicit.v1.json"),
+            include_str!("../tests/fixtures/output-abstain.v1.json"),
+            include_str!("../tests/fixtures/output-preview.v1.json"),
+            include_str!("../tests/fixtures/output-report.v1.json"),
+        ] {
+            let document =
+                OutputDocument::from_value(serde_json::from_str(fixture).unwrap()).unwrap();
+            assert_eq!(
+                validate_rank_completion(Err(timeout.clone()), &document),
+                Err(timeout.clone())
+            );
+            assert!(validate_rank_completion(Ok(()), &document).is_ok());
+        }
+    }
 
     #[test]
     fn expired_roster_runtime_is_a_timeout_not_an_invalid_roster() {
