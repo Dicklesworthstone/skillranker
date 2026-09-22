@@ -102,6 +102,11 @@ pub enum SkipKind {
     Oversize,
     Corrupt,
     DuplicateKey,
+    /// Valid JSON whose declared record type is not a conversation event this
+    /// reader models: harness-internal records such as attachments, queue
+    /// operations, titles, or mode markers. Expected on real transcripts and
+    /// not evidence of corruption or missing conversation content.
+    Unmodeled,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -546,9 +551,34 @@ pub fn parse_line(line: &[u8]) -> Result<NormalizedEvent, SkipKind> {
             AdapterError::DuplicateKey => SkipKind::DuplicateKey,
             _ => SkipKind::Corrupt,
         })?;
+    if is_unmodeled_record(&value) {
+        return Err(SkipKind::Unmodeled);
+    }
     event_from_value(&value).ok_or(SkipKind::Corrupt)
 }
 
+/// Record types this reader models as conversation events. A record whose
+/// declared `type` is anything else is harness-internal metadata, not a
+/// malformed event: current Claude transcripts interleave attachment, queue,
+/// title, and mode records with conversation records.
+const MODELED_NATIVE_TYPES: &[&str] = &[
+    "user",
+    "assistant",
+    "tool_use",
+    "tool_invocation",
+    "tool_result",
+    "compaction",
+    "resume",
+    "system",
+];
+
+fn is_unmodeled_record(value: &Value) -> bool {
+    value
+        .as_object()
+        .and_then(|object| object.get("type"))
+        .and_then(Value::as_str)
+        .is_some_and(|native_type| !MODELED_NATIVE_TYPES.contains(&native_type))
+}
 fn event_from_value(value: &Value) -> Option<NormalizedEvent> {
     let object = value.as_object()?;
     if object.contains_key("role") && object.contains_key("kind") {
@@ -579,7 +609,19 @@ fn event_from_value(value: &Value) -> Option<NormalizedEvent> {
         });
     }
 
-    let parsed = parse_native_content(object, default_role, default_kind)?;
+    let parsed = match parse_native_content(object, default_role, default_kind) {
+        Some(parsed) => parsed,
+        // System-typed records without message content are harness metadata
+        // (turn duration, API status, boundaries): keep an empty system
+        // event for structure instead of declaring the transcript corrupt.
+        None if native_type == "system" => ParsedContent {
+            role: Role::System,
+            kind: default_kind,
+            text: String::new(),
+            tool: None,
+        },
+        None => return None,
+    };
     // A user message the user did not submit is context, never the request.
     let role = if parsed.role == Role::User
         && parsed.kind == EventKind::Message
@@ -885,16 +927,34 @@ fn parse_blocks(
                 kind = EventKind::ToolResult;
                 role = Role::Tool;
             }
-            "thinking" => {
-                let _ = block_obj.get("thinking").and_then(Value::as_str)?;
-            }
+            // Reasoning blocks are dropped by policy, never fatal; the field
+            // may be absent, empty, or redacted by the harness.
+            "thinking" | "redacted_thinking" => {}
             "image" => {}
+            // A block type this build does not model is harness evolution in
+            // context records: the block is dropped and the event survives
+            // with the content this build understands. In a USER record the
+            // request is authoritative, so unmodelled content stays fatal —
+            // it cannot be silently dropped from the user's own instruction.
+            _ if role != Role::User => {}
             _ => return None,
         }
     }
 
     if text_parts.is_empty() && tool_event.is_none() {
-        return None;
+        // A context record whose content was entirely droppable
+        // (reasoning-only, image-only) still carries lineage identity for
+        // branch resolution. A user record with no usable content is
+        // essential-missing input, not an empty request.
+        if role == Role::User {
+            return None;
+        }
+        return Some(ParsedContent {
+            role,
+            kind,
+            text: String::new(),
+            tool: None,
+        });
     }
 
     Some(ParsedContent {

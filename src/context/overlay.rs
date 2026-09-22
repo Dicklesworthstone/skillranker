@@ -252,11 +252,22 @@ pub fn apply_claude_prompt_overlay_before(
     let mut native_lineage = false;
     for line in lines {
         checkpoint(clock)?;
-        let event = parse_line(line).map_err(|kind| match kind {
-            SkipKind::Corrupt => malformed("corrupt transcript JSON record"),
-            SkipKind::DuplicateKey => malformed("duplicate key in transcript record"),
-            SkipKind::Oversize => malformed("transcript record exceeds byte limit"),
-        })?;
+        // Harness-internal records (attachments, queue operations, titles,
+        // mode markers) are expected in real transcripts and carry no
+        // conversation event for this overlay; genuine malformation stays
+        // fatal because the overlay binds the authoritative prompt.
+        let event = match parse_line(line) {
+            Ok(event) => event,
+            Err(SkipKind::Unmodeled) => continue,
+            Err(kind) => {
+                return Err(match kind {
+                    SkipKind::Corrupt => malformed("corrupt transcript JSON record"),
+                    SkipKind::DuplicateKey => malformed("duplicate key in transcript record"),
+                    SkipKind::Oversize => malformed("transcript record exceeds byte limit"),
+                    SkipKind::Unmodeled => unreachable!("handled above"),
+                });
+            }
+        };
         let value = decode_json(line, ONE_TRANSCRIPT_RECORD_BYTES.max())
             .map_err(|_| malformed("corrupt, duplicate or oversized transcript record"))?;
         native_lineage |= value.get("parentUuid").is_some();

@@ -49,6 +49,61 @@ fn wrong_native_session_is_rejected_with_an_honest_matching_twin() {
     assert!(!format!("{error}").contains("foreign-private-session"));
 }
 #[test]
+fn harness_internal_records_are_skipped_but_corruption_stays_fatal() {
+    // Current Claude transcripts interleave attachment, queue, title, and mode
+    // records with conversation records; none of them may fail the overlay.
+    let internal = |t: &str, id: &str| json!({"type":t,"uuid":id,"sessionId":"expected-session","timestamp":"2026-09-22T00:00:00.000Z"});
+    let req = request(
+        &[
+            event("root", None),
+            internal("attachment", "h1"),
+            internal("queue-operation", "h2"),
+            internal("ai-title", "h3"),
+            internal("mode", "h4"),
+            internal("permission-mode", "h5"),
+            internal("atis-latch", "h6"),
+            internal("last-prompt", "h7"),
+            internal("file-history-snapshot", "h8"),
+            event("a", Some("root")),
+        ],
+        "a",
+    );
+    assert!(
+        apply_claude_prompt_overlay(&req).is_ok(),
+        "harness-internal records must not fail the overlay"
+    );
+
+    // Honest counterpart: genuinely malformed JSON is still a fatal read error.
+    static NEXT_BAD: AtomicU64 = AtomicU64::new(0);
+    let root = std::env::temp_dir().join(format!(
+        "sr-overlay-corrupt-{}-{}",
+        std::process::id(),
+        NEXT_BAD.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::create_dir(&root).unwrap();
+    let path = root.join("session.jsonl");
+    fs::write(
+        &path,
+        "{\"type\":\"user\",\"uuid\":\"a\",\"sessionId\":\"expected-session\",\"message\":{\"content\":\"x\"}}\n{not-json}\n",
+    )
+    .unwrap();
+    let hook = json!({"hook_event_name":"UserPromptSubmit","session_id":"expected-session","prompt_id":"new","prompt":"current request","transcript_path":path});
+    let bad = ClaudeOverlayRequest {
+        hook_input: ClaudeUserPromptSubmit::from_json(
+            &serde_json::to_vec(&hook).unwrap(),
+            UnknownFieldPolicy::RetainAdditive,
+        )
+        .unwrap(),
+        transcript_path: Some(path),
+        authorized_root: Some(root),
+    };
+    assert!(
+        apply_claude_prompt_overlay(&bad).is_err(),
+        "genuinely corrupt JSON must still fail the overlay"
+    );
+}
+
+#[test]
 fn pending_prompt_cannot_choose_a_sibling_by_file_order() {
     let good = request(&[event("root", None), event("a", Some("root"))], "new");
     assert!(apply_claude_prompt_overlay(&good).is_ok());

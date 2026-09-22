@@ -1020,7 +1020,7 @@ async fn rank_once(
                 || snapshot
                     .skipped
                     .iter()
-                    .any(|record| record.kind != crate::context::jsonl::SkipKind::Corrupt)
+                    .any(|record| record.kind != crate::context::jsonl::SkipKind::Unmodeled)
                 || (snapshot.missing_tool_counterpart && !snapshot.truncated_history);
             let events = snapshot.events;
             // The current request is the latest user message. Keeping its
