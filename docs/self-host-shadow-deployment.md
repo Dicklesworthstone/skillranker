@@ -165,3 +165,21 @@ cohort report (§7).
   21,275 known tokens, 1,475 ms at host load ~130, zero stdout bytes in shadow
   mode. Only real traffic from sessions launched after the credential change
   can start the cohort; this smoke is not cohort evidence.
+
+## Redeployment — 2026-09-22 (ProudBison, transcript-coverage catch-up)
+
+- Binary: `~/.local/bin/sr`, SHA256
+  `ed75516eea94bd4818086e57132d309405cd505aa54680e0c865de0aff4cb484`, built
+  `--release --locked` from a clean worktree at the pushed revision `fabe46a`,
+  adding the interleaved-tool-batch fix (`sr-interleaved-tool-batches-nwhu`),
+  the compaction-boundary lineage fix (`sr-yya0`), injected-document tolerance
+  (`sr-oy3a`), and hook entry counting (`sr-01h3`) over the previous deploy.
+  Prior binary kept as `~/.local/bin/sr.backup-20260922-fabe46a-pre`.
+- Pre-deploy smoke on the largest (82 MB) and two most recent real session
+  transcripts: zero stderr, zero injected bytes, including 3/3 repeats on the
+  82 MB transcript (one cleanup-warning run under load ~200 was transient).
+  Note: an intermediate downgrade to an `e261dd4` build during this session
+  was caught and reverted to the peers' newer build first; this deploy then
+  moved the cohort forward to `fabe46a`. Deploys must check
+  `docs/reality-check-bridge-plan.md` and this file's latest receipt before
+  replacing the binary.
