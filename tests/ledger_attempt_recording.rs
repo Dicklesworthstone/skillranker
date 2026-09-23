@@ -1102,7 +1102,16 @@ fn an_invocation_killed_after_its_request_reached_the_wire_owns_that_attempt() {
 #[test]
 fn the_documented_adoption_loop_reports_one_skill_as_one_row() {
     let f = Fixture::new();
-    f.claude_session("adoption-loop", TASK);
+    // Private text planted where the loop reads it, for the scan at the end: the user's
+    // request and a skill body. Neither may reach a stored row or file (sr-roadmap-l1i.6.26).
+    f.claude_session("adoption-loop", &format!("{TASK} {REQUEST_MARKER}"));
+    let alpha = f.workspace().join(".claude/skills/alpha/SKILL.md");
+    let text = std::fs::read_to_string(&alpha).unwrap();
+    std::fs::write(
+        &alpha,
+        text.replace("Body.", &format!("Body. {BODY_MARKER}")),
+    )
+    .unwrap();
     f.ledger_init();
 
     // Name-based feedback requires complete historical membership. Native discovery
@@ -1285,6 +1294,74 @@ fn the_documented_adoption_loop_reports_one_skill_as_one_row() {
         assert_eq!(other["judged_useful"].as_u64(), Some(0), "other: {other}");
         assert_eq!(other["observed_loads"].as_u64(), Some(0), "other: {other}");
     }
+
+    // Nothing the loop stored holds the request, a skill body or the credential: the ledger,
+    // its WAL and sidecars, the response cache and the entry counter, byte for byte. Command
+    // output must not echo the credential either.
+    let stored = files_under(&[f.data_home(), f.root.join("cache")]);
+    assert!(
+        stored.iter().any(|path| path.ends_with("ledger.sqlite3")),
+        "the scan must cover the ledger: {stored:?}"
+    );
+    for path in &stored {
+        let bytes = std::fs::read(path).unwrap();
+        for marker in [REQUEST_MARKER, BODY_MARKER, "synthetic-acceptance-canary"] {
+            assert!(
+                !contains(&bytes, marker.as_bytes()),
+                "{} stores private text {marker:?}",
+                path.display()
+            );
+        }
+    }
+    for output in [&ranked, &first, &second, &feedback, &stats] {
+        for stream in [&output.stdout, &output.stderr] {
+            assert!(!contains(stream, b"synthetic-acceptance-canary"));
+        }
+    }
+}
+
+const REQUEST_MARKER: &str = "zephyr-quill-4417";
+const BODY_MARKER: &str = "private-body-marmot-9920";
+
+fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+    haystack
+        .windows(needle.len())
+        .any(|window| window == needle)
+}
+
+/// Every regular file below the given roots.
+fn files_under(roots: &[PathBuf]) -> Vec<PathBuf> {
+    let mut pending: Vec<PathBuf> = roots.to_vec();
+    let mut files = Vec::new();
+    while let Some(dir) = pending.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let kind = entry.file_type().unwrap();
+            if kind.is_dir() {
+                pending.push(entry.path());
+            } else if kind.is_file() {
+                files.push(entry.path());
+            }
+        }
+    }
+    files
+}
+
+#[test]
+fn the_private_text_scan_finds_a_planted_marker() {
+    // Failure-detection control for the adoption loop's storage scan: a scanner that never
+    // matches would pass that check vacuously.
+    let f = Fixture::new();
+    let planted = f.data_home().join("sr-planted.bin");
+    std::fs::create_dir_all(planted.parent().unwrap()).unwrap();
+    std::fs::write(&planted, format!("prefix\0{BODY_MARKER}\0suffix")).unwrap();
+    let files = files_under(&[f.data_home()]);
+    assert!(files.contains(&planted), "{files:?}");
+    let bytes = std::fs::read(&planted).unwrap();
+    assert!(contains(&bytes, BODY_MARKER.as_bytes()));
+    assert!(!contains(&bytes, REQUEST_MARKER.as_bytes()));
 }
 
 /// One session, two agent branches. Both observations must be recorded (sr-mdng).
