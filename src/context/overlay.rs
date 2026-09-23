@@ -49,6 +49,9 @@ pub enum OverlayError {
     },
     CrossSessionReadForbidden,
     AmbiguousBranch,
+    /// A background-task notification delivered inside a turn already under
+    /// way under the same prompt id: not a user turn (sr-jdji).
+    NotificationInTurn,
     Deadline,
 }
 
@@ -69,6 +72,9 @@ impl fmt::Display for OverlayError {
                 f.write_str("transcript session does not match hook session")
             }
             Self::AmbiguousBranch => f.write_str("transcript branch cannot be resolved"),
+            Self::NotificationInTurn => {
+                f.write_str("a task notification inside a running turn is not a user turn")
+            }
             Self::Deadline => f.write_str("transcript overlay deadline exhausted"),
             Self::CrossSessionReadForbidden => {
                 f.write_str("cross-session transcript read is forbidden")
@@ -254,6 +260,7 @@ pub fn apply_claude_prompt_overlay_before(
     let mut event_ids = BTreeSet::new();
     let mut sidechain_ids: BTreeSet<EventId> = BTreeSet::new();
     let mut responses: BTreeMap<EventId, String> = BTreeMap::new();
+    let mut turn_under_way = false;
     let mut native_lineage = false;
     let check_session = |value: &Value| -> Result<(), OverlayError> {
         for key in ["sessionId", "session_id"] {
@@ -387,7 +394,24 @@ pub fn apply_claude_prompt_overlay_before(
         {
             responses.insert(id.clone(), response.to_owned());
         }
+        // A record of this prompt's turn that is not itself a notification
+        // proves the turn already began under this prompt id.
+        if let Some(prompt_id) = &prompt_event_id
+            && value.get("type").and_then(Value::as_str) == Some("user")
+            && value.get("promptId").and_then(Value::as_str) == Some(prompt_id.as_str())
+            && !is_task_notification(value.pointer("/message/content"))
+        {
+            turn_under_way = true;
+        }
         parsed_events.push(event);
+    }
+
+    // Claude runs this hook again when a background task finishes inside a
+    // running turn. That payload repeats the turn's prompt id, and its prompt
+    // is the `<task-notification>` text, not a request the user submitted, so
+    // it must not be ranked as the turn's request (sr-jdji).
+    if turn_under_way && prompt_text.starts_with(TASK_NOTIFICATION) {
+        return Err(OverlayError::NotificationInTurn);
     }
 
     let had_parent_links =
@@ -562,6 +586,21 @@ fn placeholder(event_id: EventId, parent_id: Option<EventId>) -> NormalizedEvent
         text: PrivateText::new(String::new()),
         tool: None,
     }
+}
+
+/// The wrapper Claude puts around a background task's completion message.
+const TASK_NOTIFICATION: &str = "<task-notification>";
+
+/// Whether a transcript record's `message.content` is a task notification.
+fn is_task_notification(content: Option<&Value>) -> bool {
+    let text = match content {
+        Some(Value::String(text)) => Some(text.as_str()),
+        Some(Value::Array(blocks)) => blocks
+            .iter()
+            .find_map(|block| block.get("text").and_then(Value::as_str)),
+        _ => None,
+    };
+    text.is_some_and(|text| text.trim_start().starts_with(TASK_NOTIFICATION))
 }
 
 fn checkpoint(clock: &EntryClock) -> Result<(), OverlayError> {

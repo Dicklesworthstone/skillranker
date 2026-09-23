@@ -1100,10 +1100,27 @@ async fn rank_once(
                 transcript_path: None,
                 authorized_root: None,
             };
-            let overlay = crate::context::overlay::apply_claude_prompt_overlay_before(
+            let overlay = match crate::context::overlay::apply_claude_prompt_overlay_before(
                 &overlay_request,
                 clock,
-            )
+            ) {
+                // Not a turn, so neither ranked nor recorded as one. It is
+                // counted apart so `hook_entries` can subtract it (sr-jdji).
+                Err(crate::context::overlay::OverlayError::NotificationInTurn) => {
+                    progress.failed_recording = None;
+                    if matches!(gate.ledger(), StoreAccess::Enabled) {
+                        crate::storage::hook_entries::record_hook_invocation(
+                            args.ledger_dir.as_deref(),
+                            crate::storage::hook_entries::HookCounter::NonTurns,
+                        );
+                    }
+                    return Err(failure(
+                        ErrorKind::UnsupportedInput,
+                        "A task notification inside a running turn is not a user turn",
+                    ));
+                }
+                overlay => overlay,
+            }
             .map_err(|e| match e {
                 crate::context::overlay::OverlayError::Deadline => {
                     failure(ErrorKind::Timeout, "Transcript overlay deadline exhausted")

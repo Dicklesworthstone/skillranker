@@ -6,6 +6,7 @@
 //!
 //! Every mutation is fenced by store incarnation, schema generation, and data generation.
 
+use super::hook_entries::HookCounter;
 use super::platform::{DirectoryIdentity, local_filesystem, storage_path};
 use crate::blocking::{
     BlockingLeafKind, remaining_busy_wait, run_blocking_leaf, run_blocking_leaf_with_clock,
@@ -699,11 +700,11 @@ pub struct SkillStatSummary {
 }
 
 /// Hook invocations counted at entry against the hook turns the ledger recorded, over
-/// the part of the window the entry counter covers (sr-01h3). The difference counts
-/// invocations that left no row: payloads that never parsed, invocations starved past
-/// their own deadline, redeliveries of one turn, and invocations the harness cancelled
-/// before any turn began (a queued prompt folded into a running turn, sr-w4eh). Only the
-/// first two are sr failures, so `unrecorded` is an upper bound on them, never a count.
+/// the part of the window the entry counter covers (sr-01h3). A harness notification
+/// delivered inside a turn already under way is counted apart and subtracted (sr-jdji).
+/// The rest of the difference counts invocations that left no row: payloads that never
+/// parsed, invocations starved past their own deadline, and redeliveries of one turn.
+/// Only the first two are sr failures, so `unrecorded` is an upper bound on them.
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct HookEntryReport {
     /// Start of the compared span: the later of the window start and the counter's
@@ -716,9 +717,13 @@ pub struct HookEntryReport {
     pub counted_at_entry: u64,
     /// Hook-channel turns (`shadow`, `advisory-hook`) recorded over the same span.
     pub recorded: u64,
-    /// `counted_at_entry - recorded`, not below zero: invocations that left no row. An
-    /// upper bound on sr's unrecorded failures, because it also holds harness
-    /// cancellations and redeliveries.
+    /// Invocations that were a harness notification delivered inside a turn already
+    /// under way (sr-jdji): not turns, so they never record a row.
+    pub non_turn_deliveries: u64,
+    /// `counted_at_entry - recorded - non_turn_deliveries`, not below zero:
+    /// invocations that left no row. Still an upper bound on sr's unrecorded
+    /// failures, because a genuine redelivery of one turn is two invocations and one
+    /// row.
     pub unrecorded: u64,
     /// The counter reached its size bound, so the counts above are lower bounds.
     pub counter_full: bool,
@@ -3703,8 +3708,12 @@ impl LedgerStore {
         as_of_unix_ms: i64,
     ) -> Result<Option<HookEntryReport>, StoreError> {
         let until = as_of_unix_ms.saturating_sub(HOOK_ENTRY_SETTLE_MS);
-        let count =
-            super::hook_entries::count_hook_entries(&self.directory.path, since_unix_ms, until)?;
+        let count = super::hook_entries::count_hook_entries(
+            &self.directory.path,
+            HookCounter::Entries,
+            since_unix_ms,
+            until,
+        )?;
         let Some(first_entry) = count.first_entry_unix_ms else {
             return Ok(None);
         };
@@ -3719,12 +3728,22 @@ impl LedgerStore {
             )?
         };
         let recorded = u64::try_from(recorded).map_err(|_| StoreError::InvalidRecord)?;
+        let non_turns = super::hook_entries::count_hook_entries(
+            &self.directory.path,
+            HookCounter::NonTurns,
+            start,
+            until,
+        )?;
         Ok(Some(HookEntryReport {
             counted_since_unix_ms: start,
             counted_until_unix_ms: until,
             counted_at_entry: count.entries,
             recorded,
-            unrecorded: count.entries.saturating_sub(recorded),
+            non_turn_deliveries: non_turns.entries,
+            unrecorded: count
+                .entries
+                .saturating_sub(recorded)
+                .saturating_sub(non_turns.entries),
             counter_full: count.full,
             unreadable_entries: count.unreadable,
         }))
@@ -3921,8 +3940,17 @@ impl LedgerStore {
         tx.commit()?;
         // The same cutoff for the hook entry counter, so entries and rows keep covering
         // the same history. `None` reports a counter this prune could not align.
-        let hook_entries_pruned =
-            super::hook_entries::prune_hook_entries(&self.directory.path, cutoff_unix_ms).ok();
+        let hook_entries_pruned = [HookCounter::Entries, HookCounter::NonTurns]
+            .into_iter()
+            .map(|counter| {
+                super::hook_entries::prune_hook_entries(
+                    &self.directory.path,
+                    counter,
+                    cutoff_unix_ms,
+                )
+            })
+            .sum::<Result<u64, StoreError>>()
+            .ok();
 
         let stamp_before = self.stamp;
         self.stamp.data_generation = new_data_gen;
@@ -4061,8 +4089,11 @@ impl LedgerStore {
         tx.commit()?;
         // Cleared history has no rows, so it keeps no entries either; `None` reports a
         // counter this clear could not reset.
-        let hook_entries_cleared =
-            super::hook_entries::clear_hook_entries(&self.directory.path).ok();
+        let hook_entries_cleared = [HookCounter::Entries, HookCounter::NonTurns]
+            .into_iter()
+            .map(|counter| super::hook_entries::clear_hook_entries(&self.directory.path, counter))
+            .sum::<Result<u64, StoreError>>()
+            .ok();
 
         let stamp_before = self.stamp;
         self.stamp.data_generation = new_data_gen;

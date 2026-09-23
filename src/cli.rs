@@ -932,22 +932,10 @@ fn count_hook_entry(args: &[OsString]) {
     {
         return;
     }
-    let Some(dir) =
-        try_extract_dir(args).or_else(|| crate::storage::default_ledger_directory().ok())
-    else {
-        return;
-    };
-    let dir = crate::storage::storage_path(dir);
-    let Some(now) = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()
-        .and_then(|elapsed| i64::try_from(elapsed.as_millis()).ok())
-    else {
-        return;
-    };
-    if dir.is_absolute() {
-        crate::storage::hook_entries::record_hook_entry(&dir, crate::storage::LEDGER_FILE, now);
-    }
+    crate::storage::hook_entries::record_hook_invocation(
+        try_extract_dir(args).as_deref(),
+        crate::storage::hook_entries::HookCounter::Entries,
+    );
 }
 
 fn try_extract_dir(args: &[OsString]) -> Option<PathBuf> {
@@ -2070,8 +2058,11 @@ fn format_stats_report(report: &crate::storage::StatsValueReport) -> String {
         };
         let _ = writeln!(
             out,
-            "  counted: {}, recorded: {}, left no row: {} (upper bound on sr failures; includes harness cancellations){bound}",
-            entries.counted_at_entry, entries.recorded, entries.unrecorded
+            "  counted: {}, recorded: {}, notifications inside a turn: {}, left no row: {} (upper bound on sr failures){bound}",
+            entries.counted_at_entry,
+            entries.recorded,
+            entries.non_turn_deliveries,
+            entries.unrecorded
         );
     }
 

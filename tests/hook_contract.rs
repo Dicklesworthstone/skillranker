@@ -807,6 +807,70 @@ fn hook_invocations_are_counted_at_entry_even_when_no_row_is_recorded() {
     assert_eq!(counted["counter_full"], false, "{report}");
 }
 
+/// Claude re-runs the hook when a background task finishes inside a running
+/// turn, repeating the turn's prompt id with the notification as the prompt.
+/// That is not a turn: nothing is ranked or recorded, and `sr stats` reports
+/// it apart instead of as a turn that left no row (sr-jdji).
+#[test]
+fn a_task_notification_inside_a_running_turn_is_not_ranked_or_recorded() {
+    let fixture = HookFixture::new();
+    let dir = fixture.ledger_dir();
+    let dir = dir.to_str().unwrap();
+    let init = fixture.run_cli(&["ledger", "init", "--dir", dir]);
+    assert_eq!(init.status.code(), Some(0), "ledger init must succeed");
+    let mut prompt = user_event("turn-1", None, &fixture.session_id, "fix the failing test");
+    prompt["promptId"] = json!("prompt-running");
+    fixture.write_transcript(&[prompt]);
+    let payload = serde_json::to_vec(&json!({
+        "hook_event_name": "UserPromptSubmit",
+        "prompt": "<task-notification>\n<task-id>b1</task-id>\n<status>completed</status>\n</task-notification>",
+        "prompt_id": "prompt-running",
+        "session_id": fixture.session_id,
+        "transcript_path": fixture.transcript_path(),
+        "cwd": fixture.workspace(),
+    }))
+    .unwrap();
+    let out = fixture.run_hook(&payload, &["--shadow"]);
+    assert_eq!((out.status.code(), out.stdout.len()), (Some(0), 0));
+
+    let ledger = fixture.ledger_dir();
+    let conn = rusqlite::Connection::open(ledger.join(skillranker::storage::LEDGER_FILE)).unwrap();
+    let rows: i64 = conn
+        .query_row("SELECT count(*) FROM ranking_events", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(rows, 0, "a notification inside a turn is not a turn");
+    let records = |file: &str| fs::read(ledger.join(file)).map_or(0, |bytes| bytes.len() / 54);
+    use skillranker::storage::hook_entries::{HOOK_ENTRIES_FILE, HOOK_NON_TURNS_FILE};
+    assert_eq!(
+        (records(HOOK_ENTRIES_FILE), records(HOOK_NON_TURNS_FILE)),
+        (1, 1)
+    );
+
+    // Past the settle window, stats reports it apart, not as a lost turn.
+    for file in [HOOK_ENTRIES_FILE, HOOK_NON_TURNS_FILE] {
+        let path = ledger.join(file);
+        let backdated: Vec<u8> = fs::read(&path)
+            .unwrap()
+            .chunks(54)
+            .flat_map(|record| {
+                let at: i64 = std::str::from_utf8(&record[..20]).unwrap().parse().unwrap();
+                let mut moved = format!("{:020}", at - 120_000).into_bytes();
+                moved.extend_from_slice(&record[20..]);
+                moved
+            })
+            .collect();
+        fs::write(&path, backdated).unwrap();
+    }
+    let stats = fixture.run_cli(&["stats", "--json", "--dir", dir]);
+    assert_eq!(stats.status.code(), Some(0), "{stats:?}");
+    let report: serde_json::Value = serde_json::from_slice(&stats.stdout).unwrap();
+    let counted = &report["hook_entries"];
+    assert_eq!(counted["counted_at_entry"], 1, "{report}");
+    assert_eq!(counted["recorded"], 0, "{report}");
+    assert_eq!(counted["non_turn_deliveries"], 1, "{report}");
+    assert_eq!(counted["unrecorded"], 0, "{report}");
+}
+
 /// A hook turn that fails before context capture still counts in the
 /// availability cohort: one typed `unavailable` row per turn, so a build whose
 /// overlay always fails shows its failures instead of zero rows (sr-73b6).

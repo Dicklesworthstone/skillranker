@@ -263,20 +263,23 @@ identity) to an owner-only counter beside an existing ledger. It does not count 
 `--no-ledger` or `--no-persist`, or where no ledger exists. It never blocks and fails
 silently, and it stops appending at 1 MiB. `hook_entries` then compares
 `counted_at_entry` with the hook-channel turns (`shadow`, `advisory-hook`)
-`recorded` over one span, and `unrecorded` is the difference, not below zero. The
+`recorded` over one span. `non_turn_deliveries` counts invocations that were a
+background-task notification Claude delivered inside a turn already under way: the
+payload repeats the running turn's `prompt_id` and its prompt is the
+`<task-notification>` text, so it is not a turn, and the hook neither ranks it nor
+records a row for it. `unrecorded` is `counted_at_entry - recorded -
+non_turn_deliveries`, not below zero. The
 span runs from `counted_since_unix_ms`, the later of the window start and the
 counter's oldest entry, to `counted_until_unix_ms`, one minute before `as_of`,
 because an invocation that entered later may still be running. `counter_full` marks
 the counts as lower bounds, and `unreadable_entries` counts records left out as
 malformed. A redelivered turn is two invocations and one row, so it adds one to
-`unrecorded`. So does an invocation the harness cancels before any turn begins, such as
-a queued prompt that Claude folds into the running turn. `unrecorded` is therefore an
-upper bound on sr's own unrecorded failures, not a count of them, and an availability
-report must present it as a bound until cancellations are classified.
+`unrecorded`. `unrecorded` is therefore an upper bound on sr's own unrecorded
+failures, not a count of them, and an availability report must present it as a bound.
 `hook_entries` is absent, never zero, when nothing has been counted.
-`sr ledger prune` and `sr ledger clear` apply the same cutoff to the counter and
-report `hook_entries_pruned` or `hook_entries_cleared`; `null` means the counter
-could not be aligned with the rows.
+`sr ledger prune` and `sr ledger clear` apply the same cutoff to both counters and
+report `hook_entries_pruned` or `hook_entries_cleared`, summed over them; `null` means
+a counter could not be aligned with the rows.
 
 `latency` reports `mean_ms`, `median_ms`, `p95_ms`, `min_ms`, `max_ms` over turns that
 finished, plus `excluded_unfinished`. An unfinished turn's recorded duration is a
