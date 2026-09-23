@@ -316,8 +316,38 @@ fn ordinary_two_consumer_success_incurs_one_pair_and_subsequent_exact_offline_re
 /// The test then requires the coordination timeout, not the inspection one.
 const FOLLOWER_TIMEOUT_MS: u64 = 3_200;
 
+/// How many whole scenarios may be thrown away because the host starved the follower rather than
+/// coordination deciding anything. Two shapes were observed at load 120-170 (sr-oj8g): local
+/// inspection (config, roster, context), which runs before the lease wait, took the whole 3.2 s;
+/// or the wait finished but runtime shutdown could not fit the 200 ms reserve, so the CLI
+/// replaced the document with its minimal cleanup receipt. Neither proves anything about
+/// coordination, so the attempt is retried, as sr-5n0b does for starved runtime construction.
+/// The budget cannot widen instead: the 5 s lease and the leader's 4 s provider hold bound it.
+const STARVED_FOLLOWER_ATTEMPTS: usize = 6;
+
+/// Follower messages that report host starvation rather than a coordination outcome.
+const LOCAL_INSPECTION_TIMEOUT: &str = "Local inspection deadline exceeded";
+const CLEANUP_TIMEOUT: &str = "Runtime cleanup did not finish within the invocation deadline";
+
 #[test]
 fn follower_nearing_deadline_while_leader_active_makes_zero_provider_attempts() {
+    for attempt in 1..=STARVED_FOLLOWER_ATTEMPTS {
+        if follower_scenario_reached_coordination() {
+            return;
+        }
+        eprintln!("sr-oj8g: follower starved by the host; discarding attempt {attempt}");
+    }
+    panic!(
+        "in {STARVED_FOLLOWER_ATTEMPTS} attempts the host starved the follower every time (local \
+         inspection or runtime cleanup outran {FOLLOWER_TIMEOUT_MS} ms): this host is too loaded \
+         to run the case, and nothing here is evidence about coordination"
+    );
+}
+
+/// One whole scenario. Returns false only for a starved follower, after checking that it still
+/// sent nothing: the provider log proves that for every attempt, and the envelope's usage proves
+/// it too whenever the envelope carries usage. Every other outcome is asserted.
+fn follower_scenario_reached_coordination() -> bool {
     let f = Fixture::new(CONSENT);
     f.claude_session("session-coord-2", TASK);
     let marker = f.root.join("follower-wide-started");
@@ -358,12 +388,12 @@ fn follower_nearing_deadline_while_leader_active_makes_zero_provider_attempts() 
     let val_f: Value = serde_json::from_slice(&out_follower.stdout).unwrap();
     assert_eq!(val_f["decision"], "unavailable");
     let message = val_f["error"]["message"].as_str().unwrap_or("");
-    assert!(
-        message.contains("owned by active leader"),
-        "follower must time out in the coordination wait, not local inspection \
-         (timeout {FOLLOWER_TIMEOUT_MS} ms): {val_f}; stderr: {}",
-        String::from_utf8_lossy(&out_follower.stderr)
-    );
+    if message == CLEANUP_TIMEOUT {
+        // The minimal cleanup receipt carries no usage; the provider log above already proved
+        // this follower sent nothing.
+        return false;
+    }
+    // Zero sends holds whether or not the follower reached the wait.
     assert_eq!(
         val_f["usage"]["http_attempts"],
         0,
@@ -371,6 +401,15 @@ fn follower_nearing_deadline_while_leader_active_makes_zero_provider_attempts() 
         String::from_utf8_lossy(&out_follower.stderr)
     );
     assert_eq!(val_f["usage"]["requests"], 0);
+    if message == LOCAL_INSPECTION_TIMEOUT {
+        return false;
+    }
+    assert!(
+        message.contains("owned by active leader"),
+        "follower must time out in the coordination wait, not local inspection \
+         (timeout {FOLLOWER_TIMEOUT_MS} ms): {val_f}; stderr: {}",
+        String::from_utf8_lossy(&out_follower.stderr)
+    );
     let elapsed = val_f["elapsed_ms"].as_u64().unwrap_or(0);
     let waited_until = FOLLOWER_TIMEOUT_MS.saturating_sub(450);
     assert!(
@@ -378,6 +417,7 @@ fn follower_nearing_deadline_while_leader_active_makes_zero_provider_attempts() 
         "follower elapsed {elapsed} ms; coordination wait should consume the budget \
          down to the cleanup reserve (timeout {FOLLOWER_TIMEOUT_MS} ms)"
     );
+    true
 }
 
 fn wait_for_marker(marker: &std::path::Path) {
