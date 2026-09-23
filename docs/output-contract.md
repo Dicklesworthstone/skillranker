@@ -252,10 +252,27 @@ session mismatch, branch resolution) is still one `unavailable` row, with
 redelivery is not a second turn. The prefix keeps it apart from the full row a later
 successful delivery writes. Without a `prompt_id` the row is keyed to the invocation
 and a redelivery counts again. A failure at the work deadline is still recorded: the
-failure row alone may use half of the cleanup reserve. Two residuals stay unmeasured
-and must be declared by any availability report: an invocation whose payload never
-parses (it has no turn identity), and one starved past its own total deadline (there
-is no time left to write without risking the harness's outer timeout).
+failure row alone may use half of the cleanup reserve. Two kinds of invocation still
+record no row: one whose payload never parses (it has no turn identity), and one
+starved past its own total deadline (there is no time left to write without risking
+the harness's outer timeout).
+
+Those are measured rather than declared. Before it reads stdin, `sr hook claude`
+appends one fixed-size record (a Unix time and a random token; no content or
+identity) to an owner-only counter beside an existing ledger. It does not count under
+`--no-ledger` or `--no-persist`, or where no ledger exists. It never blocks and fails
+silently, and it stops appending at 1 MiB. `hook_entries` then compares
+`counted_at_entry` with the hook-channel turns (`shadow`, `advisory-hook`)
+`recorded` over one span, and `unrecorded` is the difference, not below zero. The
+span runs from `counted_since_unix_ms`, the later of the window start and the
+counter's oldest entry, to `counted_until_unix_ms`, one minute before `as_of`,
+because an invocation that entered later may still be running. `counter_full` marks
+the counts as lower bounds, and `unreadable_entries` counts records left out as
+malformed. A redelivered turn is two invocations and one row, so it adds one to
+`unrecorded`. `hook_entries` is absent, never zero, when nothing has been counted.
+`sr ledger prune` and `sr ledger clear` apply the same cutoff to the counter and
+report `hook_entries_pruned` or `hook_entries_cleared`; `null` means the counter
+could not be aligned with the rows.
 
 `latency` reports `mean_ms`, `median_ms`, `p95_ms`, `min_ms`, `max_ms` over turns that
 finished, plus `excluded_unfinished`. An unfinished turn's recorded duration is a

@@ -675,6 +675,128 @@ fn shadow_hook_unique_events_across_turns_and_unix_timestamps() {
     );
 }
 
+/// A hook counts itself beside the ledger before reading stdin, so an
+/// invocation that never records a row still reaches the availability
+/// denominator, and `sr stats` reports how many left no row (sr-01h3).
+#[test]
+fn hook_invocations_are_counted_at_entry_even_when_no_row_is_recorded() {
+    let fixture = HookFixture::new();
+    let dir = fixture.ledger_dir();
+    let dir = dir.to_str().unwrap();
+    let entries_path = fixture
+        .ledger_dir()
+        .join(skillranker::storage::hook_entries::HOOK_ENTRIES_FILE);
+    // No ledger yet: the hook cannot record rows, so it counts nothing either.
+    let out = fixture.run_hook(b"{", &["--shadow"]);
+    assert_eq!(out.status.code(), Some(0));
+    assert!(!entries_path.exists(), "no counter without a ledger");
+
+    let init = fixture.run_cli(&["ledger", "init", "--dir", dir]);
+    assert_eq!(init.status.code(), Some(0), "ledger init must succeed");
+    fixture.write_transcript(&[user_event("turn-1", None, "mismatched-session", "hello")]);
+    let payload = serde_json::to_vec(&json!({
+        "hook_event_name": "UserPromptSubmit",
+        "prompt": "Fix test",
+        "prompt_id": "prompt-recorded",
+        "session_id": fixture.session_id,
+        "transcript_path": fixture.transcript_path(),
+        "cwd": fixture.workspace(),
+    }))
+    .unwrap();
+    let entries = || fs::read(&entries_path).map_or(0, |bytes| bytes.len() / 54);
+
+    // 1. A payload that never parses: no turn identity, no row, one entry.
+    let out = fixture.run_hook(b"{\"hook_event_name\": \"UserPromptSubmit\"", &["--shadow"]);
+    assert_eq!((out.status.code(), out.stdout.len()), (Some(0), 0));
+    // 2. An invocation starved past its own deadline while stdin stays open.
+    let mut child = Command::new(env!("CARGO_BIN_EXE_sr"))
+        .env_clear()
+        .env("HOME", fixture.home())
+        .env("XDG_CONFIG_HOME", fixture.home().join(".config"))
+        .current_dir(fixture.workspace())
+        .args(["hook", "claude", "--dir", dir, "--offline", "--shadow"])
+        .args(["--timeout-ms", "50"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let held_open = child.stdin.take();
+    let out = child.wait_with_output().unwrap();
+    drop(held_open);
+    assert_eq!((out.status.code(), out.stdout.len()), (Some(0), 0));
+    // 3. A turn that fails before context capture still records its row.
+    let out = fixture.run_hook(&payload, &["--shadow"]);
+    assert_eq!(out.status.code(), Some(0));
+    // 4. The flags that keep a hook out of the ledger keep it out of the counter.
+    for flag in ["--no-ledger", "--no-persist"] {
+        let out = fixture.run_hook(&payload, &["--shadow", flag]);
+        assert_eq!(out.status.code(), Some(0));
+    }
+    assert_eq!(entries(), 3, "every hook that could record was counted");
+    let mode = fs::metadata(&entries_path).unwrap().permissions().mode();
+    assert_eq!(mode & 0o777, 0o600);
+
+    // A counter the hook cannot append to changes nothing the hook does.
+    fs::set_permissions(&entries_path, fs::Permissions::from_mode(0o400)).unwrap();
+    let out = fixture.run_hook(&payload, &["--shadow"]);
+    assert_eq!((out.status.code(), out.stdout.len()), (Some(0), 0));
+    assert_eq!(entries(), 3);
+    fs::set_permissions(&entries_path, fs::Permissions::from_mode(0o600)).unwrap();
+
+    // Stats leaves out the last minute, since an invocation that entered then
+    // may still be running. Move everything recorded so far two minutes back.
+    let conn =
+        rusqlite::Connection::open(fixture.ledger_dir().join(skillranker::storage::LEDGER_FILE))
+            .unwrap();
+    conn.execute(
+        "UPDATE ranking_events SET created_at_unix_ms = created_at_unix_ms - 120000",
+        [],
+    )
+    .unwrap();
+    let backdated: Vec<u8> = fs::read(&entries_path)
+        .unwrap()
+        .chunks(54)
+        .flat_map(|record| {
+            let at: i64 = std::str::from_utf8(&record[..20]).unwrap().parse().unwrap();
+            let mut moved = format!("{:020}", at - 120_000).into_bytes();
+            moved.extend_from_slice(&record[20..]);
+            moved
+        })
+        .collect();
+    fs::write(&entries_path, backdated).unwrap();
+    // A fresh invocation inside the settle window is not compared yet.
+    let out = fixture.run_hook(b"{", &["--shadow"]);
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(entries(), 4);
+
+    let stats = fixture.run_cli(&["stats", "--json", "--dir", dir]);
+    assert_eq!(stats.status.code(), Some(0), "{stats:?}");
+    let report: serde_json::Value = serde_json::from_slice(&stats.stdout).unwrap();
+    let rows: Vec<String> = conn
+        .prepare(
+            "SELECT event_id FROM ranking_events WHERE mode_channel IN ('shadow', 'advisory-hook')",
+        )
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert!(
+        rows.iter().any(|id| id == "pre-context-prompt-recorded"),
+        "{rows:?}"
+    );
+    assert!(
+        rows.len() < 3,
+        "the unparseable payload recorded no row: {rows:?}"
+    );
+    let counted = &report["hook_entries"];
+    assert_eq!(counted["counted_at_entry"], 3, "{report}");
+    assert_eq!(counted["recorded"], rows.len(), "{report}");
+    assert_eq!(counted["unrecorded"], 3 - rows.len(), "{report}");
+    assert_eq!(counted["counter_full"], false, "{report}");
+}
+
 /// A hook turn that fails before context capture still counts in the
 /// availability cohort: one typed `unavailable` row per turn, so a build whose
 /// overlay always fails shows its failures instead of zero rows (sr-73b6).
@@ -746,8 +868,8 @@ fn pre_context_hook_failures_are_recorded_once_per_turn() {
     );
     assert_eq!(recorded[1].2, "missing-session");
 
-    // A payload that never parses has no turn identity and stays a declared
-    // residual; disabled ledger policy writes nothing.
+    // A payload that never parses has no turn identity and records no row (it
+    // is counted at entry instead: sr-01h3); disabled ledger policy writes nothing.
     let out = fixture.run_hook(b"{\"hook_event_name\": \"UserPromptSubmit\"", &["--shadow"]);
     assert_eq!(out.status.code(), Some(0));
     for flag in ["--no-ledger", "--no-persist"] {

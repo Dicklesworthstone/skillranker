@@ -810,6 +810,9 @@ pub fn run(clock: EntryClock) -> u8 {
     let args: Vec<OsString> = std::env::args_os().collect();
     let is_hook_claude = is_hook_claude_invocation(&args);
     let is_help = args.iter().any(|arg| arg == "--help" || arg == "-h");
+    if is_hook_claude && !is_help {
+        count_hook_entry(&args);
+    }
     let wants_json = args.iter().any(|arg| arg == "--json") || !io::stdout().is_terminal();
     let location = if let Some(dir) = try_extract_dir(&args) {
         crate::storage::LedgerLocation::Directory(dir)
@@ -915,6 +918,35 @@ fn storage_failure(
     match refusal.remedy() {
         Some(remedy) => format!("{base}. {}. Fix with: {remedy}", refusal.describe()),
         None => format!("{base}. {}", refusal.describe()),
+    }
+}
+
+/// Count a hook invocation beside the ledger before stdin is read, so a turn
+/// that never records a row still reaches the denominator (sr-01h3). The same
+/// flags that keep the hook out of the ledger keep it out of the counter, and
+/// every failure is silent.
+fn count_hook_entry(args: &[OsString]) {
+    if args
+        .iter()
+        .any(|arg| arg == "--no-ledger" || arg == "--no-persist")
+    {
+        return;
+    }
+    let Some(dir) =
+        try_extract_dir(args).or_else(|| crate::storage::default_ledger_directory().ok())
+    else {
+        return;
+    };
+    let dir = crate::storage::storage_path(dir);
+    let Some(now) = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .and_then(|elapsed| i64::try_from(elapsed.as_millis()).ok())
+    else {
+        return;
+    };
+    if dir.is_absolute() {
+        crate::storage::hook_entries::record_hook_entry(&dir, crate::storage::LEDGER_FILE, now);
     }
 }
 
@@ -2001,6 +2033,25 @@ fn format_stats_report(report: &crate::storage::StatsValueReport) -> String {
         for cause in &report.turns.failure_causes {
             let _ = writeln!(out, "  {}: {}", cause.reason, cause.count);
         }
+    }
+
+    if let Some(entries) = &report.hook_entries {
+        let _ = writeln!(
+            out,
+            "\nHook invocations counted at entry ({} to {}):",
+            crate::storage::format_unix_ms(entries.counted_since_unix_ms),
+            crate::storage::format_unix_ms(entries.counted_until_unix_ms)
+        );
+        let bound = if entries.counter_full {
+            " (counter full: lower bounds)"
+        } else {
+            ""
+        };
+        let _ = writeln!(
+            out,
+            "  counted: {}, recorded: {}, left no row: {}{bound}",
+            entries.counted_at_entry, entries.recorded, entries.unrecorded
+        );
     }
 
     if !report.turns.by_channel.is_empty() {
