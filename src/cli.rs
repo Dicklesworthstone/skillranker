@@ -1046,6 +1046,19 @@ fn validate_rank_completion(
     }
 }
 
+/// `sr observe` running out of time while reading the roster. It is a timeout, not a broken or
+/// malformed roster: under load, observe reported `unusable-roster` (exit 5) with the message
+/// "Failed to resolve roster: Deadline", sending the user to inspect skills that were fine.
+/// Rank's roster path already maps the same errors to `timeout`.
+fn observe_roster_timeout() -> Failure {
+    let kind = crate::output::ErrorKind::Timeout;
+    (
+        kind.exit_code() as u8,
+        kind.as_str(),
+        "Roster resolution reached the observation deadline".into(),
+    )
+}
+
 fn invalid(message: impl Into<String>) -> Failure {
     (2, "invalid-configuration", message.into())
 }
@@ -1694,21 +1707,29 @@ fn observe_command(clock: &EntryClock, matches: &clap::ArgMatches) -> Result<Str
                 )
             })?;
             crate::roster::import::import_authorized(&bytes, &plan, &overrides, &cx, clock)
-                .map_err(|e| {
-                    (
+                .map_err(|e| match e {
+                    crate::roster::import::ImportError::Deadline
+                    | crate::roster::import::ImportError::Cancelled
+                    | crate::roster::import::ImportError::Resolution(
+                        crate::roster::resolution::ResolutionError::Deadline
+                        | crate::roster::resolution::ResolutionError::Cancelled,
+                    ) => observe_roster_timeout(),
+                    e => (
                         7u8,
                         "malformed-input",
                         format!("Failed to import roster: {e:?}"),
-                    )
+                    ),
                 })?
         }
         None => crate::roster::resolution::resolve_claude_plan(&plan, &overrides, &cx, clock)
-            .map_err(|error| {
-                (
+            .map_err(|error| match error {
+                crate::roster::resolution::ResolutionError::Deadline
+                | crate::roster::resolution::ResolutionError::Cancelled => observe_roster_timeout(),
+                error => (
                     5u8,
                     "unusable-roster",
                     format!("Failed to resolve roster: {error:?}"),
-                )
+                ),
             })?,
     };
 
@@ -4305,6 +4326,13 @@ mod invocation_cleanup_tests {
     use super::*;
     use crate::runtime::ProcessInvocation;
     use std::time::Duration;
+
+    #[test]
+    fn an_observe_roster_deadline_is_a_timeout_not_an_unusable_roster() {
+        let (code, kind, message) = observe_roster_timeout();
+        assert_eq!((code, kind), (6, "timeout"));
+        assert!(!message.contains("Deadline"), "no Debug text: {message}");
+    }
 
     #[test]
     fn work_cutoff_preserves_unavailable_but_never_late_advice_or_artifacts() {
