@@ -183,3 +183,36 @@ cohort report (§7).
   moved the cohort forward to `fabe46a`. Deploys must check
   `docs/reality-check-bridge-plan.md` and this file's latest receipt before
   replacing the binary.
+
+## Redeployment — 2026-09-23 22:31Z (AzureJaguar, task-notification fix)
+
+- Binary: `~/.local/bin/sr`, SHA256
+  `e784d4db23f44a42b209ed04eaff4c29d5c533a39874a4cd191439e84af8034c`, built
+  `--release --locked` from a clean `git archive` export whose 102 build
+  inputs (everything outside `.beads/`, `docs/`, `tests/`, `scripts/` and the
+  top-level prose files) are byte-identical to the pushed revision `ad28bdd`.
+  It adds `sr-jdji` over the previous deploy. A background-task notification
+  that Claude delivers inside a running turn re-runs the hook with the turn's
+  `prompt_id`. It is no longer ranked as the turn's request or recorded as a
+  turn; it is counted in `hook-non-turns.log`, and `sr stats` reports it as
+  `hook_entries.non_turn_deliveries`. The previous `fabe46a` binary is kept as
+  `~/.local/bin/sr.backup.20260923T223042Z-fabe46a`. (A copy made by mistake
+  on 2026-09-23, `sr.backup.20260923T011950Z-c6999c3`, is also `fabe46a`,
+  SHA256 `ed75516e…`, despite its name.)
+- Checked before replacing: this file's latest receipt (`fabe46a`,
+  `ed75516e…`, which matched the installed binary) and
+  `docs/reality-check-bridge-plan.md`.
+- Pre-deploy smoke: `sr hook claude` replayed over the 80 most recent real
+  session transcripts in an isolated sandbox (no key, no network, no real
+  ledger). The candidate matched the installed binary's outcome on all 80:
+  54 clean, 24 stopped at the continuation gate by the replay's synthetic
+  prompt, 1 genuine fork, and 1 transcript that two processes append to.
+- Live check, before installing: the same binary was the `UserPromptSubmit`
+  hook of a throwaway Claude Code 2.1.280 session driven through NTM, with an
+  isolated `--dir`, `--offline` and `--shadow`. A background task finished
+  mid-turn, and the queue showed enqueue then remove. The ledger counted 2
+  hook entries and 1 non-turn delivery, and recorded 1 row, for the real turn.
+  The notification was neither ranked nor recorded.
+- Not changed: hook scope (project-local), consent and the credential. Live
+  turns still record `credential-absent` until agent panes are started from
+  shells that source the credential block (`sr-hook-credential-env-3i1n`).
