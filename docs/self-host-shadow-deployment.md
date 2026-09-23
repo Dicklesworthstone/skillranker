@@ -216,3 +216,40 @@ cohort report (§7).
 - Not changed: hook scope (project-local), consent and the credential. Live
   turns still record `credential-absent` until agent panes are started from
   shells that source the credential block (`sr-hook-credential-env-3i1n`).
+
+## Credential delivery at the hook — 2026-09-23 22:37Z (FuchsiaCave)
+
+Shell-rc sourcing did not reach the cohort. In the 27 hours after it landed,
+every shadow row in this repository still recorded `credential-absent` (31 rows,
+the last at 22:33Z). A read of each running Claude process's environment (checking
+for the key's presence only, never its value) showed why. Hooks inherit the Claude
+process's environment, and both Claude sessions working here had been launched
+from interactive shells opened before the rc change. One of those shells dated
+from 2026-09-17. Long-lived tmux and terminal shells never re-source `~/.zshrc`.
+The only keyed Claude process was working in another project, outside the
+project-local hook scope.
+
+The managed entry in `.claude/settings.local.json` therefore now loads the
+owner-only `.env` itself before exec'ing the pinned binary, so every session in
+this repository gets the credential however it was launched:
+
+```text
+/bin/sh -c 'set -a; . /data/projects/skillranker/.env; set +a; exec /home/ubuntu/.local/bin/sr hook claude'
+```
+
+The key never appears in the settings file. `.env` is `0600` and holds only
+`TYPESAFE_API_KEY`. The command still contains `hook claude`, so
+`sr uninstall-hook claude` recognises it as the managed entry. A backup of the
+previous settings file is kept outside the repository. Scope and consent are
+unchanged: a project-local hook with trusted-user network consent.
+
+Smoke, with an isolated ledger: the exact command, run from an empty environment
+(`env -i`, as a keyless Claude process gives its hooks), with a real payload for
+a session in this repository, completed a two-stage Jev evaluation. It exited 0
+with zero stdout, took 2.6 s against the 4 s hook timeout, recorded `ranked`
+with 18,109 input and 2,504 output tokens, and both attempts completed.
+
+Whether a running Claude session picks up the edited hook without a restart
+depends on Claude Code's settings reload. Sessions started after this change
+certainly do. Live rows other than `credential-absent` for this repository are
+the confirmation to look for.
