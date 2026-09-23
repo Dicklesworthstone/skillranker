@@ -737,11 +737,21 @@ fn hook_invocations_are_counted_at_entry_even_when_no_row_is_recorded() {
     let mode = fs::metadata(&entries_path).unwrap().permissions().mode();
     assert_eq!(mode & 0o777, 0o600);
 
-    // A counter the hook cannot append to changes nothing the hook does.
+    // A counter the hook cannot append to changes nothing the hook does. Under root (RCH
+    // workers run tests as root) mode 0o400 does not stop a write, so the unwritable counter
+    // cannot be built there; probe for that rather than guess from the uid.
     fs::set_permissions(&entries_path, fs::Permissions::from_mode(0o400)).unwrap();
-    let out = fixture.run_hook(&payload, &["--shadow"]);
-    assert_eq!((out.status.code(), out.stdout.len()), (Some(0), 0));
-    assert_eq!(entries(), 3);
+    let unwritable = fs::OpenOptions::new()
+        .append(true)
+        .open(&entries_path)
+        .is_err();
+    if unwritable {
+        let out = fixture.run_hook(&payload, &["--shadow"]);
+        assert_eq!((out.status.code(), out.stdout.len()), (Some(0), 0));
+        assert_eq!(entries(), 3);
+    } else {
+        eprintln!("skipping the unwritable-counter case: this user can write a 0o400 file");
+    }
     fs::set_permissions(&entries_path, fs::Permissions::from_mode(0o600)).unwrap();
 
     // Stats leaves out the last minute, since an invocation that entered then
