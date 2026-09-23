@@ -269,7 +269,11 @@ counter's oldest entry, to `counted_until_unix_ms`, one minute before `as_of`,
 because an invocation that entered later may still be running. `counter_full` marks
 the counts as lower bounds, and `unreadable_entries` counts records left out as
 malformed. A redelivered turn is two invocations and one row, so it adds one to
-`unrecorded`. `hook_entries` is absent, never zero, when nothing has been counted.
+`unrecorded`. So does an invocation the harness cancels before any turn begins, such as
+a queued prompt that Claude folds into the running turn. `unrecorded` is therefore an
+upper bound on sr's own unrecorded failures, not a count of them, and an availability
+report must present it as a bound until cancellations are classified.
+`hook_entries` is absent, never zero, when nothing has been counted.
 `sr ledger prune` and `sr ledger clear` apply the same cutoff to the counter and
 report `hook_entries_pruned` or `hook_entries_cleared`; `null` means the counter
 could not be aligned with the rows.

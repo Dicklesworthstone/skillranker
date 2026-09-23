@@ -2070,7 +2070,7 @@ fn format_stats_report(report: &crate::storage::StatsValueReport) -> String {
         };
         let _ = writeln!(
             out,
-            "  counted: {}, recorded: {}, left no row: {}{bound}",
+            "  counted: {}, recorded: {}, left no row: {} (upper bound on sr failures; includes harness cancellations){bound}",
             entries.counted_at_entry, entries.recorded, entries.unrecorded
         );
     }

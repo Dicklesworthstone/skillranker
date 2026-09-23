@@ -699,9 +699,11 @@ pub struct SkillStatSummary {
 }
 
 /// Hook invocations counted at entry against the hook turns the ledger recorded, over
-/// the part of the window the entry counter covers (sr-01h3). The difference measures
-/// the turns that left no row: payloads that never parsed and invocations starved past
-/// their own deadline.
+/// the part of the window the entry counter covers (sr-01h3). The difference counts
+/// invocations that left no row: payloads that never parsed, invocations starved past
+/// their own deadline, redeliveries of one turn, and invocations the harness cancelled
+/// before any turn began (a queued prompt folded into a running turn, sr-w4eh). Only the
+/// first two are sr failures, so `unrecorded` is an upper bound on them, never a count.
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct HookEntryReport {
     /// Start of the compared span: the later of the window start and the counter's
@@ -714,7 +716,9 @@ pub struct HookEntryReport {
     pub counted_at_entry: u64,
     /// Hook-channel turns (`shadow`, `advisory-hook`) recorded over the same span.
     pub recorded: u64,
-    /// `counted_at_entry - recorded`, not below zero: invocations that left no row.
+    /// `counted_at_entry - recorded`, not below zero: invocations that left no row. An
+    /// upper bound on sr's unrecorded failures, because it also holds harness
+    /// cancellations and redeliveries.
     pub unrecorded: u64,
     /// The counter reached its size bound, so the counts above are lower bounds.
     pub counter_full: bool,
