@@ -318,3 +318,29 @@ the confirmation to look for.
   restart is needed.
 - Not changed: hook scope (project-local), consent, and the managed settings
   entry.
+
+## Redeployment — 2026-09-24 18:17Z (AzureJaguar, window-stranded tool result)
+
+- Binary: `~/.local/bin/sr`, SHA256
+  `631128ee63926d393b0b0866147481f986d1843da3172e13feacf52e27f45a56`, built
+  `--release --locked` from a clean export of the pushed revision `54eecc7`
+  (sources touched; copied out of the shared target at once). It adds
+  `sr-l1nr` over `b3e7387`. The previous binary (SHA256 `835857a1…`) is kept
+  as `~/.local/bin/sr.backup.20260924T181719Z-b3e7387`.
+- Why: the live row at 2026-09-24 02:16:04Z (`ambiguous-branch`) replays from
+  the real transcript. The hook's 2 MiB tail began between one response's
+  parallel tool calls and their results, stranding Claude's dead-end side
+  result without its call, so every prompt was ambiguous until the window
+  moved on.
+- Verified on the real cut in sandboxed ledgers, with a placeholder key and a
+  refusing loopback endpoint so nothing leaves the machine:
+  - the previous binary: `ambiguous-branch` for both the notification turn
+    and an ordinary prompt;
+  - this binary: resolves both and stops only at the unreachable provider.
+  The 16:03:41Z redaction replay still produces its request.
+- Pre-deploy smoke: 80 most recent real transcripts in a keyless sandbox
+  matched the installed binary on all 80.
+- Gates on the exact revision: fmt, strict clippy, RCH full suite
+  1367 passed / 0 failed / 10 ignored; the new test fails against the
+  previous resolver.
+- Not changed: hook scope, consent, and the managed settings entry.
