@@ -707,13 +707,15 @@ fn cache_generation_change_during_provider_work_keeps_valid_answer() {
     let doc: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(doc["decision"], "ranked");
     assert_eq!(doc["usage"]["requests"], 2);
-    assert!(
-        doc["warnings"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|w| w["kind"] == "cache-recording-unavailable")
-    );
+    let skipped = doc["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|w| w["kind"] == "cache-recording-unavailable")
+        .unwrap_or_else(|| panic!("{doc}"));
+    // The failed wide recording drops the store. The rerank recording that
+    // follows was skipped too, and must not be reported as written.
+    assert_eq!(skipped["count"], 2, "{doc}");
     let rows: i64 = cache
         .query_row("SELECT count(*) FROM sr_cache_response", [], |r| r.get(0))
         .unwrap();

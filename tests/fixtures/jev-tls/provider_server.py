@@ -20,6 +20,8 @@ Scenarios:
   always-503      every attempt is a 503 with Retry-After: 0
   unauthorized    every attempt is a 401
   slow-wide       like useful; the wide answer is delayed by TEXT seconds
+  drift           like useful, but every choice distribution sums to 0.92,
+                  as live totals drift from one
 """
 
 import json
@@ -58,6 +60,8 @@ def answer(key, question, stage):
         if stage == "rerank" and key == "rerank" and scenario == "none":
             favored = "__none__"
         probabilities = distribution(options, favored)
+        if scenario == "drift":
+            probabilities = {option: p * 0.92 for option, p in probabilities.items()}
         return {"type": "choice", "choice": favored, "probabilities": probabilities,
                 "confidence": 0.8}
     value = 0.5

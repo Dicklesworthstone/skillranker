@@ -1403,10 +1403,14 @@ async fn rank_once(
                     event_id: event_id_str.clone(),
                     stage: crate::storage::CandidateStage::Wide,
                     skill_id: s.id.as_str().to_string(),
+                    // Explicit resolution yields a binding id, which differs
+                    // from the record id when the skill is reached by an alias.
                     skill_version: roster
                         .skills()
                         .iter()
-                        .find(|sk| sk.record().id == s.id)
+                        .find(|sk| {
+                            sk.record().id == s.id || sk.bindings().iter().any(|b| b.id == s.id)
+                        })
                         .map(|sk| sk.record().source_content.as_str().to_string())
                         .unwrap_or_default(),
                     raw_probability: None,
@@ -1762,7 +1766,19 @@ async fn rank_once(
                 recent_errors: "",
             };
             let budget = RetrievalBudget::default();
-            let selection = retrieve(&roster, &excluded_skills, query_input, budget, cx, clock)
+            // Quill must choose among what admission admitted, but it selects
+            // from the whole roster. So every skill admission removed (excluded,
+            // restricted or a loaded reference) is excluded here. One binding
+            // per skill suffices: any excluded binding drops its skill.
+            let admitted: BTreeSet<&SkillId> =
+                admission.admitted.iter().map(|s| &s.binding.id).collect();
+            let not_admitted: BTreeSet<SkillId> = roster
+                .skills()
+                .iter()
+                .filter(|skill| !skill.bindings().iter().any(|b| admitted.contains(&b.id)))
+                .filter_map(|skill| skill.bindings().first().map(|b| b.id.clone()))
+                .collect();
+            let selection = retrieve(&roster, &not_admitted, query_input, budget, cx, clock)
                 .await
                 .map_err(|err| match err.kind {
                     RetrievalError::RetrievalEmpty => failure(
@@ -1941,7 +1957,7 @@ async fn rank_once(
     // directory, an enabled response-cache effect and a session identity to
     // scope them. Otherwise fingerprints are keyed with fresh randomness and
     // nothing outlives this invocation. An unusable store degrades to that.
-    let mut store = match (&args.cache_dir, &normalized_context.session_id) {
+    let store = match (&args.cache_dir, &normalized_context.session_id) {
         (Some(dir), Some(_)) => {
             match persistent::Store::open(invocation, cx, clock, &gate, dir).await {
                 Ok(opened) => {
@@ -2221,45 +2237,45 @@ async fn rank_once(
     // used only when it needs no rerank, or when the rerank answer for its
     // shortlist is cached too: under an unpinned model alias a cached wide
     // answer is never paired with a fresh rerank.
-    let lookup_pair =
-        |store: &mut Option<persistent::Store>| -> Option<(Response, u64, Option<Response>)> {
-            let now_unix_ms = wall_clock_ms();
-            let (bytes, age_ms) = persistent::lookup(
+    let mut store = CacheSlot { store, lost: false };
+    let lookup_pair = |store: &mut CacheSlot| -> Option<(Response, u64, Option<Response>)> {
+        let now_unix_ms = wall_clock_ms();
+        let (bytes, age_ms) = persistent::lookup(
+            store,
+            invocation,
+            cx,
+            namespace,
+            RequestStage::Wide,
+            wide_req_fp,
+            active_model,
+            now_unix_ms,
+        )?;
+        let response = wide_builder.request().decode_response(&bytes).ok()?;
+        let outcome = wide::evaluate(&wide_builder, &response, gate_threshold, sizes).ok()?;
+        let mut rerank = None;
+        if let WideDecision::Shortlist(list) = &outcome.decision {
+            let ids: Vec<SkillId> = list.iter().map(|s| s.skill.binding.id.clone()).collect();
+            let builder = rerank::build(&roster, &ids, &rendered_context, active_model).ok()?;
+            let rerank_fp = fingerprint(
+                RequestStage::Rerank,
+                &shortlist_digests(list),
+                builder.bytes(),
+                rerank::RERANK_POLICY_VERSION,
+            );
+            let (bytes, _) = persistent::lookup(
                 store,
                 invocation,
                 cx,
                 namespace,
-                RequestStage::Wide,
-                wide_req_fp,
+                RequestStage::Rerank,
+                rerank_fp,
                 active_model,
                 now_unix_ms,
             )?;
-            let response = wide_builder.request().decode_response(&bytes).ok()?;
-            let outcome = wide::evaluate(&wide_builder, &response, gate_threshold, sizes).ok()?;
-            let mut rerank = None;
-            if let WideDecision::Shortlist(list) = &outcome.decision {
-                let ids: Vec<SkillId> = list.iter().map(|s| s.skill.binding.id.clone()).collect();
-                let builder = rerank::build(&roster, &ids, &rendered_context, active_model).ok()?;
-                let rerank_fp = fingerprint(
-                    RequestStage::Rerank,
-                    &shortlist_digests(list),
-                    builder.bytes(),
-                    rerank::RERANK_POLICY_VERSION,
-                );
-                let (bytes, _) = persistent::lookup(
-                    store,
-                    invocation,
-                    cx,
-                    namespace,
-                    RequestStage::Rerank,
-                    rerank_fp,
-                    active_model,
-                    now_unix_ms,
-                )?;
-                rerank = Some(builder.request().decode_response(&bytes).ok()?);
-            }
-            Some((response, age_ms, rerank))
-        };
+            rerank = Some(builder.request().decode_response(&bytes).ok()?);
+        }
+        Some((response, age_ms, rerank))
+    };
     let mut cached = lookup_pair(&mut store);
     // Set only when another process leads this exact request and this run is
     // not taking over: then sending would duplicate its evaluation. A lease that
@@ -2271,7 +2287,7 @@ async fn rank_once(
     // the pair it recorded; if the leader fails, the follower sends itself.
     // Leases need the persistent cache and persistent runtime state.
     if cached.is_none()
-        && store.is_some()
+        && store.store.is_some()
         && matches!(gate.runtime_state(), StoreAccess::Enabled)
         && let Some(dir) = &args.cache_dir
     {
@@ -2907,6 +2923,16 @@ async fn rank_once(
         .map(|e| e.as_str().to_string())
         .unwrap_or_else(|| derive_request_event_id(&normalized_context));
 
+    // Scoring uses renormalized probabilities; the ledger keeps the values the
+    // provider actually returned beside them.
+    let wide_raw = raw_skill_probabilities(
+        wide_response.answers.get(wide::WHICH),
+        wide_builder.options(),
+    );
+    let rerank_raw = raw_skill_probabilities(
+        rerank_response.answers.get(rerank::RERANK),
+        rerank_builder.options(),
+    );
     let mut ranking_candidates = Vec::new();
     for s in &shortlisted {
         ranking_candidates.push(crate::storage::NewRankingCandidate {
@@ -2914,7 +2940,7 @@ async fn rank_once(
             stage: crate::storage::CandidateStage::Wide,
             skill_id: s.skill.binding.id.as_str().to_string(),
             skill_version: s.skill.record.source_content.as_str().to_string(),
-            raw_probability: Some(s.wide_probability),
+            raw_probability: wide_raw.get(&s.skill.binding.id).copied(),
             normalized_probability: Some(s.wide_probability),
             fit_score: None,
             rank_score: None,
@@ -2930,7 +2956,7 @@ async fn rank_once(
             stage: crate::storage::CandidateStage::Rerank,
             skill_id: el.skill.binding.id.as_str().to_string(),
             skill_version: el.skill.record.source_content.as_str().to_string(),
-            raw_probability: Some(el.rerank),
+            raw_probability: rerank_raw.get(&el.skill.binding.id).copied(),
             normalized_probability: Some(el.rerank),
             fit_score: Some(el.fit),
             rank_score: Some(scored.rank_score),
@@ -3213,6 +3239,34 @@ fn cache_entry(
     }
 }
 
+/// Each skill's probability as the provider returned it in one Choice answer,
+/// before renormalization. Option IDs resolve only through the request's own
+/// option map.
+fn raw_skill_probabilities(
+    answer: Option<&crate::jev::codec::Answer>,
+    options: &crate::roster::resolution::OptionMap<'_>,
+) -> BTreeMap<SkillId, f64> {
+    let Some(crate::jev::codec::Answer::Choice(choice)) = answer else {
+        return BTreeMap::new();
+    };
+    choice
+        .raw_probabilities()
+        .iter()
+        .filter_map(|(option, &probability)| match options.resolve(option) {
+            Ok(ResolvedOption::Skill(skill)) => Some((skill.binding.id.clone(), probability)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The run's response-cache store. A store operation consumes the store, and a
+/// failed one does not return it, so the slot remembers the loss. Later
+/// recordings are then reported as skipped rather than as written.
+struct CacheSlot {
+    store: Option<persistent::Store>,
+    lost: bool,
+}
+
 /// The persistent exact response cache. Linux and macOS use the qualified store;
 /// elsewhere every run keys fingerprints with fresh randomness and caches
 /// nothing. Store failures never fail ranking: the store is dropped and the
@@ -3411,7 +3465,7 @@ mod persistent {
     /// A fresh stored answer's bytes and age, or nothing.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn lookup(
-        slot: &mut Option<Store>,
+        slot: &mut super::CacheSlot,
         invocation: &ProcessInvocation,
         cx: &Cx,
         namespace: [u8; 32],
@@ -3420,11 +3474,13 @@ mod persistent {
         model: &str,
         now_unix_ms: u64,
     ) -> Option<(Vec<u8>, u64)> {
-        let Store(store) = slot.take()?;
-        let (store, entry) = store
-            .response(invocation, cx, namespace, stage, fingerprint)
-            .ok()?;
-        *slot = Some(Store(store));
+        let Store(store) = slot.store.take()?;
+        let Ok((store, entry)) = store.response(invocation, cx, namespace, stage, fingerprint)
+        else {
+            slot.lost = true;
+            return None;
+        };
+        slot.store = Some(Store(store));
         let entry = entry?;
         match entry.evaluate_freshness(now_unix_ms, model, None) {
             FreshnessStatus::Fresh { age_ms, .. } => Some((entry.response_bytes, age_ms)),
@@ -3432,16 +3488,18 @@ mod persistent {
         }
     }
 
+    /// Whether the entry was written, or nothing was required: `false` when a
+    /// store this run opened failed now or earlier.
     pub(super) fn record(
-        slot: &mut Option<Store>,
+        slot: &mut super::CacheSlot,
         invocation: &ProcessInvocation,
         cx: &Cx,
         namespace: [u8; 32],
         entry: CachedResponseEntry,
         fence: Option<&(std::path::PathBuf, LeaderContext)>,
     ) -> Result<bool, super::PipelineFailure> {
-        let Some(Store(store)) = slot.take() else {
-            return Ok(true);
+        let Some(Store(store)) = slot.store.take() else {
+            return Ok(!slot.lost);
         };
         let result = match fence {
             Some(fence) => {
@@ -3453,14 +3511,18 @@ mod persistent {
             }
         };
         match result {
-            Ok(store) => *slot = Some(Store(store)),
+            Ok(store) => slot.store = Some(Store(store)),
             Err(StoreError::LeaseSuperseded) => {
+                slot.lost = true;
                 return Err(super::failure(
                     super::ErrorKind::Timeout,
                     "Leader cache publication could not verify and retain lease ownership",
                 ));
             }
-            Err(_) => return Ok(false),
+            Err(_) => {
+                slot.lost = true;
+                return Ok(false);
+            }
         }
         Ok(true)
     }
@@ -3541,7 +3603,7 @@ mod persistent {
 
     #[allow(clippy::too_many_arguments)]
     pub(super) fn lookup(
-        _: &mut Option<Store>,
+        _: &mut super::CacheSlot,
         _: &ProcessInvocation,
         _: &Cx,
         _: [u8; 32],
@@ -3554,7 +3616,7 @@ mod persistent {
     }
 
     pub(super) fn record(
-        _: &mut Option<Store>,
+        _: &mut super::CacheSlot,
         _: &ProcessInvocation,
         _: &Cx,
         _: [u8; 32],
