@@ -538,6 +538,82 @@ fn pre_admission_refusals_finalize_the_inflight_event() {
 }
 
 #[test]
+fn an_absent_credential_is_recorded_apart_from_a_rejected_key() {
+    for (key, scenario, kind) in [
+        (false, "useful", "credential-absent"),
+        (true, "unauthorized", "authentication"),
+    ] {
+        let f = Fixture::new();
+        f.claude_session("credential", TASK);
+        f.ledger_init();
+        let provider = Provider::start(&f, scenario);
+        let mut command = f.rank_command(provider.port, &[]);
+        if !key {
+            command.env_remove("TYPESAFE_API_KEY");
+        }
+        let out = command.output().unwrap();
+        let served = provider.finish();
+        assert_eq!(served, usize::from(key), "{kind}: requests sent");
+        assert_eq!(out.status.code(), Some(4), "{kind}");
+        let document: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(document["error"]["kind"], kind, "{document}");
+        let events = f.events();
+        assert_eq!(events.len(), 1, "{kind}: {events:?}");
+        assert_eq!(events[0].1, "unavailable");
+        assert_eq!(events[0].3, kind);
+
+        let stats = f.command(1, &["stats", "--json"]).output().unwrap();
+        assert!(stats.status.success(), "{kind}: stats failed");
+        let report: Value = serde_json::from_slice(&stats.stdout).unwrap();
+        assert_eq!(report["turns"]["operational_failures"], 1, "{report}");
+        assert_eq!(
+            report["turns"]["failure_causes"],
+            json!([{"reason": kind, "count": 1}]),
+            "{report}"
+        );
+    }
+}
+
+#[test]
+fn a_redelivery_that_pays_replaces_the_failed_delivery_of_its_turn() {
+    // sr-e8vm, as observed live: the first delivery had no key and failed, the
+    // second delivery of the same turn ran both stages. The turn's row must say
+    // what the paying delivery found, not credential-absent.
+    let f = Fixture::new();
+    f.claude_session("redelivered", TASK);
+    f.ledger_init();
+    let provider = Provider::start(&f, "useful");
+    let mut first = f.rank_command(provider.port, &["--no-cache"]);
+    first.env_remove("TYPESAFE_API_KEY");
+    assert_eq!(first.output().unwrap().status.code(), Some(4));
+    let events = f.events();
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0].3, "credential-absent");
+
+    let second = f.rank_with(provider.port, &["--no-cache"]);
+    assert!(
+        second.status.success(),
+        "{}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+    assert_eq!(provider.finish(), 2, "the redelivery sent wide and rerank");
+    let events = f.events();
+    assert_eq!(events.len(), 1, "still one turn: {events:?}");
+    assert_eq!(events[0].1, "ranked", "{events:?}");
+    let attempts = f.attempts();
+    assert_eq!(attempts.len(), 2, "{attempts:#?}");
+    assert!(attempts.iter().all(|a| a.owner_event_id == events[0].0));
+
+    // A completed delivery still stands against a later failing one.
+    let provider = Provider::start(&f, "useful");
+    let mut third = f.rank_command(provider.port, &["--no-cache"]);
+    third.env_remove("TYPESAFE_API_KEY");
+    assert_eq!(third.output().unwrap().status.code(), Some(4));
+    assert_eq!(provider.finish(), 0);
+    assert_eq!(f.events()[0].1, "ranked");
+}
+
+#[test]
 fn disabled_ledger_records_neither_success_nor_failure() {
     for flag in ["--no-ledger", "--no-persist"] {
         for scenario in ["useful", "always-503"] {

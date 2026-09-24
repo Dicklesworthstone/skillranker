@@ -1080,6 +1080,33 @@ async fn rank_once(
                 crate::adapter::UnknownFieldPolicy::RetainAdditive,
             )
             .map_err(|e| failure(7, "malformed-input", format!("Invalid hook input: {e}")))?;
+            // From here on a failure is a hook turn the availability cohort must
+            // count. Arm the failure row now rather than after context capture, or
+            // an overlay, roster or retrieval failure leaves no trace at all. The
+            // row is replaced by the full one once the context names the turn.
+            // Its id has its own namespace: the branch is still unresolved, so
+            // sharing the full row's id would make a later successful delivery of
+            // this prompt collide with it. Without the harness's prompt id the turn
+            // has no stable identity, so the row is keyed to this invocation and a
+            // redelivery counts again.
+            if matches!(gate.ledger(), StoreAccess::Enabled) {
+                progress.failed_recording = Some(FailureRecording {
+                    ledger_dir: args.ledger_dir.clone(),
+                    workspace_root: args.workspace.to_string_lossy().into_owned(),
+                    session_id: hook_input
+                        .session_id
+                        .as_ref()
+                        .map_or_else(|| "session-0".to_string(), |s| s.as_str().to_string()),
+                    agent_branch: "unresolved".to_string(),
+                    mode_channel: mode_channel.to_string(),
+                    policy_version: "ranking-v1",
+                    event_id: hook_input.prompt_id.as_ref().map_or_else(
+                        || format!("pre-context-invocation-{}", invocation_row_mark()),
+                        |id| format!("pre-context-{}", id.as_str()),
+                    ),
+                    attempts: Vec::new(),
+                });
+            }
             let overlay_request = crate::context::overlay::ClaudeOverlayRequest {
                 hook_input,
                 transcript_path: None,
@@ -3689,7 +3716,8 @@ fn retry_failure(kind: RetryErrorKind, last: Option<TransportErrorKind>) -> Pipe
 }
 
 /// Offline is a cache miss (exit 11), not an authorization failure; missing
-/// consent is a privacy denial (8) and a missing credential is authentication (4).
+/// consent is a privacy denial (8). A missing credential is `credential-absent`
+/// (4): an environment gap, kept apart from a key the provider rejected.
 fn admission_refusal(refusal: ProviderAdmissionRefusal) -> PipelineFailure {
     let kind = refusal.kind();
     failure(kind.exit_code() as u8, kind.as_str(), refusal.to_string())

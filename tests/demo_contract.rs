@@ -198,7 +198,7 @@ fn offline_demo() {
 
     let hist_unavail = &val_unavail["historical"];
     assert_eq!(hist_unavail["decision"], "unavailable");
-    assert_eq!(hist_unavail["error"]["kind"], "authentication");
+    assert_eq!(hist_unavail["error"]["kind"], "credential-absent");
     assert_eq!(hist_unavail["error"]["code"], 4);
     assert_eq!(hist_unavail["error"]["retryable"], false);
 }

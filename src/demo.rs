@@ -309,7 +309,7 @@ pub fn generate_demo_value(case: DemoCase) -> Value {
             "decision": "unavailable",
             "error": {
                 "code": 4,
-                "kind": "authentication",
+                "kind": "credential-absent",
                 "message": "Provider credentials are unavailable.",
                 "hint": "Configure your own TypeSafe API key.",
                 "retryable": false
@@ -414,7 +414,7 @@ mod tests {
         let val = doc.as_value();
         let hist = &val["historical"];
         assert_eq!(hist["decision"], "unavailable");
-        assert_eq!(hist["error"]["kind"], "authentication");
+        assert_eq!(hist["error"]["kind"], "credential-absent");
         assert_eq!(hist["error"]["code"], 4);
     }
 }

@@ -114,6 +114,7 @@ fn test_all_28_error_kinds_and_documented_exit_categories() {
         // Category 4: Provider / Network / Budget
         (4u8, ErrorKind::ProviderFailure, "provider-failure"),
         (4u8, ErrorKind::Authentication, "authentication"),
+        (4u8, ErrorKind::CredentialAbsent, "credential-absent"),
         (4u8, ErrorKind::NetworkFailure, "network-failure"),
         (4u8, ErrorKind::RequestBudget, "request-budget"),
         (4u8, ErrorKind::ProviderCooldown, "provider-cooldown"),

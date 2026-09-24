@@ -21,7 +21,7 @@ pub use export::{
 };
 pub use ledger::{
     CandidateStage, ChannelStats, CleanupDebt, ClearPreview, ClearReport, CursorKind,
-    DEFAULT_RETENTION_MS, DecisionKind, EvidenceState, ExposureState, FeedbackError,
+    DEFAULT_RETENTION_MS, DecisionKind, EvidenceState, ExposureState, FailureCause, FeedbackError,
     FeedbackOutcome, FeedbackRequest, InitReport, InitStatus, JudgmentLabel, JudgmentMetrics,
     LEDGER_APPLICATION_ID, LEDGER_FILE, LEDGER_MAINTENANCE_RESERVE_BYTES,
     LEDGER_MUTATION_RESERVE_BYTES, LEDGER_QUOTA_BYTES, LEDGER_SCHEMA_ID, LEDGER_SCHEMA_VERSION,

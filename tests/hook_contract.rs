@@ -674,3 +674,99 @@ fn shadow_hook_unique_events_across_turns_and_unix_timestamps() {
         "fresh events must not be pruned as ancient"
     );
 }
+
+/// A hook turn that fails before context capture still counts in the
+/// availability cohort: one typed `unavailable` row per turn, so a build whose
+/// overlay always fails shows its failures instead of zero rows (sr-73b6).
+#[test]
+fn pre_context_hook_failures_are_recorded_once_per_turn() {
+    let fixture = HookFixture::new();
+    let dir = fixture.ledger_dir();
+    let dir = dir.to_str().unwrap();
+    let init = fixture.run_cli(&["ledger", "init", "--dir", dir]);
+    assert_eq!(init.status.code(), Some(0), "ledger init must succeed");
+    fixture.write_transcript(&[user_event("turn-1", None, "mismatched-session", "hello")]);
+    let payload = |prompt_id: Option<&str>| {
+        let mut payload = json!({
+            "hook_event_name": "UserPromptSubmit",
+            "prompt": "Fix test",
+            "session_id": fixture.session_id,
+            "transcript_path": fixture.transcript_path(),
+            "cwd": fixture.workspace(),
+        });
+        if let Some(id) = prompt_id {
+            payload["prompt_id"] = json!(id);
+        }
+        serde_json::to_vec(&payload).unwrap()
+    };
+    let rows = || -> Vec<(String, String, String, String)> {
+        let conn = rusqlite::Connection::open(
+            fixture.ledger_dir().join(skillranker::storage::LEDGER_FILE),
+        )
+        .unwrap();
+        let mut statement = conn
+            .prepare(
+                "SELECT event_id, decision, reason, agent_branch FROM ranking_events \
+                 ORDER BY created_at_unix_ms, event_id",
+            )
+            .unwrap();
+        statement
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    };
+
+    // The transcript belongs to another session: the overlay fails, silently.
+    for _delivery in 0..2 {
+        let out = fixture.run_hook(&payload(Some("prompt-mismatch")), &["--shadow"]);
+        assert_eq!(out.status.code(), Some(0));
+        assert!(out.stdout.is_empty());
+    }
+    let recorded = rows();
+    assert_eq!(
+        recorded,
+        [(
+            "pre-context-prompt-mismatch".to_string(),
+            "unavailable".to_string(),
+            "missing-session".to_string(),
+            "unresolved".to_string()
+        )],
+        "one row per turn; a redelivery of the same prompt id is not a second turn"
+    );
+
+    // Without the harness's prompt id each invocation is its own row.
+    let out = fixture.run_hook(&payload(None), &["--shadow"]);
+    assert_eq!(out.status.code(), Some(0));
+    let recorded = rows();
+    assert_eq!(recorded.len(), 2, "{recorded:?}");
+    assert!(
+        recorded[1].0.starts_with("pre-context-invocation-"),
+        "{recorded:?}"
+    );
+    assert_eq!(recorded[1].2, "missing-session");
+
+    // A payload that never parses has no turn identity and stays a declared
+    // residual; disabled ledger policy writes nothing.
+    let out = fixture.run_hook(b"{\"hook_event_name\": \"UserPromptSubmit\"", &["--shadow"]);
+    assert_eq!(out.status.code(), Some(0));
+    for flag in ["--no-ledger", "--no-persist"] {
+        let out = fixture.run_hook(
+            &payload(Some(&format!("prompt-{flag}"))),
+            &["--shadow", flag],
+        );
+        assert_eq!(out.status.code(), Some(0));
+    }
+    assert_eq!(rows().len(), 2, "{:?}", rows());
+
+    let stats = fixture.run_cli(&["stats", "--json", "--dir", dir]);
+    assert_eq!(stats.status.code(), Some(0), "{stats:?}");
+    let report: serde_json::Value = serde_json::from_slice(&stats.stdout).unwrap();
+    assert_eq!(report["turns"]["total_evaluated"], 2, "{report}");
+    assert_eq!(report["turns"]["operational_failures"], 2, "{report}");
+    assert_eq!(
+        report["turns"]["failure_causes"],
+        json!([{"reason": "missing-session", "count": 2}]),
+        "{report}"
+    );
+}

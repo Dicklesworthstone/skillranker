@@ -106,7 +106,7 @@ with fixed diagnostics. Optional unresolved references contain `reference` and a
 | --- | --- |
 | 2 | `invalid-usage`, `invalid-configuration` |
 | 3 | `missing-session`, `ambiguous-session`, `superseded` |
-| 4 | `provider-failure`, `authentication`, `network-failure`, `request-budget`, `provider-cooldown`, `budget-state` |
+| 4 | `provider-failure`, `authentication`, `credential-absent`, `network-failure`, `request-budget`, `provider-cooldown`, `budget-state` |
 | 5 | `empty-roster`, `unusable-roster`, `unresolved-explicit`, `incomplete-roster`, `roster-changed`, `retrieval-empty`, `retrieval-failure` |
 | 6 | `timeout` |
 | 7 | `malformed-input`, `oversized-input`, `unsupported-input`, `unsupported-source-mode`, `insufficient-context`, `output-limit` |
@@ -115,8 +115,9 @@ with fixed diagnostics. Optional unresolved references contain `reference` and a
 | 10 | `invalid-provider-response` |
 | 11 | `cache-miss` |
 
-Codes and kinds must agree. Missing TypeSafe credentials use `authentication`;
-credentials themselves do not grant network consent. Retryability describes a
+Codes and kinds must agree. A TypeSafe credential absent from the environment is
+`credential-absent`; a credential the provider rejects is `authentication`.
+Credentials themselves do not grant network consent. Retryability describes a
 fresh invocation with the intended inputs, not permission to retry past policy
 or deadline limits. Signals and broken pipes remain platform outcomes.
 
@@ -236,6 +237,20 @@ only as `in_flight_or_killed`. It is not an operational failure, because no prov
 outcome was ever observed; it is not muted, because no output existed to withhold; and
 an invocation still running is indistinguishable from one that was killed, so both
 share that one count rather than being separated on a guess.
+`failure_causes` partitions `operational_failures` into `{reason, count}` rows keyed
+by the recorded error kind, most frequent first. `credential-absent` (no key in the
+invoking environment) stays apart from `authentication` (a key the provider rejected)
+and from provider or network outages. A turn delivered twice is one row: a later
+delivery replaces a failed one, which delivered nothing, but never a delivery that
+produced a decision, and the attempts of both deliveries stay attributed to the turn.
+A hook turn that fails after its payload parses but before context capture (overlay,
+session mismatch, branch resolution) is still one `unavailable` row, with
+`agent_branch = "unresolved"` and event id `pre-context-<prompt_id>`, so a failing
+redelivery is not a second turn. The prefix keeps it apart from the full row a later
+successful delivery writes. Without a `prompt_id` the row is keyed to the invocation
+and a redelivery counts again. An invocation whose payload never parses
+has no turn identity and is not recorded: it is the one unmeasured residual of the
+operational-failure denominator.
 
 `latency` reports `mean_ms`, `median_ms`, `p95_ms`, `min_ms`, `max_ms` over turns that
 finished, plus `excluded_unfinished`. An unfinished turn's recorded duration is a

@@ -584,6 +584,13 @@ pub struct ChannelStats {
     pub in_flight_or_killed: u64,
 }
 
+/// Finished `unavailable` turns sharing one recorded failure kind.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct FailureCause {
+    pub reason: String,
+    pub count: u64,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct LatencySummary {
     pub mean_ms: u64,
@@ -612,6 +619,11 @@ pub struct TurnMetrics {
     /// on a guess. They are neither failures nor deliveries: see [`IN_FLIGHT_REASON`].
     pub in_flight_or_killed: u64,
     pub by_channel: Vec<ChannelStats>,
+    /// `operational_failures` split by recorded kind, most frequent first. An
+    /// absent credential (`credential-absent`) is an environment gap, not a
+    /// provider outage or a rejected key (`authentication`), so the availability
+    /// cohort must be able to tell them apart.
+    pub failure_causes: Vec<FailureCause>,
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -3199,6 +3211,25 @@ impl LedgerStore {
             by_channel.push(ch?);
         }
 
+        let mut cause_stmt = self.connection.prepare(&format!(
+            "SELECT reason, count(*) FROM ranking_events WHERE created_at_unix_ms >= ?1 \
+             AND created_at_unix_ms <= ?2 AND decision = 'unavailable' AND NOT {UNFINISHED_ROW_SQL} \
+             GROUP BY reason ORDER BY count(*) DESC, reason"
+        ))?;
+        let cause_rows = cause_stmt.query_map(
+            params![since_unix_ms, as_of_unix_ms, IN_FLIGHT_REASON],
+            |row| {
+                Ok(FailureCause {
+                    reason: row.get(0)?,
+                    count: row.get::<_, i64>(1)? as u64,
+                })
+            },
+        )?;
+        let mut failure_causes = Vec::new();
+        for cause in cause_rows {
+            failure_causes.push(cause?);
+        }
+
         let turns = TurnMetrics {
             total_evaluated: total_evaluated as u64,
             emitted_suggestions: emitted_suggestions as u64,
@@ -3208,6 +3239,7 @@ impl LedgerStore {
             explicit_requirements: explicit_requirements as u64,
             in_flight_or_killed: in_flight_or_killed as u64,
             by_channel,
+            failure_causes,
         };
 
         // 2. Latency. An unfinished row carries `elapsed_ms = 0` as a placeholder, not
@@ -4235,11 +4267,19 @@ impl LedgerStore {
             // derivation is supposed to produce; failing here would roll the whole
             // transaction back and take this delivery's attempt rows with it, which is
             // how a repeat that really paid ended up recorded nowhere (sr-qqlk).
-            let stored: (String, String, String, String) = tx.query_row(
-                "SELECT workspace_root, session_id, agent_branch, exposure_state
+            let stored: (String, String, String, String, String) = tx.query_row(
+                "SELECT workspace_root, session_id, agent_branch, exposure_state, decision
                  FROM ranking_events WHERE event_id = ?1",
                 params![event.event_id],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
             )?;
             // An id reused for a different session or workspace is a collision, not a
             // repeat, and is still refused.
@@ -4253,15 +4293,21 @@ impl LedgerStore {
                 return Err(StoreError::RecordConflict);
             }
             // `generated` means an invocation wrote itself down before sending and has
-            // not finished: this write is that invocation finishing. Anything further
-            // along belongs to a delivery that already completed, and the first
-            // delivery's record stands.
-            if stored.3 == ExposureState::Generated.as_str() {
+            // not finished: this write is that invocation finishing. A finished
+            // failure (`unavailable`, `prepared`) delivered nothing, so a later
+            // delivery of the same turn that is running or got further is the
+            // turn's outcome; keeping the failure would label that delivery's paid
+            // attempts a failed turn (sr-e8vm). Anything else belongs to a delivery
+            // that already produced output, and the first delivery's record stands.
+            let running = stored.3 == ExposureState::Generated.as_str();
+            let failed = stored.3 == ExposureState::Prepared.as_str()
+                && stored.4 == DecisionKind::Unavailable.as_str();
+            if running || failed {
                 tx.execute(
                     "UPDATE ranking_events SET decision = ?1, reason = ?2, exposure_state = ?3,
                             elapsed_ms = ?4, input_tokens = ?5, output_tokens = ?6,
                             snapshot_id = ?7
-                     WHERE event_id = ?8 AND exposure_state = ?9",
+                     WHERE event_id = ?8 AND exposure_state = ?9 AND decision = ?10",
                     params![
                         event.decision.as_str(),
                         event.reason,
@@ -4271,7 +4317,8 @@ impl LedgerStore {
                         event.output_tokens.map(|t| t as i64),
                         event.snapshot_id,
                         event.event_id,
-                        ExposureState::Generated.as_str(),
+                        stored.3,
+                        stored.4,
                     ],
                 )?;
             }

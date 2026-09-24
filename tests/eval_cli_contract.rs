@@ -5,8 +5,7 @@
 //! - Capabilities registry reflects `eval` as `implemented`.
 //! - Missing `--dataset` fails with exit code 2.
 //! - Offline batch execution over recorded replay cases outputs a valid report artifact with exit code 0.
-//! - `--online` live execution without `--allow-network` fails with exit code 8 (network denied).
-//! - `--online` live execution without `--max-requests` fails with exit code 2 (invalid usage).
+//! - `--online` and `--max-requests` are planned flags: refused with exit code 2 naming the phase.
 
 use serde_json::Value;
 use std::fs;
@@ -136,8 +135,8 @@ fn eval_help_flag_succeeds_and_documents_options() {
     assert_eq!(out.status.code(), Some(0));
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("sr eval --dataset FILE"));
-    assert!(stdout.contains("--online"));
-    assert!(stdout.contains("--max-requests"));
+    assert!(!stdout.contains("--online"));
+    assert!(!stdout.contains("--max-requests"));
     assert!(stdout.contains("--max-runtime-ms"));
 }
 
@@ -194,46 +193,34 @@ fn eval_offline_replay_batch_succeeds_with_json_report() {
 }
 
 #[test]
-fn eval_online_without_network_permission_is_denied() {
+fn eval_online_is_a_planned_flag_refused_before_reading_the_dataset() {
     let root = temp_root();
     let dataset_file = root.join("workspace/dataset.jsonl");
     fs::write(&dataset_file, format!("{}\n", make_replay_case_json())).unwrap();
-
-    let out = run_sr(
-        &root,
-        &[
-            "eval",
-            "--dataset",
-            dataset_file.to_str().unwrap(),
+    let dataset = dataset_file.to_str().unwrap();
+    for (options, flag) in [
+        (
+            vec!["--online", "--allow-network", "--max-requests", "1"],
             "--online",
-            "--max-requests",
-            "10",
-            "--json",
-        ],
-    );
-    // Exit code 8 is Privacy/NetworkDenied
-    assert_eq!(out.status.code(), Some(8));
-}
-
-#[test]
-fn eval_online_without_max_requests_fails_with_usage_error() {
-    let root = temp_root();
-    let dataset_file = root.join("workspace/dataset.jsonl");
-    fs::write(&dataset_file, format!("{}\n", make_replay_case_json())).unwrap();
-
-    let out = run_sr(
-        &root,
-        &[
-            "eval",
-            "--dataset",
-            dataset_file.to_str().unwrap(),
-            "--online",
-            "--allow-network",
-            "--json",
-        ],
-    );
-    // Exit code 2 is InvalidUsage
-    assert_eq!(out.status.code(), Some(2));
+        ),
+        (vec!["--online"], "--online"),
+        (vec!["--max-requests", "1"], "--max-requests"),
+    ] {
+        let mut args = vec!["eval", "--dataset", dataset, "--json"];
+        args.extend(options);
+        let out = run_sr(&root, &args);
+        assert_eq!(out.status.code(), Some(2), "{args:?}: {out:?}");
+        let error: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(error["error"]["kind"], "invalid-usage");
+        let message = error["error"]["message"].as_str().unwrap();
+        assert!(
+            message.contains(flag) && message.contains("P5") && message.contains("sr capabilities"),
+            "{message}"
+        );
+    }
+    // Offline replay of the same dataset still runs.
+    let out = run_sr(&root, &["eval", "--dataset", dataset, "--json"]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
 }
 
 #[cfg(unix)]
@@ -272,12 +259,13 @@ fn eval_rejects_nonregular_datasets_without_waiting_for_a_writer() {
 fn eval_validates_mode_and_bounds_before_opening_any_input() {
     let root = temp_root();
     for (options, expected) in [
-        (vec!["--online"], 8),
+        (vec!["--online"], 2),
         (vec!["--online", "--allow-network"], 2),
         (vec!["--max-runtime-ms", "0"], 2),
         (vec!["--max-runtime-ms", "86400001"], 2),
         (vec!["--timeout-ms", "0"], 2),
         (vec!["--max-requests", "nonsense"], 2),
+        (vec!["--max-requests", "5"], 2),
     ] {
         let mut args = vec![
             "eval",

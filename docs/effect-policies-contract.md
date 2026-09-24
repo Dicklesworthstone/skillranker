@@ -41,7 +41,7 @@ Flags combine by taking the strictly more restrictive behavior.
   - Refusal returns `ProviderAdmissionRefusal::NetworkNotAuthorized` (`ErrorKind::NetworkDenied`, exit code 8).
 - **Authorized mode** (`--allow-network`):
   - With credential present: succeeds with `ConsentSource::AllowNetworkFlag`.
-  - Without credential: fails with `ProviderAdmissionRefusal::MissingCredential` (`ErrorKind::Authentication`, exit code 4).
+  - Without credential: fails with `ProviderAdmissionRefusal::MissingCredential` (`ErrorKind::CredentialAbsent`, exit code 4).
 
 ### Subprocess / Cass Restriction
 - Under `--offline`, `--dry-run`, or `--local-only`, external discovery or cass subprocesses are strictly forbidden.

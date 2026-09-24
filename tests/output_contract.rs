@@ -114,7 +114,7 @@ fn every_stable_error_kind_has_the_documented_exit_category() {
         (3, "missing-session ambiguous-session superseded"),
         (
             4,
-            "provider-failure authentication network-failure request-budget provider-cooldown budget-state",
+            "provider-failure authentication credential-absent network-failure request-budget provider-cooldown budget-state",
         ),
         (
             5,

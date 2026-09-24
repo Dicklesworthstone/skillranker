@@ -255,6 +255,49 @@ fn a_turn_still_in_flight_is_not_an_operational_failure() {
 }
 
 #[test]
+fn failure_causes_keep_an_absent_credential_apart_from_a_rejected_key() {
+    let mut ledger = Ledger::new("causes");
+    for (id, reason, at) in [
+        ("ev-absent-1", "credential-absent", 100),
+        ("ev-absent-2", "credential-absent", 200),
+        ("ev-rejected", "authentication", 300),
+    ] {
+        ledger.record(
+            &finished_event(
+                id,
+                "hook-shadow",
+                DecisionKind::Unavailable,
+                ExposureState::Generated,
+                reason,
+                50,
+                BASE_MS + at,
+            ),
+            &[],
+        );
+    }
+    // An unfinished row is not a failure and must not appear as a cause.
+    ledger.record(
+        &in_flight_event("ev-inflight", "hook-shadow", BASE_MS + 400),
+        &[],
+    );
+
+    let report = ledger.stats();
+    assert_eq!(report.turns.operational_failures, 3);
+    let causes: Vec<(&str, u64)> = report
+        .turns
+        .failure_causes
+        .iter()
+        .map(|cause| (cause.reason.as_str(), cause.count))
+        .collect();
+    assert_eq!(causes, [("credential-absent", 2), ("authentication", 1)]);
+    assert_eq!(
+        causes.iter().map(|(_, count)| count).sum::<u64>(),
+        report.turns.operational_failures,
+        "causes partition the operational failures"
+    );
+}
+
+#[test]
 fn an_unfinished_turns_zero_duration_stays_out_of_the_latency_summary() {
     let mut ledger = Ledger::new("latency");
     // Two real durations, and one row whose elapsed_ms is a placeholder rather than
