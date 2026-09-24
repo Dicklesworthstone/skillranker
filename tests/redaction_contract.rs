@@ -1,7 +1,7 @@
 //! Synthetic scanner regressions; see THIRD_PARTY_NOTICES.md for provenance.
 use skillranker::privacy::redaction::{
-    MAX_INSPECTED_PAYLOAD_BYTES, MAX_REDACTED_FIELD_BYTES, REDACTION_MARKER, RedactionError,
-    Redactor,
+    EXCERPT_JOIN, MAX_INSPECTED_PAYLOAD_BYTES, MAX_REDACTED_FIELD_BYTES, REDACTION_MARKER,
+    RedactionError, Redactor,
 };
 
 #[test]
@@ -196,8 +196,75 @@ fn redaction_before_truncation() {
         assert_eq!(result.redaction_count(), 1);
         assert!(result.as_str().chars().count() <= budget);
     }
+    // The visible join counts toward the limit: head `é`, join, tail `z`.
     let result = scanner.redact_field_excerpt("éabc界xyz", 5).unwrap();
-    assert_eq!(result.omitted_scalars(), 3);
+    assert_eq!(result.as_str(), format!("é{EXCERPT_JOIN}z"));
+    assert_eq!(result.omitted_scalars(), 6);
+}
+
+/// Whether `text` holds a piece of a redaction marker. The inputs below are
+/// lowercase apart from their markers, so any capital left after removing
+/// whole markers is a fragment.
+fn has_marker_fragment(text: &str) -> bool {
+    text.replace(REDACTION_MARKER, "")
+        .chars()
+        .any(|c| c.is_ascii_uppercase())
+}
+
+#[test]
+fn no_cut_leaves_a_fragment_of_a_redaction_marker() {
+    // A fragment such as `password=[RED` no longer reads as a redaction, and
+    // the final payload scan takes it for a secret: the whole request fails.
+    // Also: a cut must not strand `password=` before its marker, nor glue text
+    // onto one (`[REDACTED]…`); the scan reads either as a secret value.
+    let scanner = Redactor::default();
+    let clean = |text: &str| {
+        !has_marker_fragment(text)
+            && scanner
+                .inspect_payload(serde_json::json!({ "text": text }).to_string().as_bytes())
+                .is_ok()
+    };
+    for raw in [
+        "check password=supersecretvalue1234 then token=abcdefghij0123456789 end",
+        r#"args {"api_key": "abcdefghijklmnopqrstuvwxyz0123", "note": "ok"} done"#,
+    ] {
+        truncations_stay_clean(&scanner, raw, &clean);
+    }
+}
+
+fn truncations_stay_clean(scanner: &Redactor, raw: &str, clean: &dyn Fn(&str) -> bool) {
+    let redacted = scanner.redact_field(raw).unwrap();
+    assert!(redacted.redaction_count() > 0, "{}", redacted.as_str());
+    let length = redacted.as_str().chars().count();
+    for budget in 0..=length {
+        let excerpt = scanner.redact_field_excerpt(raw, budget).unwrap();
+        assert!(clean(excerpt.as_str()), "{budget}: {}", excerpt.as_str());
+        assert!(excerpt.as_str().chars().count() <= budget);
+        // The omission count is what was removed; the join is not source text.
+        let join = if excerpt.as_str().contains(EXCERPT_JOIN) {
+            EXCERPT_JOIN.chars().count()
+        } else {
+            0
+        };
+        assert_eq!(
+            excerpt.omitted_scalars(),
+            length - (excerpt.as_str().chars().count() - join),
+            "{budget}: {}",
+            excerpt.as_str()
+        );
+        let truncated = skillranker::context::head_tail_truncate(redacted.as_str(), budget);
+        assert!(clean(&truncated), "{budget}: {truncated}");
+        assert!(
+            truncated.chars().count() <= budget.max(1),
+            "{budget}: {truncated}"
+        );
+        if budget > 0 && budget < length {
+            assert!(
+                truncated.contains('…') || truncated.contains("chars omitted"),
+                "a cut must stay visible: {budget}: {truncated}"
+            );
+        }
+    }
 }
 
 #[test]
