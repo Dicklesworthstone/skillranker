@@ -250,30 +250,33 @@ digest `929bf33b65b903fac37bec33cec76878ab6f82cac9c4eed67af6b0fc2cdded62`.
 | Cost | ≈43 s per adjudicator for 18 cases (≈2.4 s per case); tie-break 36 s for 11 cases. Human cost not measured |
 | Class agreement (A vs B) | 18/18 |
 | Acceptable-set agreement | 17/18 exact (mean Jaccard 0.98) |
-| Near-miss-set agreement | 7/18 exact; 11/18 disagreed |
+| Near-miss existence agreement | 13/13 helpful cases: A and B always named at least one near-miss in common |
+| Near-miss-set exact agreement | 7/18; the lists differed only in extra members |
 | Rubric gaps noted | 8 notes in 6 of 18 cases |
 | Final strata | positive 0, near-miss 13, no-match 5 |
 
 Findings that require a revision before any corpus is built:
 
-1. **The acceptable set is reproducible. The near-miss set is not.** "Plausible but
-   wrong" over a 205-skill roster produced long, adjudicator-specific lists, so a
-   near-miss stratum defined this way would measure the adjudicator rather than the
-   selector.
-2. **The positive stratum is degenerate on a large roster.** Every case with a
-   non-empty acceptable set also had some tempting wrong skill, so none came out
-   `positive`. README's targets (≥150 positive, ≥50 near-miss) cannot both be met under
-   §3.3 as written.
+1. **The acceptable set is reproducible, and so is the existence of a near-miss.** The
+   near-miss lists differ in their extra members, but whenever a case had an acceptable
+   skill, both adjudicators named at least one near-miss skill in common.
+2. **The positive/near-miss split is degenerate on a large roster.** Because some
+   plausible wrong skill always exists among 205, every case with a non-empty
+   acceptable set is a near-miss under §3.3, and none is `positive`. The classes do not
+   discriminate, and README's targets (≥150 positive, ≥50 near-miss) cannot both be met
+   as written.
 3. **Where the rubric gaps recurred:** a skill that fits only partly under a constraint
    (it covers a forbidden path as well as a permitted one); a profile-specific skill
    when the request states no profile; environment assumptions the request leaves
    unstated (NTM-managed swarm, project language); and whether tempting skills are
    recorded for a no-match case.
 
-Proposed v2, not adopted here because it changes README's promotion-table strata:
-(a) class from the acceptable set alone (positive vs no-match); (b) near-miss as an
-attribute of a positive case, counted only when two independent adjudicators name at
-least one skill in common, which is reproducible by construction; (c) rubric clauses for
+Proposed v2, tracked as sr-20n7: (a) keep the three case kinds, but redefine near-miss
+by a sharper question: *is there a wrong skill a reasonable selector would more likely
+pick than the best acceptable one?* A case is `near_miss_advisory` only when both
+adjudicators answer yes and agree on at least one such skill; its reproducibility is to
+be measured before adoption. An agreement rule on plain near-miss existence does not
+help, since it still labels every helpful case a near-miss. (c) Rubric clauses for
 partial-fit-under-constraint (acceptable when a permitted path exists and the constraint
 is stated), missing profile (judge only against what the request states), and unstated
 environment (never assume it; judge the request as written). Adopting v2 starts a new
