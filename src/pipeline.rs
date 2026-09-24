@@ -1922,6 +1922,16 @@ async fn rank_once(
                 "The context could not be rendered within its bounds",
             ),
         })?;
+    // The receipt is the disclosure account shown to the user; a receipt that
+    // disagrees with the bytes about to be sent fails closed before any request.
+    disclosure_receipt
+        .verify_against_payload(&rendered_context)
+        .map_err(|_| {
+            failure(
+                ErrorKind::UnsupportedInput,
+                "The disclosure receipt does not match the rendered context",
+            )
+        })?;
     // Report the rendered input truthfully. Essential content that is missing,
     // or a latest request that had to be truncated, cannot support a ranked
     // result, so nothing is sent.
