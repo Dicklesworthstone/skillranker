@@ -617,6 +617,81 @@ fn a_task_notification_inside_a_running_turn_is_not_a_user_turn() {
 }
 
 #[test]
+fn a_notification_turn_already_in_the_transcript_is_that_turn() {
+    // Measured live (2026-09-24 02:16Z): a background task that finishes while
+    // the agent is idle starts a turn of its own. Claude writes that record
+    // BEFORE running the hook, so the prompt is already the transcript's
+    // newest leaf. It carries the hook's prompt id as `promptId`, under its
+    // own `uuid`, and it is marked as a system-originated notification.
+    let records = [
+        json!({"type":"user","uuid":"root","parentUuid":null,"sessionId":"expected-session",
+               "promptId":"earlier","message":{"role":"user","content":"do it"}}),
+        json!({"type":"assistant","uuid":"answer","parentUuid":"root","sessionId":"expected-session",
+               "message":{"role":"assistant","id":"m1","content":[{"type":"text","text":"done"}]}}),
+        json!({"type":"system","subtype":"turn_duration","uuid":"duration","parentUuid":"answer",
+               "sessionId":"expected-session"}),
+        json!({"type":"user","uuid":"note","parentUuid":"duration","sessionId":"expected-session",
+               "promptId":"notification-turn","origin":{"kind":"task-notification"},
+               "promptSource":"system","message":{"role":"user","content":NOTIFICATION}}),
+    ];
+    let lines: Vec<String> = records.iter().map(ToString::to_string).collect();
+    let overlay =
+        apply_claude_prompt_overlay(&request_prompt(&lines, "notification-turn", NOTIFICATION))
+            .expect("a notification that starts its own turn is that turn's request");
+    assert_eq!(overlay.current_request.text.as_str(), NOTIFICATION);
+    // The prompt is one event on the one chain, not a second leaf beside the
+    // record that already holds it.
+    let ids: Vec<_> = overlay
+        .events
+        .iter()
+        .filter_map(|e| e.event_id.as_ref().map(|id| id.as_str().to_owned()))
+        .collect();
+    assert_eq!(
+        ids.iter().filter(|id| id.as_str() == "note").count(),
+        1,
+        "{ids:?}"
+    );
+    assert!(ids.contains(&"root".to_owned()), "{ids:?}");
+}
+
+#[test]
+fn a_parallel_call_cut_by_the_window_does_not_make_the_prompt_ambiguous() {
+    // Measured live (sr-l1nr): the bounded tail began between one response's
+    // two parallel calls and their results. Both call records were outside
+    // the window. One result is the dead-end side record Claude files beside
+    // its own call; the conversation continues from the other.
+    let result = |id: &str, call: &str| {
+        json!({"type":"user","uuid":id,"parentUuid":call,"sessionId":"expected-session",
+               "message":{"role":"user","content":[{"type":"tool_result","tool_use_id":format!("toolu-{call}"),"is_error":false,"content":"ok"}]}})
+    };
+    let records = [
+        result("side-result", "call-before-window-1"),
+        result("main-result", "call-before-window-2"),
+        json!({"type":"assistant","uuid":"answer","parentUuid":"main-result","sessionId":"expected-session",
+               "message":{"role":"assistant","id":"m2","content":[{"type":"text","text":"both passed"}]}}),
+    ];
+    let overlay = apply_claude_prompt_overlay(&request(&records, "new"))
+        .expect("a stranded side result is not a conversation leaf");
+    let ids: Vec<_> = overlay
+        .events
+        .iter()
+        .filter_map(|e| e.event_id.as_ref().map(|id| id.as_str().to_owned()))
+        .collect();
+    assert!(ids.contains(&"answer".to_owned()), "{ids:?}");
+    assert!(!ids.contains(&"side-result".to_owned()), "{ids:?}");
+
+    // Honest counterpart: an orphaned MESSAGE is not a side record. Two
+    // conversation leaves with unseen parents remain a fork the prompt must
+    // not choose between by file order.
+    let orphan = |id: &str, parent: &str| {
+        json!({"type":"user","uuid":id,"parentUuid":parent,"sessionId":"expected-session",
+               "message":{"role":"user","content":"history"}})
+    };
+    let fork = [orphan("left", "before-1"), orphan("right", "before-2")];
+    assert!(apply_claude_prompt_overlay(&request(&fork, "new")).is_err());
+}
+
+#[test]
 fn a_rewound_tool_exchange_is_still_a_real_fork() {
     // After a rewind, the abandoned branch can end in a tool result whose
     // call has no other child. That branch is not a side record of an
