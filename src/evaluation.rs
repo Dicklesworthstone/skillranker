@@ -281,6 +281,21 @@ pub enum RelevanceClass {
     Unjudged,
 }
 
+impl RelevanceClass {
+    /// Tuning loss from the frozen `evaluation_policy.v1` table. Explicit
+    /// requests are checked separately from advisory quality, and an unjudged
+    /// case has no loss; both are `None`, never an invented zero.
+    #[must_use]
+    pub const fn policy_loss(self) -> Option<u32> {
+        match self {
+            Self::TruePositive | Self::TrueAbstain => Some(0),
+            Self::FalseAbstain => Some(1),
+            Self::FalsePositive | Self::NeedlessSuggestion | Self::OperationalFailure => Some(2),
+            Self::ExplicitMatch | Self::ExplicitMismatch | Self::Unjudged => None,
+        }
+    }
+}
+
 /// Case record paired with its resolved ground-truth label and evaluation outcome.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ResolvedEvaluationCase {

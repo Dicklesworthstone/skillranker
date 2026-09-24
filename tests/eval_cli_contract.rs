@@ -6,6 +6,7 @@
 //! - Missing `--dataset` fails with exit code 2.
 //! - Offline batch execution over recorded replay cases outputs a valid report artifact with exit code 0.
 //! - `--online` and `--max-requests` are planned flags: refused with exit code 2 naming the phase.
+//! - `--labels` scores a labeled case frame; `--sample-size`/`--seed` freeze a sample first.
 
 use serde_json::Value;
 use std::fs;
@@ -283,4 +284,382 @@ fn eval_validates_mode_and_bounds_before_opening_any_input() {
         assert!(!message.contains("missing-dataset") && !message.contains("missing-policy"));
         assert!(!message.contains("No such file"), "{error}");
     }
+}
+
+fn frame_case(family: &str, split: &str, decision: &str, suggested: &[&str]) -> Value {
+    serde_json::json!({
+        "schema_version": 1,
+        "key": {
+            "frame_id": "frame-1", "family_id": family, "case_id": format!("{family}-case"),
+            "replicate": 0, "policy_id": "baseline"
+        },
+        "split": split,
+        "prompt_summary": "Triage a failing test",
+        "roster_skills": ["rust-test-triage", "agent-mail", "planner"],
+        "decision": decision,
+        "suggested_skills": suggested,
+    })
+}
+
+fn frame_label(family: &str, acceptable: &[&str]) -> Value {
+    serde_json::json!({
+        "schema_version": 1, "case_id": format!("{family}-case"), "revision": 1,
+        "acceptable_skills": acceptable, "no_skill_needed": acceptable.is_empty(),
+        "adjudicator": "judge-a", "created_at_unix_ms": 1_726_700_000_000u64
+    })
+}
+
+fn write_jsonl(root: &std::path::Path, name: &str, rows: &[Value]) -> String {
+    let path = root.join("workspace").join(name);
+    let body: String = rows.iter().map(|row| format!("{row}\n")).collect();
+    fs::write(&path, body).unwrap();
+    path.to_string_lossy().into_owned()
+}
+
+fn uniform_frame(root: &std::path::Path, families: usize) -> (String, String) {
+    let names: Vec<String> = (0..families).map(|i| format!("fam-{i:02}")).collect();
+    let cases: Vec<Value> = names
+        .iter()
+        .map(|f| frame_case(f, "holdout", "ranked", &["rust-test-triage"]))
+        .collect();
+    let labels: Vec<Value> = names
+        .iter()
+        .map(|f| frame_label(f, &["rust-test-triage"]))
+        .collect();
+    (
+        write_jsonl(root, "frame.jsonl", &cases),
+        write_jsonl(root, "labels.jsonl", &labels),
+    )
+}
+
+fn json_report(output: &Output) -> Value {
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).expect("report JSON")
+}
+
+fn selected_ids(report: &Value) -> Vec<String> {
+    report["sample_manifest"]["selected_cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| entry["case_key"]["case_id"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+#[test]
+fn labeled_frame_scores_the_frozen_loss_and_keeps_unjudged_cases_visible() {
+    let root = temp_root();
+    let cases = write_jsonl(
+        &root,
+        "frame.jsonl",
+        &[
+            frame_case("fam-hit", "holdout", "ranked", &["rust-test-triage"]),
+            frame_case("fam-miss", "holdout", "abstain", &[]),
+            frame_case("fam-needless", "holdout", "ranked", &["planner"]),
+            frame_case("fam-unjudged", "holdout", "ranked", &["planner"]),
+        ],
+    );
+    let labels = write_jsonl(
+        &root,
+        "labels.jsonl",
+        &[
+            frame_label("fam-hit", &["rust-test-triage"]),
+            frame_label("fam-miss", &["rust-test-triage"]),
+            frame_label("fam-needless", &[]),
+        ],
+    );
+    let report = json_report(&run_sr(
+        &root,
+        &["eval", "--dataset", &cases, "--labels", &labels, "--json"],
+    ));
+    assert_eq!(report["kind"], "report");
+    assert_eq!(report["actionable"], false);
+    assert_eq!(report["gate_status"], "not-established");
+    // The unjudged case is neither dropped nor scored as a success.
+    assert_eq!(report["run_status"], "partial");
+    assert_eq!(report["completeness"]["cases_requested"], 4);
+    assert_eq!(report["completeness"]["cases_completed"], 3);
+    assert_eq!(report["reconciliation"]["reconciled"], true);
+    // evaluation_policy.v1: hit 0, false abstention 1, needless suggestion 2.
+    assert_eq!(report["loss_summary"]["attempted_cases"], 3);
+    assert_eq!(report["loss_summary"]["total_loss"], 3);
+    assert_eq!(report["loss_summary"]["not_estimable_cases"], 1);
+    assert_eq!(report["metrics"]["judged_cases"], 3);
+    assert_eq!(report["metrics"]["unjudged_cases"], 1);
+    let losses: Vec<(String, Value)> = report["cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|case| {
+            (
+                case["family_id"].as_str().unwrap().to_owned(),
+                case["status"]["loss"].clone(),
+            )
+        })
+        .collect();
+    assert!(losses.contains(&("fam-hit".into(), Value::from(0))));
+    assert!(losses.contains(&("fam-miss".into(), Value::from(1))));
+    assert!(losses.contains(&("fam-needless".into(), Value::from(2))));
+    assert!(losses.contains(&("fam-unjudged".into(), Value::Null)));
+    assert!(report.get("sample_manifest").is_none());
+}
+
+#[test]
+fn a_supplied_seed_reproduces_a_diagnostic_selection_without_design_weights() {
+    let root = temp_root();
+    let (cases, labels) = uniform_frame(&root, 12);
+    let args = [
+        "eval",
+        "--dataset",
+        &cases,
+        "--labels",
+        &labels,
+        "--sample-size",
+        "4",
+        "--seed",
+        "42",
+        "--json",
+    ];
+    let first = json_report(&run_sr(&root, &args));
+    let second = json_report(&run_sr(&root, &args));
+    assert_eq!(selected_ids(&first).len(), 4);
+    assert_eq!(selected_ids(&first), selected_ids(&second));
+    assert_eq!(
+        first["sample_manifest"]["design_status"],
+        "diagnostic-fixed"
+    );
+    assert_eq!(
+        first["sample_manifest"]["randomization_provenance"]["source"],
+        "supplied-manual"
+    );
+    assert!(first.get("design_weighted_loss").is_none());
+    assert_eq!(first["completeness"]["cases_requested"], 4);
+    assert_eq!(first["run_status"], "complete");
+
+    // Selection precedes the join: changing every label cannot move the draw.
+    let flipped: Vec<Value> = (0..12)
+        .map(|i| frame_label(&format!("fam-{i:02}"), &[]))
+        .collect();
+    let flipped = write_jsonl(&root, "flipped.jsonl", &flipped);
+    let third = json_report(&run_sr(
+        &root,
+        &[
+            "eval",
+            "--dataset",
+            &cases,
+            "--labels",
+            &flipped,
+            "--sample-size",
+            "4",
+            "--seed",
+            "42",
+            "--json",
+        ],
+    ));
+    assert_eq!(selected_ids(&first), selected_ids(&third));
+    assert_eq!(third["loss_summary"]["total_loss"], 8);
+}
+
+#[test]
+fn a_fresh_os_seed_is_recorded_and_supports_design_weighted_loss() {
+    let root = temp_root();
+    let (cases, labels) = uniform_frame(&root, 12);
+    let report = json_report(&run_sr(
+        &root,
+        &[
+            "eval",
+            "--dataset",
+            &cases,
+            "--labels",
+            &labels,
+            "--sample-size",
+            "5",
+            "--json",
+        ],
+    ));
+    let manifest = &report["sample_manifest"];
+    assert_eq!(manifest["design_status"], "stratified-probability-sample");
+    assert_eq!(manifest["randomization_provenance"]["source"], "os-random");
+    assert!(manifest["randomization_provenance"]["seed"].is_u64());
+    assert_eq!(selected_ids(&report).len(), 5);
+    let design = &report["design_weighted_loss"];
+    assert_eq!(design["total_sampled_cases"], 5);
+    assert_eq!(design["total_missing_labels"], 0);
+    assert_eq!(design["r_hat_observed"], 0.0);
+
+    // A budget covering the frame is a census with exact weights.
+    let census = json_report(&run_sr(
+        &root,
+        &[
+            "eval",
+            "--dataset",
+            &cases,
+            "--labels",
+            &labels,
+            "--sample-size",
+            "99",
+            "--json",
+        ],
+    ));
+    assert_eq!(census["sample_manifest"]["design_status"], "full-census");
+    assert_eq!(selected_ids(&census).len(), 12);
+    assert_eq!(census["design_weighted_loss"]["total_sampled_cases"], 12);
+}
+
+#[test]
+fn frame_flags_reject_incoherent_combinations_before_reading_inputs() {
+    let root = temp_root();
+    let (cases, labels) = uniform_frame(&root, 3);
+    for args in [
+        vec![
+            "eval",
+            "--dataset",
+            "/missing",
+            "--sample-size",
+            "2",
+            "--json",
+        ],
+        vec![
+            "eval",
+            "--dataset",
+            "/missing",
+            "--labels",
+            "/missing",
+            "--seed",
+            "1",
+            "--json",
+        ],
+        vec![
+            "eval",
+            "--dataset",
+            "/missing",
+            "--labels",
+            "/missing",
+            "--policy",
+            "p",
+            "--json",
+        ],
+        vec![
+            "eval",
+            "--dataset",
+            &cases,
+            "--labels",
+            &labels,
+            "--sample-size",
+            "0",
+            "--json",
+        ],
+        vec![
+            "eval",
+            "--dataset",
+            &cases,
+            "--labels",
+            &labels,
+            "--sample-size",
+            "x",
+            "--json",
+        ],
+    ] {
+        let output = run_sr(&root, &args);
+        assert_eq!(output.status.code(), Some(2), "{args:?}");
+    }
+    let mixed = write_jsonl(
+        &root,
+        "mixed.jsonl",
+        &[
+            frame_case("fam-a", "holdout", "ranked", &["planner"]),
+            frame_case("fam-b", "validation", "ranked", &["planner"]),
+        ],
+    );
+    let output = run_sr(
+        &root,
+        &[
+            "eval",
+            "--dataset",
+            &mixed,
+            "--labels",
+            &labels,
+            "--sample-size",
+            "1",
+            "--json",
+        ],
+    );
+    assert_eq!(output.status.code(), Some(2));
+    let error: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(
+        error["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("one split"),
+        "{error}"
+    );
+}
+
+#[test]
+fn explain_derives_equations_from_the_report_without_changing_it() {
+    let root = temp_root();
+    let (cases, _) = uniform_frame(&root, 12);
+    // Every label says no skill was needed, so each ranked case is needless (loss 2).
+    let needless: Vec<Value> = (0..12)
+        .map(|i| frame_label(&format!("fam-{i:02}"), &[]))
+        .collect();
+    let labels = write_jsonl(&root, "needless.jsonl", &needless);
+    let base = [
+        "eval",
+        "--dataset",
+        &cases,
+        "--labels",
+        &labels,
+        "--sample-size",
+        "99",
+        "--json",
+    ];
+    let plain = json_report(&run_sr(&root, &base));
+    assert!(plain.get("explanation").is_none());
+    let mut explained = json_report(&run_sr(&root, &[&base[..], &["--explain"]].concat()));
+    let explanation = explained
+        .as_object_mut()
+        .unwrap()
+        .remove("explanation")
+        .expect("explanation");
+    // Each run records its own time and fresh OS seed; everything else is identical.
+    let mut plain = plain;
+    for report in [&mut explained, &mut plain] {
+        let manifest = &mut report["sample_manifest"];
+        for run_specific in [
+            "created_at_unix_ms",
+            "manifest_id",
+            "randomization_provenance",
+        ] {
+            manifest[run_specific] = Value::Null;
+        }
+    }
+    assert_eq!(explained, plain);
+
+    let quantity = |name: &str| {
+        explanation["quantities"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|q| q["name"] == name)
+            .unwrap_or_else(|| panic!("{name} in {explanation}"))
+            .clone()
+    };
+    assert_eq!(quantity("mean_loss")["substituted"], "24 / 12");
+    assert_eq!(quantity("mean_loss")["value"], 2.0);
+    assert_eq!(quantity("mean_normalized_loss")["value"], 1.0);
+    assert_eq!(quantity("design_weighted_mean_loss")["value"], 1.0);
+    assert_eq!(quantity("design_weighted_upper_bound")["value"], 1.0);
+    let text = explanation.to_string();
+    assert!(text.contains("evaluation_policy.v1"), "{text}");
+    assert!(
+        text.contains("Every family in the frame was evaluated"),
+        "{text}"
+    );
+    assert!(text.contains("not a passed quality gate"), "{text}");
 }

@@ -13,9 +13,9 @@ use std::ffi::OsString;
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
-const HELP: &str = "SkillRanker — powered by TypeSafe.ai Jev\n\nUsage: sr [rank] [--context FILE | --transcript FILE --harness NAME | --session PATH | --latest]\n                 [--roster FILE] [--require-skill ID] [--dry-run [--shortlist-ids ID,...]]\n                 [--offline | --allow-network] [--json | --table]\n                 [--top N] [--shortlist M] [--gate FLOAT] [--fits FLOAT]\n                 [--explain] [--why-not ID] [--cursor TOKEN] [--no-tools] [--no-cache]\n                 [--save-case FILE]\n       sr doctor [--json | --table] [--offline | --allow-network]\n       sr doctor --config [--json | --table] [--top N] [--shortlist N]\n       sr roster [--json] [--limit N] [--cursor TOKEN]\n       sr roster --snapshot FILE | --diff FILE\n       sr capabilities [--json]\n       sr demo --case <useful|none|explicit|unavailable> [--json | --table]\n       sr replay FILE [--policy FILE] [--compare-policy FILE] [--json | --table]\n       sr eval --dataset FILE [--allow-network] [--max-runtime-ms MS] [--timeout-ms MS] [--policy FILE] [--compare-policy FILE] [--json | --table]\n       sr feedback <EVENT_ID> --skill ID [--instead ID] [--verdict <useful|not-useful|unknown>] [--reason CODE] [--provenance TEXT] [--expected-version GEN] [--dir DIR] [--json]\n       sr ledger <init|migrate|status|prune|clear> [--before TIME] [--apply] [--json]\n       sr observe [--context FILE | --transcript FILE --harness NAME | --session PATH] [--branch NAME] [--roster FILE] [--dir DIR] [--json]\n       sr stats [--since DURATION] [--by-skill] [--dir DIR] [--json | --table]\n       sr hook <claude> [--shadow] [--offline | --allow-network] [--dir DIR]\n       sr install-hook <claude> [--settings FILE] [--target-dir DIR] [--apply] [--json]\n       sr uninstall-hook <claude> [--settings FILE] [--target-dir DIR] [--apply] [--json]\n       sr --help | --version\n\nRank the next step of an agent session using TypeSafe Jev.\nRequires your own TypeSafe API key (TYPESAFE_API_KEY) and network consent (--allow-network).\n";
+const HELP: &str = "SkillRanker — powered by TypeSafe.ai Jev\n\nUsage: sr [rank] [--context FILE | --transcript FILE --harness NAME | --session PATH | --latest]\n                 [--roster FILE] [--require-skill ID] [--dry-run [--shortlist-ids ID,...]]\n                 [--offline | --allow-network] [--json | --table]\n                 [--top N] [--shortlist M] [--gate FLOAT] [--fits FLOAT]\n                 [--explain] [--why-not ID] [--cursor TOKEN] [--no-tools] [--no-cache]\n                 [--save-case FILE]\n       sr doctor [--json | --table] [--offline | --allow-network]\n       sr doctor --config [--json | --table] [--top N] [--shortlist N]\n       sr roster [--json] [--limit N] [--cursor TOKEN]\n       sr roster --snapshot FILE | --diff FILE\n       sr capabilities [--json]\n       sr demo --case <useful|none|explicit|unavailable> [--json | --table]\n       sr replay FILE [--policy FILE] [--compare-policy FILE] [--json | --table]\n       sr eval --dataset FILE [--allow-network] [--max-runtime-ms MS] [--timeout-ms MS] [--policy FILE] [--compare-policy FILE] [--explain] [--json | --table]\n       sr eval --dataset FRAME --labels FILE [--sample-size N [--seed S]] [--explain] [--json | --table]\n       sr feedback <EVENT_ID> --skill ID [--instead ID] [--verdict <useful|not-useful|unknown>] [--reason CODE] [--provenance TEXT] [--expected-version GEN] [--dir DIR] [--json]\n       sr ledger <init|migrate|status|prune|clear> [--before TIME] [--apply] [--json]\n       sr observe [--context FILE | --transcript FILE --harness NAME | --session PATH] [--branch NAME] [--roster FILE] [--dir DIR] [--json]\n       sr stats [--since DURATION] [--by-skill] [--dir DIR] [--json | --table]\n       sr hook <claude> [--shadow] [--offline | --allow-network] [--dir DIR]\n       sr install-hook <claude> [--settings FILE] [--target-dir DIR] [--apply] [--json]\n       sr uninstall-hook <claude> [--settings FILE] [--target-dir DIR] [--apply] [--json]\n       sr --help | --version\n\nRank the next step of an agent session using TypeSafe Jev.\nRequires your own TypeSafe API key (TYPESAFE_API_KEY) and network consent (--allow-network).\n";
 
-const EVAL_HELP: &str = "sr eval --dataset FILE [--allow-network] [--max-runtime-ms MS] [--timeout-ms MS] [--policy FILE] [--compare-policy FILE] [--json | --table]\n\nEvaluate recorded or synthetic replay batches against local or comparison policies with bounded runtime and explicit accounting.\n";
+const EVAL_HELP: &str = "sr eval --dataset FILE [--allow-network] [--max-runtime-ms MS] [--timeout-ms MS] [--policy FILE] [--compare-policy FILE] [--explain] [--json | --table]\n       sr eval --dataset FRAME --labels FILE [--sample-size N [--seed S]] [--explain] [--json | --table]\n\nEvaluate recorded or synthetic replay batches against local or comparison policies with bounded runtime and explicit accounting.\nWith --labels, score a labeled case frame against independent judgments, optionally over a stratified sample frozen before labels are joined.\n";
 
 const STATS_HELP: &str = "sr stats [--since DURATION] [--by-skill] [--dir DIR] [--json | --table]\n\nReport observation and operational metrics across honest cohorts (evaluations, suggestions, abstentions, latency, loads, judgments, tokens, and cost).\n";
 
@@ -322,6 +322,43 @@ fn command() -> Command {
                         .long("dataset")
                         .value_name("FILE")
                         .help("Path to the evaluation dataset (JSONL / JSON)")
+                        .action(ArgAction::Set),
+                )
+                .arg(
+                    Arg::new("labels")
+                        .long("labels")
+                        .value_name("FILE")
+                        .help("Independent judged labels; the dataset is then a labeled case frame")
+                        .conflicts_with_all([
+                            "policy",
+                            "compare-policy",
+                            "timeout-ms",
+                            "max-runtime-ms",
+                        ])
+                        .action(ArgAction::Set),
+                )
+                .arg(
+                    Arg::new("sample-size")
+                        .long("sample-size")
+                        .value_name("N")
+                        .help("Freeze a stratified sample of N task-family representatives")
+                        .requires("labels")
+                        .action(ArgAction::Set),
+                )
+                .arg(
+                    Arg::new("explain")
+                        .long("explain")
+                        .help(
+                            "Include equations, substituted values, assumptions and interpretation",
+                        )
+                        .action(ArgAction::SetTrue),
+                )
+                .arg(
+                    Arg::new("seed")
+                        .long("seed")
+                        .value_name("S")
+                        .help("Reproduce a diagnostic selection instead of a fresh OS-random seed")
+                        .requires("sample-size")
                         .action(ArgAction::Set),
                 )
                 .arg(
@@ -2839,6 +2876,9 @@ fn eval_command(clock: &EntryClock, eval_matches: &clap::ArgMatches) -> Result<S
             "Missing required argument --dataset".into(),
         )
     })?;
+    if let Some(labels_str) = eval_matches.get_one::<String>("labels") {
+        return eval_frame_command(clock, eval_matches, dataset_str, labels_str);
+    }
     // `--online` and `--max-requests` are planned flags refused before dispatch,
     // so this build only replays recorded cases.
     let allow_network = eval_matches.get_flag("allow-network");
@@ -2905,25 +2945,8 @@ fn eval_command(clock: &EntryClock, eval_matches: &clap::ArgMatches) -> Result<S
     config.policy = policy;
     config.compare_policy = compare_policy;
     timely(clock)?;
-    // Pin the selected directory and use the descriptor that was checked as a
-    // regular file. A FIFO (including a raced-in replacement) cannot block open.
-    let input_error = || {
-        (
-            7,
-            "malformed-input",
-            "Evaluation dataset must be an accessible authorized regular file".into(),
-        )
-    };
-    let absolute = std::path::absolute(dataset_str).map_err(|_| input_error())?;
-    let parent = absolute.parent().ok_or_else(input_error)?;
-    let parent = std::fs::canonicalize(parent).map_err(|_| input_error())?;
-    let name = absolute.file_name().ok_or_else(input_error)?;
-    let root = AuthorizedRoot::open_absolute(&parent).map_err(|_| input_error())?;
-    let file = AuthorizedRoots::single(root)
-        .open_absolute_file(&parent.join(name))
-        .map_err(|_| input_error())?;
+    let reader = std::io::BufReader::new(open_eval_input(dataset_str, "dataset")?);
     timely(clock)?;
-    let reader = std::io::BufReader::new(file);
 
     let report = match crate::evaluation::batch::execute_evaluation_batch(reader, &config, clock) {
         Ok(rep) => rep,
@@ -2932,7 +2955,96 @@ fn eval_command(clock: &EntryClock, eval_matches: &clap::ArgMatches) -> Result<S
             return Err((kind.exit_code() as u8, kind.as_str(), err.to_string()));
         }
     };
+    render_eval_report(report, eval_matches)
+}
 
+/// Pin the selected directory and use the descriptor that was checked as a
+/// regular file. A FIFO (including a raced-in replacement) cannot block open.
+fn open_eval_input(path: &str, what: &str) -> Result<std::fs::File, Failure> {
+    let input_error = || {
+        (
+            7,
+            "malformed-input",
+            format!("Evaluation {what} must be an accessible authorized regular file"),
+        )
+    };
+    let absolute = std::path::absolute(path).map_err(|_| input_error())?;
+    let parent = absolute.parent().ok_or_else(input_error)?;
+    let parent = std::fs::canonicalize(parent).map_err(|_| input_error())?;
+    let name = absolute.file_name().ok_or_else(input_error)?;
+    let root = AuthorizedRoot::open_absolute(&parent).map_err(|_| input_error())?;
+    AuthorizedRoots::single(root)
+        .open_absolute_file(&parent.join(name))
+        .map_err(|_| input_error())
+}
+
+/// Score a labeled case frame against independent judgments. No provider,
+/// network, or persistence effect; sampling is frozen before labels join.
+fn eval_frame_command(
+    clock: &EntryClock,
+    eval_matches: &clap::ArgMatches,
+    dataset_str: &str,
+    labels_str: &str,
+) -> Result<String, Failure> {
+    let parse_count = |name: &str| -> Result<Option<u64>, Failure> {
+        eval_matches
+            .get_one::<String>(name)
+            .map(|value| {
+                value.parse::<u64>().map_err(|_| {
+                    (
+                        2,
+                        "invalid-usage",
+                        format!("Invalid --{name}: must be a non-negative integer"),
+                    )
+                })
+            })
+            .transpose()
+    };
+    let sample_size = parse_count("sample-size")?;
+    let seed = parse_count("seed")?;
+    let sampling = match sample_size {
+        Some(0) => {
+            return Err((
+                2,
+                "invalid-usage",
+                "Invalid --sample-size: must be positive".into(),
+            ));
+        }
+        Some(n) => Some(crate::evaluation::batch::FrameSampling {
+            sample_size: usize::try_from(n).unwrap_or(usize::MAX),
+            seed,
+        }),
+        None => None,
+    };
+    let cases = std::io::BufReader::new(open_eval_input(dataset_str, "dataset")?);
+    let labels = std::io::BufReader::new(open_eval_input(labels_str, "labels")?);
+    timely(clock)?;
+    let now_unix_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| {
+            u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
+        });
+    let report = crate::evaluation::batch::execute_labeled_frame_evaluation(
+        cases,
+        labels,
+        sampling,
+        now_unix_ms,
+    )
+    .map_err(|err| {
+        let kind = err.kind();
+        (kind.exit_code() as u8, kind.as_str(), err.to_string())
+    })?;
+    timely(clock)?;
+    render_eval_report(report, eval_matches)
+}
+
+fn render_eval_report(
+    mut report: crate::evaluation::batch::EvaluationBatchReport,
+    eval_matches: &clap::ArgMatches,
+) -> Result<String, Failure> {
+    if eval_matches.get_flag("explain") {
+        report.explain();
+    }
     let doc = report
         .to_document()
         .map_err(|e| (2, "output-error", e.to_string()))?;

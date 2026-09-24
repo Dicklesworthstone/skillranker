@@ -398,6 +398,7 @@ request or runtime limit is reached and reports unfinished cases.
 | Flag | Default | Meaning |
 |---|---|---|
 | `--dataset FILE` | Required | Versioned, consented evaluation data and compatible recorded responses for replay |
+| `--labels FILE` | Off | Independent judged labels; `--dataset` is then a labeled case frame scored with the frozen 0/1/2 loss |
 | `--online` | Off | Permit fresh Jev evaluations when network access is separately authorized |
 | `--max-requests N` | Required for live runs | Maximum HTTP attempts across the batch, including retries |
 | `--max-runtime-ms N` | `600000` | Overall batch deadline, in addition to per-case deadlines |
@@ -407,7 +408,7 @@ request or runtime limit is reached and reports unfinished cases.
 
 ```bash
 # Reproduce a diagnostic selection; seed 42 alone supports no sampling guarantee.
-sr eval --dataset scratch/evaluation.json --sample-size 100 --seed 42 --explain
+sr eval --dataset scratch/frame.jsonl --labels scratch/labels.jsonl --sample-size 100 --seed 42
 
 # Draw and record a random sample, then authorize a bounded live evaluation.
 sr eval --dataset scratch/evaluation.json --sample-size 100 \
@@ -1124,7 +1125,7 @@ a ready ledger; `--no-ledger` and `--no-persist` conflict with its promised upda
 sr observe --transcript scratch/session.jsonl --harness claude_code
 sr stats --since 7d --by-skill
 sr feedback EVENT_ID --skill SKILL_ID --verdict useful
-sr eval --dataset scratch/labeled-cases.json
+sr eval --dataset scratch/labeled-cases.jsonl --labels scratch/labels.jsonl
 sr calibrate --evaluation scratch/evaluation-report.json
 sr calibrate --evaluation scratch/evaluation-report.json --apply
 ```

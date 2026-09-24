@@ -34,7 +34,7 @@ pub const IMPLEMENTED_COMMANDS: &[&str] = &[
 ];
 
 /// Documented flags recognized only to explain their unavailable capability.
-/// Scope is part of identity: rank's implemented `--explain` is not eval's.
+/// Scope is part of identity: a flag implemented for one command may be planned for another.
 pub struct PlannedFlag {
     pub command: &'static str,
     pub flag: &'static str,
@@ -47,24 +47,6 @@ pub const PLANNED_FLAGS: &[PlannedFlag] = &[
         command: "doctor",
         flag: "descriptions",
         phase: PhaseGate::P9,
-        takes_value: false,
-    },
-    PlannedFlag {
-        command: "eval",
-        flag: "sample-size",
-        phase: PhaseGate::P5,
-        takes_value: true,
-    },
-    PlannedFlag {
-        command: "eval",
-        flag: "seed",
-        phase: PhaseGate::P5,
-        takes_value: true,
-    },
-    PlannedFlag {
-        command: "eval",
-        flag: "explain",
-        phase: PhaseGate::P5,
         takes_value: false,
     },
     // Live batches: remove both entries when eval executes fresh Jev requests.

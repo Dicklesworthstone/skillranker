@@ -92,26 +92,9 @@ fn planned_flags_name_their_phase_before_reading_inputs() {
             "--descriptions",
         ),
         (
-            vec![
-                "eval",
-                "--dataset",
-                "/missing",
-                "--sample-size",
-                "10",
-                "--json",
-            ],
+            vec!["eval", "--dataset", "/missing", "--online", "--json"],
             "P5",
-            "--sample-size",
-        ),
-        (
-            vec!["eval", "--dataset", "/missing", "--seed=42", "--json"],
-            "P5",
-            "--seed",
-        ),
-        (
-            vec!["eval", "--dataset", "/missing", "--explain", "--json"],
-            "P5",
-            "--explain",
+            "--online",
         ),
     ] {
         let (code, value) = run(&args);
