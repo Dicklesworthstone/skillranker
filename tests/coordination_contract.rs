@@ -146,6 +146,7 @@ fn sample_stage_request_fingerprint(
             adapter_version: "1.0",
             privacy_policy_version: "standard",
             excerpt_strategy: "default",
+            paired_wide: None,
         },
     )
 }

@@ -2207,7 +2207,8 @@ async fn rank_once(
     let fingerprint = |stage: RequestStage,
                        candidates: &[CandidateDigest],
                        request: &[u8],
-                       version: &str|
+                       version: &str,
+                       paired_wide: Option<&RequestFingerprint>|
      -> RequestFingerprint {
         compute_request_fingerprint(
             &cache_key,
@@ -2223,6 +2224,7 @@ async fn rank_once(
                 adapter_version: "v1",
                 privacy_policy_version: "v1",
                 excerpt_strategy: "default",
+                paired_wide,
             },
         )
     };
@@ -2231,6 +2233,7 @@ async fn rank_once(
         &candidate_digests,
         wide_builder.bytes(),
         wide::WIDE_POLICY_VERSION,
+        None,
     );
 
     // An exact cached pair is served without a send. A cached wide answer is
@@ -2256,11 +2259,14 @@ async fn rank_once(
         if let WideDecision::Shortlist(list) = &outcome.decision {
             let ids: Vec<SkillId> = list.iter().map(|s| s.skill.binding.id.clone()).collect();
             let builder = rerank::build(&roster, &ids, &rendered_context, active_model).ok()?;
+            // Keyed to this wide answer, so only the rerank recorded with it
+            // can complete the pair (sr-z1u0).
             let rerank_fp = fingerprint(
                 RequestStage::Rerank,
                 &shortlist_digests(list),
                 builder.bytes(),
                 rerank::RERANK_POLICY_VERSION,
+                Some(&wide_req_fp),
             );
             let (bytes, _) = persistent::lookup(
                 store,
@@ -2647,6 +2653,7 @@ async fn rank_once(
             &shortlist_digests(&shortlisted),
             rerank_builder.bytes(),
             rerank::RERANK_POLICY_VERSION,
+            Some(&wide_req_fp),
         )
     });
     let rerank_req_fp: Option<String> = rerank_fp.map(|fp| fp.to_hex());

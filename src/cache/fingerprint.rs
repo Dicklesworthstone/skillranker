@@ -265,6 +265,12 @@ pub struct RequestFingerprintInput<'a> {
     pub adapter_version: &'a str,
     pub privacy_policy_version: &'a str,
     pub excerpt_strategy: &'a str,
+    /// For a rerank request, the wide request whose answer produced its shortlist.
+    /// Without it, two wide requests yielding the same shortlist share one rerank
+    /// key, and a rerank recorded for one evaluation is served beside another
+    /// evaluation's cached wide answer: a mixed pair, which AGENTS.md forbids under
+    /// an unpinned model alias (sr-z1u0). `None` for wide requests.
+    pub paired_wide: Option<&'a RequestFingerprint>,
 }
 
 /// Computes a keyed `RequestFingerprint`.
@@ -309,6 +315,15 @@ pub fn compute_request_fingerprint(
     feed_length_prefixed(&mut hasher, input.adapter_version.as_bytes());
     feed_length_prefixed(&mut hasher, input.privacy_policy_version.as_bytes());
     feed_length_prefixed(&mut hasher, input.excerpt_strategy.as_bytes());
+    match input.paired_wide {
+        Some(wide) => {
+            hasher.update(&[1u8]);
+            hasher.update(wide.as_bytes());
+        }
+        None => {
+            hasher.update(&[0u8]);
+        }
+    }
 
     let hash = hasher.finalize();
     RequestFingerprint(*hash.as_bytes())

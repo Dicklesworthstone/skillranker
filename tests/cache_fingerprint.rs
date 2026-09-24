@@ -99,6 +99,7 @@ fn request_fingerprint_determinism_and_canonical_equivalence() {
         adapter_version: "0.8.0",
         privacy_policy_version: "standard",
         excerpt_strategy: "head-tail",
+        paired_wide: None,
     };
 
     let fp1 = compute_request_fingerprint(&key, &ns, &input1);
@@ -129,6 +130,7 @@ fn request_fingerprint_stage_and_field_sensitivity() {
         adapter_version: "0.8.0",
         privacy_policy_version: "standard",
         excerpt_strategy: "head-tail",
+        paired_wide: None,
     };
 
     let base_fp = compute_request_fingerprint(&key, &ns, &base);
@@ -265,6 +267,7 @@ fn namespace_isolation_across_sessions_and_key_generations() {
         adapter_version: "0.8.0",
         privacy_policy_version: "standard",
         excerpt_strategy: "head-tail",
+        paired_wide: None,
     };
 
     let fp1 = compute_request_fingerprint(&key, &ns1, &input);
@@ -320,6 +323,7 @@ fn decision_fingerprint_sensitivity() {
         adapter_version: "0.8.0",
         privacy_policy_version: "standard",
         excerpt_strategy: "head-tail",
+        paired_wide: None,
     };
     let req_fp = compute_request_fingerprint(&key, &ns, &req_input);
 
@@ -520,4 +524,55 @@ fn event_delivery_duplicate_detection() {
         !key_non_amb.is_ambiguous(),
         "delivery with positive transcript generation has established coordinate identity"
     );
+}
+
+/// sr-z1u0: two wide requests can yield the same shortlist, so their rerank requests can be
+/// byte-identical. Keyed without the wide answer they came from, a rerank recorded for one
+/// evaluation completed another evaluation's cached wide answer: a mixed pair.
+#[test]
+fn a_rerank_key_is_bound_to_the_wide_answer_that_produced_its_shortlist() {
+    let key = test_key();
+    let ns = sample_namespace();
+    let candidates = sample_candidates();
+    let wide_input = |state: &'static [u8]| RequestFingerprintInput {
+        stage: RequestStage::Wide,
+        canonical_redacted_state: state,
+        candidates: &candidates,
+        questions_digest: [2u8; 32],
+        endpoint_url: "https://api.typesafe.ai",
+        model: "sys1-preview",
+        prompt_version: "v1.2",
+        adapter_version: "0.8.0",
+        privacy_policy_version: "standard",
+        excerpt_strategy: "default",
+        paired_wide: None,
+    };
+    let wide_a = compute_request_fingerprint(&key, &ns, &wide_input(b"{\"wide\":\"A\"}"));
+    let wide_b = compute_request_fingerprint(&key, &ns, &wide_input(b"{\"wide\":\"B\"}"));
+    assert_ne!(wide_a, wide_b);
+
+    let rerank = |paired: Option<&RequestFingerprint>| {
+        compute_request_fingerprint(
+            &key,
+            &ns,
+            &RequestFingerprintInput {
+                stage: RequestStage::Rerank,
+                canonical_redacted_state: b"{\"request\":\"same shortlist\"}",
+                candidates: &candidates,
+                questions_digest: [3u8; 32],
+                endpoint_url: "https://api.typesafe.ai",
+                model: "sys1-preview",
+                prompt_version: "v1.2",
+                adapter_version: "0.8.0",
+                privacy_policy_version: "standard",
+                excerpt_strategy: "default",
+                paired_wide: paired,
+            },
+        )
+    };
+    // Identical rerank requests, paired with different wide answers, are different keys.
+    assert_ne!(rerank(Some(&wide_a)), rerank(Some(&wide_b)));
+    // A paired key never collides with an unpaired one, and pairing is deterministic.
+    assert_ne!(rerank(Some(&wide_a)), rerank(None));
+    assert_eq!(rerank(Some(&wide_a)), rerank(Some(&wide_a)));
 }

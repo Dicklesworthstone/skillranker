@@ -690,6 +690,7 @@ fn test_cache_fingerprint_and_namespace_invariants() {
         adapter_version: "0.8.0",
         privacy_policy_version: "standard",
         excerpt_strategy: "head-tail",
+        paired_wide: None,
     };
 
     let fp1 = compute_request_fingerprint(&key, &ns_a, &req_input_1);
