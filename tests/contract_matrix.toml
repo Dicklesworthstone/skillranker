@@ -5,6 +5,9 @@
 # an e2e suite owner, required platforms/features, earliest executable phase,
 # and current execution status.
 #
+# member_beads explicitly enumerates aggregate coverage. Future phase aggregates
+# must be split into concrete executable rows before those phases are accepted.
+# Status is a declaration, not an execution receipt.
 # Rule: P0 rows for future product tests are planned, never fake passed results.
 # Later phase gates require their complete real cases.
 
@@ -18,6 +21,7 @@ created_for_phase = "P0"
 [[boundaries]]
 id = "p0_bootstrap"
 owner_bead = "sr-roadmap-l1i.1.1"
+member_beads = ["sr-roadmap-l1i.1.1"]
 phase = "P0"
 title = "Bootstrap single Rust 2024 package and reproducible build boundaries"
 unit_property_tests = [
@@ -33,6 +37,7 @@ status = "executed"
 [[boundaries]]
 id = "p0_identity_provenance"
 owner_bead = "sr-roadmap-l1i.1.2"
+member_beads = ["sr-roadmap-l1i.1.2"]
 phase = "P0"
 title = "Identity, provenance, visibility and normalized event types"
 unit_property_tests = [
@@ -48,6 +53,7 @@ status = "executed"
 [[boundaries]]
 id = "p0_output_schemas"
 owner_bead = "sr-roadmap-l1i.1.3"
+member_beads = ["sr-roadmap-l1i.1.3"]
 phase = "P0"
 title = "Decision, error, quality, trace and report schemas"
 unit_property_tests = [
@@ -63,6 +69,7 @@ status = "executed"
 [[boundaries]]
 id = "p0_resource_limits"
 owner_bead = "sr-roadmap-l1i.1.4"
+member_beads = ["sr-roadmap-l1i.1.4"]
 phase = "P0"
 title = "Validated resource budgets and clock types"
 unit_property_tests = [
@@ -78,6 +85,7 @@ status = "executed"
 [[boundaries]]
 id = "p0_config_authority"
 owner_bead = "sr-roadmap-l1i.1.5"
+member_beads = ["sr-roadmap-l1i.1.5"]
 phase = "P0"
 title = "Trusted configuration layers and authority policy schema"
 unit_property_tests = [
@@ -93,6 +101,7 @@ status = "executed"
 [[boundaries]]
 id = "p0_adapter_contracts"
 owner_bead = "sr-roadmap-l1i.1.6"
+member_beads = ["sr-roadmap-l1i.1.6"]
 phase = "P0"
 title = "Versioned adapter and capability contracts"
 unit_property_tests = [
@@ -108,6 +117,7 @@ status = "executed"
 [[boundaries]]
 id = "p0_dependency_slices"
 owner_bead = "sr-roadmap-l1i.1.7"
+member_beads = ["sr-roadmap-l1i.1.7"]
 phase = "P0"
 title = "Pinned dependency source slices and license obligations"
 unit_property_tests = [
@@ -123,6 +133,7 @@ status = "executed"
 [[boundaries]]
 id = "p0_eval_policy"
 owner_bead = "sr-roadmap-l1i.1.8"
+member_beads = ["sr-roadmap-l1i.1.8"]
 phase = "P0"
 title = "Evaluation cases, cohorts, loss and promotion policy"
 unit_property_tests = [
@@ -138,6 +149,7 @@ status = "executed"
 [[boundaries]]
 id = "p0_process_engine"
 owner_bead = "sr-roadmap-l1i.1.14"
+member_beads = ["sr-roadmap-l1i.1.14"]
 phase = "P0"
 title = "Bounded process and evidence engine for P0 test runner"
 unit_property_tests = [
@@ -153,6 +165,7 @@ status = "executed"
 [[boundaries]]
 id = "p0_evidence_scaffolding"
 owner_bead = "sr-roadmap-l1i.1.9"
+member_beads = ["sr-roadmap-l1i.1.9"]
 phase = "P0"
 title = "Sanitized test and evidence scaffolding entrypoint"
 unit_property_tests = [
@@ -168,34 +181,15 @@ status = "executed"
 [[boundaries]]
 id = "p0_adversarial_certification"
 owner_bead = "sr-roadmap-l1i.1.12"
+member_beads = ["sr-roadmap-l1i.1.12", "sr-roadmap-l1i.1.15"]
 phase = "P0"
 title = "Adversarial test driver verification and fault rejection"
 unit_property_tests = [
     "scripts/e2e/test_runner_contract.py::ContractTests"
 ]
 e2e_suite = "runner-contract"
-e2e_cases = [
-    "success",
-    "expected-refusal",
-    "nonzero",
-    "signal",
-    "timeout",
-    "descendant-cleanup",
-    "pipe-budget",
-    "malformed",
-    "truncated",
-    "duplicate-record",
-    "missing-record",
-    "foreign-case",
-    "unreached-fault",
-    "failed-then-passed",
-    "hidden-pipeline-failure",
-    "unexpected-effects",
-    "false-assertion",
-    "wrong-outcome",
-    "private-diagnostics"
-]
-assertion_ids = ["behavior", "absence_of_effects"]
+e2e_cases = ["success", "expected-refusal", "nonzero", "signal", "timeout", "descendant-cleanup", "pipe-budget", "malformed", "truncated", "duplicate-record", "missing-record", "foreign-case", "unreached-fault", "failed-then-passed", "hidden-pipeline-failure", "unexpected-effects", "false-assertion", "wrong-outcome", "private-diagnostics", "inner-failure-retained", "honest-complete-twin", "private-artifacts", "sanitized-artifacts", "empty-selection", "duplicate-selection", "partial-selection", "artifact-reservation", "expected-binary-mismatch", "expected-source-mismatch", "expected-run-mismatch", "foreign-child-record", "fault-witness-current", "fault-witness-old", "fault-witness-absent", "signal-interruption", "secret-argument", "secret-environment", "schema-mismatch", "duplicate-terminal", "missing-terminal", "missing-summary", "truncated-events", "wrong-counts", "unknown-assertion", "wrong-case", "foreign-event", "unsafe-extra-field", "false-effects", "false-fault", "retry-erasure", "witness-missing", "witness-foreign-run", "witness-foreign-case", "witness-replayed"]
+assertion_ids = ["satisfied"]
 platforms = ["linux"]
 features = []
 status = "executed"
@@ -203,25 +197,27 @@ status = "executed"
 [[boundaries]]
 id = "p0_contract_reconciliation"
 owner_bead = "sr-roadmap-l1i.1.10"
+member_beads = ["sr-roadmap-l1i.1.10"]
 phase = "P0"
 title = "Reconciliation of public contracts and staged capabilities"
 unit_property_tests = [
-    "tests/contract_reconciliation.rs::public_contracts_agree"
+    "scripts/validate_public_contracts.py::main"
 ]
 e2e_suite = "runner-smoke"
 e2e_cases = ["success"]
 assertion_ids = ["behavior"]
 platforms = ["linux"]
 features = []
-status = "planned"
+status = "executed"
 
 [[boundaries]]
 id = "p0_acceptance_gate"
 owner_bead = "sr-roadmap-l1i.1.11"
+member_beads = ["sr-roadmap-l1i.1.11"]
 phase = "P0"
 title = "P0 contracts acceptance gate unblocking foundation tracks"
 unit_property_tests = [
-    "tests/p0_gate.rs::all_p0_contracts_verified"
+    "scripts/test_contract_matrix.py::ContractMatrixTests"
 ]
 e2e_suite = "runner-smoke"
 e2e_cases = ["success", "isolation"]
@@ -237,6 +233,7 @@ status = "planned"
 [[boundaries]]
 id = "p1_runtime_scopes"
 owner_bead = "sr-roadmap-l1i.2.1"
+member_beads = ["sr-roadmap-l1i.2.1"]
 phase = "P1"
 title = "Runtime scopes, entry deadlines and cancellation tokens"
 unit_property_tests = [
@@ -252,6 +249,7 @@ status = "planned"
 [[boundaries]]
 id = "p1_bounded_blocking"
 owner_bead = "sr-roadmap-l1i.2.2"
+member_beads = ["sr-roadmap-l1i.2.2"]
 phase = "P1"
 title = "Bounded blocking filesystem, regex and database execution"
 unit_property_tests = [
@@ -267,6 +265,7 @@ status = "planned"
 [[boundaries]]
 id = "p1_trusted_subprocess"
 owner_bead = "sr-roadmap-l1i.2.3"
+member_beads = ["sr-roadmap-l1i.2.3"]
 phase = "P1"
 title = "Trusted bounded subprocess execution"
 unit_property_tests = [
@@ -282,6 +281,7 @@ status = "planned"
 [[boundaries]]
 id = "p1_canonical_origin"
 owner_bead = "sr-roadmap-l1i.2.4"
+member_beads = ["sr-roadmap-l1i.2.4"]
 phase = "P1"
 title = "Canonicalize TypeSafe origins and credential isolation"
 unit_property_tests = [
@@ -297,6 +297,7 @@ status = "planned"
 [[boundaries]]
 id = "p1_typed_jev_contract"
 owner_bead = "sr-roadmap-l1i.2.5"
+member_beads = ["sr-roadmap-l1i.2.5"]
 phase = "P1"
 title = "TypeSafe typed request and answer envelopes"
 unit_property_tests = [
@@ -312,6 +313,7 @@ status = "planned"
 [[boundaries]]
 id = "p1_distribution_validation"
 owner_bead = "sr-roadmap-l1i.2.6"
+member_beads = ["sr-roadmap-l1i.2.6"]
 phase = "P1"
 title = "Validate distributions, confidence and usage reconciliation"
 unit_property_tests = [
@@ -327,6 +329,7 @@ status = "planned"
 [[boundaries]]
 id = "p1_asupersync_https"
 owner_bead = "sr-roadmap-l1i.2.7"
+member_beads = ["sr-roadmap-l1i.2.7"]
 phase = "P1"
 title = "Asupersync HTTPS transport with verified trust roots and cancellation"
 unit_property_tests = [
@@ -342,6 +345,7 @@ status = "planned"
 [[boundaries]]
 id = "p1_admission_budget"
 owner_bead = "sr-roadmap-l1i.2.8"
+member_beads = ["sr-roadmap-l1i.2.8"]
 phase = "P1"
 title = "Invocation-wide attempt admission and budget guards"
 unit_property_tests = [
@@ -357,6 +361,7 @@ status = "planned"
 [[boundaries]]
 id = "p1_classified_retries"
 owner_bead = "sr-roadmap-l1i.2.9"
+member_beads = ["sr-roadmap-l1i.2.9"]
 phase = "P1"
 title = "Classified retries and Retry-After compliance"
 unit_property_tests = [
@@ -372,6 +377,7 @@ status = "planned"
 [[boundaries]]
 id = "p1_jev_contract_smoke"
 owner_bead = "sr-roadmap-l1i.2.10"
+member_beads = ["sr-roadmap-l1i.2.10"]
 phase = "P1"
 title = "Separately consented bounded Jev live contract smoke test"
 unit_property_tests = [
@@ -387,6 +393,7 @@ status = "planned"
 [[boundaries]]
 id = "p1_transport_failure_matrix"
 owner_bead = "sr-roadmap-l1i.2.11"
+member_beads = ["sr-roadmap-l1i.2.11"]
 phase = "P1"
 title = "Transport shutdown, failure and cancellation regression matrix"
 unit_property_tests = [
@@ -402,6 +409,7 @@ status = "planned"
 [[boundaries]]
 id = "p1_acceptance_gate"
 owner_bead = "sr-roadmap-l1i.2.12"
+member_beads = ["sr-roadmap-l1i.2.12"]
 phase = "P1"
 title = "Accept transport/runtime readiness on the single Rust package"
 unit_property_tests = [
@@ -421,6 +429,7 @@ status = "planned"
 [[boundaries]]
 id = "p2_descriptor_reads"
 owner_bead = "sr-roadmap-l1i.3.1"
+member_beads = ["sr-roadmap-l1i.3.1"]
 phase = "P2"
 title = "Authorized descriptor-based skill reads"
 unit_property_tests = [
@@ -436,6 +445,7 @@ status = "planned"
 [[boundaries]]
 id = "p2_secret_scanning"
 owner_bead = "sr-roadmap-l1i.3.2"
+member_beads = ["sr-roadmap-l1i.3.2"]
 phase = "P2"
 title = "Standalone secret scanning and whole-payload redaction"
 unit_property_tests = [
@@ -451,6 +461,7 @@ status = "planned"
 [[boundaries]]
 id = "p2_frontmatter_parsing"
 owner_bead = "sr-roadmap-l1i.3.3"
+member_beads = ["sr-roadmap-l1i.3.3"]
 phase = "P2"
 title = "Parse bounded harness-compatible skill metadata"
 unit_property_tests = [
@@ -466,6 +477,7 @@ status = "planned"
 [[boundaries]]
 id = "p2_visible_roots"
 owner_bead = "sr-roadmap-l1i.3.4"
+member_beads = ["sr-roadmap-l1i.3.4"]
 phase = "P2"
 title = "Discover harness-visible roots and source precedence"
 unit_property_tests = [
@@ -481,6 +493,7 @@ status = "planned"
 [[boundaries]]
 id = "p2_id_resolution"
 owner_bead = "sr-roadmap-l1i.3.5"
+member_beads = ["sr-roadmap-l1i.3.5"]
 phase = "P2"
 title = "Resolve stable IDs, aliases, collisions and invocation restrictions"
 unit_property_tests = [
@@ -496,6 +509,7 @@ status = "planned"
 [[boundaries]]
 id = "p2_explicit_resolution"
 owner_bead = "sr-roadmap-l1i.3.6"
+member_beads = ["sr-roadmap-l1i.3.6"]
 phase = "P2"
 title = "Resolve explicit requirements locally before inference"
 unit_property_tests = [
@@ -511,6 +525,7 @@ status = "planned"
 [[boundaries]]
 id = "p2_roster_imports"
 owner_bead = "sr-roadmap-l1i.3.7"
+member_beads = ["sr-roadmap-l1i.3.7"]
 phase = "P2"
 title = "Validate explicit roster imports without side effects"
 unit_property_tests = [
@@ -526,6 +541,7 @@ status = "planned"
 [[boundaries]]
 id = "p2_quill_integration"
 owner_bead = "sr-roadmap-l1i.3.8"
+member_beads = ["sr-roadmap-l1i.3.8"]
 phase = "P2"
 title = "Integrate narrow Quill crate and feature boundaries"
 unit_property_tests = [
@@ -541,6 +557,7 @@ status = "planned"
 [[boundaries]]
 id = "p2_literal_disjunction"
 owner_bead = "sr-roadmap-l1i.3.9"
+member_beads = ["sr-roadmap-l1i.3.9"]
 phase = "P2"
 title = "Compile bounded literal disjunction queries"
 unit_property_tests = [
@@ -556,6 +573,7 @@ status = "planned"
 [[boundaries]]
 id = "p2_roster_retrieval"
 owner_bead = "sr-roadmap-l1i.3.10"
+member_beads = ["sr-roadmap-l1i.3.10"]
 phase = "P2"
 title = "Deterministic in-memory roster retrieval and tie-breaking"
 unit_property_tests = [
@@ -571,6 +589,7 @@ status = "planned"
 [[boundaries]]
 id = "p2_dependency_revalidation"
 owner_bead = "sr-roadmap-l1i.3.11"
+member_beads = ["sr-roadmap-l1i.3.11"]
 phase = "P2"
 title = "Revalidate every roster dependency before publication"
 unit_property_tests = [
@@ -586,6 +605,7 @@ status = "planned"
 [[boundaries]]
 id = "p2_exclusion_reasons"
 owner_bead = "sr-roadmap-l1i.3.12"
+member_beads = ["sr-roadmap-l1i.3.12"]
 phase = "P2"
 title = "Expose typed discovery and exclusion evidence"
 unit_property_tests = [
@@ -601,6 +621,7 @@ status = "planned"
 [[boundaries]]
 id = "p2_roster_cli"
 owner_bead = "sr-roadmap-l1i.3.13"
+member_beads = ["sr-roadmap-l1i.3.13"]
 phase = "P2"
 title = "Local roster inspection and snapshot diff CLI"
 unit_property_tests = [
@@ -616,6 +637,7 @@ status = "planned"
 [[boundaries]]
 id = "p2_atomic_export"
 owner_bead = "sr-roadmap-l1i.3.14"
+member_beads = ["sr-roadmap-l1i.3.14"]
 phase = "P2"
 title = "Publish private exports atomically with bounded permissions"
 unit_property_tests = [
@@ -631,6 +653,7 @@ status = "planned"
 [[boundaries]]
 id = "p2_roster_snapshot"
 owner_bead = "sr-roadmap-l1i.3.15"
+member_beads = ["sr-roadmap-l1i.3.15"]
 phase = "P2"
 title = "Roster snapshot and authorized delta computation"
 unit_property_tests = [
@@ -646,6 +669,7 @@ status = "planned"
 [[boundaries]]
 id = "p2_roster_regression_matrix"
 owner_bead = "sr-roadmap-l1i.3.16"
+member_beads = ["sr-roadmap-l1i.3.16"]
 phase = "P2"
 title = "Verify standalone roster, privacy and Quill retrieval regression matrix"
 unit_property_tests = [
@@ -661,6 +685,7 @@ status = "planned"
 [[boundaries]]
 id = "p2_acceptance_gate"
 owner_bead = "sr-roadmap-l1i.3.17"
+member_beads = ["sr-roadmap-l1i.3.17"]
 phase = "P2"
 title = "Accept roster, redaction, snapshot and Quill foundation"
 unit_property_tests = [
@@ -680,6 +705,7 @@ status = "planned"
 [[boundaries]]
 id = "p3_source_selection"
 owner_bead = "sr-roadmap-l1i.4.1"
+member_beads = ["sr-roadmap-l1i.4.1"]
 phase = "P3"
 title = "Exact source selection and source-failure isolation"
 unit_property_tests = [
@@ -695,6 +721,7 @@ status = "planned"
 [[boundaries]]
 id = "p3_normalized_envelopes"
 owner_bead = "sr-roadmap-l1i.4.2"
+member_beads = ["sr-roadmap-l1i.4.2"]
 phase = "P3"
 title = "Parse bounded normalized local envelopes"
 unit_property_tests = [
@@ -710,6 +737,7 @@ status = "planned"
 [[boundaries]]
 id = "p3_native_jsonl"
 owner_bead = "sr-roadmap-l1i.4.3"
+member_beads = ["sr-roadmap-l1i.4.3"]
 phase = "P3"
 title = "Read bounded native JSONL snapshots and incremental updates"
 unit_property_tests = [
@@ -725,6 +753,7 @@ status = "planned"
 [[boundaries]]
 id = "p3_branch_resolution"
 owner_bead = "sr-roadmap-l1i.4.4"
+member_beads = ["sr-roadmap-l1i.4.4"]
 phase = "P3"
 title = "Resolve active branches, compaction and worktree context"
 unit_property_tests = [
@@ -740,6 +769,7 @@ status = "planned"
 [[boundaries]]
 id = "p3_claude_overlay"
 owner_bead = "sr-roadmap-l1i.4.5"
+member_beads = ["sr-roadmap-l1i.4.5"]
 phase = "P3"
 title = "Implement authoritative Claude prompt overlay"
 unit_property_tests = [
@@ -755,6 +785,7 @@ status = "planned"
 [[boundaries]]
 id = "p3_cass_adapter"
 owner_bead = "sr-roadmap-l1i.4.6"
+member_beads = ["sr-roadmap-l1i.4.6"]
 phase = "P3"
 title = "Implement optional capability-checked cass adapter"
 unit_property_tests = [
@@ -770,6 +801,7 @@ status = "planned"
 [[boundaries]]
 id = "p3_tool_associations"
 owner_bead = "sr-roadmap-l1i.4.7"
+member_beads = ["sr-roadmap-l1i.4.7"]
 phase = "P3"
 title = "Normalize tool/result associations and loaded-skill evidence"
 unit_property_tests = [
@@ -785,6 +817,7 @@ status = "planned"
 [[boundaries]]
 id = "p3_request_context"
 owner_bead = "sr-roadmap-l1i.4.8"
+member_beads = ["sr-roadmap-l1i.4.8"]
 phase = "P3"
 title = "Render bounded request-first context and visible truncation"
 unit_property_tests = [
@@ -800,6 +833,7 @@ status = "planned"
 [[boundaries]]
 id = "p3_task_anchors"
 owner_bead = "sr-roadmap-l1i.4.9"
+member_beads = ["sr-roadmap-l1i.4.9"]
 phase = "P3"
 title = "Preserve task anchors and explicit directives"
 unit_property_tests = [
@@ -815,6 +849,7 @@ status = "planned"
 [[boundaries]]
 id = "p3_project_signals"
 owner_bead = "sr-roadmap-l1i.4.10"
+member_beads = ["sr-roadmap-l1i.4.10"]
 phase = "P3"
 title = "Collect safe bounded project signals without external monitoring"
 unit_property_tests = [
@@ -830,6 +865,7 @@ status = "planned"
 [[boundaries]]
 id = "p3_disclosure_profiles"
 owner_bead = "sr-roadmap-l1i.4.11"
+member_beads = ["sr-roadmap-l1i.4.11"]
 phase = "P3"
 title = "Implement trusted standard/minimal disclosure profiles"
 unit_property_tests = [
@@ -845,6 +881,7 @@ status = "planned"
 [[boundaries]]
 id = "p3_disclosure_receipts"
 owner_bead = "sr-roadmap-l1i.4.12"
+member_beads = ["sr-roadmap-l1i.4.12"]
 phase = "P3"
 title = "Produce bounded field-level disclosure receipts"
 unit_property_tests = [
@@ -860,6 +897,7 @@ status = "planned"
 [[boundaries]]
 id = "p3_conformance_matrix"
 owner_bead = "sr-roadmap-l1i.4.13"
+member_beads = ["sr-roadmap-l1i.4.13"]
 phase = "P3"
 title = "Native, normalized, cass and corrupted conformance matrix"
 unit_property_tests = [
@@ -875,6 +913,7 @@ status = "planned"
 [[boundaries]]
 id = "p3_acceptance_gate"
 owner_bead = "sr-roadmap-l1i.4.14"
+member_beads = ["sr-roadmap-l1i.4.14"]
 phase = "P3"
 title = "Accept exact-session context and privacy conformance"
 unit_property_tests = [
@@ -894,6 +933,7 @@ status = "planned"
 [[boundaries]]
 id = "p4_strict_cli"
 owner_bead = "sr-roadmap-l1i.5.1"
+member_beads = ["sr-roadmap-l1i.5.1"]
 phase = "P4"
 title = "Strict CLI and provenance-aware configuration resolver"
 unit_property_tests = [
@@ -908,7 +948,8 @@ status = "planned"
 
 [[boundaries]]
 id = "p4_dry_run"
-owner_bead = "sr-roadmap-l1i.5.5"
+owner_bead = "sr-roadmap-l1i.5.15"
+member_beads = ["sr-roadmap-l1i.5.15"]
 phase = "P4"
 title = "Stateless dry-run preview for stages 1 and 2"
 unit_property_tests = [
@@ -923,7 +964,8 @@ status = "planned"
 
 [[boundaries]]
 id = "p4_offline_demo"
-owner_bead = "sr-roadmap-l1i.5.6"
+owner_bead = "sr-roadmap-l1i.5.16"
+member_beads = ["sr-roadmap-l1i.5.16"]
 phase = "P4"
 title = "Offline demo and non-actionable synthetic output envelopes"
 unit_property_tests = [
@@ -939,6 +981,7 @@ status = "planned"
 [[boundaries]]
 id = "p4_core_cli_acceptance"
 owner_bead = "sr-roadmap-l1i.5.21"
+member_beads = ["sr-roadmap-l1i.5.21", "sr-roadmap-l1i.5.10", "sr-roadmap-l1i.5.11", "sr-roadmap-l1i.5.12", "sr-roadmap-l1i.5.13", "sr-roadmap-l1i.5.14", "sr-roadmap-l1i.5.17", "sr-roadmap-l1i.5.18", "sr-roadmap-l1i.5.19", "sr-roadmap-l1i.5.2", "sr-roadmap-l1i.5.20", "sr-roadmap-l1i.5.22", "sr-roadmap-l1i.5.3", "sr-roadmap-l1i.5.4", "sr-roadmap-l1i.5.5", "sr-roadmap-l1i.5.6", "sr-roadmap-l1i.5.7", "sr-roadmap-l1i.5.8", "sr-roadmap-l1i.5.9"]
 phase = "P4"
 title = "Accept the useful standalone core CLI"
 unit_property_tests = [
@@ -958,13 +1001,14 @@ status = "planned"
 [[boundaries]]
 id = "p5_sqlite_storage"
 owner_bead = "sr-roadmap-l1i.6.1"
+member_beads = ["sr-roadmap-l1i.6.1"]
 phase = "P5"
-title = "WAL SQLite storage and schema migrations"
+title = "Observation ledger schema and repositories"
 unit_property_tests = [
-    "tests/storage_contract.rs::sqlite_wal_and_migrations"
+    "tests/storage_contract.rs::observation_ledger_schema"
 ]
 e2e_suite = "replay"
-e2e_cases = ["sqlite-wal-concurrency", "migration-dry-run"]
+e2e_cases = ["ledger-schema", "ledger-repositories"]
 assertion_ids = ["storage_intact"]
 platforms = ["linux"]
 features = []
@@ -972,7 +1016,8 @@ status = "planned"
 
 [[boundaries]]
 id = "p5_offline_replay"
-owner_bead = "sr-roadmap-l1i.6.14"
+owner_bead = "sr-roadmap-l1i.6.16"
+member_beads = ["sr-roadmap-l1i.6.16"]
 phase = "P5"
 title = "Offline faithful replay and policy comparison"
 unit_property_tests = [
@@ -988,6 +1033,7 @@ status = "planned"
 [[boundaries]]
 id = "p5_eval_accounting"
 owner_bead = "sr-roadmap-l1i.6.28"
+member_beads = ["sr-roadmap-l1i.6.28"]
 phase = "P5"
 title = "Evaluation accounting, sampling math and robustness reports"
 unit_property_tests = [
@@ -1006,7 +1052,8 @@ status = "planned"
 
 [[boundaries]]
 id = "p6_claude_installer"
-owner_bead = "sr-roadmap-l1i.7.1"
+owner_bead = "sr-roadmap-l1i.7.3"
+member_beads = ["sr-roadmap-l1i.7.3"]
 phase = "P6"
 title = "Claude settings manager and atomic hook installer"
 unit_property_tests = [
@@ -1021,7 +1068,8 @@ status = "planned"
 
 [[boundaries]]
 id = "p6_shadow_hook_execution"
-owner_bead = "sr-roadmap-l1i.7.3"
+owner_bead = "sr-roadmap-l1i.7.1"
+member_beads = ["sr-roadmap-l1i.7.1"]
 phase = "P6"
 title = "Shadow hook execution with non-blocking quiet failure"
 unit_property_tests = [
@@ -1040,7 +1088,8 @@ status = "planned"
 
 [[boundaries]]
 id = "p7_advisory_rollout"
-owner_bead = "sr-roadmap-l1i.8.1"
+owner_bead = "sr-roadmap-l1i.8.6"
+member_beads = ["sr-roadmap-l1i.8.6"]
 phase = "P7"
 title = "Advisory hook injection and operational telemetry"
 unit_property_tests = [
@@ -1060,6 +1109,7 @@ status = "planned"
 [[boundaries]]
 id = "p8_learning_lifecycle"
 owner_bead = "sr-roadmap-l1i.9.8"
+member_beads = ["sr-roadmap-l1i.9.8"]
 phase = "P8"
 title = "Learned-policy lifecycle and statistical validity"
 unit_property_tests = [
@@ -1079,6 +1129,7 @@ status = "planned"
 [[boundaries]]
 id = "p9_quill_passages"
 owner_bead = "sr-roadmap-l1i.10.1.1"
+member_beads = ["sr-roadmap-l1i.10.1.1"]
 phase = "P9"
 title = "Quill heading passages retrieval within selected skills"
 unit_property_tests = [
@@ -1094,14 +1145,127 @@ status = "planned"
 [[boundaries]]
 id = "p9_frankentui"
 owner_bead = "sr-roadmap-l1i.10.7"
+member_beads = ["sr-roadmap-l1i.10.7"]
 phase = "P9"
 title = "FrankenTUI nine-row inspection and terminal recovery"
 unit_property_tests = [
     "tests/tui_contract.rs::tui_rendering_and_recovery"
 ]
-e2e_suite = "passages"
+e2e_suite = "tui"
 e2e_cases = ["non-tty-fallback", "terminal-state-restored"]
 assertion_ids = ["tui_clean_recovery"]
 platforms = ["linux"]
 features = ["tui"]
+status = "planned"
+
+[[boundaries]]
+id = "p0_foundation_audit"
+owner_bead = "sr-roadmap-l1i.1.13"
+member_beads = ["sr-roadmap-l1i.1.13"]
+phase = "P0"
+title = "Audit and repair foundation boundary defects"
+unit_property_tests = ["tests/identity_contract.rs::documented_incomplete_context_round_trips_without_durable_authority", "tests/limits_contract.rs::default_limits_are_positive_and_cap_plus_one_checked", "tests/adapter_contract.rs::foundation_capabilities_match_the_checked_in_fixture_and_do_not_advertise_commands"]
+e2e_suite = "runner-smoke"
+e2e_cases = ["success", "expected-refusal", "isolation"]
+assertion_ids = ["behavior"]
+platforms = ["linux"]
+features = []
+status = "planned"
+
+[[boundaries]]
+id = "p0_runner_review"
+owner_bead = "sr-roadmap-l1i.1.16"
+member_beads = ["sr-roadmap-l1i.1.16"]
+phase = "P0"
+title = "Fix runner certification defects found by fresh-eyes review"
+unit_property_tests = ["scripts/e2e/test_runner.py::EvidenceBoundaryTests", "scripts/e2e/test_runner_contract.py::ContractTests"]
+e2e_suite = "runner-contract"
+e2e_cases = ["success", "expected-refusal", "nonzero", "signal", "timeout", "descendant-cleanup", "pipe-budget", "malformed", "truncated", "duplicate-record", "missing-record", "foreign-case", "unreached-fault", "failed-then-passed", "hidden-pipeline-failure", "unexpected-effects", "false-assertion", "wrong-outcome", "private-diagnostics", "inner-failure-retained", "honest-complete-twin", "private-artifacts", "sanitized-artifacts", "empty-selection", "duplicate-selection", "partial-selection", "artifact-reservation", "expected-binary-mismatch", "expected-source-mismatch", "expected-run-mismatch", "foreign-child-record", "fault-witness-current", "fault-witness-old", "fault-witness-absent", "signal-interruption", "secret-argument", "secret-environment", "schema-mismatch", "duplicate-terminal", "missing-terminal", "missing-summary", "truncated-events", "wrong-counts", "unknown-assertion", "wrong-case", "foreign-event", "unsafe-extra-field", "false-effects", "false-fault", "retry-erasure", "witness-missing", "witness-foreign-run", "witness-foreign-case", "witness-replayed"]
+assertion_ids = ["satisfied"]
+platforms = ["linux"]
+features = []
+status = "planned"
+
+[[boundaries]]
+id = "p2_local_inspection_shell"
+owner_bead = "sr-roadmap-l1i.3.18"
+member_beads = ["sr-roadmap-l1i.3.18"]
+phase = "P2"
+title = "Build the shared local-inspection command and configuration shell"
+unit_property_tests = ["tests/cli_contract.rs::local_inspection_configuration"]
+e2e_suite = "roster"
+e2e_cases = ["local-inspection-config"]
+assertion_ids = ["authority_preserved"]
+platforms = ["linux"]
+features = []
+status = "planned"
+
+[[boundaries]]
+id = "p5_acceptance_gate"
+owner_bead = "sr-roadmap-l1i.6.29"
+member_beads = ["sr-roadmap-l1i.6.29", "sr-roadmap-l1i.6.10", "sr-roadmap-l1i.6.11", "sr-roadmap-l1i.6.12", "sr-roadmap-l1i.6.13", "sr-roadmap-l1i.6.14", "sr-roadmap-l1i.6.15", "sr-roadmap-l1i.6.17", "sr-roadmap-l1i.6.18", "sr-roadmap-l1i.6.19", "sr-roadmap-l1i.6.2", "sr-roadmap-l1i.6.20", "sr-roadmap-l1i.6.21", "sr-roadmap-l1i.6.22", "sr-roadmap-l1i.6.23", "sr-roadmap-l1i.6.24", "sr-roadmap-l1i.6.25", "sr-roadmap-l1i.6.26", "sr-roadmap-l1i.6.27", "sr-roadmap-l1i.6.3", "sr-roadmap-l1i.6.4", "sr-roadmap-l1i.6.5", "sr-roadmap-l1i.6.6", "sr-roadmap-l1i.6.7", "sr-roadmap-l1i.6.8", "sr-roadmap-l1i.6.9"]
+phase = "P5"
+title = "Accept local evidence, faithful replay and bounded evaluation"
+unit_property_tests = ["tests/p5_gate.rs::all_p5_contracts_verified"]
+e2e_suite = "replay"
+e2e_cases = ["complete-phase-coverage"]
+assertion_ids = ["complete_independent_evidence"]
+platforms = ["linux"]
+features = []
+status = "planned"
+
+[[boundaries]]
+id = "p6_acceptance_gate"
+owner_bead = "sr-roadmap-l1i.7.13"
+member_beads = ["sr-roadmap-l1i.7.13", "sr-roadmap-l1i.7.10", "sr-roadmap-l1i.7.11", "sr-roadmap-l1i.7.12", "sr-roadmap-l1i.7.2", "sr-roadmap-l1i.7.4", "sr-roadmap-l1i.7.5", "sr-roadmap-l1i.7.6", "sr-roadmap-l1i.7.7", "sr-roadmap-l1i.7.8", "sr-roadmap-l1i.7.9"]
+phase = "P6"
+title = "Accept a recorded, bounded Claude shadow integration"
+unit_property_tests = ["tests/p6_gate.rs::all_p6_contracts_verified"]
+e2e_suite = "shadow-hook"
+e2e_cases = ["complete-phase-coverage"]
+assertion_ids = ["complete_independent_evidence"]
+platforms = ["linux"]
+features = []
+status = "planned"
+
+[[boundaries]]
+id = "p7_acceptance_gate"
+owner_bead = "sr-roadmap-l1i.8.8"
+member_beads = ["sr-roadmap-l1i.8.8", "sr-roadmap-l1i.8.1", "sr-roadmap-l1i.8.10", "sr-roadmap-l1i.8.2", "sr-roadmap-l1i.8.3", "sr-roadmap-l1i.8.4", "sr-roadmap-l1i.8.5", "sr-roadmap-l1i.8.7", "sr-roadmap-l1i.8.9"]
+phase = "P7"
+title = "Accept evidence-backed advisory rollout"
+unit_property_tests = ["tests/p7_gate.rs::all_p7_contracts_verified"]
+e2e_suite = "rollout"
+e2e_cases = ["complete-phase-coverage"]
+assertion_ids = ["complete_independent_evidence"]
+platforms = ["linux"]
+features = []
+status = "planned"
+
+[[boundaries]]
+id = "p8_acceptance_gate"
+owner_bead = "sr-roadmap-l1i.9.9"
+member_beads = ["sr-roadmap-l1i.9.9", "sr-roadmap-l1i.9.1", "sr-roadmap-l1i.9.2", "sr-roadmap-l1i.9.3", "sr-roadmap-l1i.9.4", "sr-roadmap-l1i.9.5", "sr-roadmap-l1i.9.6", "sr-roadmap-l1i.9.7"]
+phase = "P8"
+title = "Accept learning only after held-out benefit and valid monitoring evidence"
+unit_property_tests = ["tests/p8_gate.rs::all_p8_contracts_verified"]
+e2e_suite = "learning"
+e2e_cases = ["complete-phase-coverage"]
+assertion_ids = ["complete_independent_evidence"]
+platforms = ["linux"]
+features = []
+status = "planned"
+
+[[boundaries]]
+id = "p9_acceptance_gate"
+owner_bead = "sr-roadmap-l1i.10.13"
+member_beads = ["sr-roadmap-l1i.10.13", "sr-roadmap-l1i.10.1", "sr-roadmap-l1i.10.10", "sr-roadmap-l1i.10.11", "sr-roadmap-l1i.10.12", "sr-roadmap-l1i.10.14", "sr-roadmap-l1i.10.15", "sr-roadmap-l1i.10.16", "sr-roadmap-l1i.10.17", "sr-roadmap-l1i.10.18", "sr-roadmap-l1i.10.19", "sr-roadmap-l1i.10.2", "sr-roadmap-l1i.10.20", "sr-roadmap-l1i.10.21", "sr-roadmap-l1i.10.22", "sr-roadmap-l1i.10.23", "sr-roadmap-l1i.10.24", "sr-roadmap-l1i.10.25", "sr-roadmap-l1i.10.26", "sr-roadmap-l1i.10.27", "sr-roadmap-l1i.10.28", "sr-roadmap-l1i.10.29", "sr-roadmap-l1i.10.3", "sr-roadmap-l1i.10.30", "sr-roadmap-l1i.10.31", "sr-roadmap-l1i.10.32", "sr-roadmap-l1i.10.4", "sr-roadmap-l1i.10.5", "sr-roadmap-l1i.10.6", "sr-roadmap-l1i.10.8", "sr-roadmap-l1i.10.8.1", "sr-roadmap-l1i.10.8.2", "sr-roadmap-l1i.10.8.3", "sr-roadmap-l1i.10.9"]
+phase = "P9"
+title = "Close the later-experiments phase with explicit per-feature dispositions"
+unit_property_tests = ["tests/p9_gate.rs::all_p9_contracts_verified"]
+e2e_suite = "experiments"
+e2e_cases = ["complete-phase-coverage"]
+assertion_ids = ["complete_independent_evidence"]
+platforms = ["linux"]
+features = []
 status = "planned"

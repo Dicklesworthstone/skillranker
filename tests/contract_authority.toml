@@ -1,0 +1,852 @@
+# Reviewed coverage policy. Edit deliberately alongside roadmap scope changes.
+# This file is an independent validator input, never regenerated during validation.
+# Executable suite catalogs additionally come from their actual trusted drivers.
+schema_version = 1
+created_for_phase = "P0"
+
+[[boundaries]]
+id = "p0_bootstrap"
+owner_bead = "sr-roadmap-l1i.1.1"
+phase = "P0"
+member_beads = ["sr-roadmap-l1i.1.1"]
+platforms = ["linux"]
+features = []
+e2e_suite = "runner-smoke"
+e2e_cases = ["success"]
+assertion_ids = ["behavior"]
+
+[[boundaries]]
+id = "p0_identity_provenance"
+owner_bead = "sr-roadmap-l1i.1.2"
+phase = "P0"
+member_beads = ["sr-roadmap-l1i.1.2"]
+platforms = ["linux"]
+features = []
+e2e_suite = "runner-smoke"
+e2e_cases = ["isolation"]
+assertion_ids = ["behavior"]
+
+[[boundaries]]
+id = "p0_output_schemas"
+owner_bead = "sr-roadmap-l1i.1.3"
+phase = "P0"
+member_beads = ["sr-roadmap-l1i.1.3"]
+platforms = ["linux"]
+features = []
+e2e_suite = "runner-smoke"
+e2e_cases = ["expected-refusal"]
+assertion_ids = ["behavior"]
+
+[[boundaries]]
+id = "p0_resource_limits"
+owner_bead = "sr-roadmap-l1i.1.4"
+phase = "P0"
+member_beads = ["sr-roadmap-l1i.1.4"]
+platforms = ["linux"]
+features = []
+e2e_suite = "runner-smoke"
+e2e_cases = ["isolation"]
+assertion_ids = ["behavior"]
+
+[[boundaries]]
+id = "p0_config_authority"
+owner_bead = "sr-roadmap-l1i.1.5"
+phase = "P0"
+member_beads = ["sr-roadmap-l1i.1.5"]
+platforms = ["linux"]
+features = []
+e2e_suite = "runner-smoke"
+e2e_cases = ["isolation"]
+assertion_ids = ["behavior"]
+
+[[boundaries]]
+id = "p0_adapter_contracts"
+owner_bead = "sr-roadmap-l1i.1.6"
+phase = "P0"
+member_beads = ["sr-roadmap-l1i.1.6"]
+platforms = ["linux"]
+features = []
+e2e_suite = "runner-smoke"
+e2e_cases = ["expected-refusal"]
+assertion_ids = ["behavior"]
+
+[[boundaries]]
+id = "p0_dependency_slices"
+owner_bead = "sr-roadmap-l1i.1.7"
+phase = "P0"
+member_beads = ["sr-roadmap-l1i.1.7"]
+platforms = ["linux"]
+features = []
+e2e_suite = "runner-smoke"
+e2e_cases = ["success"]
+assertion_ids = ["behavior"]
+
+[[boundaries]]
+id = "p0_eval_policy"
+owner_bead = "sr-roadmap-l1i.1.8"
+phase = "P0"
+member_beads = ["sr-roadmap-l1i.1.8"]
+platforms = ["linux"]
+features = []
+e2e_suite = "runner-smoke"
+e2e_cases = ["success"]
+assertion_ids = ["behavior"]
+
+[[boundaries]]
+id = "p0_process_engine"
+owner_bead = "sr-roadmap-l1i.1.14"
+phase = "P0"
+member_beads = ["sr-roadmap-l1i.1.14"]
+platforms = ["linux"]
+features = []
+e2e_suite = "runner-smoke"
+e2e_cases = ["success", "expected-refusal", "isolation"]
+assertion_ids = ["behavior"]
+
+[[boundaries]]
+id = "p0_evidence_scaffolding"
+owner_bead = "sr-roadmap-l1i.1.9"
+phase = "P0"
+member_beads = ["sr-roadmap-l1i.1.9"]
+platforms = ["linux"]
+features = []
+e2e_suite = "runner-smoke"
+e2e_cases = ["success", "expected-refusal", "isolation"]
+assertion_ids = ["behavior"]
+
+[[boundaries]]
+id = "p0_adversarial_certification"
+owner_bead = "sr-roadmap-l1i.1.12"
+phase = "P0"
+member_beads = ["sr-roadmap-l1i.1.12", "sr-roadmap-l1i.1.15"]
+platforms = ["linux"]
+features = []
+e2e_suite = "runner-contract"
+e2e_cases = ["success", "expected-refusal", "nonzero", "signal", "timeout", "descendant-cleanup", "pipe-budget", "malformed", "truncated", "duplicate-record", "missing-record", "foreign-case", "unreached-fault", "failed-then-passed", "hidden-pipeline-failure", "unexpected-effects", "false-assertion", "wrong-outcome", "private-diagnostics", "inner-failure-retained", "honest-complete-twin", "private-artifacts", "sanitized-artifacts", "empty-selection", "duplicate-selection", "partial-selection", "artifact-reservation", "expected-binary-mismatch", "expected-source-mismatch", "expected-run-mismatch", "foreign-child-record", "fault-witness-current", "fault-witness-old", "fault-witness-absent", "signal-interruption", "secret-argument", "secret-environment", "schema-mismatch", "duplicate-terminal", "missing-terminal", "missing-summary", "truncated-events", "wrong-counts", "unknown-assertion", "wrong-case", "foreign-event", "unsafe-extra-field", "false-effects", "false-fault", "retry-erasure", "witness-missing", "witness-foreign-run", "witness-foreign-case", "witness-replayed"]
+assertion_ids = ["satisfied"]
+
+[[boundaries]]
+id = "p0_contract_reconciliation"
+owner_bead = "sr-roadmap-l1i.1.10"
+phase = "P0"
+member_beads = ["sr-roadmap-l1i.1.10"]
+platforms = ["linux"]
+features = []
+e2e_suite = "runner-smoke"
+e2e_cases = ["success"]
+assertion_ids = ["behavior"]
+
+[[boundaries]]
+id = "p0_acceptance_gate"
+owner_bead = "sr-roadmap-l1i.1.11"
+phase = "P0"
+member_beads = ["sr-roadmap-l1i.1.11"]
+platforms = ["linux"]
+features = []
+e2e_suite = "runner-smoke"
+e2e_cases = ["success", "isolation"]
+assertion_ids = ["behavior"]
+
+[[boundaries]]
+id = "p1_runtime_scopes"
+owner_bead = "sr-roadmap-l1i.2.1"
+phase = "P1"
+member_beads = ["sr-roadmap-l1i.2.1"]
+platforms = ["linux"]
+features = []
+e2e_suite = "transport"
+e2e_cases = ["deadline-exhaustion", "cancellation-propagation"]
+assertion_ids = ["timing_bounded", "cancellation_clean"]
+
+[[boundaries]]
+id = "p1_bounded_blocking"
+owner_bead = "sr-roadmap-l1i.2.2"
+phase = "P1"
+member_beads = ["sr-roadmap-l1i.2.2"]
+platforms = ["linux"]
+features = []
+e2e_suite = "transport"
+e2e_cases = ["stalled-leaf-isolation"]
+assertion_ids = ["leaf_bounded"]
+
+[[boundaries]]
+id = "p1_trusted_subprocess"
+owner_bead = "sr-roadmap-l1i.2.3"
+phase = "P1"
+member_beads = ["sr-roadmap-l1i.2.3"]
+platforms = ["linux"]
+features = []
+e2e_suite = "transport"
+e2e_cases = ["child-reaping", "pipe-saturation"]
+assertion_ids = ["tree_reaped", "no_deadlock"]
+
+[[boundaries]]
+id = "p1_canonical_origin"
+owner_bead = "sr-roadmap-l1i.2.4"
+phase = "P1"
+member_beads = ["sr-roadmap-l1i.2.4"]
+platforms = ["linux"]
+features = []
+e2e_suite = "transport"
+e2e_cases = ["origin-canonicalization", "credential-exclusion"]
+assertion_ids = ["clean_origin", "no_credential_leak"]
+
+[[boundaries]]
+id = "p1_typed_jev_contract"
+owner_bead = "sr-roadmap-l1i.2.5"
+phase = "P1"
+member_beads = ["sr-roadmap-l1i.2.5"]
+platforms = ["linux"]
+features = []
+e2e_suite = "transport"
+e2e_cases = ["typed-request-serialization", "answer-validation"]
+assertion_ids = ["schema_valid", "finite_distributions"]
+
+[[boundaries]]
+id = "p1_distribution_validation"
+owner_bead = "sr-roadmap-l1i.2.6"
+phase = "P1"
+member_beads = ["sr-roadmap-l1i.2.6"]
+platforms = ["linux"]
+features = []
+e2e_suite = "transport"
+e2e_cases = ["nonfinite-rejected", "distribution-sum-tolerance"]
+assertion_ids = ["exact_argmax", "unknown_usage_preserved"]
+
+[[boundaries]]
+id = "p1_asupersync_https"
+owner_bead = "sr-roadmap-l1i.2.7"
+phase = "P1"
+member_beads = ["sr-roadmap-l1i.2.7"]
+platforms = ["linux"]
+features = []
+e2e_suite = "transport"
+e2e_cases = ["local-tls-handshake", "transport-cancellation"]
+assertion_ids = ["tls_verified", "zero_leak_on_cancel"]
+
+[[boundaries]]
+id = "p1_admission_budget"
+owner_bead = "sr-roadmap-l1i.2.8"
+phase = "P1"
+member_beads = ["sr-roadmap-l1i.2.8"]
+platforms = ["linux"]
+features = []
+e2e_suite = "transport"
+e2e_cases = ["attempt-cap-enforced"]
+assertion_ids = ["attempt_limit_honored"]
+
+[[boundaries]]
+id = "p1_classified_retries"
+owner_bead = "sr-roadmap-l1i.2.9"
+phase = "P1"
+member_beads = ["sr-roadmap-l1i.2.9"]
+platforms = ["linux"]
+features = []
+e2e_suite = "transport"
+e2e_cases = ["retry-after-delay", "4xx-no-retry"]
+assertion_ids = ["retry_behavior_correct"]
+
+[[boundaries]]
+id = "p1_jev_contract_smoke"
+owner_bead = "sr-roadmap-l1i.2.10"
+phase = "P1"
+member_beads = ["sr-roadmap-l1i.2.10"]
+platforms = ["linux"]
+features = []
+e2e_suite = "transport"
+e2e_cases = ["consented-live-smoke"]
+assertion_ids = ["smoke_valid"]
+
+[[boundaries]]
+id = "p1_transport_failure_matrix"
+owner_bead = "sr-roadmap-l1i.2.11"
+phase = "P1"
+member_beads = ["sr-roadmap-l1i.2.11"]
+platforms = ["linux"]
+features = []
+e2e_suite = "transport"
+e2e_cases = ["stalled-dns", "handshake-timeout", "429-backoff"]
+assertion_ids = ["safe_error_reporting"]
+
+[[boundaries]]
+id = "p1_acceptance_gate"
+owner_bead = "sr-roadmap-l1i.2.12"
+phase = "P1"
+member_beads = ["sr-roadmap-l1i.2.12"]
+platforms = ["linux"]
+features = []
+e2e_suite = "transport"
+e2e_cases = ["full-transport-suite"]
+assertion_ids = ["p1_gate_passed"]
+
+[[boundaries]]
+id = "p2_descriptor_reads"
+owner_bead = "sr-roadmap-l1i.3.1"
+phase = "P2"
+member_beads = ["sr-roadmap-l1i.3.1"]
+platforms = ["linux"]
+features = []
+e2e_suite = "roster"
+e2e_cases = ["safe-descriptor-walk", "symlink-escape-blocked"]
+assertion_ids = ["no_symlink_escape"]
+
+[[boundaries]]
+id = "p2_secret_scanning"
+owner_bead = "sr-roadmap-l1i.3.2"
+phase = "P2"
+member_beads = ["sr-roadmap-l1i.3.2"]
+platforms = ["linux"]
+features = []
+e2e_suite = "roster"
+e2e_cases = ["planted-secret-redacted", "split-boundary-redacted"]
+assertion_ids = ["zero_secret_leak"]
+
+[[boundaries]]
+id = "p2_frontmatter_parsing"
+owner_bead = "sr-roadmap-l1i.3.3"
+phase = "P2"
+member_beads = ["sr-roadmap-l1i.3.3"]
+platforms = ["linux"]
+features = []
+e2e_suite = "roster"
+e2e_cases = ["oversized-frontmatter-rejected", "valid-frontmatter-parsed"]
+assertion_ids = ["frontmatter_bounded"]
+
+[[boundaries]]
+id = "p2_visible_roots"
+owner_bead = "sr-roadmap-l1i.3.4"
+phase = "P2"
+member_beads = ["sr-roadmap-l1i.3.4"]
+platforms = ["linux"]
+features = []
+e2e_suite = "roster"
+e2e_cases = ["shadowing-precedence-honored"]
+assertion_ids = ["correct_shadowing"]
+
+[[boundaries]]
+id = "p2_id_resolution"
+owner_bead = "sr-roadmap-l1i.3.5"
+phase = "P2"
+member_beads = ["sr-roadmap-l1i.3.5"]
+platforms = ["linux"]
+features = []
+e2e_suite = "roster"
+e2e_cases = ["collision-detected-and-excluded"]
+assertion_ids = ["unique_ids"]
+
+[[boundaries]]
+id = "p2_explicit_resolution"
+owner_bead = "sr-roadmap-l1i.3.6"
+phase = "P2"
+member_beads = ["sr-roadmap-l1i.3.6"]
+platforms = ["linux"]
+features = []
+e2e_suite = "roster"
+e2e_cases = ["explicit-resolved-offline"]
+assertion_ids = ["no_network_needed"]
+
+[[boundaries]]
+id = "p2_roster_imports"
+owner_bead = "sr-roadmap-l1i.3.7"
+phase = "P2"
+member_beads = ["sr-roadmap-l1i.3.7"]
+platforms = ["linux"]
+features = []
+e2e_suite = "roster"
+e2e_cases = ["dry-run-import-clean"]
+assertion_ids = ["zero_mutation"]
+
+[[boundaries]]
+id = "p2_quill_integration"
+owner_bead = "sr-roadmap-l1i.3.8"
+phase = "P2"
+member_beads = ["sr-roadmap-l1i.3.8"]
+platforms = ["linux"]
+features = []
+e2e_suite = "roster"
+e2e_cases = ["in-memory-quill-commit"]
+assertion_ids = ["quill_bounded"]
+
+[[boundaries]]
+id = "p2_literal_disjunction"
+owner_bead = "sr-roadmap-l1i.3.9"
+phase = "P2"
+member_beads = ["sr-roadmap-l1i.3.9"]
+platforms = ["linux"]
+features = []
+e2e_suite = "roster"
+e2e_cases = ["escaped-disjunction-queries"]
+assertion_ids = ["disjunction_exact"]
+
+[[boundaries]]
+id = "p2_roster_retrieval"
+owner_bead = "sr-roadmap-l1i.3.10"
+phase = "P2"
+member_beads = ["sr-roadmap-l1i.3.10"]
+platforms = ["linux"]
+features = []
+e2e_suite = "roster"
+e2e_cases = ["deterministic-tie-breaking"]
+assertion_ids = ["deterministic_ordering"]
+
+[[boundaries]]
+id = "p2_dependency_revalidation"
+owner_bead = "sr-roadmap-l1i.3.11"
+phase = "P2"
+member_beads = ["sr-roadmap-l1i.3.11"]
+platforms = ["linux"]
+features = []
+e2e_suite = "roster"
+e2e_cases = ["changed-shortlist-invalidated"]
+assertion_ids = ["revalidation_clean"]
+
+[[boundaries]]
+id = "p2_exclusion_reasons"
+owner_bead = "sr-roadmap-l1i.3.12"
+phase = "P2"
+member_beads = ["sr-roadmap-l1i.3.12"]
+platforms = ["linux"]
+features = []
+e2e_suite = "roster"
+e2e_cases = ["exclusion-evidence-reported"]
+assertion_ids = ["typed_reasons"]
+
+[[boundaries]]
+id = "p2_roster_cli"
+owner_bead = "sr-roadmap-l1i.3.13"
+phase = "P2"
+member_beads = ["sr-roadmap-l1i.3.13"]
+platforms = ["linux"]
+features = []
+e2e_suite = "roster"
+e2e_cases = ["roster-json-pagination"]
+assertion_ids = ["pagination_stable"]
+
+[[boundaries]]
+id = "p2_atomic_export"
+owner_bead = "sr-roadmap-l1i.3.14"
+phase = "P2"
+member_beads = ["sr-roadmap-l1i.3.14"]
+platforms = ["linux"]
+features = []
+e2e_suite = "roster"
+e2e_cases = ["atomic-rename-permissions-0600"]
+assertion_ids = ["owner_only_permissions"]
+
+[[boundaries]]
+id = "p2_roster_snapshot"
+owner_bead = "sr-roadmap-l1i.3.15"
+phase = "P2"
+member_beads = ["sr-roadmap-l1i.3.15"]
+platforms = ["linux"]
+features = []
+e2e_suite = "roster"
+e2e_cases = ["snapshot-diff-accurate"]
+assertion_ids = ["delta_exact"]
+
+[[boundaries]]
+id = "p2_roster_regression_matrix"
+owner_bead = "sr-roadmap-l1i.3.16"
+phase = "P2"
+member_beads = ["sr-roadmap-l1i.3.16"]
+platforms = ["linux"]
+features = []
+e2e_suite = "roster"
+e2e_cases = ["0-skills", "1-skill", "254-skills", "255-skills", "1000-skills"]
+assertion_ids = ["all_scale_invariants_pass"]
+
+[[boundaries]]
+id = "p2_acceptance_gate"
+owner_bead = "sr-roadmap-l1i.3.17"
+phase = "P2"
+member_beads = ["sr-roadmap-l1i.3.17"]
+platforms = ["linux"]
+features = []
+e2e_suite = "roster"
+e2e_cases = ["full-roster-suite"]
+assertion_ids = ["p2_gate_passed"]
+
+[[boundaries]]
+id = "p3_source_selection"
+owner_bead = "sr-roadmap-l1i.4.1"
+phase = "P3"
+member_beads = ["sr-roadmap-l1i.4.1"]
+platforms = ["linux"]
+features = []
+e2e_suite = "context"
+e2e_cases = ["no-cross-session-fallthrough"]
+assertion_ids = ["exact_session_bound"]
+
+[[boundaries]]
+id = "p3_normalized_envelopes"
+owner_bead = "sr-roadmap-l1i.4.2"
+phase = "P3"
+member_beads = ["sr-roadmap-l1i.4.2"]
+platforms = ["linux"]
+features = []
+e2e_suite = "context"
+e2e_cases = ["bounded-normalized-parsing"]
+assertion_ids = ["normalized_bounded"]
+
+[[boundaries]]
+id = "p3_native_jsonl"
+owner_bead = "sr-roadmap-l1i.4.3"
+phase = "P3"
+member_beads = ["sr-roadmap-l1i.4.3"]
+platforms = ["linux"]
+features = []
+e2e_suite = "context"
+e2e_cases = ["partial-tail-deferred", "compaction-detected"]
+assertion_ids = ["incremental_clean"]
+
+[[boundaries]]
+id = "p3_branch_resolution"
+owner_bead = "sr-roadmap-l1i.4.4"
+phase = "P3"
+member_beads = ["sr-roadmap-l1i.4.4"]
+platforms = ["linux"]
+features = []
+e2e_suite = "context"
+e2e_cases = ["sibling-branch-isolation"]
+assertion_ids = ["no_branch_confusion"]
+
+[[boundaries]]
+id = "p3_claude_overlay"
+owner_bead = "sr-roadmap-l1i.4.5"
+phase = "P3"
+member_beads = ["sr-roadmap-l1i.4.5"]
+platforms = ["linux"]
+features = []
+e2e_suite = "context"
+e2e_cases = ["hook-prompt-overlaid-once"]
+assertion_ids = ["authoritative_prompt"]
+
+[[boundaries]]
+id = "p3_cass_adapter"
+owner_bead = "sr-roadmap-l1i.4.6"
+phase = "P3"
+member_beads = ["sr-roadmap-l1i.4.6"]
+platforms = ["linux"]
+features = []
+e2e_suite = "context"
+e2e_cases = ["cass-bounded-pipe", "offline-cass-mock"]
+assertion_ids = ["cass_safe"]
+
+[[boundaries]]
+id = "p3_tool_associations"
+owner_bead = "sr-roadmap-l1i.4.7"
+phase = "P3"
+member_beads = ["sr-roadmap-l1i.4.7"]
+platforms = ["linux"]
+features = []
+e2e_suite = "context"
+e2e_cases = ["loaded-evidence-extracted"]
+assertion_ids = ["tool_association_exact"]
+
+[[boundaries]]
+id = "p3_request_context"
+owner_bead = "sr-roadmap-l1i.4.8"
+phase = "P3"
+member_beads = ["sr-roadmap-l1i.4.8"]
+platforms = ["linux"]
+features = []
+e2e_suite = "context"
+e2e_cases = ["visible-head-tail-truncation"]
+assertion_ids = ["rendered_within_budget"]
+
+[[boundaries]]
+id = "p3_task_anchors"
+owner_bead = "sr-roadmap-l1i.4.9"
+phase = "P3"
+member_beads = ["sr-roadmap-l1i.4.9"]
+platforms = ["linux"]
+features = []
+e2e_suite = "context"
+e2e_cases = ["task-anchor-preserved"]
+assertion_ids = ["anchor_intact"]
+
+[[boundaries]]
+id = "p3_project_signals"
+owner_bead = "sr-roadmap-l1i.4.10"
+phase = "P3"
+member_beads = ["sr-roadmap-l1i.4.10"]
+platforms = ["linux"]
+features = []
+e2e_suite = "context"
+e2e_cases = ["dirty-paths-repo-relative"]
+assertion_ids = ["bounded_project_signals"]
+
+[[boundaries]]
+id = "p3_disclosure_profiles"
+owner_bead = "sr-roadmap-l1i.4.11"
+phase = "P3"
+member_beads = ["sr-roadmap-l1i.4.11"]
+platforms = ["linux"]
+features = []
+e2e_suite = "context"
+e2e_cases = ["minimal-profile-drops-tools"]
+assertion_ids = ["profile_respected"]
+
+[[boundaries]]
+id = "p3_disclosure_receipts"
+owner_bead = "sr-roadmap-l1i.4.12"
+phase = "P3"
+member_beads = ["sr-roadmap-l1i.4.12"]
+platforms = ["linux"]
+features = []
+e2e_suite = "context"
+e2e_cases = ["disclosure-receipt-matches-payload"]
+assertion_ids = ["receipt_accurate"]
+
+[[boundaries]]
+id = "p3_conformance_matrix"
+owner_bead = "sr-roadmap-l1i.4.13"
+phase = "P3"
+member_beads = ["sr-roadmap-l1i.4.13"]
+platforms = ["linux"]
+features = []
+e2e_suite = "context"
+e2e_cases = ["corrupted-jsonl", "oversized-record", "missing-prompt"]
+assertion_ids = ["safe_context_rejection"]
+
+[[boundaries]]
+id = "p3_acceptance_gate"
+owner_bead = "sr-roadmap-l1i.4.14"
+phase = "P3"
+member_beads = ["sr-roadmap-l1i.4.14"]
+platforms = ["linux"]
+features = []
+e2e_suite = "context"
+e2e_cases = ["full-context-suite"]
+assertion_ids = ["p3_gate_passed"]
+
+[[boundaries]]
+id = "p4_strict_cli"
+owner_bead = "sr-roadmap-l1i.5.1"
+phase = "P4"
+member_beads = ["sr-roadmap-l1i.5.1"]
+platforms = ["linux"]
+features = []
+e2e_suite = "core-cli"
+e2e_cases = ["unknown-flag-rejected", "config-precedence-verified"]
+assertion_ids = ["strict_cli_parsing"]
+
+[[boundaries]]
+id = "p4_dry_run"
+owner_bead = "sr-roadmap-l1i.5.15"
+phase = "P4"
+member_beads = ["sr-roadmap-l1i.5.15"]
+platforms = ["linux"]
+features = []
+e2e_suite = "core-cli"
+e2e_cases = ["dry-run-zero-network-zero-mutation"]
+assertion_ids = ["stateless_preview"]
+
+[[boundaries]]
+id = "p4_offline_demo"
+owner_bead = "sr-roadmap-l1i.5.16"
+phase = "P4"
+member_beads = ["sr-roadmap-l1i.5.16"]
+platforms = ["linux"]
+features = []
+e2e_suite = "core-cli"
+e2e_cases = ["demo-inert-envelope"]
+assertion_ids = ["non_actionable_envelope"]
+
+[[boundaries]]
+id = "p4_core_cli_acceptance"
+owner_bead = "sr-roadmap-l1i.5.21"
+phase = "P4"
+member_beads = ["sr-roadmap-l1i.5.21", "sr-roadmap-l1i.5.10", "sr-roadmap-l1i.5.11", "sr-roadmap-l1i.5.12", "sr-roadmap-l1i.5.13", "sr-roadmap-l1i.5.14", "sr-roadmap-l1i.5.17", "sr-roadmap-l1i.5.18", "sr-roadmap-l1i.5.19", "sr-roadmap-l1i.5.2", "sr-roadmap-l1i.5.20", "sr-roadmap-l1i.5.22", "sr-roadmap-l1i.5.3", "sr-roadmap-l1i.5.4", "sr-roadmap-l1i.5.5", "sr-roadmap-l1i.5.6", "sr-roadmap-l1i.5.7", "sr-roadmap-l1i.5.8", "sr-roadmap-l1i.5.9"]
+platforms = ["linux"]
+features = []
+e2e_suite = "core-cli"
+e2e_cases = ["full-core-cli-suite"]
+assertion_ids = ["p4_gate_passed"]
+
+[[boundaries]]
+id = "p5_sqlite_storage"
+owner_bead = "sr-roadmap-l1i.6.1"
+phase = "P5"
+member_beads = ["sr-roadmap-l1i.6.1"]
+platforms = ["linux"]
+features = []
+e2e_suite = "replay"
+e2e_cases = ["ledger-schema", "ledger-repositories"]
+assertion_ids = ["storage_intact"]
+
+[[boundaries]]
+id = "p5_offline_replay"
+owner_bead = "sr-roadmap-l1i.6.16"
+phase = "P5"
+member_beads = ["sr-roadmap-l1i.6.16"]
+platforms = ["linux"]
+features = []
+e2e_suite = "replay"
+e2e_cases = ["replay-matches-original"]
+assertion_ids = ["faithful_replay"]
+
+[[boundaries]]
+id = "p5_eval_accounting"
+owner_bead = "sr-roadmap-l1i.6.28"
+phase = "P5"
+member_beads = ["sr-roadmap-l1i.6.28"]
+platforms = ["linux"]
+features = []
+e2e_suite = "replay"
+e2e_cases = ["loss-denominators-exact"]
+assertion_ids = ["math_correct"]
+
+[[boundaries]]
+id = "p6_claude_installer"
+owner_bead = "sr-roadmap-l1i.7.3"
+phase = "P6"
+member_beads = ["sr-roadmap-l1i.7.3"]
+platforms = ["linux"]
+features = []
+e2e_suite = "shadow-hook"
+e2e_cases = ["install-diff-preview", "atomic-install-rollback"]
+assertion_ids = ["install_clean"]
+
+[[boundaries]]
+id = "p6_shadow_hook_execution"
+owner_bead = "sr-roadmap-l1i.7.1"
+phase = "P6"
+member_beads = ["sr-roadmap-l1i.7.1"]
+platforms = ["linux"]
+features = []
+e2e_suite = "shadow-hook"
+e2e_cases = ["quiet-on-failure", "stdin-deadline-enforced"]
+assertion_ids = ["non_blocking_hook"]
+
+[[boundaries]]
+id = "p7_advisory_rollout"
+owner_bead = "sr-roadmap-l1i.8.6"
+phase = "P7"
+member_beads = ["sr-roadmap-l1i.8.6"]
+platforms = ["linux"]
+features = []
+e2e_suite = "rollout"
+e2e_cases = ["advisory-output-injected"]
+assertion_ids = ["advisory_within_limits"]
+
+[[boundaries]]
+id = "p8_learning_lifecycle"
+owner_bead = "sr-roadmap-l1i.9.8"
+phase = "P8"
+member_beads = ["sr-roadmap-l1i.9.8"]
+platforms = ["linux"]
+features = []
+e2e_suite = "learning"
+e2e_cases = ["supermartingale-crossing-bound", "policy-rollback-atomic"]
+assertion_ids = ["alpha_conserved", "rollback_exact"]
+
+[[boundaries]]
+id = "p9_quill_passages"
+owner_bead = "sr-roadmap-l1i.10.1.1"
+phase = "P9"
+member_beads = ["sr-roadmap-l1i.10.1.1"]
+platforms = ["linux"]
+features = []
+e2e_suite = "passages"
+e2e_cases = ["equal-budget-comparison", "no-match-lead-fallback"]
+assertion_ids = ["budget_neutral", "passages_accurate"]
+
+[[boundaries]]
+id = "p9_frankentui"
+owner_bead = "sr-roadmap-l1i.10.7"
+phase = "P9"
+member_beads = ["sr-roadmap-l1i.10.7"]
+platforms = ["linux"]
+features = ["tui"]
+e2e_suite = "tui"
+e2e_cases = ["non-tty-fallback", "terminal-state-restored"]
+assertion_ids = ["tui_clean_recovery"]
+
+[[boundaries]]
+id = "p0_foundation_audit"
+owner_bead = "sr-roadmap-l1i.1.13"
+phase = "P0"
+member_beads = ["sr-roadmap-l1i.1.13"]
+platforms = ["linux"]
+features = []
+e2e_suite = "runner-smoke"
+e2e_cases = ["success", "expected-refusal", "isolation"]
+assertion_ids = ["behavior"]
+
+[[boundaries]]
+id = "p0_runner_review"
+owner_bead = "sr-roadmap-l1i.1.16"
+phase = "P0"
+member_beads = ["sr-roadmap-l1i.1.16"]
+platforms = ["linux"]
+features = []
+e2e_suite = "runner-contract"
+e2e_cases = ["success", "expected-refusal", "nonzero", "signal", "timeout", "descendant-cleanup", "pipe-budget", "malformed", "truncated", "duplicate-record", "missing-record", "foreign-case", "unreached-fault", "failed-then-passed", "hidden-pipeline-failure", "unexpected-effects", "false-assertion", "wrong-outcome", "private-diagnostics", "inner-failure-retained", "honest-complete-twin", "private-artifacts", "sanitized-artifacts", "empty-selection", "duplicate-selection", "partial-selection", "artifact-reservation", "expected-binary-mismatch", "expected-source-mismatch", "expected-run-mismatch", "foreign-child-record", "fault-witness-current", "fault-witness-old", "fault-witness-absent", "signal-interruption", "secret-argument", "secret-environment", "schema-mismatch", "duplicate-terminal", "missing-terminal", "missing-summary", "truncated-events", "wrong-counts", "unknown-assertion", "wrong-case", "foreign-event", "unsafe-extra-field", "false-effects", "false-fault", "retry-erasure", "witness-missing", "witness-foreign-run", "witness-foreign-case", "witness-replayed"]
+assertion_ids = ["satisfied"]
+
+[[boundaries]]
+id = "p2_local_inspection_shell"
+owner_bead = "sr-roadmap-l1i.3.18"
+phase = "P2"
+member_beads = ["sr-roadmap-l1i.3.18"]
+platforms = ["linux"]
+features = []
+e2e_suite = "roster"
+e2e_cases = ["local-inspection-config"]
+assertion_ids = ["authority_preserved"]
+
+[[boundaries]]
+id = "p5_acceptance_gate"
+owner_bead = "sr-roadmap-l1i.6.29"
+phase = "P5"
+member_beads = ["sr-roadmap-l1i.6.29", "sr-roadmap-l1i.6.10", "sr-roadmap-l1i.6.11", "sr-roadmap-l1i.6.12", "sr-roadmap-l1i.6.13", "sr-roadmap-l1i.6.14", "sr-roadmap-l1i.6.15", "sr-roadmap-l1i.6.17", "sr-roadmap-l1i.6.18", "sr-roadmap-l1i.6.19", "sr-roadmap-l1i.6.2", "sr-roadmap-l1i.6.20", "sr-roadmap-l1i.6.21", "sr-roadmap-l1i.6.22", "sr-roadmap-l1i.6.23", "sr-roadmap-l1i.6.24", "sr-roadmap-l1i.6.25", "sr-roadmap-l1i.6.26", "sr-roadmap-l1i.6.27", "sr-roadmap-l1i.6.3", "sr-roadmap-l1i.6.4", "sr-roadmap-l1i.6.5", "sr-roadmap-l1i.6.6", "sr-roadmap-l1i.6.7", "sr-roadmap-l1i.6.8", "sr-roadmap-l1i.6.9"]
+platforms = ["linux"]
+features = []
+e2e_suite = "replay"
+e2e_cases = ["complete-phase-coverage"]
+assertion_ids = ["complete_independent_evidence"]
+
+[[boundaries]]
+id = "p6_acceptance_gate"
+owner_bead = "sr-roadmap-l1i.7.13"
+phase = "P6"
+member_beads = ["sr-roadmap-l1i.7.13", "sr-roadmap-l1i.7.10", "sr-roadmap-l1i.7.11", "sr-roadmap-l1i.7.12", "sr-roadmap-l1i.7.2", "sr-roadmap-l1i.7.4", "sr-roadmap-l1i.7.5", "sr-roadmap-l1i.7.6", "sr-roadmap-l1i.7.7", "sr-roadmap-l1i.7.8", "sr-roadmap-l1i.7.9"]
+platforms = ["linux"]
+features = []
+e2e_suite = "shadow-hook"
+e2e_cases = ["complete-phase-coverage"]
+assertion_ids = ["complete_independent_evidence"]
+
+[[boundaries]]
+id = "p7_acceptance_gate"
+owner_bead = "sr-roadmap-l1i.8.8"
+phase = "P7"
+member_beads = ["sr-roadmap-l1i.8.8", "sr-roadmap-l1i.8.1", "sr-roadmap-l1i.8.10", "sr-roadmap-l1i.8.2", "sr-roadmap-l1i.8.3", "sr-roadmap-l1i.8.4", "sr-roadmap-l1i.8.5", "sr-roadmap-l1i.8.7", "sr-roadmap-l1i.8.9"]
+platforms = ["linux"]
+features = []
+e2e_suite = "rollout"
+e2e_cases = ["complete-phase-coverage"]
+assertion_ids = ["complete_independent_evidence"]
+
+[[boundaries]]
+id = "p8_acceptance_gate"
+owner_bead = "sr-roadmap-l1i.9.9"
+phase = "P8"
+member_beads = ["sr-roadmap-l1i.9.9", "sr-roadmap-l1i.9.1", "sr-roadmap-l1i.9.2", "sr-roadmap-l1i.9.3", "sr-roadmap-l1i.9.4", "sr-roadmap-l1i.9.5", "sr-roadmap-l1i.9.6", "sr-roadmap-l1i.9.7"]
+platforms = ["linux"]
+features = []
+e2e_suite = "learning"
+e2e_cases = ["complete-phase-coverage"]
+assertion_ids = ["complete_independent_evidence"]
+
+[[boundaries]]
+id = "p9_acceptance_gate"
+owner_bead = "sr-roadmap-l1i.10.13"
+phase = "P9"
+member_beads = ["sr-roadmap-l1i.10.13", "sr-roadmap-l1i.10.1", "sr-roadmap-l1i.10.10", "sr-roadmap-l1i.10.11", "sr-roadmap-l1i.10.12", "sr-roadmap-l1i.10.14", "sr-roadmap-l1i.10.15", "sr-roadmap-l1i.10.16", "sr-roadmap-l1i.10.17", "sr-roadmap-l1i.10.18", "sr-roadmap-l1i.10.19", "sr-roadmap-l1i.10.2", "sr-roadmap-l1i.10.20", "sr-roadmap-l1i.10.21", "sr-roadmap-l1i.10.22", "sr-roadmap-l1i.10.23", "sr-roadmap-l1i.10.24", "sr-roadmap-l1i.10.25", "sr-roadmap-l1i.10.26", "sr-roadmap-l1i.10.27", "sr-roadmap-l1i.10.28", "sr-roadmap-l1i.10.29", "sr-roadmap-l1i.10.3", "sr-roadmap-l1i.10.30", "sr-roadmap-l1i.10.31", "sr-roadmap-l1i.10.32", "sr-roadmap-l1i.10.4", "sr-roadmap-l1i.10.5", "sr-roadmap-l1i.10.6", "sr-roadmap-l1i.10.8", "sr-roadmap-l1i.10.8.1", "sr-roadmap-l1i.10.8.2", "sr-roadmap-l1i.10.8.3", "sr-roadmap-l1i.10.9"]
+platforms = ["linux"]
+features = []
+e2e_suite = "experiments"
+e2e_cases = ["complete-phase-coverage"]
+assertion_ids = ["complete_independent_evidence"]
