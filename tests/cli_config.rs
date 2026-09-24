@@ -272,7 +272,14 @@ fn file_refresh_preserves_overrides_and_rejects_invalid_current_policy() {
     let files = ConfigFiles::new(f.root.join("workspace"), Some(f.root.join("user")));
     let user = f.root.join("user/sr/config.toml");
     std::fs::write(&user, "[ranking]\ntop=2\n[network]\nenabled=true\n").unwrap();
-    let clock = EntryClock::capture().unwrap();
+    // Five configuration reads and several writes, none of them about the deadline. The
+    // product's default 3 s ran out on a loaded RCH worker (sr-87gj), so declare the budget.
+    let clock = EntryClock::capture()
+        .unwrap()
+        .with_total(
+            skillranker::limits::DurationMillis::new("test_deadline_ms", 60_000, 600_000).unwrap(),
+        )
+        .unwrap();
     let initial = files
         .load(
             &clock,
