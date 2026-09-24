@@ -56,12 +56,21 @@ static PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         r"(?:gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9]{22,}_[A-Za-z0-9_]{59,})",
         r"eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+",
         r"(?i)\bbearer\s+[A-Za-z0-9_\-.~+/]+=*",
+        // Provider keys: OpenAI and Anthropic `sk-…`, Stripe-style `sk_live_…`.
+        r"\bsk-[A-Za-z0-9_-]{20,}",
+        r"\b[rs]k_(?:live|test)_[A-Za-z0-9]{16,}",
+        r"(?i)\bauthorization\s*[:=]\s*basic\s+[A-Za-z0-9+/]+=*",
         // Capture only the entire value, including quotes if present. Quoted
         // Unicode, escaped quotes, whitespace and unbounded-length values are
         // scanned within the complete-field cap. Unterminated quotes fail closed.
-        r#"(?i)\b(?:aws[_-]?secret(?:[_-]?access[_-]?key)?|secret[_-]?key|api[_-]?key|password|passwd|pwd|secret|token|credential)["']?\s*[:=]\s*("(?:\\[\s\S]|[^"\\])*(?:"|\\?$)|'(?:\\[\s\S]|[^'\\])*(?:'|\\?$)|[^\s"',;\}]+)"#,
-        // All URI schemes, not only databases. Userinfo as a whole is private.
-        r#"(?i)[a-z][a-z0-9+.-]*://([^\s/@"'<>]+)@"#,
+        // No leading word boundary: `_` is a word character, so `\b` would
+        // skip `OPENAI_API_KEY=`, `GITHUB_TOKEN=` or `DB_PASSWORD=`. The value
+        // must follow the keyword directly, which keeps `max_tokens: 5` out.
+        r#"(?i)(?:aws[_-]?secret(?:[_-]?access[_-]?key)?|secret[_-]?key|api[_-]?key|password|passwd|pwd|secret|token|credential)["']?\s*[:=]\s*("(?:\\[\s\S]|[^"\\])*(?:"|\\?$)|'(?:\\[\s\S]|[^'\\])*(?:'|\\?$)|[^\s"',;\}]+)"#,
+        // All URI schemes, not only databases. Userinfo as a whole is private,
+        // including an unencoded `@` inside a password: the host follows the
+        // last `@` before the path.
+        r#"(?i)[a-z][a-z0-9+.-]*://([^\s/"'<>]+)@"#,
         r"xox[baprs]-[0-9]{10,13}-[0-9]{10,13}[A-Za-z0-9-]*",
         r"https://hooks\.slack\.com/services/[A-Za-z0-9_-]+/[A-Za-z0-9_-]+/[A-Za-z0-9_-]+",
     ]
@@ -76,7 +85,9 @@ static PRIVATE_KEY_HEADER: LazyLock<Regex> = LazyLock::new(|| {
 static ENTROPY: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"[A-Za-z0-9+/=_\-]{32,}").expect("static entropy pattern"));
 static SECRET_KEY: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)^(?:aws[_-]?secret(?:[_-]?access[_-]?key)?|secret[_-]?key|api[_-]?key|password|passwd|pwd|secret|token|credential)$")
+    // A prefixed key names the same kind of value: `access_token`,
+    // `client_secret`, `db_password`.
+    Regex::new(r"(?i)^[a-z0-9_-]*(?:aws[_-]?secret(?:[_-]?access[_-]?key)?|secret[_-]?key|api[_-]?key|password|passwd|pwd|secret|token|credential)$")
         .expect("static secret key pattern")
 });
 

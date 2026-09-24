@@ -84,6 +84,59 @@ fn secret_families_remove_complete_values_preserving_neighbors() {
 }
 
 #[test]
+fn prefixed_key_names_and_provider_keys_are_private() {
+    // `_` is a word character: a `\b` before the keyword skipped all of these.
+    for (input, expected) in [
+        ("OPENAI_API_KEY=abc123def", "OPENAI_API_KEY=[REDACTED]"),
+        ("TYPESAFE_API_KEY=abc123def", "TYPESAFE_API_KEY=[REDACTED]"),
+        (
+            "export GITHUB_TOKEN=abc123def",
+            "export GITHUB_TOKEN=[REDACTED]",
+        ),
+        ("DB_PASSWORD=hunter2", "DB_PASSWORD=[REDACTED]"),
+        ("PGPASSWORD=hunter2", "PGPASSWORD=[REDACTED]"),
+        ("client_secret: s3cr3t", "client_secret: [REDACTED]"),
+        (
+            r#"{"access_token":"ya29abc"}"#,
+            r#"{"access_token":[REDACTED]}"#,
+        ),
+        (
+            "key sk-ant-api03-abcdefghijklmnopqrstuvwx here",
+            "key [REDACTED] here",
+        ),
+        (
+            "key sk-proj-abcdefghijklmnopqrstuvwx here",
+            "key [REDACTED] here",
+        ),
+        (
+            "stripe sk_live_abcdefghijklmnop1234 here",
+            "stripe [REDACTED] here",
+        ),
+        ("Authorization: Basic dXNlcjpwYXNz", "[REDACTED]"),
+        ("postgres://user:p@ss@db/x", "postgres://[REDACTED]@db/x"),
+    ] {
+        let result = Redactor::default().redact_field(input).unwrap();
+        assert_eq!(result.as_str(), expected, "{input}");
+    }
+    // Honest twins: counts and prose that only resemble keys stay readable.
+    for text in [
+        "max_tokens: 5",
+        "input_tokens=120",
+        "the secretary: Jane",
+        "a basic introduction to caching",
+        "tokenizer=bpe",
+    ] {
+        let result = Redactor::default().redact_field(text).unwrap();
+        assert_eq!(result.as_str(), text);
+    }
+    // The payload scan treats a prefixed key's value as private too.
+    assert!(matches!(
+        Redactor::default().inspect_payload(br#"{"access_token":"ya29abc"}"#),
+        Err(RedactionError::SecretsDetected { .. })
+    ));
+}
+
+#[test]
 fn adjacent_aws_identifiers_are_both_removed() {
     let result = Redactor::default()
         .redact_field("AKIAIOSFODNN7EXAMPLE,ASIAIOSFODNN7EXAMPLE")

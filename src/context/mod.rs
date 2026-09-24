@@ -40,9 +40,9 @@ pub use render::{
 };
 pub use tool::{
     AssociatedToolCall, DEFAULT_TOOL_EXCERPT_CHARS, SimpleSkillResolver, SkillEvidenceResolver,
-    SkillMatch, associate_tool_events, extract_load_observations, extract_loaded_skill_records,
-    filter_events_for_provider, head_tail_truncate, summarize_tool_arguments,
-    summarize_tool_result,
+    SkillMatch, allowlist_tool_arguments, associate_tool_events, extract_load_observations,
+    extract_loaded_skill_records, filter_events_for_provider, head_tail_truncate,
+    summarize_tool_arguments, summarize_tool_result,
 };
 
 use crate::identity::{

@@ -144,6 +144,31 @@ fn make_test_signals() -> ProjectSignals {
 }
 
 #[test]
+fn tool_arguments_are_allowlisted_before_redaction_can_break_their_json() {
+    // Redacting `"password": "hunter2"` replaces the quotes too, so the
+    // redacted text is no longer JSON. The allowlist must not depend on it.
+    for arguments in [
+        r#"{"password": "hunter2", "content": "PRIVATE FILE BODY"}"#,
+        r#"{"command": "curl -H \"token=abc\" x", "description": "PRIVATE FILE BODY"}"#,
+    ] {
+        let mut context = make_test_context("Please create a unit test for the auth model", false);
+        let call = context
+            .events
+            .iter_mut()
+            .find(|event| event.kind == EventKind::ToolInvocation)
+            .expect("fixture has a tool call");
+        call.tool.as_mut().unwrap().arguments = Some(PrivateText::new(arguments));
+        let payload =
+            render_context(&context, &RenderContextOptions::default()).expect("rendering succeeds");
+        let rendered = serde_json::to_string(&payload.recent_messages).unwrap();
+        assert!(rendered.contains("<omitted>"), "{rendered}");
+        for private in ["PRIVATE", "hunter2", "abc"] {
+            assert!(!rendered.contains(private), "{private} leaked: {rendered}");
+        }
+    }
+}
+
+#[test]
 fn disclosure_profiles() {
     let signals = make_test_signals();
     let loaded_refs = vec![RenderedLoadedReference {

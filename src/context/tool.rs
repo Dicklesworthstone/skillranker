@@ -93,23 +93,30 @@ pub fn head_tail_truncate(text: &str, max_chars: usize) -> String {
     format!("{}{}{}", head, marker, tail)
 }
 
+/// Keep only allowlisted JSON argument values; every other value becomes
+/// `<omitted>`. Arguments that are not a JSON object are returned unchanged.
+/// Apply this to the original arguments, before redaction: redaction can
+/// rewrite quotes and escapes, and arguments that no longer parse as JSON
+/// would pass every field through.
+pub fn allowlist_tool_arguments(raw_args: &str) -> String {
+    let Ok(Value::Object(map)) = serde_json::from_str::<Value>(raw_args) else {
+        return raw_args.to_owned();
+    };
+    let mut filtered = serde_json::Map::new();
+    for (k, v) in map {
+        if ALLOWLISTED_TOOL_ARGUMENT_KEYS.contains(&k.as_str()) {
+            filtered.insert(k, v);
+        } else {
+            filtered.insert(k, Value::String("<omitted>".to_string()));
+        }
+    }
+    Value::Object(filtered).to_string()
+}
+
 /// Summarize tool arguments by retaining only allowlisted JSON keys,
 /// then applying bounded head/tail excerpting.
 pub fn summarize_tool_arguments(raw_args: &str, max_chars: usize) -> String {
-    if let Ok(Value::Object(map)) = serde_json::from_str::<Value>(raw_args) {
-        let mut filtered = serde_json::Map::new();
-        for (k, v) in map {
-            if ALLOWLISTED_TOOL_ARGUMENT_KEYS.contains(&k.as_str()) {
-                filtered.insert(k, v);
-            } else {
-                filtered.insert(k, Value::String("<omitted>".to_string()));
-            }
-        }
-        let serialized = Value::Object(filtered).to_string();
-        head_tail_truncate(&serialized, max_chars)
-    } else {
-        head_tail_truncate(raw_args, max_chars)
-    }
+    head_tail_truncate(&allowlist_tool_arguments(raw_args), max_chars)
 }
 
 /// Summarize tool results by detecting error lines and applying bounded head/tail excerpting.
