@@ -16,7 +16,7 @@ The initial release targets local Linux and macOS, Claude Code's `UserPromptSubm
 
 **Quill is the lexical search engine throughout SkillRanker.** Use `frankensearch-quill` from the user's FrankenSearch project. Do not use Tantivy for runtime search, fallback, testing, benchmarking, reference implementations, or copied code. Quill's optional upstream oracle is not enabled by this project.
 
-Keep README.md and AGENTS.md aligned with this plan as part of P0 and whenever a public contract changes. Their main architecture has been reconciled with the standalone design; examples and detailed schemas must track subsequent corrections too. Preserve their unrelated repository, licensing, coordination, and release rules. Command examples throughout these documents are proposed interfaces, not evidence that a working binary exists.
+Keep README.md and AGENTS.md aligned with this plan as part of P0 and whenever a public contract changes. Their main architecture has been reconciled with the standalone design; examples and detailed schemas must track subsequent corrections too. Preserve their unrelated repository, licensing, coordination, and release rules. README uses the requested finished-product voice. Source, the capability contract, live Beads and revision-bound verification establish which interfaces have passed their gates; command examples alone do not.
 
 ### Evidence and limits of the starting recipe
 
@@ -309,7 +309,8 @@ Use these initial resource limits, all validated before allocation:
 | Explicit roster JSON | 32 MiB, ≤10,000 records, nesting ≤64 | Invalid roster; no partial manifest accepted |
 | Each user/project/policy configuration file | 256 KiB, nesting ≤32; no recursive includes or interpolation execution | Configuration error before discovery/network/mutation |
 | Replay case / local replay policy | 16 MiB / 64 KiB, nesting ≤64 / ≤32 | Input/configuration error; never follow embedded paths |
-| Evaluation dataset or report | 256 MiB / 10,000 case records, nesting ≤64, with per-case bounds | Explicit input-limit failure; bounded streaming, no unbounded object graph |
+| Streamed evaluation dataset or report | 256 MiB / 10,000 case records, nesting ≤64, with per-case bounds | Explicit input-limit failure; bounded streaming, no unbounded object graph |
+| Live decision or demo/replay/report summary | 2 MiB, nesting ≤64 | Output-limit failure; larger evaluation artifacts do not enlarge this envelope |
 | Native transcript tail | 2 MiB / 2,000 records | Bounded context with incompleteness metadata |
 | One transcript record | 256 KiB | Skip with diagnostic or reject if it is essential |
 | cass subprocess stdout | 8 MiB | Cancel, reap, and report input-limit failure |
@@ -1120,7 +1121,7 @@ FrankenSciPy's inspected stats crate has several numerical transitive dependenci
 
 ## Verification and acceptance
 
-There is no implementation yet in this workspace. This plan defines work and release evidence; it does not claim tests, benchmarks, live TypeSafe calls, or harness integrations have passed.
+The initial planning baseline on 2026-09-17 preceded implementation. The repository now contains the Rust foundation library, help/version CLI, contract fixtures and evidence runner. The project-local Beads tracker records remaining work. Accepted checks bind to the exact revisions and input hashes in their verification artifacts; they do not automatically cover newer source. P0 library and runner evidence does not establish ranking, live TypeSafe interoperability, native-harness integration, quality, latency or a release. See [the changelog](CHANGELOG.md) and [verification records](docs/verification-p0.md) for the historical foundation checks, and consume each later boundary's own evidence.
 
 ### Deterministic and adversarial tests
 

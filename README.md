@@ -19,13 +19,6 @@ Sign up at the [TypeSafe console](https://console.typesafe.ai) to get your own k
 ![Runtime](https://img.shields.io/badge/runtime-Asupersync-654ff0)
 ![Output](https://img.shields.io/badge/output-JSON%20%7C%20hooks%20%7C%20TUI-00897b)
 
-**Status: foundation implementation.** The Rust package contains identity and
-resource-limit contracts, focused tests, and a bootstrap `sr` binary supporting
-only `--help` and `--version`. Ranking, adapters, hooks, evaluation commands, and
-the TUI are still planned. Commands below describe those intended interfaces.
-The [implementation phases](COMPREHENSIVE_PLAN_TO_DESIGN_SKILLRANKER.md#implementation-order-and-dependencies)
-gate the core CLI, evaluation tools, hooks, and later experiments separately.
-
 ```bash
 sr demo --case useful     # Inspect an offline fixture before connecting a session
 sr rank --allow-network   # Rank skills for the selected session
@@ -189,21 +182,12 @@ or override the agent's governing instructions.
 
 ### From source
 
-The current source builds the foundation binary with help and version commands.
-It does not yet provide the ranking workflow described below. The dated Rust
-toolchain and `Cargo.lock` are committed for reproducibility.
+Build the `sr` binary with the repository's pinned Rust toolchain and lockfile:
 
 ```bash
 git clone https://github.com/Dicklesworthstone/skillranker.git
 cd skillranker
 cargo install --locked --path . --bin sr
-```
-
-The `tui` feature is an empty build boundary today. This future installation
-variant will include the inline TUI when its implementation and gates are complete:
-
-```bash
-cargo install --locked --path . --bin sr --features tui
 ```
 
 For a checkout-local binary:
@@ -306,8 +290,12 @@ current provider availability.
 `sr capabilities --json` separates implemented adapters from tested harness
 versions/features and unverified versions. Adapter conformance covers prompt
 timing, branch identity, visibility, restrictions, compaction, load evidence, and
-hook output; real supported-harness checks complement protocol fixtures.
-Incompatible identity or visibility semantics disable advice.
+hook output, deadlines, and delivery. Native advice requires passing real-harness
+evidence for every dimension on the installed version; protocol fixtures and
+official schema documentation alone cannot authorize it. Cass remains an
+explicit archive source. Native Codex, omp/pi, and Grok integrations each need
+their own support record. Incompatible identity or visibility semantics disable
+advice. The [adapter contract](docs/adapter-contract.md) defines these checks.
 
 ## Command Reference
 
@@ -533,7 +521,10 @@ This illustrative result has two eligible candidates. The score arithmetic uses
 | `unavailable` | An operational, input, privacy, or coverage problem prevented a decision |
 
 Demo and replay use separately versioned, non-actionable envelopes around their
-synthetic or historical decisions. They do not reuse the live hook output channel.
+synthetic or historical decisions. A demo's context is synthetic; any recorded
+provider response retains its own provenance. It remains demonstration evidence,
+not a live evaluation or a quality-gate result. Neither artifact uses the live
+hook output channel.
 
 `choice_confidence` describes the rerank distribution. `fits` is a model estimate
 of suitability. `rank_score` is a relative local score over eligible candidates.
@@ -552,8 +543,13 @@ Quality metadata includes `prompt_complete`, `task_anchor_known`,
 `history_windowed`, `attachments_omitted`, and `source_gaps`. These describe the
 admitted input; `context_quality: "complete"` does not claim that the entire
 conversation history was read. Warnings are bounded to 32 details plus an omitted
-count, and rank JSON is capped at 2 MiB. Roster listings and full-wide explanations
+count. Live decision JSON and individual demo/replay/report summary envelopes
+are capped at 2 MiB. The separate 256 MiB evaluation-artifact limit bounds a
+streamed dataset or report with at most 10,000 case records; it does not enlarge
+an individual output envelope. Roster listings and full-wide explanations
 paginate against a fixed snapshot; a changed snapshot requires restarting.
+Trace pages contain at most 128 entries and bind both snapshot and query identity.
+Unevaluated entries keep operands and reasons null instead of inventing evidence.
 
 ### Exit codes
 
@@ -587,6 +583,10 @@ Evaluation and replay reports distinguish execution from quality:
 not that every comparison was replayable or a policy passed. Promotion requires
 the intended complete cohort, compatible evidence, and explicit passed gates.
 Fatal errors retain their nonzero exit code and available partial-work/usage data.
+Each summary accounts for requested/completed cases and required/completed
+stages. Partial, incompatible, empty, or synthetic evidence cannot carry a
+passed gate. A completed report can faithfully describe a failed historical
+request without treating that historical error as a failure to generate the report.
 
 The dedicated hook maps recommendation failures to quiet exit-zero behavior so
 it never blocks the agent. CLI failures retain their meaningful exit codes.
@@ -625,13 +625,28 @@ shadow mode. `--allow-network` can authorize a single CLI evaluation.
 | `TYPESAFE_API_KEY` | TypeSafe bearer credential; never serialized or stored in project config |
 | `TYPESAFE_ENDPOINT` | Trusted HTTPS base origin; `sr` appends `/v1/systemone` once |
 | `SR_MODEL` | Requested model; default `jev-latest` |
-| Recognized `SR_*` settings | Ordinary configuration overrides described by capabilities |
+| `SR_MESSAGES`, `SR_BUDGET_CHARS` | Context-volume limits: 1–12 messages and 1–12,000 Unicode scalar values |
+| `SR_TOP`, `SR_SHORTLIST` | Output and rerank sizes, satisfying `1 ≤ top ≤ shortlist ≤ 32` |
+| `SR_GATE`, `SR_FITS` | Finite thresholds in `[0, 1]` |
+| `SR_TIMEOUT_MS` | Whole-invocation deadline, 201–60,000 ms |
 
 Workspace configuration may tune bounded ranking values and exclusions. It
 cannot authorize networking, change endpoints/proxies, supply credentials,
 expand transcript access, disable redaction, or enable raw retention. Unknown
 or duplicate keys, forbidden project settings, and invalid values are errors
 after bounded configuration reads and before discovery, networking, or mutation.
+Unrecognized `SR_*` environment names are errors too. Project context settings
+may reduce message/character budgets, select `minimal`, or remove tool content;
+they cannot widen a trusted user's disclosure settings. Exclusions and skill
+roots merge as unions. Project roots must remain relative to the workspace;
+only trusted user configuration can authorize absolute roots. Readers also check
+symlink containment when opening files.
+
+Credentials are environment-only and kept outside serializable configuration.
+The v1 endpoint override is environment-only; model overrides use trusted user
+configuration or `SR_MODEL`. Proxy, redaction-disable, and raw-retention settings
+are reserved and rejected. The [configuration contract](docs/config-contract.md)
+lists every key, bound, source layer, and restriction.
 
 The endpoint accepts an empty or root path and rejects URL credentials, query
 strings, fragments, and non-root paths. Credentials, cache identity, and request
@@ -644,6 +659,17 @@ valid configuration. It reports credential presence/source without exposing
 values or secret-bearing endpoint components.
 Shared request allowances and snoozes are explicit trusted-user controls. Project
 configuration cannot enable, raise, or disable the allowance.
+
+`--offline` and `--dry-run` conflict with `--allow-network`. Case capture conflicts
+with `--dry-run` and `--no-persist`. `--no-cache` and `--no-ledger` disable their
+respective stores independently; `--no-persist` also disables persistent runtime
+coordination. Ordinary configuration reads remain allowed.
+
+Each provider attempt rechecks the effective disclosure and admission policy.
+Publication separately rechecks the fields governing eligibility and hook mode.
+A revoked permission or changed governing value withholds the affected action;
+it never authorizes a replacement request. An edit hidden by an unchanged CLI
+or environment override does not change the effective policy.
 
 ## How Ranking Works
 
@@ -716,7 +742,8 @@ instructing the agent to bypass that restriction by reading its file.
 | Quill query | 128 distinct terms / 4,096 Unicode scalar values after escaping |
 | Replay case capture/import | 16 MiB / nesting depth 64, with per-field limits |
 | Local replay policy | 64 KiB / nesting depth 32 |
-| Evaluation dataset/report | 256 MiB / 10,000 case records / nesting depth 64 |
+| Streamed evaluation dataset/report | 256 MiB / 10,000 case records / nesting depth 64 |
+| Live decision or artifact summary envelope | 2 MiB / nesting depth 64 |
 | Wide description | 160 characters |
 | Rerank description / body excerpt | 1,000 / 700 characters |
 | Serialized provider request / decoded response | 96 KiB / 2 MiB |
@@ -1598,7 +1625,7 @@ flowchart TD
 One Rust package contains `sr` and reusable pure pipeline components. Asupersync
 owns task lifetimes, deadlines, HTTP/TLS, and deterministic lab replay. Quill
 provides bounded in-memory lexical retrieval. SQLite persistence uses `rusqlite`
-with bundled SQLite. The planned concurrent WAL stores require a verified SQLite
+with bundled SQLite. Concurrent WAL stores require a verified SQLite
 3.51.3 or later to include the [WAL-reset corruption fix](https://www.sqlite.org/wal.html#walresetbug);
 the actual linked engine is checked separately from the Rust crate version.
 FrankenTUI is optional.
@@ -1855,8 +1882,9 @@ No. Explicit requests are resolved locally before probabilistic ranking. Missing
 or ambiguous requests are reported rather than replaced with a similar skill.
 
 **Why include both a none option and fit questions?**
-The none option competes in the same distribution as the candidates. Fit questions
-independently estimate suitability. Both participate in the final eligibility policy.
+The none option competes in the same distribution as the candidates. Separate
+fit questions estimate suitability. These answers can be correlated; neither
+is independent ground truth. Both participate in the final eligibility policy.
 
 **Is `rank_score` a probability of success?**
 No. It is a normalized relative score among eligible shortlist candidates. A lone

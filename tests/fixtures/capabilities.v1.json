@@ -9,10 +9,19 @@
     { "name": "doctor", "earliest_phase": "p4" },
     { "name": "capabilities", "earliest_phase": "p4" },
     { "name": "demo", "earliest_phase": "p4" },
+    { "name": "install-hook", "earliest_phase": "p6" },
+    { "name": "uninstall-hook", "earliest_phase": "p6" },
+    { "name": "stats", "earliest_phase": "p5" },
     { "name": "observe", "earliest_phase": "p5" },
+    { "name": "feedback", "earliest_phase": "p5" },
+    { "name": "snooze", "earliest_phase": "p6" },
+    { "name": "budget", "earliest_phase": "p6" },
+    { "name": "replay", "earliest_phase": "p5" },
     { "name": "eval", "earliest_phase": "p5" },
     { "name": "calibrate", "earliest_phase": "p8" },
-    { "name": "tui", "earliest_phase": "p9" }
+    { "name": "ledger", "earliest_phase": "p5" },
+    { "name": "tui", "earliest_phase": "p9" },
+    { "name": "gaps", "earliest_phase": "p9" }
   ],
   "adapters": [
     {

@@ -56,6 +56,11 @@ The reviewed plan supersedes its earlier sketches: there is no `ms` bridge,
 ignored-suggestion penalty, transparent `ureq` fallback, or HTTP-only deadline.
 Resolve contradictions at the affected boundary and update the relevant docs.
 Current source and executed checks establish behavior; prose alone is not proof.
+Keep README in the finished-product voice Jeffrey requested. Do not add a
+design-stage banner or turn installation into a progress report. Track actual
+implementation, unsupported commands, phase gates, and revision-bound evidence
+in the capability contract, engineering docs, changelog, and live Beads. Product
+prose is not a verification receipt.
 
 ## Maintainer Credentials — Local Environment And Vault
 
@@ -182,6 +187,12 @@ is not permission for an arbitrary project to export session content.
 - Project config may tune allowlisted ranking values/exclusions. It cannot set
   credentials, endpoints/proxies, expanded transcript roots, raw retention,
   redaction overrides, or network authorization.
+  Consume the [key/layer registry](docs/config-contract.md), not an independent
+  permissive interpretation. Project disclosure settings are restrict-only;
+  exclusions and roots merge as unions. Unknown `SR_*` names fail validation.
+  Credentials remain outside serializable config; endpoint overrides are
+  environment-only in v1. Revalidate effective dependency projections at each
+  provider admission and publication, preserving fixed CLI/environment precedence.
 - Use HTTPS, verified public certificate roots, origin-scoped credentials, and
   disabled redirects. Never use accept-all TLS. Loopback HTTP tests must not
   carry production credentials.
@@ -222,6 +233,9 @@ Initial limits from the plan:
 | Resource | Default |
 |---|---:|
 | Hook stdin | 1 MiB |
+| Normalized context / nesting | 1 MiB / 64 |
+| Each configuration file / nesting | 256 KiB / 32 |
+| Explicit roster / records | 32 MiB / 10,000 |
 | Transcript tail / records | 2 MiB / 2,000 |
 | One transcript record | 256 KiB |
 | cass stdout | 8 MiB |
@@ -231,6 +245,9 @@ Initial limits from the plan:
 | Wide excerpt | 160 characters |
 | Rerank description / body excerpt | 1,000 / 700 characters |
 | Serialized request / decoded response | 96 KiB / 2 MiB |
+| Live decision or demo/replay/report summary | 2 MiB / nesting 64 |
+| Streamed evaluation dataset/report | 256 MiB / 10,000 cases / nesting 64 |
+| Trace page / total entries | 128 / 80,000; snapshot and query bound |
 
 Validate before allocation and expose truncation/partial coverage. Partial input
 cannot justify an unqualified no-skill message.
@@ -409,14 +426,21 @@ preflight backup/WAL/temporary space and fail before mutation if it is insuffici
   Distinguish planned commands from implemented capabilities and tested harness
   versions from unverified ones. The foundation build implements a Rust contract
   library and a bootstrap `sr` binary with only help and version commands; ranking
-  and integrations remain planned. Keep that status explicit before README
-  commands/build instructions. P4 CLI does not imply P6 hooks, P8 calibration, or
-  P9 TUI availability. Recorded shadow trials require explicit ledger initialization
-  and separate trusted network consent.
+  and integrations remain planned. Record this technical status in the capability
+  contract and verification artifacts while preserving README's requested voice.
+  An empty feature flag does not establish feature implementation. P4 CLI does
+  not imply P6 hooks, P8 calibration, or P9 TUI availability. Recorded shadow trials
+  require explicit ledger initialization and separate trusted network consent.
 - Ordinary CLI exits: `0` success, `2` usage/config, `3` session, `4` network/provider/budget,
   `5` roster/retrieval, `6` timeout, `7` input/adapter, `8` privacy, `9` required storage,
   `10` provider contract, `11` offline/cache-only miss. JSON errors include schema version, unavailable decision,
   and `{code, kind, message, hint, retryable}` with stable kebab-case kinds.
+  Use the [output contract](docs/output-contract.md) and its typed error mapping.
+  Demo/replay/report envelopes are non-actionable. Synthetic demo context does
+  not establish live provenance for recorded responses. Partial, synthetic,
+  incompatible, or empty evidence cannot have a passed quality gate. Reconcile
+  requested/completed cases and required/completed stages; a generated report's
+  exit zero is separate from its quality gate and historical request failures.
 - `sr hook claude` accepts its verified `UserPromptSubmit` contract. Advisory output
   uses `hookSpecificOutput.additionalContext`, bounded to 1,024 characters and at
   most one suggested invocation name. Explicit multiple requests are separate.
@@ -504,6 +528,23 @@ of P9 retrieval/excerpt/description experiments.
   not a new independent sample; fully labeled censuses need no randomization.
 
 ## Verification And Performance
+
+The capability phases are independent gates, not aliases for Cargo features:
+
+| Phase | Public capability boundary |
+|---|---|
+| P0 | Identity, resource, output, configuration, adapter and evaluation contracts |
+| P2 | Roster inspection, snapshots and differences |
+| P4 | Core rank, readiness/config inspection, capabilities and offline demo |
+| P5 | Ledger, observation, feedback, replay, statistics and evaluation |
+| P6 | Shadow hook, installation/removal, request allowance and snoozes |
+| P7 | Advisory rollout after measured quality and operational gates |
+| P8 | Calibration, rollback, priors and sequential monitoring |
+| P9 | TUI, description/gap diagnostics, additional adapters and retrieval experiments |
+
+Use `python3 scripts/validate_public_contracts.py` to check local documentation
+links/anchors, JSON/TOML syntax, shell syntax without execution, and cross-document
+examples. These checks establish documentation consistency, never runtime support.
 
 After substantive Rust changes, run relevant tests plus these gates:
 

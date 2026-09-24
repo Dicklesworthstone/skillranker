@@ -439,11 +439,23 @@ impl CapabilitiesDocument {
             return Err(AdapterError::UnsupportedVersion);
         }
         let implemented: BTreeSet<&str> = self.implemented_cli.iter().map(String::as_str).collect();
-        if implemented != BTreeSet::from_iter(FOUNDATION_IMPLEMENTED_CLI.iter().copied()) {
+        if implemented.len() != self.implemented_cli.len()
+            || implemented != BTreeSet::from_iter(FOUNDATION_IMPLEMENTED_CLI.iter().copied())
+        {
             return Err(AdapterError::InvalidField);
         }
+        let mut planned = BTreeSet::new();
         for command in &self.planned_cli {
-            if implemented.contains(command.name.as_str()) {
+            let name = command.name.as_str();
+            let valid_name = name.len() <= 64
+                && name.as_bytes().first().is_some_and(u8::is_ascii_lowercase)
+                && name.split('-').all(|part| {
+                    !part.is_empty()
+                        && part
+                            .bytes()
+                            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+                });
+            if !valid_name || implemented.contains(name) || !planned.insert(name) {
                 return Err(AdapterError::InvalidField);
             }
         }
@@ -481,10 +493,19 @@ pub fn foundation_capabilities() -> Result<CapabilitiesDocument, AdapterError> {
             planned("doctor", PhaseGate::P4),
             planned("capabilities", PhaseGate::P4),
             planned("demo", PhaseGate::P4),
+            planned("install-hook", PhaseGate::P6),
+            planned("uninstall-hook", PhaseGate::P6),
+            planned("stats", PhaseGate::P5),
             planned("observe", PhaseGate::P5),
+            planned("feedback", PhaseGate::P5),
+            planned("snooze", PhaseGate::P6),
+            planned("budget", PhaseGate::P6),
+            planned("replay", PhaseGate::P5),
             planned("eval", PhaseGate::P5),
             planned("calibrate", PhaseGate::P8),
+            planned("ledger", PhaseGate::P5),
             planned("tui", PhaseGate::P9),
+            planned("gaps", PhaseGate::P9),
         ],
         adapters: vec![
             AdapterRecord {
