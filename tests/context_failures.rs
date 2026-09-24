@@ -105,7 +105,9 @@ fn context_failure_cases() {
 
     // -------------------------------------------------------------------------
     // Sub-case 1.2 (E2E: oversized-record):
-    // Single JSONL record exceeding ONE_TRANSCRIPT_RECORD_BYTES (256 KiB) rejected safely.
+    // Single JSONL record exceeding ONE_TRANSCRIPT_RECORD_BYTES (256 KiB) is never parsed:
+    // its content is dropped and the context reports partial coverage (sr-xy2q). Being over
+    // the limit is not malformation, so it no longer withholds the whole prompt.
     // Assertion: safe_context_rejection
     // -------------------------------------------------------------------------
     {
@@ -136,14 +138,17 @@ fn context_failure_cases() {
             authorized_root: Some(base_dir.clone()),
         };
 
-        let err = apply_claude_prompt_overlay(&req)
-            .expect_err("oversized transcript line must be safely rejected");
+        let result = apply_claude_prompt_overlay(&req)
+            .expect("an oversized transcript line is dropped, not fatal");
 
         // Assertion: safe_context_rejection
+        assert_eq!(result.context_quality, ContextQuality::Partial);
         assert!(
-            matches!(err, OverlayError::MalformedTranscript(ref msg) if msg.contains("byte limit")),
-            "expected MalformedTranscript with byte limit, got: {:?}",
-            err
+            result
+                .events
+                .iter()
+                .all(|event| !event.text.as_str().contains("xxxx")),
+            "no oversized content may reach the context"
         );
 
         // Also verify direct parse_line behavior

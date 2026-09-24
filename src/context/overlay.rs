@@ -17,7 +17,9 @@
 
 use crate::adapter::{ClaudeUserPromptSubmit, decode_json};
 use crate::authorized_read::{AuthorizedRoot, AuthorizedRoots, FileKind, ReadError};
-use crate::context::branch::{ActiveBranch, BranchResolutionTarget, resolve_active_branch};
+use crate::context::branch::{
+    ActiveBranch, BranchResolutionTarget, resolve_active_branch_with_responses,
+};
 use crate::context::jsonl::{SkipKind, parse_line};
 use crate::context::{CurrentRequest, EventKind, NormalizedEvent, PrivateText, Role};
 use crate::identity::{BranchId, EventId, SessionId};
@@ -27,7 +29,7 @@ use crate::limits::{
 use crate::output::ContextQuality;
 use crate::runtime::EntryClock;
 use serde_json::Value;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -251,6 +253,7 @@ pub fn apply_claude_prompt_overlay_before(
     let mut parsed_events = Vec::with_capacity(lines.len());
     let mut event_ids = BTreeSet::new();
     let mut sidechain_ids: BTreeSet<EventId> = BTreeSet::new();
+    let mut responses: BTreeMap<EventId, String> = BTreeMap::new();
     let mut native_lineage = false;
     let check_session = |value: &Value| -> Result<(), OverlayError> {
         for key in ["sessionId", "session_id"] {
@@ -284,7 +287,43 @@ pub fn apply_claude_prompt_overlay_before(
         // the overlay binds the authoritative prompt.
         let event = match parse_line(line) {
             Err(SkipKind::Oversize) => {
-                return Err(malformed("transcript record exceeds byte limit"));
+                // Over the per-record parse limit is not malformation: a large
+                // tool result or a pasted image. Its content is dropped unread,
+                // but the chain runs through it, so its lineage identity is
+                // kept and the context is reported partial.
+                let identity = serde_json::from_slice::<LineageIdentity>(line)
+                    .map_err(|_| malformed("oversized transcript record has no valid identity"))?;
+                let sessions = [
+                    ("sessionId", identity.session_camel),
+                    ("session_id", identity.session_id),
+                ];
+                check_session(&Value::Object(
+                    sessions
+                        .into_iter()
+                        .filter_map(|(key, value)| Some((key.to_owned(), Value::String(value?))))
+                        .collect(),
+                ))?;
+                partial = true;
+                let Some(event_id) = identity
+                    .uuid
+                    .or(identity.event_id)
+                    .and_then(|v| EventId::new(v).ok())
+                else {
+                    continue;
+                };
+                if identity.is_sidechain == Some(true) {
+                    sidechain_ids.insert(event_id.clone());
+                }
+                let parent_id = identity
+                    .parent_uuid
+                    .or(identity.parent_id)
+                    .and_then(|v| EventId::new(v).ok());
+                native_lineage |= parent_id.is_some();
+                if !event_ids.insert(event_id.clone()) {
+                    return Err(malformed("duplicate transcript event identity"));
+                }
+                parsed_events.push(placeholder(event_id, parent_id));
+                continue;
             }
             Err(SkipKind::DuplicateKey) => {
                 return Err(malformed("duplicate key in transcript record"));
@@ -319,24 +358,10 @@ pub fn apply_claude_prompt_overlay_before(
                     .or_else(|| value.get("parent_id"))
                     .and_then(Value::as_str)
                     .and_then(|v| EventId::new(v.to_owned()).ok());
-                let placeholder = NormalizedEvent {
-                    event_id: Some(event_id),
-                    parent_id,
-                    turn_id: None,
-                    agent_id: None,
-                    branch_id: None,
-                    role: Role::System,
-                    kind: EventKind::Message,
-                    timestamp_unix_ms: None,
-                    text: PrivateText::new(String::new()),
-                    tool: None,
-                };
-                if let Some(id) = &placeholder.event_id
-                    && !event_ids.insert(id.clone())
-                {
+                if !event_ids.insert(event_id.clone()) {
                     return Err(malformed("duplicate transcript event identity"));
                 }
-                parsed_events.push(placeholder);
+                parsed_events.push(placeholder(event_id, parent_id));
                 continue;
             }
         };
@@ -353,6 +378,14 @@ pub fn apply_claude_prompt_overlay_before(
             && !event_ids.insert(id.clone())
         {
             return Err(malformed("duplicate transcript event identity"));
+        }
+        // Claude writes each content block of one API response as its own
+        // record; they share `message.id`.
+        if let Some(id) = &event.event_id
+            && value.get("type").and_then(Value::as_str) == Some("assistant")
+            && let Some(response) = value.pointer("/message/id").and_then(Value::as_str)
+        {
+            responses.insert(id.clone(), response.to_owned());
         }
         parsed_events.push(event);
     }
@@ -408,13 +441,14 @@ pub fn apply_claude_prompt_overlay_before(
         // Even if an earlier turn has identical prompt text, do NOT deduplicate by text:
         // repeated identical user messages are distinct turns!
         let parent_id = if had_parent_links {
-            resolve_active_branch(
+            resolve_active_branch_with_responses(
                 &work_events,
                 &BranchResolutionTarget {
                     target_event_id: None,
                     target_branch_id: None,
                     target_agent_id: None,
                 },
+                &responses,
             )
             .active_branch()
             .ok_or(OverlayError::AmbiguousBranch)?
@@ -461,7 +495,7 @@ pub fn apply_claude_prompt_overlay_before(
     } else {
         None
     };
-    let branch_res = resolve_active_branch(&work_events, &branch_target);
+    let branch_res = resolve_active_branch_with_responses(&work_events, &branch_target, &responses);
     let mut active_branch = branch_res.active_branch().cloned();
     if let (Some(branch), Some(prompt)) = (active_branch.as_mut(), anonymous_prompt) {
         branch.events.push(prompt);
@@ -493,6 +527,41 @@ pub fn apply_claude_prompt_overlay_before(
         prompt_overlaid: true,
         deduplicated_by_event_id: matched_index.is_some(),
     })
+}
+
+/// The lineage fields of a record whose content is not read. Every other
+/// field is skipped without being built, so reading this is bounded by the
+/// record's bytes, not by its structure. A repeated identity key is an error.
+/// Claude records carry both session key spellings, so each is read and
+/// checked, as for any other record.
+#[derive(serde::Deserialize)]
+struct LineageIdentity {
+    uuid: Option<String>,
+    event_id: Option<String>,
+    #[serde(rename = "parentUuid")]
+    parent_uuid: Option<String>,
+    parent_id: Option<String>,
+    #[serde(rename = "sessionId")]
+    session_camel: Option<String>,
+    session_id: Option<String>,
+    #[serde(rename = "isSidechain")]
+    is_sidechain: Option<bool>,
+}
+
+/// A content-free system event that keeps a parent link intact.
+fn placeholder(event_id: EventId, parent_id: Option<EventId>) -> NormalizedEvent {
+    NormalizedEvent {
+        event_id: Some(event_id),
+        parent_id,
+        turn_id: None,
+        agent_id: None,
+        branch_id: None,
+        role: Role::System,
+        kind: EventKind::Message,
+        timestamp_unix_ms: None,
+        text: PrivateText::new(String::new()),
+        tool: None,
+    }
 }
 
 fn checkpoint(clock: &EntryClock) -> Result<(), OverlayError> {

@@ -590,8 +590,19 @@ fn event_from_value(value: &Value) -> Option<NormalizedEvent> {
     let agent_id = native_identity(object, &["agent_id"], AgentId::new)?;
     let branch_id = native_identity(object, &["branch_id"], BranchId::new)?;
     let native_type = string_field(object, &["type"]).unwrap_or("message");
-    let (default_role, default_kind) = map_native_type(native_type);
+    let (default_role, mut default_kind) = map_native_type(native_type);
     let timestamp_unix_ms = object.get("timestamp_unix_ms").and_then(Value::as_i64);
+    // Claude starts the post-compaction chain at a parentless boundary and
+    // names the pre-compaction tip only as its logical parent. Linking the
+    // two keeps the old tip an ancestor, not a second conversation leaf, and
+    // puts the compaction on the lineage so epochs advance.
+    let mut parent_id = parent_id;
+    if native_type == "system" && string_field(object, &["subtype"]) == Some("compact_boundary") {
+        default_kind = EventKind::Compaction;
+        if parent_id.is_none() {
+            parent_id = native_identity(object, &["logicalParentUuid"], EventId::new)?;
+        }
+    }
 
     if matches!(default_kind, EventKind::Compaction | EventKind::Resume) {
         let text = string_field(object, &["text"]).unwrap_or("").to_owned();
@@ -626,6 +637,17 @@ fn event_from_value(value: &Value) -> Option<NormalizedEvent> {
                 tool: None,
             }
         }
+        // A user record the user did not submit (an injected attachment,
+        // such as a document the agent read) is context, not the request.
+        // With nothing usable left it keeps its place in the lineage as an
+        // empty system event. A submitted prompt with no usable content
+        // stays essential-missing input.
+        None if native_type == "user" && injected_by_provenance(object) => ParsedContent {
+            role: Role::System,
+            kind: default_kind,
+            text: String::new(),
+            tool: None,
+        },
         None => return None,
     };
     // A user message the user did not submit is context, never the request.
@@ -663,19 +685,14 @@ fn event_from_value(value: &Value) -> Option<NormalizedEvent> {
 /// stay user messages, and the text markers apply only to records that carry
 /// no submission provenance.
 fn injected_user_record(object: &serde_json::Map<String, Value>, text: &str) -> bool {
-    let flagged = |name: &str| object.get(name).and_then(Value::as_bool) == Some(true);
+    if injected_by_provenance(object) {
+        return true;
+    }
     let origin = object
         .get("origin")
         .and_then(|origin| origin.get("kind"))
         .and_then(Value::as_str);
     let source = object.get("promptSource").and_then(Value::as_str);
-    if flagged("isMeta")
-        || flagged("isCompactSummary")
-        || source == Some("system")
-        || origin.is_some_and(|kind| kind != "human")
-    {
-        return true;
-    }
     // Explicit submission provenance outranks the text heuristics: a typed
     // prompt may itself quote an interrupt marker or command output.
     if source.is_some() || origin.is_some() {
@@ -685,6 +702,19 @@ fn injected_user_record(object: &serde_json::Map<String, Value>, text: &str) -> 
     text.starts_with("[Request interrupted by user")
         || text.starts_with("<local-command-stdout>")
         || text.starts_with("<local-command-stderr>")
+}
+
+/// The record's own flags say the user did not submit it; no text heuristic.
+fn injected_by_provenance(object: &serde_json::Map<String, Value>) -> bool {
+    let flagged = |name: &str| object.get(name).and_then(Value::as_bool) == Some(true);
+    let origin = object
+        .get("origin")
+        .and_then(|origin| origin.get("kind"))
+        .and_then(Value::as_str);
+    flagged("isMeta")
+        || flagged("isCompactSummary")
+        || object.get("promptSource").and_then(Value::as_str) == Some("system")
+        || origin.is_some_and(|kind| kind != "human")
 }
 
 fn map_native_type(native_type: &str) -> (Role, EventKind) {
@@ -936,7 +966,9 @@ fn parse_blocks(
             // Reasoning blocks are dropped by policy, never fatal; the field
             // may be absent, empty, or redacted by the harness.
             "thinking" | "redacted_thinking" => {}
-            "image" => {}
+            // Media is dropped by policy: an attached image or document (a
+            // PDF the agent read) is binary data, not instruction text.
+            "image" | "document" => {}
             // A block type this build does not model is harness evolution in
             // context records: the block is dropped and the event survives
             // with the content this build understands. In a USER record the

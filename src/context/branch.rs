@@ -227,7 +227,22 @@ pub fn resolve_active_branch(
     events: &[NormalizedEvent],
     target: &BranchResolutionTarget,
 ) -> BranchResolution {
-    lineage::resolve(events, target)
+    lineage::resolve(events, target, &BTreeMap::new())
+}
+
+/// [`resolve_active_branch`] given the provider response each event is a
+/// fragment of, keyed by event ID. Claude writes one assistant response as a
+/// chain of records that share `message.id`. When tools run concurrently,
+/// answered calls of that response can branch off while the response goes on
+/// through a sibling fragment. Response identity lets the resolver recognize
+/// that layout without relying on timestamps or file order. A rewind starts a
+/// new user turn, so it remains a fork.
+pub fn resolve_active_branch_with_responses(
+    events: &[NormalizedEvent],
+    target: &BranchResolutionTarget,
+    responses: &BTreeMap<EventId, String>,
+) -> BranchResolution {
+    lineage::resolve(events, target, responses)
 }
 
 fn epoch_name(index: u64) -> ContextEpoch {
