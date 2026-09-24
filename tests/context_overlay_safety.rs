@@ -1,7 +1,9 @@
 //! Real-file adversarial checks of the production Claude overlay boundary.
 use serde_json::json;
 use skillranker::adapter::{ClaudeUserPromptSubmit, UnknownFieldPolicy};
-use skillranker::context::overlay::{ClaudeOverlayRequest, apply_claude_prompt_overlay};
+use skillranker::context::overlay::{
+    ClaudeOverlayRequest, OverlayError, apply_claude_prompt_overlay,
+};
 use skillranker::output::ContextQuality;
 use std::{
     fs,
@@ -10,6 +12,12 @@ use std::{
 };
 
 fn request(records: &[serde_json::Value], prompt_id: &str) -> ClaudeOverlayRequest {
+    let lines: Vec<String> = records.iter().map(ToString::to_string).collect();
+    request_lines(&lines, prompt_id)
+}
+
+/// Like [`request`], from raw JSONL lines, for records `json!` cannot build.
+fn request_lines(lines: &[String], prompt_id: &str) -> ClaudeOverlayRequest {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let root = std::env::temp_dir().join(format!(
         "sr-overlay-safety-{}-{}-{}",
@@ -22,7 +30,7 @@ fn request(records: &[serde_json::Value], prompt_id: &str) -> ClaudeOverlayReque
     ));
     fs::create_dir(&root).unwrap();
     let path = root.join("session.jsonl");
-    let bytes = records.iter().map(|v| format!("{v}\n")).collect::<String>();
+    let bytes = lines.iter().map(|l| format!("{l}\n")).collect::<String>();
     fs::write(&path, bytes).unwrap();
     let hook = json!({"hook_event_name":"UserPromptSubmit","session_id":"expected-session","prompt_id":prompt_id,"prompt":"current request","transcript_path":path});
     ClaudeOverlayRequest {
@@ -249,6 +257,302 @@ fn parallel_tool_results_filed_beside_their_calls_are_side_branches() {
         "the real tip is on the branch: {ids:?}"
     );
     assert!(!ids.contains(&"result-a") && !ids.contains(&"result-b"));
+}
+
+/// A tool call written as one fragment of the API response `response`.
+fn batch_call(id: &str, parent: &str, response: &str) -> serde_json::Value {
+    let mut call = tool_call(id, parent);
+    call["message"]["id"] = json!(response);
+    call
+}
+
+/// Claude's layout when tools of one response run concurrently: the response
+/// goes on through `b`, while call `a`'s result starts a side branch that
+/// carries three more calls of the same response, each answered.
+fn interleaved_batches() -> Vec<serde_json::Value> {
+    vec![
+        event("root", None),
+        batch_call("a", "root", "msg-1"),
+        batch_call("b", "a", "msg-1"),
+        tool_result("result-a", "a"),
+        hook_success("hook-a", "result-a"),
+        batch_call("c", "hook-a", "msg-1"),
+        batch_call("d", "c", "msg-1"),
+        batch_call("e", "d", "msg-1"),
+        tool_result("result-b", "b"),
+        hook_success("hook-b", "result-b"),
+        batch_call("f", "hook-b", "msg-1"),
+        tool_result("result-c", "c"),
+        hook_success("hook-c", "result-c"),
+        tool_result("result-d", "d"),
+        tool_result("result-e", "e"),
+        hook_success("hook-e", "result-e"),
+        tool_result("result-f", "f"),
+        json!({"type":"assistant","uuid":"reply","parentUuid":"result-f","sessionId":"expected-session",
+               "message":{"id":"msg-2","role":"assistant","content":[{"type":"text","text":"done"}]}}),
+    ]
+}
+
+fn record<'r>(records: &'r mut [serde_json::Value], uuid: &str) -> &'r mut serde_json::Value {
+    records.iter_mut().find(|r| r["uuid"] == uuid).unwrap()
+}
+
+#[test]
+fn an_answered_parallel_batch_of_the_continuing_response_is_a_side_branch() {
+    let result = apply_claude_prompt_overlay(&request(&interleaved_batches(), "new"))
+        .expect("the response continues through b; its answered side batch is no fork");
+    let ids: Vec<_> = result
+        .events
+        .iter()
+        .filter_map(|e| e.event_id.as_ref().map(|id| id.as_str().to_owned()))
+        .collect();
+    assert_eq!(
+        ids,
+        [
+            "root", "a", "b", "result-b", "hook-b", "f", "result-f", "reply", "new"
+        ]
+    );
+}
+
+/// The response goes on through call `a`'s own result, while call `b` heads a
+/// side batch whose calls fork again: `b`'s result and call `c` each end the
+/// nested fork answered, so neither of them continues.
+fn nested_batches() -> Vec<serde_json::Value> {
+    vec![
+        event("root", None),
+        batch_call("a", "root", "msg-1"),
+        batch_call("b", "a", "msg-1"),
+        tool_result("result-a", "a"),
+        batch_call("c", "b", "msg-1"),
+        tool_result("result-b", "b"),
+        hook_success("hook-b", "result-b"),
+        tool_result("result-c", "c"),
+        json!({"type":"assistant","uuid":"reply","parentUuid":"result-a","sessionId":"expected-session",
+               "message":{"id":"msg-2","role":"assistant","content":[{"type":"text","text":"done"}]}}),
+    ]
+}
+
+#[test]
+fn a_nested_side_batch_is_pruned_whole_when_the_calls_own_result_goes_on() {
+    let result = apply_claude_prompt_overlay(&request(&nested_batches(), "new"))
+        .expect("the response continues through a's result; b's batch is finished");
+    let ids: Vec<_> = result
+        .events
+        .iter()
+        .filter_map(|e| e.event_id.as_ref().map(|id| id.as_str().to_owned()))
+        .collect();
+    assert_eq!(ids, ["root", "a", "result-a", "reply", "new"]);
+    // Response identity is what separates this layout from a rewind.
+    let mut records = nested_batches();
+    for record in &mut records {
+        if let Some(message) = record["message"].as_object_mut() {
+            message.remove("id");
+        }
+    }
+    assert!(apply_claude_prompt_overlay(&request(&records, "new")).is_err());
+    // With no later response, both branches are finished batches and neither
+    // shows where the conversation goes.
+    let finished = [
+        event("root", None),
+        batch_call("a", "root", "msg-1"),
+        batch_call("b", "a", "msg-1"),
+        tool_result("result-b", "b"),
+        tool_result("result-a", "a"),
+        hook_success("hook-a", "result-a"),
+        batch_call("d", "hook-a", "msg-1"),
+        tool_result("result-d", "d"),
+    ];
+    assert!(apply_claude_prompt_overlay(&request(&finished, "new")).is_err());
+}
+
+#[test]
+fn an_interleaved_batch_forks_unless_it_belongs_to_the_continuing_response() {
+    // Each twin breaks one condition of the side-batch layout; each must fail.
+    let mut twins = Vec::new();
+    // The side branch holds a fragment of a different response.
+    let mut records = interleaved_batches();
+    record(&mut records, "d")["message"]["id"] = json!("msg-other");
+    twins.push(("foreign response", records));
+    // The response does not continue through the fork's other child.
+    let mut records = interleaved_batches();
+    record(&mut records, "b")["message"]["id"] = json!("msg-other");
+    twins.push(("different continuing response", records));
+    // Without response identity the layout is indistinguishable from a rewind.
+    let mut records = interleaved_batches();
+    for record in &mut records {
+        if let Some(message) = record["message"].as_object_mut() {
+            message.remove("id");
+        }
+    }
+    twins.push(("no response identity", records));
+    // A call of the side branch is still unanswered.
+    let mut records = interleaved_batches();
+    records.retain(|r| r["uuid"] != "result-d");
+    twins.push(("unanswered call", records));
+    // A user message on the side branch is conversation, not a tool batch.
+    let mut records = interleaved_batches();
+    records.push(event("typed", Some("hook-e")));
+    twins.push(("user turn", records));
+    // A result answering a call outside the batch.
+    let mut records = interleaved_batches();
+    record(&mut records, "result-e")["message"]["content"][0]["tool_use_id"] =
+        json!("call-elsewhere");
+    twins.push(("foreign result", records));
+    for (name, records) in twins {
+        assert!(
+            apply_claude_prompt_overlay(&request(&records, "new")).is_err(),
+            "{name} must stay an ambiguous fork"
+        );
+    }
+}
+
+/// Claude's automatic compaction: the post-compaction chain starts at a
+/// parentless boundary that names the pre-compaction tip only as its
+/// logical parent.
+fn compacted() -> Vec<serde_json::Value> {
+    vec![
+        event("root", None),
+        tool_call("old-call", "root"),
+        tool_result("old-result", "old-call"),
+        hook_success("old-tip", "old-result"),
+        json!({"type":"system","subtype":"compact_boundary","uuid":"boundary","parentUuid":null,
+               "logicalParentUuid":"old-tip","sessionId":"expected-session","content":"Conversation compacted",
+               "compactMetadata":{"trigger":"auto","preservedSegment":{"headUuid":"old-call","anchorUuid":"summary","tailUuid":"old-tip"}}}),
+        json!({"type":"user","uuid":"summary","parentUuid":"boundary","isCompactSummary":true,"sessionId":"expected-session",
+               "message":{"role":"user","content":"summary of the earlier conversation"}}),
+        json!({"type":"assistant","uuid":"reply","parentUuid":"summary","sessionId":"expected-session",
+               "message":{"role":"assistant","content":[{"type":"text","text":"continuing"}]}}),
+    ]
+}
+
+#[test]
+fn a_compaction_boundary_continues_the_pre_compaction_tip() {
+    let result = apply_claude_prompt_overlay(&request(&compacted(), "new"))
+        .expect("the boundary's logical parent is the old tip, not a second leaf");
+    let branch = result.active_branch.expect("resolved branch");
+    let ids: Vec<_> = branch
+        .events
+        .iter()
+        .filter_map(|e| e.event_id.as_ref().map(|id| id.as_str().to_owned()))
+        .collect();
+    assert_eq!(
+        ids,
+        [
+            "root",
+            "old-call",
+            "old-result",
+            "old-tip",
+            "boundary",
+            "summary",
+            "reply",
+            "new"
+        ]
+    );
+    assert_eq!(branch.compaction_count, 1);
+    // Without the logical link the boundary is a second root, and the old
+    // tip stays a leaf the pending prompt cannot choose against.
+    let mut records = compacted();
+    records[4]
+        .as_object_mut()
+        .unwrap()
+        .remove("logicalParentUuid");
+    assert!(apply_claude_prompt_overlay(&request(&records, "new")).is_err());
+}
+
+/// A chain whose middle tool result is over the 256 KiB record limit.
+fn oversized_result_chain() -> Vec<serde_json::Value> {
+    let mut big = tool_result("big-result", "call");
+    big["toolUseResult"] = json!({ "stdout": "x".repeat(300_000) });
+    // Real Claude records carry both session key spellings.
+    big["session_id"] = json!("expected-session");
+    vec![
+        event("root", None),
+        tool_call("call", "root"),
+        big,
+        json!({"type":"assistant","uuid":"reply","parentUuid":"big-result","sessionId":"expected-session",
+               "message":{"role":"assistant","content":[{"type":"text","text":"read it"}]}}),
+    ]
+}
+
+#[test]
+fn an_oversized_record_keeps_its_lineage_and_reports_partial_context() {
+    let result = apply_claude_prompt_overlay(&request(&oversized_result_chain(), "new"))
+        .expect("an oversized tool result is over the parse limit, not malformed");
+    let ids: Vec<_> = result
+        .events
+        .iter()
+        .filter_map(|e| e.event_id.as_ref().map(|id| id.as_str().to_owned()))
+        .collect();
+    assert_eq!(ids, ["root", "call", "big-result", "reply", "new"]);
+    assert_eq!(result.context_quality, ContextQuality::Partial);
+    let big = &result.events[2];
+    assert!(big.text.as_str().is_empty() && big.tool.is_none());
+    // The same chain under the limit is complete: partial comes from the drop.
+    let mut small = oversized_result_chain();
+    small[2]["toolUseResult"] = json!({ "stdout": "x" });
+    let result = apply_claude_prompt_overlay(&request(&small, "new")).unwrap();
+    assert_eq!(result.context_quality, ContextQuality::Complete);
+}
+
+#[test]
+fn an_oversized_record_still_proves_its_session_and_identity() {
+    // Another session's record stays a cross-session read, however large,
+    // under either session key.
+    let mut foreign = oversized_result_chain();
+    foreign[2]["session_id"] = json!("foreign-session");
+    assert!(matches!(
+        apply_claude_prompt_overlay(&request(&foreign, "new")),
+        Err(OverlayError::SessionMismatch { .. })
+    ));
+    let lines: Vec<String> = oversized_result_chain()
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    // A repeated identity key is not a record this reader can trust.
+    let mut duplicate = lines.clone();
+    duplicate[2] = duplicate[2].replacen("{", "{\"uuid\":\"other\",", 1);
+    assert!(apply_claude_prompt_overlay(&request_lines(&duplicate, "new")).is_err());
+    // Truncated JSON is corruption, not an oversized record.
+    let mut truncated = lines;
+    let cut = truncated[2].len() - 2;
+    truncated[2].truncate(cut);
+    assert!(apply_claude_prompt_overlay(&request_lines(&truncated, "new")).is_err());
+}
+
+#[test]
+fn an_injected_document_record_is_context_but_a_submitted_one_is_not_dropped() {
+    let with_middle = |middle: serde_json::Value| {
+        vec![
+            event("root", None),
+            middle,
+            json!({"type":"assistant","uuid":"reply","parentUuid":"doc","sessionId":"expected-session",
+                   "message":{"role":"assistant","content":[{"type":"text","text":"read the PDF"}]}}),
+        ]
+    };
+    let document = json!({"type":"document","source":{"type":"base64","media_type":"application/pdf","data":"JVBERi0="}});
+    // Claude injects a document the agent read as a meta user record.
+    let injected = json!({"type":"user","uuid":"doc","parentUuid":"root","isMeta":true,"sessionId":"expected-session",
+                          "message":{"role":"user","content":[document.clone()]}});
+    let result = apply_claude_prompt_overlay(&request(&with_middle(injected), "new"))
+        .expect("an injected document record is dropped media, not corruption");
+    let doc = &result.events[1];
+    assert_eq!(doc.role, skillranker::context::Role::System);
+    assert!(doc.text.as_str().is_empty());
+    // A prompt the user submitted keeps its text when a document is dropped...
+    let submitted = json!({"type":"user","uuid":"doc","parentUuid":"root","sessionId":"expected-session",
+                           "message":{"role":"user","content":[{"type":"text","text":"summarize this"}, document.clone()]}});
+    let result = apply_claude_prompt_overlay(&request(&with_middle(submitted), "new")).unwrap();
+    assert_eq!(result.events[1].text.as_str(), "summarize this");
+    // ...but a submitted prompt with nothing usable, or with content this
+    // build does not model, cannot be silently dropped.
+    for content in [
+        json!([document]),
+        json!([{"type":"text","text":"do this"}, {"type":"future_block"}]),
+    ] {
+        let submitted = json!({"type":"user","uuid":"doc","parentUuid":"root","sessionId":"expected-session",
+                               "message":{"role":"user","content":content}});
+        assert!(apply_claude_prompt_overlay(&request(&with_middle(submitted), "new")).is_err());
+    }
 }
 
 #[test]
