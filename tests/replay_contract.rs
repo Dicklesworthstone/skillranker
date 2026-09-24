@@ -218,6 +218,19 @@ fn replay_rejects_recorded_answers_the_live_codec_would_refuse() {
 }
 
 #[test]
+fn replay_execution_refuses_an_unvalidated_in_memory_case() {
+    // Built in memory, so it never passed through from_json_bytes. Without __none__
+    // the beat-none rule would fail open if execution trusted it.
+    let mut case = sample_ranked_case();
+    let rerank = case.recorded_responses.rerank.as_mut().unwrap();
+    rerank.distribution.retain(|d| d.option_id != "__none__");
+    rerank.distribution[1].probability = 0.20;
+    assert!(execute_replay(&case, None).is_err());
+    // The honest twin still executes.
+    assert!(execute_replay(&sample_ranked_case(), None).is_ok());
+}
+
+#[test]
 fn replay_case_rejects_distribution_not_summing_to_one() {
     let mut case = sample_ranked_case();
     case.recorded_responses.wide.as_mut().unwrap().distribution[0].probability = 0.10; // Sum becomes 0.25, far from 1.0

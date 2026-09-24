@@ -567,6 +567,11 @@ pub fn execute_replay(
     case: &ReplayCase,
     policy: Option<&ReplayPolicy>,
 ) -> Result<ReplayOutcome, ReplayError> {
+    // `ReplayCase` has public fields, so a case built in memory need not have passed
+    // through `from_json_bytes`. Validating here keeps scoring from reading an
+    // unvalidated distribution, where a missing `__none__` counts as zero and every
+    // candidate would beat none (sr-u66v).
+    case.validate()?;
     let hist_decision_str = case
         .historical_decision
         .get("decision")
