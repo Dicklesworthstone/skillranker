@@ -29,11 +29,20 @@ pub const MAX_INSPECTED_PAYLOAD_DEPTH: usize = NORMALIZED_CONTEXT_DEPTH.max();
 /// a fragment such as `password=[RED`. It must also not end between an
 /// assignment and its marker, leaving `password=` whose value is whatever
 /// follows (an ellipsis, an omission note). The payload scan reads either as a
-/// secret and refuses the whole request. Such a cut keeps the whole marker
-/// when `limit` allows, and otherwise drops the assignment's whole token.
+/// secret and refuses the whole request. Such a cut keeps the whole marker,
+/// with the quote closing a quoted one (`"[REDACTED]"`, since an unclosed
+/// quote makes the rest of the text the value), when `limit` allows, and
+/// otherwise drops the assignment's whole token.
 pub fn redacted_head_end(text: &str, at: usize, limit: usize) -> usize {
     for (start, marker) in text.match_indices(REDACTION_MARKER) {
         let end = start + marker.len();
+        let end = match (
+            text[..start].chars().next_back(),
+            text[end..].chars().next(),
+        ) {
+            (Some(open @ ('"' | '\'')), Some(close)) if close == open => end + 1,
+            _ => end,
+        };
         // The quotes and spaces between an assignment and its value.
         let lead = text[..start]
             .trim_end_matches(|c: char| c.is_whitespace() || matches!(c, '"' | '\''))
@@ -153,6 +162,22 @@ fn entropy(text: &str) -> f64 {
         .sum()
 }
 
+/// The part of a matched value to replace. A value in matching quotes keeps
+/// its quotes, so `password="x")` becomes `password="[REDACTED]")`. Replacing
+/// the quotes too would leave `password=[REDACTED])`, which a later scan reads
+/// as the unquoted value `[REDACTED])`: not the marker, so a "secret", and the
+/// whole request is refused. An unterminated quoted value runs to the end of
+/// the field, so nothing can follow it and it is replaced whole.
+fn inside_closing_quotes(value: &str, range: Range<usize>) -> Range<usize> {
+    let bytes = value.as_bytes();
+    match bytes {
+        [open @ (b'"' | b'\''), .., close] if bytes.len() > 2 && close == open => {
+            range.start + 1..range.end - 1
+        }
+        _ => range,
+    }
+}
+
 fn merged_spans(text: &str, scan_entropy: bool) -> Vec<Range<usize>> {
     let mut spans = Vec::new();
     for found in AWS.find_iter(text) {
@@ -169,7 +194,7 @@ fn merged_spans(text: &str, scan_entropy: bool) -> Vec<Range<usize>> {
                 // The fixed marker is safe on repeated passes, including when
                 // attached to an assignment key or URI userinfo.
                 if found.as_str().trim_matches(['\'', '"']) != REDACTION_MARKER {
-                    spans.push(found.range());
+                    spans.push(inside_closing_quotes(found.as_str(), found.range()));
                 }
             }
         }
