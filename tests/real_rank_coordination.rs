@@ -614,6 +614,44 @@ fn completed_lease_with_absent_pair_reacquires_leadership_before_fresh_evaluatio
 }
 
 #[test]
+fn an_unacquirable_lease_sends_uncoordinated_instead_of_a_false_timeout() {
+    // A lease that cannot be acquired (the store busy for the whole retry
+    // window) is no evidence of a leader. The run must send on its own, not
+    // fail as a follower whose leader never existed.
+    let f = Fixture::new(CONSENT);
+    f.claude_session("lease-busy", TASK);
+    let provider = Provider::start(&f, "useful", &[]);
+    let first = f.sr_command(&provider, &[]).output().unwrap();
+    assert_eq!(
+        first.status.code(),
+        Some(0),
+        "the first run creates the store"
+    );
+    // The same session with a new request: a different exact request, so no
+    // cached answer serves it.
+    f.claude_session("lease-busy", "Please draft release notes from git history");
+    let lock = rusqlite::Connection::open(f.cache_dir().join("sr/cache.sqlite3")).unwrap();
+    lock.execute_batch("BEGIN IMMEDIATE").unwrap();
+    let out = f
+        .sr_command(&provider, &["--timeout-ms", "12000"])
+        .output()
+        .unwrap();
+    lock.execute_batch("ROLLBACK").unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let doc: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_ne!(doc["decision"], "unavailable", "{doc}");
+    assert_eq!(
+        stages(&provider.finish()),
+        ["wide", "rerank", "wide", "rerank"]
+    );
+}
+
+#[test]
 fn no_cache_and_no_persist_preserve_documented_effects() {
     let f = Fixture::new(CONSENT);
     f.claude_session("session-nocache-1", TASK);

@@ -1614,6 +1614,40 @@ fn a_dry_run_previews_the_rerank_for_supplied_shortlist_evidence() {
 }
 
 #[test]
+fn a_dry_run_accepts_a_full_default_shortlist_not_only_top_k() {
+    // A stage-2 shortlist holds up to M (default 8), not K (default 5).
+    let f = Fixture::new(CONSENT);
+    std::fs::create_dir_all(f.root.join("home")).unwrap();
+    for name in ["gamma", "delta", "epsilon", "zeta", "eta", "theta", "iota"] {
+        f.skill(name, "Runs and repairs failing rust tests.");
+    }
+    let provider = Provider::start(&f, "useful", &[]);
+    let ids: Vec<String> = ["alpha", "beta", "gamma", "delta", "epsilon", "zeta"]
+        .iter()
+        .map(|name| skill_id(&f, name))
+        .collect();
+    let mut args = vec!["--dry-run"];
+    for id in &ids {
+        args.extend(["--shortlist-ids", id.as_str()]);
+    }
+    let (code, preview) = run_sr_with(&f, &provider, true, TASK, &args);
+    assert_eq!(code, Some(0), "{preview}");
+    let stages = preview["provider_request"]["stages"].as_array().unwrap();
+    assert_eq!(stages[1]["candidates"], 6, "{preview}");
+    // Nine distinct real candidates are more than M and stay a usage error.
+    let more: Vec<String> = ["eta", "theta", "iota"]
+        .iter()
+        .map(|n| skill_id(&f, n))
+        .collect();
+    for id in &more {
+        args.extend(["--shortlist-ids", id.as_str()]);
+    }
+    let (code, value) = run_sr_with(&f, &provider, true, TASK, &args);
+    assert_eq!(code, Some(2), "{value}");
+    assert!(provider.finish().is_empty(), "a preview sends nothing");
+}
+
+#[test]
 fn absent_or_invalid_stage_two_evidence_is_never_guessed() {
     let f = Fixture::new(CONSENT);
     std::fs::create_dir_all(f.root.join("home")).unwrap();

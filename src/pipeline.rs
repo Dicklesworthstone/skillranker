@@ -1618,16 +1618,27 @@ async fn rank_once(
         already_loaded: &loaded_refs,
     };
 
-    // Roster skills as AdvisorySkills
+    // Roster skills as AdvisorySkills: one per physical skill. Bindings of one
+    // skill are aliases of the same file (reached through two roots, or a
+    // symlink), and the provider's options are skills. Offering two would fail
+    // the whole ranking as a duplicate option and inflate the overflow count.
+    // Prefer a binding the agent may invoke, so admission still reports a
+    // restriction only when every alias carries it.
     let mut initial_advisory: Vec<AdvisorySkill> = Vec::new();
     for skill in roster.skills() {
-        for binding in skill.bindings() {
-            if matches!(binding.visibility, Visibility::Verified { .. }) {
-                initial_advisory.push(AdvisorySkill {
-                    record: skill.record(),
-                    binding,
-                });
-            }
+        let mut verified = skill
+            .bindings()
+            .iter()
+            .filter(|binding| matches!(binding.visibility, Visibility::Verified { .. }));
+        let chosen = verified
+            .clone()
+            .find(|binding| binding.restrictions.agent_invocable)
+            .or_else(|| verified.next());
+        if let Some(binding) = chosen {
+            initial_advisory.push(AdvisorySkill {
+                record: skill.record(),
+                binding,
+            });
         }
     }
 
@@ -2105,7 +2116,8 @@ async fn rank_once(
             candidate_ids.len(),
         )?];
         if !args.shortlist_ids.is_empty() {
-            let (_, shortlist) = sizes.effective(candidate_ids.len());
+            // `effective` is `(M, K)`: a stage-2 shortlist holds up to M.
+            let (shortlist, _) = sizes.effective(candidate_ids.len());
             let mut seen = BTreeSet::new();
             if args.shortlist_ids.len() > shortlist
                 || args
@@ -2249,6 +2261,11 @@ async fn rank_once(
             Some((response, age_ms, rerank))
         };
     let mut cached = lookup_pair(&mut store);
+    // Set only when another process leads this exact request and this run is
+    // not taking over: then sending would duplicate its evaluation. A lease that
+    // could not be read or acquired is no evidence of a leader, and the run
+    // sends uncoordinated.
+    let mut deferred_to_leader = false;
     // Single flight: on a miss, one process per exact request sends. Another
     // process with the same request waits for that lease and is then served
     // the pair it recorded; if the leader fails, the follower sends itself.
@@ -2283,6 +2300,7 @@ async fn rank_once(
                 {
                     progress.lease = Some((leases, leader));
                 }
+                deferred_to_leader = cached.is_none() && progress.lease.is_none();
             }
             Some(LeaseAcquisition::AlreadyCompleted) => {
                 cached = lookup_pair(&mut store);
@@ -2376,11 +2394,7 @@ async fn rank_once(
                     "Trace continuation requires exact cached evaluation evidence",
                 ));
             }
-            if store.is_some()
-                && matches!(gate.runtime_state(), StoreAccess::Enabled)
-                && args.cache_dir.is_some()
-                && progress.lease.is_none()
-            {
+            if deferred_to_leader {
                 return Err(failure(
                     ErrorKind::Timeout,
                     "Follower deadline reached while request was owned by active leader",
