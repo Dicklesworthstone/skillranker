@@ -414,6 +414,96 @@ fn shadow_hook_non_blocking() {
 }
 
 #[test]
+fn shadow_hook_accepts_thinking_and_message_less_system_records() {
+    // Real Claude transcripts chain conversation events through records that
+    // carry no publishable message. Exercise the installed hook boundary, not
+    // only the parser: a silent refusal would still exit zero with empty stdout.
+    for shape in ["thinking", "system", "interleaved"] {
+        let fixture = HookFixture::new();
+        let init = fixture.run_cli(&[
+            "ledger",
+            "init",
+            "--dir",
+            fixture.ledger_dir().to_str().unwrap(),
+        ]);
+        assert_eq!(init.status.code(), Some(0), "{shape}: ledger init failed");
+
+        let thinking = |id: &str, parent: &str| {
+            json!({
+                "type": "assistant", "uuid": id, "parentUuid": parent,
+                "sessionId": fixture.session_id,
+                "message": {"role": "assistant", "content": [
+                    {"type": "thinking", "thinking": "synthetic private reasoning", "signature": "synthetic"}
+                ]}
+            })
+        };
+        let system = |id: &str, parent: &str| {
+            json!({
+                "type": "system", "uuid": id, "parentUuid": parent,
+                "sessionId": fixture.session_id, "subtype": "hook_result"
+            })
+        };
+        let mut records = vec![user_event(
+            "root",
+            None,
+            &fixture.session_id,
+            "Please use skill test-repair to fix cargo test failures.",
+        )];
+        let final_parent = match shape {
+            "thinking" => {
+                records.push(thinking("t1", "root"));
+                "t1"
+            }
+            "system" => {
+                records.push(system("s1", "root"));
+                "s1"
+            }
+            _ => {
+                records.push(thinking("t1", "root"));
+                records.push(system("s1", "t1"));
+                records.push(thinking("t2", "s1"));
+                "t2"
+            }
+        };
+        records.push(json!({
+            "type": "assistant", "uuid": "a1", "parentUuid": final_parent,
+            "sessionId": fixture.session_id,
+            "message": {"role": "assistant", "content": [
+                {"type": "text", "text": "I will inspect the failing tests."}
+            ]}
+        }));
+        fixture.write_transcript(&records);
+
+        let payload = json!({
+            "hook_event_name": "UserPromptSubmit",
+            "prompt": "Please use skill test-repair to fix cargo test failures.",
+            "prompt_id": format!("prompt-{shape}"),
+            "session_id": fixture.session_id,
+            "transcript_path": fixture.transcript_path(),
+            "cwd": fixture.workspace(),
+        });
+        let output = fixture.run_hook(&serde_json::to_vec(&payload).unwrap(), &[]);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(0), "{shape}: {stderr}");
+        assert!(
+            output.stdout.is_empty(),
+            "{shape}: shadow hook wrote stdout"
+        );
+        assert!(
+            !stderr.contains("corrupt") && !stderr.contains("malformed"),
+            "{shape}: harmless transcript record refused: {stderr}"
+        );
+
+        let db_path = fixture.ledger_dir().join(skillranker::storage::LEDGER_FILE);
+        let conn = rusqlite::Connection::open(db_path).expect("open ledger");
+        let count: i64 = conn
+            .query_row("SELECT count(*) FROM ranking_events", [], |row| row.get(0))
+            .expect("count ranking events");
+        assert_eq!(count, 1, "{shape}: hook silently skipped ranking: {stderr}");
+    }
+}
+
+#[test]
 fn quiet_on_failure() {
     let fixture = HookFixture::new();
 
