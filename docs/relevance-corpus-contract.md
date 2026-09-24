@@ -6,9 +6,10 @@ relevance corpus that the promotion gates consume. It exists because the gates
 forbid freezing after the fact: a corpus whose rules were written after its
 labels were seen cannot support an inferential claim.
 
-Status: pre-registered v1. Changing any rule in this document after case
-adjudication has started invalidates the affected epoch; the corrected rules
-apply only to prospectively collected cases.
+Status: pre-registered v2 (2026-09-24; §3.1 clauses and §3.3 revised after the §10
+pilot). Changing any rule in this document after case adjudication has started
+invalidates the affected epoch; the corrected rules apply only to prospectively
+collected cases. v1 labelled only the diagnostic pilot and opens no corpus epoch.
 
 ## 1. What the corpus feeds
 
@@ -94,6 +95,13 @@ materially help the user's current request under their stated constraints:
   present in context adds nothing and is not acceptable.
 - Planning, analysis, writing, and explanation skills are eligible; acting on
   files is not a prerequisite.
+- A skill that fits only partly under a constraint is acceptable when it offers a
+  permitted path that helps materially. For example, a release skill covering both a
+  forbidden and an allowed build path is acceptable if the request forbids only the
+  first.
+- Judge only against what the request states. Do not assume an unstated user profile
+  (a filer type, a jurisdiction) or unstated environment details (the project's
+  language, how a swarm is managed).
 
 The set may have several members (order-free) or be empty. Naming a skill
 "acceptable" is not a claim it is the single best one.
@@ -108,11 +116,15 @@ not sufficient; the test is material help, not personal habit.
 ### 3.3 Near-miss
 
 A case is **near-miss** when (a) its acceptable set is non-empty, and (b) at
-least one visible skill is *plausible but wrong*: a reasonable selector could
-pick it from its name/description, yet it fails the material-help test. Each
-near-miss case names its near-miss skill IDs. A case with an empty acceptable
-set is no-match even if a tempting skill exists — the near-miss class exists
-to measure wrong-choice pressure where a right choice also exists.
+least one visible skill is a **strong distractor**: it is not acceptable, yet a
+reasonable selector reading only names and descriptions would be *more* likely to
+pick it than the best acceptable skill. An ordinary related-but-wrong skill does not
+qualify, because on a large roster one always exists (§10). Each near-miss case
+names its strong-distractor skill IDs. When a case is double-judged, it is near-miss
+only if both adjudicators name at least one strong distractor in common, and its
+recorded IDs are those they share. A case with an empty acceptable set is no-match
+even if a tempting skill exists — the near-miss class exists to measure
+wrong-choice pressure where a right choice also exists.
 
 ### 3.4 Explicit requests and exclusions
 
@@ -281,3 +293,16 @@ partial-fit-under-constraint (acceptable when a permitted path exists and the co
 is stated), missing profile (judge only against what the request states), and unstated
 environment (never assume it; judge the request as written). Adopting v2 starts a new
 epoch; no v1 labels exist beyond this pilot.
+
+### 10.1 v2 check — the strong-distractor question (adopted)
+
+Two new blinded adjudicators (D, E) re-judged all 18 pilot cases under the v2 wording
+above, independently of A, B and C. They agreed on whether a strong distractor exists
+in 18 of 18 cases, and in both cases where one exists they named the same skill:
+`gh-actions` for a release request that forbids GitHub Actions, and a
+Drizzle/Postgres migration skill for a SQLite migration. Their acceptable sets agreed
+with each other on 17 of 18 cases, and on 16 of 18 with the v1 majority labels
+reached by different adjudicators. The strata now discriminate: 11 positive, 2
+near-miss, 5 no-match. Each adjudicator took about 30 s for 18 cases. v2 keeps the
+three case kinds, so README's promotion table, the evaluation policy and
+`scripts/validate_corpus.py` stand unchanged.
