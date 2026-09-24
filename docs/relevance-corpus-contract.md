@@ -229,3 +229,52 @@ is the corpus's definition of done. It fails on:
   listed case missing from the corpus (digest mismatch).
 
 The validator's output, not a case count, is this bead's exit evidence.
+
+## 10. Pilot result — 2026-09-24 (outcome (c): revise the rubric first)
+
+Run under maintainer-delegated decisions (sr-uv2v comment of 2026-09-23). The pilot used
+blinded AI adjudicators, which is acceptable for a diagnostic pilot only; any promotion
+claim still requires human adjudication. It ran 18 **constructed** requests, one family
+each, against this workspace's real 205-skill Claude roster. Each description was
+verified byte-for-byte by BLAKE3 against the roster's content hash. Every case was judged
+independently by two fresh subagent adjudicators (A, B), which saw only this rubric, the
+roster and the request, never SkillRanker's or Jev's output. The 11 cases whose label sets
+differed went to a third blinded adjudicator (C), and each skill's final label is its
+majority vote. Case data stays owner-only outside the repository (§7).
+
+`scripts/validate_corpus.py` passed: 18 cases, 18 families, 18 double-judged, dataset
+digest `929bf33b65b903fac37bec33cec76878ab6f82cac9c4eed67af6b0fc2cdded62`.
+
+| Measure | Result |
+|---|---|
+| Cost | ≈43 s per adjudicator for 18 cases (≈2.4 s per case); tie-break 36 s for 11 cases. Human cost not measured |
+| Class agreement (A vs B) | 18/18 |
+| Acceptable-set agreement | 17/18 exact (mean Jaccard 0.98) |
+| Near-miss-set agreement | 7/18 exact; 11/18 disagreed |
+| Rubric gaps noted | 8 notes in 6 of 18 cases |
+| Final strata | positive 0, near-miss 13, no-match 5 |
+
+Findings that require a revision before any corpus is built:
+
+1. **The acceptable set is reproducible. The near-miss set is not.** "Plausible but
+   wrong" over a 205-skill roster produced long, adjudicator-specific lists, so a
+   near-miss stratum defined this way would measure the adjudicator rather than the
+   selector.
+2. **The positive stratum is degenerate on a large roster.** Every case with a
+   non-empty acceptable set also had some tempting wrong skill, so none came out
+   `positive`. README's targets (≥150 positive, ≥50 near-miss) cannot both be met under
+   §3.3 as written.
+3. **Where the rubric gaps recurred:** a skill that fits only partly under a constraint
+   (it covers a forbidden path as well as a permitted one); a profile-specific skill
+   when the request states no profile; environment assumptions the request leaves
+   unstated (NTM-managed swarm, project language); and whether tempting skills are
+   recorded for a no-match case.
+
+Proposed v2, not adopted here because it changes README's promotion-table strata:
+(a) class from the acceptable set alone (positive vs no-match); (b) near-miss as an
+attribute of a positive case, counted only when two independent adjudicators name at
+least one skill in common, which is reproducible by construction; (c) rubric clauses for
+partial-fit-under-constraint (acceptable when a permitted path exists and the constraint
+is stated), missing profile (judge only against what the request states), and unstated
+environment (never assume it; judge the request as written). Adopting v2 starts a new
+epoch; no v1 labels exist beyond this pilot.
