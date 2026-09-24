@@ -253,3 +253,27 @@ Whether a running Claude session picks up the edited hook without a restart
 depends on Claude Code's settings reload. Sessions started after this change
 certainly do. Live rows other than `credential-absent` for this repository are
 the confirmation to look for.
+
+## Redeployment — 2026-09-24 13:22Z (AzureJaguar, review fixes incl. secret redaction)
+
+- Binary: `~/.local/bin/sr`, SHA256
+  `25786998f434d902afd76706f3aa6a4784fee233297efaa029ef6c5c256bec55`, built
+  `--release --locked` from a clean `git archive` export of the pushed revision
+  `f556751`, with its sources touched so the build could not reuse stale
+  artifacts. It adds the `sr-8ye6` review fixes over the previous deploy.
+  These matter for the cohort the moment the credential reaches the panes:
+  - `_`-prefixed secret assignments (`OPENAI_API_KEY=…`, `GITHUB_TOKEN=…`) are
+    now redacted;
+  - tool arguments are allowlisted before redaction;
+  - a negated directive never becomes a requirement;
+  - a skill reached through two names no longer fails the rank.
+  The previous `ad28bdd` binary (SHA256 `e784d4db…`, this file's prior
+  receipt) is kept as `~/.local/bin/sr.backup.20260924T132231Z-ad28bdd`.
+- Pre-deploy smoke: `sr hook claude` replayed over the 80 most recent real
+  session transcripts in an isolated sandbox (no key, no network, no real
+  ledger). The outcome matched the installed binary on all 80.
+- Post-install check: an offline `sr rank --dry-run` in an isolated HOME, whose
+  request contains `OPENAI_API_KEY=abc123def`, previews a request containing
+  `OPENAI_API_KEY=[REDACTED]`, and the value appears nowhere in the output.
+- Not changed: hook scope (project-local), consent, and the credential (still
+  `credential-absent` until agents start from fresh shells).
