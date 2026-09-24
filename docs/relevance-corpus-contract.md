@@ -42,6 +42,16 @@ A case is a (workspace, session, agent branch, moment) tuple where:
 2. The user's current request and constraints are recoverable in redacted form
    sufficient to judge relevance without the raw session.
 3. The session's producer consents to retention under §7.
+4. The moment is a **user-initiated** turn. SkillRanker also ranks turns that a harness
+   message started, such as a Claude `<task-notification>` arriving while the agent
+   is idle, because the agent does act next (sr-jdji). Those turns have no user
+   request to judge relevance against. The frame classifies each turn by its
+   transcript record, which Claude marks `origin.kind = task-notification`, and
+   excludes harness-initiated turns from relevance and needless-suggestion
+   denominators (sr-i2u7). In the first live shadow evaluations they were 10 of 14
+   turns. The hook cannot make this split, because Claude writes the mark after the
+   hook starts. Operational availability still counts them, since it measures whether
+   the hook works.
 
 Shadow-mode traffic (`sr-1uf4`) is the preferred source: no advice was
 injected, so the selector under evaluation cannot have influenced the session.
