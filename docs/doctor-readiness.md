@@ -14,7 +14,7 @@ changes no configuration. Invalid configuration fails first, with
 | `roster` | `ready`, `empty`, `no-advisory-candidates`, `unusable`, `timeout` | add skills, or inspect `sr roster --json` |
 | `credential` | `present` or `absent`; `verified` is always `false` | create your own key in the TypeSafe console |
 | `network` | `authorized` (with `source`), `not-authorized`, `blocked` (with `by`) | `--allow-network`, or trusted `network.enabled = true` |
-| `transport` | `untested`, `previously-verified`, `invalidated` | — |
+| `transport` | `untested`, `previously-verified`, `invalidated`; `ambient_proxy_ignored` names set proxy variables | allow direct HTTPS egress when a proxy variable is set |
 | `ledger` | `not-available`, `blocks_ranking: false` | — |
 | `hook` | `mode` and `mode_sources`; `installation: not-checked`; `snoozes: not-available` | — |
 
@@ -45,6 +45,10 @@ canonical endpoint origin, model and timeout. `assess_transport` returns:
 
 No live check writes transport evidence in this build, so doctor always
 reports `untested`.
+
+The transport connects directly and ignores `HTTP_PROXY`, `HTTPS_PROXY`,
+`ALL_PROXY`, `NO_PROXY` and their lowercase forms. When any is set, doctor
+lists the variable names, never their values, and adds a transport next step.
 
 ## Policy fingerprint
 

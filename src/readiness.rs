@@ -131,6 +131,9 @@ pub struct Inputs<'a> {
     pub gate: EffectGate,
     pub roster: RosterCheck<'a>,
     pub transport: TransportState,
+    /// Names of set ambient proxy variables. The transport connects directly
+    /// and ignores them; values are never read into the report.
+    pub ambient_proxy_vars: Vec<&'static str>,
     pub ledger: LedgerCheck,
 }
 
@@ -265,6 +268,21 @@ pub fn report(inputs: &Inputs<'_>) -> Value {
             "changed": changed,
             "next_step": null,
         }),
+    };
+
+    let transport = if inputs.ambient_proxy_vars.is_empty() {
+        transport
+    } else {
+        let mut transport = transport;
+        transport["ambient_proxy_ignored"] = json!(inputs.ambient_proxy_vars);
+        transport["next_step"] = step(
+            "transport",
+            &format!(
+                "{} is set but ignored: sr connects directly to the TypeSafe endpoint, so allow direct HTTPS egress to it.",
+                inputs.ambient_proxy_vars.join(", ")
+            ),
+        );
+        transport
     };
 
     let ledger = match &inputs.ledger {

@@ -4160,6 +4160,10 @@ fn readiness(
         gate,
         roster,
         transport,
+        ambient_proxy_vars: crate::jev::ProxyPolicy::inspect_ambient_process_env()
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect(),
         ledger,
     });
     timely(clock)?;

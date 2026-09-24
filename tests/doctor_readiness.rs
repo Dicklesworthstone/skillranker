@@ -397,3 +397,32 @@ fn historical_transport_evidence_is_invalidated_by_identity_changes() {
     value["verified_live"] = true.into();
     assert!(serde_json::from_value::<TransportEvidence>(value).is_err());
 }
+
+#[test]
+fn ignored_ambient_proxies_are_named_without_their_values() {
+    let home = Home::new();
+    let secret_proxy = "http://user:hunter2@proxy.internal:3128";
+    let report = home.doctor(
+        &["doctor", "--json"],
+        &[("HTTPS_PROXY", secret_proxy), ("no_proxy", "localhost")],
+    );
+    let transport = &report["checks"]["transport"];
+    assert_eq!(transport["state"], "untested");
+    assert_eq!(
+        transport["ambient_proxy_ignored"],
+        serde_json::json!(["HTTPS_PROXY", "no_proxy"])
+    );
+    assert!(steps(&report).contains(&"transport".to_owned()));
+    let text = report.to_string();
+    assert!(
+        !text.contains("hunter2") && !text.contains("proxy.internal"),
+        "{text}"
+    );
+
+    let quiet = Home::new().doctor(&["doctor", "--json"], &[]);
+    assert!(
+        quiet["checks"]["transport"]
+            .get("ambient_proxy_ignored")
+            .is_none()
+    );
+}
