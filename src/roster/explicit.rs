@@ -162,48 +162,73 @@ pub fn parse_prompt_directives(prompt: &str) -> Vec<ParsedDirective> {
             continue;
         }
 
-        // 2. Natural language directives
+        // 2. Natural language directives. A segment can hold both kinds
+        // ("don't use skill lint, use skill deploy"). A requirement phrase
+        // governed by a negation never requires its target: "don’t use skill
+        // deploy" (typographic apostrophe) must not become the opposite of
+        // what the user asked.
         let lower = trimmed.to_ascii_lowercase();
-
-        // Check exclusions first ("do not use skill X", "don't use skill X", "exclude skill X")
-        if let Some(target) = extract_natural_directive(
-            trimmed,
-            &lower,
-            &[
-                "do not use skill ",
-                "do not use ",
-                "don't use skill ",
-                "don't use ",
-                "exclude skill ",
-            ],
-        ) {
+        for (_, target) in natural_directives(trimmed, &lower, EXCLUSION_PREFIXES) {
             directives.push(ParsedDirective {
                 target,
                 kind: DirectiveKind::Exclude,
             });
-            continue;
         }
-
-        // Check positive directives ("use skill X", "require skill X", "run skill X", "invoke skill X")
-        if let Some(target) = extract_natural_directive(
-            trimmed,
-            &lower,
-            &[
-                "use skill ",
-                "require skill ",
-                "run skill ",
-                "invoke skill ",
-                "execute skill ",
-            ],
-        ) {
-            directives.push(ParsedDirective {
-                target,
-                kind: DirectiveKind::Require,
-            });
+        for (pos, target) in natural_directives(trimmed, &lower, REQUIREMENT_PREFIXES) {
+            if !negated(&lower[..pos]) {
+                directives.push(ParsedDirective {
+                    target,
+                    kind: DirectiveKind::Require,
+                });
+            }
         }
     }
 
     directives
+}
+
+/// Longer phrases first: a shorter one at the same offset is the same phrase.
+const EXCLUSION_PREFIXES: &[&str] = &[
+    "do not use skill ",
+    "do not use ",
+    "don't use skill ",
+    "don't use ",
+    "don\u{2019}t use skill ",
+    "don\u{2019}t use ",
+    "dont use skill ",
+    "never use skill ",
+    "exclude skill ",
+];
+
+const REQUIREMENT_PREFIXES: &[&str] = &[
+    "use skill ",
+    "require skill ",
+    "run skill ",
+    "invoke skill ",
+    "execute skill ",
+];
+
+/// Whether the text before a requirement phrase ends in a word that negates
+/// it. Punctuation ends the clause: "No, use skill X" still requires X.
+fn negated(before: &str) -> bool {
+    let Some(word) = before.split_whitespace().next_back() else {
+        return false;
+    };
+    matches!(
+        word.replace('\u{2019}', "'").as_str(),
+        "not"
+            | "don't"
+            | "dont"
+            | "never"
+            | "no"
+            | "avoid"
+            | "without"
+            | "cannot"
+            | "can't"
+            | "won't"
+            | "shouldn't"
+            | "mustn't"
+    )
 }
 
 /// Internal dots belong to exact invocation names. A terminal dot, or one
@@ -225,28 +250,38 @@ fn directive_segments(text: &str) -> impl Iterator<Item = &str> {
         })
 }
 
-fn extract_natural_directive(original: &str, line: &str, prefixes: &[&str]) -> Option<String> {
+/// Every `(offset, target)` a prefix introduces in the segment, not only the
+/// first occurrence: "to reuse skill output, use skill deploy" must still see
+/// the second. Where a longer prefix already matched at an offset, a shorter
+/// one there is the same phrase and is skipped.
+fn natural_directives(original: &str, line: &str, prefixes: &[&str]) -> Vec<(usize, String)> {
+    let mut found: Vec<(usize, String)> = Vec::new();
+    let mut claimed = std::collections::BTreeSet::new();
     for prefix in prefixes {
-        if let Some(pos) = line.find(prefix) {
+        for (pos, _) in line.match_indices(prefix) {
             // Must be at line start or preceded by punctuation/space
-            if pos == 0
+            let bounded = pos == 0
                 || line.as_bytes()[pos - 1].is_ascii_whitespace()
                 || line.as_bytes()[pos - 1] == b'.'
                 || line.as_bytes()[pos - 1] == b';'
-                || line.as_bytes()[pos - 1] == b','
-            {
-                // ASCII case folding preserves byte offsets, but only the
-                // directive vocabulary is case-insensitive. Targets are exact.
-                let after = &original[pos + prefix.len()..];
-                let first_word = after.split_whitespace().next()?;
-                let target = clean_target_name(first_word);
-                if !target.is_empty() {
-                    return Some(target);
-                }
+                || line.as_bytes()[pos - 1] == b',';
+            if !bounded || !claimed.insert(pos) {
+                continue;
+            }
+            // ASCII case folding preserves byte offsets, but only the
+            // directive vocabulary is case-insensitive. Targets are exact.
+            let after = &original[pos + prefix.len()..];
+            let Some(first_word) = after.split_whitespace().next() else {
+                continue;
+            };
+            let target = clean_target_name(first_word);
+            if !target.is_empty() {
+                found.push((pos, target));
             }
         }
     }
-    None
+    found.sort_by_key(|(pos, _)| *pos);
+    found
 }
 
 fn clean_target_name(word: &str) -> String {
@@ -319,6 +354,27 @@ fn strip_quotes_and_code_blocks(text: &str) -> String {
             if let Some(close_idx) = end {
                 out.push(' ');
                 i = close_idx;
+                continue;
+            }
+        }
+
+        // 3b. Typographic quotes “...” and ‘...’, as phones and word processors
+        // type them. A ’ inside a word is an apostrophe, never an opener.
+        if let Some(close_quote) = match chars[i] {
+            '\u{201C}' => Some('\u{201D}'),
+            '\u{2018}' => Some('\u{2019}'),
+            _ => None,
+        } {
+            let close = chars[i + 1..].iter().enumerate().position(|(k, &c)| {
+                c == close_quote
+                    && !(close_quote == '\u{2019}'
+                        && chars
+                            .get(i + 2 + k)
+                            .is_some_and(|next| next.is_alphanumeric()))
+            });
+            if let Some(offset) = close {
+                out.push(' ');
+                i += offset + 2;
                 continue;
             }
         }
