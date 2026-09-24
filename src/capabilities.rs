@@ -28,6 +28,7 @@ pub const IMPLEMENTED_COMMANDS: &[&str] = &[
     "rank",
     "replay",
     "roster",
+    "stats",
     "uninstall-hook",
 ];
 

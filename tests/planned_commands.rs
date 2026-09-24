@@ -17,7 +17,10 @@ fn run(args: &[&str]) -> (Option<i32>, Value) {
 
 #[test]
 fn a_planned_command_names_the_phase_it_waits_for() {
-    for (command, phase) in [("stats", "P5"), ("calibrate", "P8")] {
+    // `stats` used to stand here and graduated in the 6.13 work, which is the point
+    // of this case: a command that becomes real must leave this list, and the test
+    // fails loudly if it does not.
+    for (command, phase) in [("eval", "P5"), ("calibrate", "P8")] {
         let (code, value) = run(&[command, "--json"]);
         assert_eq!(code, Some(2), "{command}: {value}");
         assert_eq!(

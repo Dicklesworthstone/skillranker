@@ -22,7 +22,7 @@ use rusqlite::{
     Connection, ErrorCode, OpenFlags, OptionalExtension, TransactionBehavior, config::DbConfig,
     limits::Limit, params,
 };
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fs::File;
 use std::path::{Component, Path, PathBuf};
@@ -528,6 +528,106 @@ pub struct RetainedStats {
     pub active_snapshots: u64,
 }
 
+/// What one delivery channel did over a window, with the denominators separated.
+///
+/// Counts only; nothing here is a rate, because a rate without its denominator is
+/// the thing this report exists not to print.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ChannelStats {
+    pub channel: String,
+    /// Every recorded invocation, whatever became of it.
+    pub evaluated_turns: u64,
+    pub ranked: u64,
+    pub explicit: u64,
+    pub abstained: u64,
+    /// `unavailable` rows that finished: a real operational failure.
+    pub operational_failures: u64,
+    /// Rows still `generated`: in flight, or killed before finishing. Their cost is
+    /// unknown, never zero, and they are not failures and not deliveries.
+    pub in_flight_or_killed: u64,
+    pub emitted: u64,
+    pub prepared_not_emitted: u64,
+    /// Suggestions carried by events that actually emitted.
+    pub emitted_suggestions: u64,
+    /// Events with no attempt rows at all. Named literally: a reused response looks
+    /// like this, and so does any event recorded before attempts were written down.
+    pub events_without_recorded_attempts: u64,
+    pub attempts: u64,
+    pub attempts_completed: u64,
+    pub attempts_failed: u64,
+    /// Sent or otherwise unsettled: cost incurred, amount unknown.
+    pub attempts_unknown: u64,
+    pub attempts_admitted_only: u64,
+    pub known_input_tokens: u64,
+    pub known_output_tokens: u64,
+    /// Latency samples, excluding rows that never finished.
+    pub latency_samples: u64,
+    pub latency_p50_ms: Option<u64>,
+    pub latency_p95_ms: Option<u64>,
+    pub latency_excluded_unfinished: u64,
+}
+
+/// Observation coverage over the window. Missing evidence stays visible.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ObservationStats {
+    pub total: u64,
+    pub loaded: u64,
+    pub attempted: u64,
+    pub censored: u64,
+    pub attributed: u64,
+    pub unattributed: u64,
+}
+
+/// Independent labels over the window. Adoption is not among them.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct JudgmentStats {
+    pub total: u64,
+    pub useful: u64,
+    pub harmful: u64,
+    pub neutral: u64,
+    /// Distinct events carrying at least one label: the judged cohort.
+    pub judged_events: u64,
+}
+
+/// The judged cohort's own attempts, which is the only cohort a cost-per-useful
+/// ratio may be computed over.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct JudgedCohortCost {
+    pub useful_labels: u64,
+    pub matched_attempts: u64,
+    pub attempts_with_unknown_usage: u64,
+    pub known_input_tokens: u64,
+    pub known_output_tokens: u64,
+}
+
+/// One skill's appearances, observations and labels. Deliberately not a rate: a
+/// recommendation can cause its own observed load, and the same transcript cannot
+/// say what the agent would have done unprompted.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct SkillStats {
+    pub skill_id: String,
+    pub emitted_suggestions: u64,
+    pub observed_loaded: u64,
+    pub observed_attempted: u64,
+    pub observed_censored: u64,
+    pub judged_useful: u64,
+    pub judged_harmful: u64,
+    pub judged_neutral: u64,
+}
+
+/// Everything `sr stats` reports, before rendering.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct StatsSnapshot {
+    pub window_from_unix_ms: Option<i64>,
+    pub window_to_unix_ms: i64,
+    pub totals: ChannelStats,
+    pub channels: Vec<ChannelStats>,
+    pub observations: ObservationStats,
+    pub judgments: JudgmentStats,
+    pub judged_cohort: JudgedCohortCost,
+    pub by_skill: Vec<SkillStats>,
+}
+
 /// Formats a unix millisecond timestamp as ISO-8601 UTC string (e.g. `2026-09-01T00:00:00Z`).
 pub fn format_unix_ms(ms: i64) -> String {
     let secs = ms.div_euclid(1000);
@@ -883,6 +983,18 @@ fn validated_snapshot(snapshot: &NewRosterSnapshot) -> Result<String, StoreError
 
 /// Insert one attempt row inside a caller-owned transaction, so an attempt can be
 /// committed together with the ranking event that owns it.
+/// Nearest-rank percentile over the samples that exist. `None` when there are none,
+/// because an empty sample has no percentile and reporting 0 would invent one.
+fn percentile(samples: &mut [u64], nth: u64) -> Option<u64> {
+    if samples.is_empty() {
+        return None;
+    }
+    samples.sort_unstable();
+    let rank = nth.saturating_mul(samples.len() as u64).div_ceil(100);
+    let index = rank.max(1) as usize - 1;
+    samples.get(index.min(samples.len() - 1)).copied()
+}
+
 fn insert_provider_attempt(
     tx: &rusqlite::Transaction<'_>,
     attempt: &NewProviderAttempt,
@@ -2791,6 +2903,401 @@ impl LedgerStore {
     }
 
     /// Queries statistics over active records, excluding records older than 30 days relative to versioned as_of timestamp.
+    /// Aggregate the window a `sr stats` report describes.
+    ///
+    /// Read-only, one connection, no writes and no clock of its own: the caller
+    /// supplies both ends of the window so the report can state exactly what it
+    /// covered. Rows still `generated` are counted apart from both failures and
+    /// deliveries, because an invocation that never finished is neither.
+    pub fn query_stats(
+        &self,
+        from_unix_ms: Option<i64>,
+        to_unix_ms: i64,
+        with_skills: bool,
+    ) -> Result<StatsSnapshot, StoreError> {
+        let from = from_unix_ms.unwrap_or(i64::MIN);
+        let mut snapshot = StatsSnapshot {
+            window_from_unix_ms: from_unix_ms,
+            window_to_unix_ms: to_unix_ms,
+            ..StatsSnapshot::default()
+        };
+
+        // One pass over the events in the window: channel, decision, exposure and
+        // the latency each finished invocation reported.
+        let mut statement = self.connection.prepare(
+            "SELECT mode_channel, decision, exposure_state, elapsed_ms, input_tokens, output_tokens
+             FROM ranking_events
+             WHERE created_at_unix_ms >= ?1 AND created_at_unix_ms <= ?2",
+        )?;
+        let mut per_channel: BTreeMap<String, ChannelStats> = BTreeMap::new();
+        let mut latencies: BTreeMap<String, Vec<u64>> = BTreeMap::new();
+        let mut all_latencies: Vec<u64> = Vec::new();
+        let rows = statement.query_map(params![from, to_unix_ms], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, Option<i64>>(4)?,
+                row.get::<_, Option<i64>>(5)?,
+            ))
+        })?;
+        for row in rows {
+            let (channel, decision, exposure, elapsed, input, output) = row?;
+            let entry = per_channel
+                .entry(channel.clone())
+                .or_insert_with(|| ChannelStats {
+                    channel: channel.clone(),
+                    ..ChannelStats::default()
+                });
+            entry.evaluated_turns += 1;
+            let unfinished = exposure == ExposureState::Generated.as_str();
+            if unfinished {
+                entry.in_flight_or_killed += 1;
+            }
+            match decision.as_str() {
+                "ranked" => entry.ranked += 1,
+                "explicit" => entry.explicit += 1,
+                "abstain" => entry.abstained += 1,
+                // Only a finished row is a failure; an unfinished one is unknown.
+                "unavailable" if !unfinished => entry.operational_failures += 1,
+                _ => {}
+            }
+            if exposure == ExposureState::Emitted.as_str()
+                || exposure == ExposureState::Acknowledged.as_str()
+            {
+                entry.emitted += 1;
+            } else if exposure == ExposureState::Prepared.as_str() {
+                entry.prepared_not_emitted += 1;
+            }
+            if let Some(tokens) = input {
+                entry.known_input_tokens += u64::try_from(tokens).unwrap_or(0);
+            }
+            if let Some(tokens) = output {
+                entry.known_output_tokens += u64::try_from(tokens).unwrap_or(0);
+            }
+            // An unfinished row never reported a duration; counting its zero as a
+            // latency sample would drag every percentile toward it.
+            if unfinished || elapsed <= 0 {
+                entry.latency_excluded_unfinished += 1;
+            } else {
+                let ms = u64::try_from(elapsed).unwrap_or(0);
+                latencies.entry(channel).or_default().push(ms);
+                all_latencies.push(ms);
+            }
+        }
+        drop(statement);
+
+        // Suggestions that were actually delivered, and events that recorded no
+        // attempt at all, both keyed by channel.
+        let mut statement = self.connection.prepare(
+            "SELECT e.mode_channel, count(*)
+             FROM ranking_candidates c JOIN ranking_events e ON e.event_id = c.event_id
+             WHERE e.created_at_unix_ms >= ?1 AND e.created_at_unix_ms <= ?2
+               AND e.exposure_state IN ('emitted', 'acknowledged')
+               AND c.excluded = 0 AND c.rank_position IS NOT NULL
+             GROUP BY e.mode_channel",
+        )?;
+        for row in statement.query_map(params![from, to_unix_ms], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })? {
+            let (channel, count) = row?;
+            if let Some(entry) = per_channel.get_mut(&channel) {
+                entry.emitted_suggestions = u64::try_from(count).unwrap_or(0);
+            }
+        }
+        drop(statement);
+
+        let mut statement = self.connection.prepare(
+            "SELECT e.mode_channel, count(*)
+             FROM ranking_events e
+             WHERE e.created_at_unix_ms >= ?1 AND e.created_at_unix_ms <= ?2
+               AND NOT EXISTS (SELECT 1 FROM provider_attempts a WHERE a.owner_event_id = e.event_id)
+             GROUP BY e.mode_channel",
+        )?;
+        for row in statement.query_map(params![from, to_unix_ms], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })? {
+            let (channel, count) = row?;
+            if let Some(entry) = per_channel.get_mut(&channel) {
+                entry.events_without_recorded_attempts = u64::try_from(count).unwrap_or(0);
+            }
+        }
+        drop(statement);
+
+        // Attempts, by the status that says whether their cost is known.
+        let mut statement = self.connection.prepare(
+            "SELECT e.mode_channel, a.status, count(*),
+                    coalesce(sum(a.input_tokens), 0), coalesce(sum(a.output_tokens), 0)
+             FROM provider_attempts a JOIN ranking_events e ON e.event_id = a.owner_event_id
+             WHERE e.created_at_unix_ms >= ?1 AND e.created_at_unix_ms <= ?2
+             GROUP BY e.mode_channel, a.status",
+        )?;
+        for row in statement.query_map(params![from, to_unix_ms], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, i64>(4)?,
+            ))
+        })? {
+            let (channel, status, count, _in_tok, _out_tok) = row?;
+            let Some(entry) = per_channel.get_mut(&channel) else {
+                continue;
+            };
+            let count = u64::try_from(count).unwrap_or(0);
+            entry.attempts += count;
+            match status.as_str() {
+                "completed" => entry.attempts_completed += count,
+                "failed" => entry.attempts_failed += count,
+                "sent" | "unknown" => entry.attempts_unknown += count,
+                "admitted" => entry.attempts_admitted_only += count,
+                _ => {}
+            }
+        }
+        drop(statement);
+
+        for (channel, mut samples) in latencies {
+            if let Some(entry) = per_channel.get_mut(&channel) {
+                entry.latency_samples = samples.len() as u64;
+                entry.latency_p50_ms = percentile(&mut samples, 50);
+                entry.latency_p95_ms = percentile(&mut samples, 95);
+            }
+        }
+
+        snapshot.observations = self.query_observation_stats(from, to_unix_ms)?;
+        snapshot.judgments = self.query_judgment_stats(from, to_unix_ms)?;
+        snapshot.judged_cohort = self.query_judged_cohort_cost(from, to_unix_ms)?;
+        if with_skills {
+            snapshot.by_skill = self.query_skill_stats(from, to_unix_ms)?;
+        }
+
+        // Totals are summed from the channels rather than queried separately, so a
+        // total can never disagree with the parts it is made of.
+        let mut totals = ChannelStats {
+            channel: "all".to_string(),
+            ..ChannelStats::default()
+        };
+        for stats in per_channel.values() {
+            totals.evaluated_turns += stats.evaluated_turns;
+            totals.ranked += stats.ranked;
+            totals.explicit += stats.explicit;
+            totals.abstained += stats.abstained;
+            totals.operational_failures += stats.operational_failures;
+            totals.in_flight_or_killed += stats.in_flight_or_killed;
+            totals.emitted += stats.emitted;
+            totals.prepared_not_emitted += stats.prepared_not_emitted;
+            totals.emitted_suggestions += stats.emitted_suggestions;
+            totals.events_without_recorded_attempts += stats.events_without_recorded_attempts;
+            totals.attempts += stats.attempts;
+            totals.attempts_completed += stats.attempts_completed;
+            totals.attempts_failed += stats.attempts_failed;
+            totals.attempts_unknown += stats.attempts_unknown;
+            totals.attempts_admitted_only += stats.attempts_admitted_only;
+            totals.known_input_tokens += stats.known_input_tokens;
+            totals.known_output_tokens += stats.known_output_tokens;
+            totals.latency_excluded_unfinished += stats.latency_excluded_unfinished;
+        }
+        totals.latency_samples = all_latencies.len() as u64;
+        totals.latency_p50_ms = percentile(&mut all_latencies, 50);
+        totals.latency_p95_ms = percentile(&mut all_latencies.clone(), 95);
+        snapshot.totals = totals;
+        snapshot.channels = per_channel.into_values().collect();
+        Ok(snapshot)
+    }
+
+    fn query_observation_stats(&self, from: i64, to: i64) -> Result<ObservationStats, StoreError> {
+        let mut stats = ObservationStats::default();
+        let mut statement = self.connection.prepare(
+            "SELECT evidence_state, attributed_event_id IS NOT NULL, count(*)
+             FROM observations
+             WHERE observed_at_unix_ms >= ?1 AND observed_at_unix_ms <= ?2
+             GROUP BY evidence_state, attributed_event_id IS NOT NULL",
+        )?;
+        for row in statement.query_map(params![from, to], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, bool>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
+        })? {
+            let (state, attributed, count) = row?;
+            let count = u64::try_from(count).unwrap_or(0);
+            stats.total += count;
+            match state.as_str() {
+                "loaded" => stats.loaded += count,
+                "attempted" => stats.attempted += count,
+                "censored" => stats.censored += count,
+                _ => {}
+            }
+            if attributed {
+                stats.attributed += count;
+            } else {
+                stats.unattributed += count;
+            }
+        }
+        Ok(stats)
+    }
+
+    fn query_judgment_stats(&self, from: i64, to: i64) -> Result<JudgmentStats, StoreError> {
+        let mut stats = JudgmentStats::default();
+        let mut statement = self.connection.prepare(
+            "SELECT label, count(*) FROM judgments
+             WHERE created_at_unix_ms >= ?1 AND created_at_unix_ms <= ?2
+             GROUP BY label",
+        )?;
+        for row in statement.query_map(params![from, to], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })? {
+            let (label, count) = row?;
+            let count = u64::try_from(count).unwrap_or(0);
+            stats.total += count;
+            match label.as_str() {
+                "useful" => stats.useful += count,
+                "harmful" => stats.harmful += count,
+                "neutral" => stats.neutral += count,
+                _ => {}
+            }
+        }
+        drop(statement);
+        let judged: i64 = self.connection.query_row(
+            "SELECT count(DISTINCT attributed_event_id) FROM judgments
+             WHERE created_at_unix_ms >= ?1 AND created_at_unix_ms <= ?2",
+            params![from, to],
+            |row| row.get(0),
+        )?;
+        stats.judged_events = u64::try_from(judged).unwrap_or(0);
+        Ok(stats)
+    }
+
+    /// The judged cohort and the attempts belonging to it, which is the only basis a
+    /// cost-per-useful ratio may use. Unlabelled traffic is deliberately excluded.
+    fn query_judged_cohort_cost(&self, from: i64, to: i64) -> Result<JudgedCohortCost, StoreError> {
+        let mut cost = JudgedCohortCost::default();
+        let useful: i64 = self.connection.query_row(
+            "SELECT count(*) FROM judgments
+             WHERE label = 'useful' AND created_at_unix_ms >= ?1 AND created_at_unix_ms <= ?2",
+            params![from, to],
+            |row| row.get(0),
+        )?;
+        cost.useful_labels = u64::try_from(useful).unwrap_or(0);
+        let mut statement = self.connection.prepare(
+            "SELECT a.status, count(*),
+                    coalesce(sum(a.input_tokens), 0), coalesce(sum(a.output_tokens), 0)
+             FROM provider_attempts a
+             WHERE a.owner_event_id IN (
+                 SELECT DISTINCT attributed_event_id FROM judgments
+                 WHERE label = 'useful' AND created_at_unix_ms >= ?1 AND created_at_unix_ms <= ?2
+             )
+             GROUP BY a.status",
+        )?;
+        for row in statement.query_map(params![from, to], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
+            ))
+        })? {
+            let (status, count, input, output) = row?;
+            let count = u64::try_from(count).unwrap_or(0);
+            cost.matched_attempts += count;
+            match status.as_str() {
+                "completed" => {
+                    cost.known_input_tokens += u64::try_from(input).unwrap_or(0);
+                    cost.known_output_tokens += u64::try_from(output).unwrap_or(0);
+                }
+                // Sent without a validated answer, or unknown: the cohort's cost
+                // cannot be stated exactly while any of these exist.
+                "sent" | "unknown" => cost.attempts_with_unknown_usage += count,
+                _ => {}
+            }
+        }
+        Ok(cost)
+    }
+
+    fn query_skill_stats(&self, from: i64, to: i64) -> Result<Vec<SkillStats>, StoreError> {
+        let mut by_skill: BTreeMap<String, SkillStats> = BTreeMap::new();
+        let mut statement = self.connection.prepare(
+            "SELECT c.skill_id, count(*)
+             FROM ranking_candidates c JOIN ranking_events e ON e.event_id = c.event_id
+             WHERE e.created_at_unix_ms >= ?1 AND e.created_at_unix_ms <= ?2
+               AND e.exposure_state IN ('emitted', 'acknowledged')
+               AND c.excluded = 0 AND c.rank_position IS NOT NULL
+             GROUP BY c.skill_id",
+        )?;
+        for row in statement.query_map(params![from, to], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })? {
+            let (skill_id, count) = row?;
+            by_skill
+                .entry(skill_id.clone())
+                .or_insert_with(|| SkillStats {
+                    skill_id,
+                    ..SkillStats::default()
+                })
+                .emitted_suggestions = u64::try_from(count).unwrap_or(0);
+        }
+        drop(statement);
+        let mut statement = self.connection.prepare(
+            "SELECT skill_id, evidence_state, count(*) FROM observations
+             WHERE observed_at_unix_ms >= ?1 AND observed_at_unix_ms <= ?2
+             GROUP BY skill_id, evidence_state",
+        )?;
+        for row in statement.query_map(params![from, to], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
+        })? {
+            let (skill_id, state, count) = row?;
+            let entry = by_skill
+                .entry(skill_id.clone())
+                .or_insert_with(|| SkillStats {
+                    skill_id,
+                    ..SkillStats::default()
+                });
+            let count = u64::try_from(count).unwrap_or(0);
+            match state.as_str() {
+                "loaded" => entry.observed_loaded += count,
+                "attempted" => entry.observed_attempted += count,
+                "censored" => entry.observed_censored += count,
+                _ => {}
+            }
+        }
+        drop(statement);
+        let mut statement = self.connection.prepare(
+            "SELECT skill_id, label, count(*) FROM judgments
+             WHERE created_at_unix_ms >= ?1 AND created_at_unix_ms <= ?2
+             GROUP BY skill_id, label",
+        )?;
+        for row in statement.query_map(params![from, to], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
+        })? {
+            let (skill_id, label, count) = row?;
+            let entry = by_skill
+                .entry(skill_id.clone())
+                .or_insert_with(|| SkillStats {
+                    skill_id,
+                    ..SkillStats::default()
+                });
+            let count = u64::try_from(count).unwrap_or(0);
+            match label.as_str() {
+                "useful" => entry.judged_useful += count,
+                "harmful" => entry.judged_harmful += count,
+                "neutral" => entry.judged_neutral += count,
+                _ => {}
+            }
+        }
+        Ok(by_skill.into_values().collect())
+    }
+
     pub fn query_retained_stats(&self, as_of_unix_ms: i64) -> Result<RetainedStats, StoreError> {
         let cutoff = as_of_unix_ms.saturating_sub(DEFAULT_RETENTION_MS);
         let total_events: i64 =

@@ -94,6 +94,46 @@ not use one also carries the `cache-unavailable` warning, because an uncached
 run that says nothing is indistinguishable from a cached one and silently pays
 for every response twice. The warning names no path, mode or errno.
 
+## Statistics envelope
+
+`sr stats` emits a non-actionable report: `kind: "stats"`, `actionable: false`, and a
+`window` naming both ends plus `covers_all_retained_records` when no `--since` was
+given. It never contains raw examples and never enables adaptation.
+
+Counts are reported with their own denominators rather than as rates. `totals` is the
+sum of `channels`, which keep separate denominators for `cli`, hook and any other
+recorded `mode_channel`, so a shadow run and a CLI run are never averaged together.
+Within each channel, `decisions` separates `ranked`, `explicit`, `abstained`,
+`operational_failures` and `in_flight_or_killed`; the last is an invocation that
+wrote itself down and never finished, whose cost is unknown rather than zero, and it
+is counted as neither a failure nor a delivery. `delivery` counts `emitted` against
+`prepared_not_emitted`, because writing no bytes is not delivered advice.
+`latency_ms` reports `samples` alongside `p50`, `p95` and
+`excluded_unfinished`, and the percentiles are absent rather than zero when nothing
+finished. `attempts` separates `completed`, `failed`, `unknown_or_unsettled` and
+`admitted_only`, plus `events_without_recorded_attempts` — named for what was
+observed, since a reused response and a record written before attempts existed look
+identical and neither is evidence of a cache hit.
+
+`cost_per_useful_suggestion` covers only the judged cohort and its matched attempts.
+It reports `estimable: false` with a `reason` of `no-useful-labels`,
+`unknown-usage-present` or `no-matched-attempts`, and the known attempt and token
+counts regardless, so the report degrades to counts rather than to silence. Its
+`monetary` field is separately not estimable while no versioned pricing configuration
+exists. Adoption is never reported as usefulness, and token counts are never
+converted into saved labour.
+
+`not_recorded` names each measure the ledger cannot observe, with why: muted or
+suppressed output, because snoozes are trusted configuration; cache reuse, because no
+cache column exists on a recorded event; acknowledged delivery, because no harness
+confirmation exists to record; and estimated cost. These are named rather than
+reported as `0`, since a zero that means "never recorded" is indistinguishable from a
+measurement.
+
+`sr stats` requires a ledger. An absent, disabled or unreadable store is a typed
+storage failure, never an empty report, because "there is nothing to read" and
+"nothing happened" are different claims.
+
 ## Failure envelopes
 
 A failure before input admission may contain just version, unavailable decision,

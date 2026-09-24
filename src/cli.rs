@@ -12,9 +12,11 @@ use std::ffi::OsString;
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
-const HELP: &str = "SkillRanker — powered by TypeSafe.ai Jev\n\nUsage: sr [rank] [--context FILE | --transcript FILE --harness NAME | --session PATH | --latest]\n                 [--roster FILE] [--require-skill ID] [--dry-run [--shortlist-ids ID,...]]\n                 [--offline | --allow-network] [--json | --table]\n                 [--top N] [--shortlist M] [--gate FLOAT] [--fits FLOAT]\n                 [--explain] [--why-not ID] [--cursor TOKEN] [--no-tools] [--no-cache]\n                 [--save-case FILE]\n       sr doctor [--json | --table] [--offline | --allow-network]\n       sr doctor --config [--json | --table] [--top N] [--shortlist N]\n       sr roster [--json] [--limit N] [--cursor TOKEN]\n       sr roster --snapshot FILE | --diff FILE\n       sr capabilities [--json]\n       sr demo --case <useful|none|explicit|unavailable> [--json | --table]\n       sr replay FILE [--policy FILE] [--compare-policy FILE] [--json | --table]\n       sr feedback <EVENT_ID> --skill ID [--instead ID] [--verdict <useful|not-useful|unknown>] [--reason CODE] [--provenance TEXT] [--expected-version GEN] [--dir DIR] [--json]\n       sr ledger <init|migrate|status|prune|clear> [--before TIME] [--apply] [--json]\n       sr observe [--context FILE | --transcript FILE --harness NAME | --session PATH] [--branch NAME] [--roster FILE] [--dir DIR] [--json]\n       sr hook <claude> [--shadow] [--offline | --allow-network] [--dir DIR]\n       sr install-hook <claude> [--settings FILE] [--target-dir DIR] [--apply] [--json]\n       sr uninstall-hook <claude> [--settings FILE] [--target-dir DIR] [--apply] [--json]\n       sr --help | --version\n\nRank the next step of an agent session using TypeSafe Jev.\nRequires your own TypeSafe API key (TYPESAFE_API_KEY) and network consent (--allow-network).\n";
+const HELP: &str = "SkillRanker — powered by TypeSafe.ai Jev\n\nUsage: sr [rank] [--context FILE | --transcript FILE --harness NAME | --session PATH | --latest]\n                 [--roster FILE] [--require-skill ID] [--dry-run [--shortlist-ids ID,...]]\n                 [--offline | --allow-network] [--json | --table]\n                 [--top N] [--shortlist M] [--gate FLOAT] [--fits FLOAT]\n                 [--explain] [--why-not ID] [--cursor TOKEN] [--no-tools] [--no-cache]\n                 [--save-case FILE]\n       sr doctor [--json | --table] [--offline | --allow-network]\n       sr doctor --config [--json | --table] [--top N] [--shortlist N]\n       sr roster [--json] [--limit N] [--cursor TOKEN]\n       sr roster --snapshot FILE | --diff FILE\n       sr capabilities [--json]\n       sr demo --case <useful|none|explicit|unavailable> [--json | --table]\n       sr replay FILE [--policy FILE] [--compare-policy FILE] [--json | --table]\n       sr feedback <EVENT_ID> --skill ID [--instead ID] [--verdict <useful|not-useful|unknown>] [--reason CODE] [--provenance TEXT] [--expected-version GEN] [--dir DIR] [--json]\n       sr ledger <init|migrate|status|prune|clear> [--before TIME] [--apply] [--json]\n       sr stats [--since DURATION] [--by-skill] [--dir DIR] [--json | --table]\n       sr observe [--context FILE | --transcript FILE --harness NAME | --session PATH] [--branch NAME] [--roster FILE] [--dir DIR] [--json]\n       sr hook <claude> [--shadow] [--offline | --allow-network] [--dir DIR]\n       sr install-hook <claude> [--settings FILE] [--target-dir DIR] [--apply] [--json]\n       sr uninstall-hook <claude> [--settings FILE] [--target-dir DIR] [--apply] [--json]\n       sr --help | --version\n\nRank the next step of an agent session using TypeSafe Jev.\nRequires your own TypeSafe API key (TYPESAFE_API_KEY) and network consent (--allow-network).\n";
 
 const FEEDBACK_HELP: &str = "sr feedback <EVENT_ID> --skill ID [--instead ID] [--verdict <useful|not-useful|unknown>] [--reason CODE] [--provenance TEXT] [--expected-version GEN] [--dir DIR] [--json]\n\nRecord explicit feedback or paired corrective labels for a historical ranking event.\n";
+
+const STATS_HELP: &str = "sr stats [--since DURATION] [--by-skill] [--dir DIR] [--json | --table]\n\nReport usefulness, interruption and cost from the local ledger, with each measure's own denominator. Measures the ledger cannot observe are named rather than reported as zero.\n";
 
 const OBSERVE_HELP: &str = "sr observe [--context FILE | --transcript FILE --harness NAME | --session PATH] [--branch NAME] [--roster FILE] [--dir DIR] [--json]\n\nIngest session tool events, record loaded skill observations, attribute to recent emissions, and advance observation watermark.\n";
 
@@ -293,6 +295,41 @@ fn command() -> Command {
                         .long("compare-policy")
                         .value_name("FILE")
                         .help("Path to a comparison policy file")
+                        .action(ArgAction::Set),
+                )
+                .arg(
+                    Arg::new("json")
+                        .long("json")
+                        .conflicts_with("table")
+                        .action(ArgAction::SetTrue),
+                )
+                .arg(Arg::new("table").long("table").action(ArgAction::SetTrue)),
+        )
+        .subcommand(
+            Command::new("stats")
+                .disable_help_flag(true)
+                .arg(
+                    Arg::new("help")
+                        .long("help")
+                        .short('h')
+                        .action(ArgAction::SetTrue),
+                )
+                .arg(
+                    Arg::new("since")
+                        .long("since")
+                        .help("Only count records at or after this cutoff, e.g. 7d")
+                        .action(ArgAction::Set),
+                )
+                .arg(
+                    Arg::new("by-skill")
+                        .long("by-skill")
+                        .help("Break the report down per skill")
+                        .action(ArgAction::SetTrue),
+                )
+                .arg(
+                    Arg::new("dir")
+                        .long("dir")
+                        .help("Custom ledger directory")
                         .action(ArgAction::Set),
                 )
                 .arg(
@@ -943,6 +980,12 @@ fn execute(clock: &EntryClock, mut args: Vec<OsString>) -> Result<String, Failur
             return Ok(HELP.into());
         }
         return replay_command(clock, replay_matches);
+    }
+    if let Some(("stats", stats_matches)) = matches.subcommand() {
+        if stats_matches.get_flag("help") {
+            return Ok(STATS_HELP.into());
+        }
+        return stats_command(clock, stats_matches);
     }
     if let Some(("ledger", ledger_matches)) = matches.subcommand() {
         if ledger_matches.get_flag("help") {
@@ -1615,6 +1658,364 @@ fn observe_command(clock: &EntryClock, matches: &clap::ArgMatches) -> Result<Str
     };
 
     finish_invocation(invocation, Ok(out))
+}
+
+/// `sr stats`: what the local ledger can honestly say about usefulness,
+/// interruption and cost over a window.
+///
+/// Read-only. Every count states what it counted; every measure the ledger cannot
+/// observe is named in `not_recorded` rather than reported as zero, because a zero
+/// that means "never recorded" is the most expensive kind of wrong number here.
+fn stats_command(clock: &EntryClock, stats_matches: &clap::ArgMatches) -> Result<String, Failure> {
+    timely(clock)?;
+    let invocation = crate::runtime::ProcessInvocation::from_clock(*clock)
+        .map_err(|_| (6u8, "timeout", "Local runtime unavailable".into()))?;
+    let cx = invocation
+        .request_cx()
+        .map_err(|_| (6u8, "timeout", "Local runtime unavailable".into()))?;
+
+    let now_unix_ms = i64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis(),
+    )
+    .unwrap_or(i64::MAX);
+    let since = stats_matches.get_one::<String>("since");
+    let from_unix_ms = match since {
+        Some(raw) => Some(
+            crate::storage::parse_cutoff_to_unix_ms(raw, now_unix_ms)
+                .map_err(|message| (2u8, "invalid-usage", message))?,
+        ),
+        None => None,
+    };
+    let by_skill = stats_matches.get_flag("by-skill");
+    let wants_json = stats_matches.get_flag("json") || !stats_matches.get_flag("table");
+    let location = if let Some(dir) = stats_matches.get_one::<String>("dir") {
+        crate::storage::LedgerLocation::Directory(PathBuf::from(dir))
+    } else {
+        crate::storage::LedgerLocation::Platform
+    };
+
+    // A report over a ledger that does not exist is not an empty report: it is a
+    // missing prerequisite, and saying "nothing happened" would be a lie.
+    let store = match crate::storage::open_ledger(
+        &invocation,
+        &cx,
+        crate::storage::LedgerAccess::ExistingOnly,
+        location,
+    ) {
+        Ok(crate::storage::LedgerOpen::Ready(store)) => *store,
+        Ok(crate::storage::LedgerOpen::ReadOnly(store)) => *store,
+        Ok(crate::storage::LedgerOpen::Missing) => {
+            return Err((
+                9,
+                "storage-failure",
+                "No ledger to report on; run sr ledger init first".into(),
+            ));
+        }
+        Ok(crate::storage::LedgerOpen::Disabled) => {
+            return Err((
+                9,
+                "storage-failure",
+                "Ledger access is disabled by an effect flag; sr stats needs a ledger".into(),
+            ));
+        }
+        Err(err) => {
+            return Err((
+                9,
+                "storage-failure",
+                format!("Failed to open ledger: {err}"),
+            ));
+        }
+    };
+
+    let snapshot = store
+        .query_stats(from_unix_ms, now_unix_ms, by_skill)
+        .map_err(|err| {
+            (
+                9u8,
+                "storage-failure",
+                format!("Failed to read ledger: {err}"),
+            )
+        })?;
+
+    if wants_json {
+        let document = stats_document(&snapshot, by_skill);
+        serde_json::to_string_pretty(&document)
+            .map(|s| format!("{s}\n"))
+            .map_err(|e| (9u8, "storage-failure", e.to_string()))
+    } else {
+        Ok(stats_table(&snapshot, by_skill))
+    }
+}
+
+/// The cost-per-useful ratio, or the exact reason it is not estimable.
+fn cost_per_useful(cohort: &crate::storage::JudgedCohortCost) -> serde_json::Value {
+    let base = serde_json::json!({
+        "useful_labels": cohort.useful_labels,
+        "matched_attempts": cohort.matched_attempts,
+        "attempts_with_unknown_usage": cohort.attempts_with_unknown_usage,
+        "known_input_tokens": cohort.known_input_tokens,
+        "known_output_tokens": cohort.known_output_tokens,
+    });
+    let mut document = base.as_object().cloned().unwrap_or_default();
+    // Three separate reasons, each of which independently prevents an exact ratio.
+    // Reported by name so a reader knows what would make it estimable.
+    let reason = if cohort.useful_labels == 0 {
+        Some("no-useful-labels")
+    } else if cohort.attempts_with_unknown_usage > 0 {
+        Some("unknown-usage-present")
+    } else if cohort.matched_attempts == 0 {
+        Some("no-matched-attempts")
+    } else {
+        None
+    };
+    match reason {
+        Some(reason) => {
+            document.insert("estimable".into(), serde_json::Value::Bool(false));
+            document.insert("reason".into(), serde_json::Value::String(reason.into()));
+        }
+        None => {
+            document.insert("estimable".into(), serde_json::Value::Bool(true));
+            let tokens = cohort.known_input_tokens + cohort.known_output_tokens;
+            document.insert(
+                "known_tokens_per_useful_label".into(),
+                serde_json::json!(tokens / cohort.useful_labels.max(1)),
+            );
+        }
+    }
+    // A monetary figure needs versioned pricing, which this build has no source for.
+    document.insert(
+        "monetary".into(),
+        serde_json::json!({"estimable": false, "reason": "no-pricing-configuration"}),
+    );
+    serde_json::Value::Object(document)
+}
+
+fn channel_document(stats: &crate::storage::ChannelStats) -> serde_json::Value {
+    serde_json::json!({
+        "channel": stats.channel,
+        "evaluated_turns": stats.evaluated_turns,
+        "decisions": {
+            "ranked": stats.ranked,
+            "explicit": stats.explicit,
+            "abstained": stats.abstained,
+            "operational_failures": stats.operational_failures,
+            "in_flight_or_killed": stats.in_flight_or_killed,
+        },
+        "delivery": {
+            "emitted": stats.emitted,
+            "prepared_not_emitted": stats.prepared_not_emitted,
+            "emitted_suggestions": stats.emitted_suggestions,
+        },
+        "attempts": {
+            "total": stats.attempts,
+            "completed": stats.attempts_completed,
+            "failed": stats.attempts_failed,
+            "unknown_or_unsettled": stats.attempts_unknown,
+            "admitted_only": stats.attempts_admitted_only,
+            "events_without_recorded_attempts": stats.events_without_recorded_attempts,
+        },
+        "usage": {
+            "known_input_tokens": stats.known_input_tokens,
+            "known_output_tokens": stats.known_output_tokens,
+        },
+        "latency_ms": {
+            "samples": stats.latency_samples,
+            "p50": stats.latency_p50_ms,
+            "p95": stats.latency_p95_ms,
+            "excluded_unfinished": stats.latency_excluded_unfinished,
+        },
+    })
+}
+
+fn stats_document(snapshot: &crate::storage::StatsSnapshot, by_skill: bool) -> serde_json::Value {
+    let mut document = serde_json::json!({
+        "schema_version": 1,
+        "kind": "stats",
+        "actionable": false,
+        "window": {
+            "from_unix_ms": snapshot.window_from_unix_ms,
+            "to_unix_ms": snapshot.window_to_unix_ms,
+            "covers_all_retained_records": snapshot.window_from_unix_ms.is_none(),
+        },
+        "totals": channel_document(&snapshot.totals),
+        "channels": snapshot.channels.iter().map(channel_document).collect::<Vec<_>>(),
+        "observations": {
+            "total": snapshot.observations.total,
+            "loaded": snapshot.observations.loaded,
+            "attempted": snapshot.observations.attempted,
+            "censored": snapshot.observations.censored,
+            "attributed": snapshot.observations.attributed,
+            "unattributed": snapshot.observations.unattributed,
+        },
+        "judgments": {
+            "total": snapshot.judgments.total,
+            "useful": snapshot.judgments.useful,
+            "harmful": snapshot.judgments.harmful,
+            "neutral": snapshot.judgments.neutral,
+            "judged_events": snapshot.judgments.judged_events,
+            "label_coverage": {
+                "numerator": snapshot.judgments.judged_events,
+                "denominator": snapshot.totals.emitted,
+                "unlabelled": snapshot.totals.emitted.saturating_sub(snapshot.judgments.judged_events),
+            },
+        },
+        "cost_per_useful_suggestion": cost_per_useful(&snapshot.judged_cohort),
+        // Named, not zeroed. Each of these is absent from the ledger by design, and a
+        // reader who saw 0 would conclude something false about the product.
+        "not_recorded": [
+            {"measure": "muted_or_suppressed_output", "why": "snoozes are trusted configuration and never recorded"},
+            {"measure": "cache_reuse", "why": "no cache column on recorded events; see events_without_recorded_attempts"},
+            {"measure": "acknowledged_delivery", "why": "no harness confirmation exists to record"},
+            {"measure": "estimated_cost", "why": "no versioned pricing configuration"}
+        ],
+        "interpretation": {
+            "adoption_is_not_usefulness": true,
+            "in_flight_rows_have_unknown_cost": true
+        }
+    });
+    if by_skill {
+        let skills: Vec<serde_json::Value> = snapshot
+            .by_skill
+            .iter()
+            .map(|skill| {
+                serde_json::json!({
+                    "skill_id": skill.skill_id,
+                    "emitted_suggestions": skill.emitted_suggestions,
+                    "observed": {
+                        "loaded": skill.observed_loaded,
+                        "attempted": skill.observed_attempted,
+                        "censored": skill.observed_censored,
+                    },
+                    "judged": {
+                        "useful": skill.judged_useful,
+                        "harmful": skill.judged_harmful,
+                        "neutral": skill.judged_neutral,
+                    },
+                })
+            })
+            .collect();
+        if let Some(object) = document.as_object_mut() {
+            object.insert("by_skill".into(), serde_json::Value::Array(skills));
+        }
+    }
+    document
+}
+
+fn stats_table(snapshot: &crate::storage::StatsSnapshot, by_skill: bool) -> String {
+    let totals = &snapshot.totals;
+    let mut out = String::new();
+    let window = match snapshot.window_from_unix_ms {
+        Some(from) => format!(
+            "{} to {}",
+            crate::storage::format_unix_ms(from),
+            crate::storage::format_unix_ms(snapshot.window_to_unix_ms)
+        ),
+        None => format!(
+            "all retained records through {}",
+            crate::storage::format_unix_ms(snapshot.window_to_unix_ms)
+        ),
+    };
+    out.push_str(&format!("Window: {window}\n"));
+    out.push_str(&format!(
+        "Turns evaluated: {} (ranked {}, explicit {}, abstained {}, failed {}, unfinished {})\n",
+        totals.evaluated_turns,
+        totals.ranked,
+        totals.explicit,
+        totals.abstained,
+        totals.operational_failures,
+        totals.in_flight_or_killed
+    ));
+    out.push_str(&format!(
+        "Delivered: {} of {} turns emitted, carrying {} suggestions\n",
+        totals.emitted, totals.evaluated_turns, totals.emitted_suggestions
+    ));
+    let latency = match (totals.latency_p50_ms, totals.latency_p95_ms) {
+        (Some(p50), Some(p95)) => format!(
+            "p50 {p50}ms, p95 {p95}ms over {} samples",
+            totals.latency_samples
+        ),
+        _ => "no finished invocations to measure".to_string(),
+    };
+    out.push_str(&format!(
+        "Latency: {latency} ({} unfinished excluded)\n",
+        totals.latency_excluded_unfinished
+    ));
+    out.push_str(&format!(
+        "Attempts: {} total, {} completed, {} failed, {} unknown cost; {} turns recorded no attempt\n",
+        totals.attempts,
+        totals.attempts_completed,
+        totals.attempts_failed,
+        totals.attempts_unknown,
+        totals.events_without_recorded_attempts
+    ));
+    out.push_str(&format!(
+        "Known tokens: {} in, {} out\n",
+        totals.known_input_tokens, totals.known_output_tokens
+    ));
+    out.push_str(&format!(
+        "Observations: {} total ({} loaded, {} attempted, {} censored; {} unattributed)\n",
+        snapshot.observations.total,
+        snapshot.observations.loaded,
+        snapshot.observations.attempted,
+        snapshot.observations.censored,
+        snapshot.observations.unattributed
+    ));
+    out.push_str(&format!(
+        "Independent labels: {} useful, {} harmful, {} neutral over {} judged turns of {} emitted\n",
+        snapshot.judgments.useful,
+        snapshot.judgments.harmful,
+        snapshot.judgments.neutral,
+        snapshot.judgments.judged_events,
+        totals.emitted
+    ));
+    let cohort = &snapshot.judged_cohort;
+    if cohort.useful_labels == 0 {
+        out.push_str("Cost per useful suggestion: not estimable (no useful labels)\n");
+    } else if cohort.attempts_with_unknown_usage > 0 {
+        out.push_str(&format!(
+            "Cost per useful suggestion: not estimable ({} matched attempts have unknown usage); known {} tokens over {} labels\n",
+            cohort.attempts_with_unknown_usage,
+            cohort.known_input_tokens + cohort.known_output_tokens,
+            cohort.useful_labels
+        ));
+    } else {
+        out.push_str(&format!(
+            "Cost per useful suggestion: {} known tokens per label over {} labels and {} attempts\n",
+            (cohort.known_input_tokens + cohort.known_output_tokens) / cohort.useful_labels.max(1),
+            cohort.useful_labels,
+            cohort.matched_attempts
+        ));
+    }
+    out.push_str("Not recorded: muted output, cache reuse, acknowledged delivery, monetary cost\n");
+    if snapshot.channels.len() > 1 {
+        out.push_str("Per channel (separate denominators):\n");
+        for channel in &snapshot.channels {
+            out.push_str(&format!(
+                "  {}: {} turns, {} emitted, {} attempts\n",
+                channel.channel, channel.evaluated_turns, channel.emitted, channel.attempts
+            ));
+        }
+    }
+    if by_skill {
+        out.push_str("Per skill (appearances and labels, never a success rate):\n");
+        for skill in &snapshot.by_skill {
+            out.push_str(&format!(
+                "  {}: {} suggested, loads {}/{}/{} (loaded/attempted/censored), labels {}/{}/{}\n",
+                skill.skill_id,
+                skill.emitted_suggestions,
+                skill.observed_loaded,
+                skill.observed_attempted,
+                skill.observed_censored,
+                skill.judged_useful,
+                skill.judged_harmful,
+                skill.judged_neutral
+            ));
+        }
+    }
+    out
 }
 
 fn ledger_command(
