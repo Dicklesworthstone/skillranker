@@ -351,15 +351,59 @@ impl Default for FrontmatterFields {
     }
 }
 
-fn parse_yaml_frontmatter(yaml: &str) -> Result<FrontmatterFields, FrontmatterError> {
-    // Check for YAML anchors/aliases to prevent amplification attacks
-    if yaml.contains('&') || yaml.contains('*') {
-        for line in yaml.lines() {
-            let t = line.trim();
-            if t.starts_with('&') || t.starts_with('*') || t.contains(" &") || t.contains(" *") {
-                return Err(FrontmatterError::AliasForbidden);
-            }
+/// Whether the YAML uses an anchor or alias: `&name` or `*name` where a node
+/// begins, meaning a value, a sequence item or a flow element. Elsewhere the
+/// characters are prose ("Build & deploy", "*.rs") or block scalar content
+/// (Markdown emphasis or bullets under `description: |`), which YAML never
+/// reads as anchors.
+fn uses_anchor_or_alias(yaml: &str) -> bool {
+    let node_start = |text: &str| {
+        let mut chars = text.trim_start().chars();
+        matches!(chars.next(), Some('&' | '*')) && chars.next().is_some_and(|c| !c.is_whitespace())
+    };
+    let value_starts_node = |value: &str| {
+        let value = value.trim();
+        match value.strip_prefix('[').or_else(|| value.strip_prefix('{')) {
+            Some(inner) => inner.split(',').any(|element| {
+                let element = element.trim_end_matches([']', '}']);
+                node_start(element.split_once(": ").map_or(element, |(_, v)| v))
+            }),
+            None => node_start(value),
         }
+    };
+    // Indentation of the line that opened a block scalar (`|` or `>`).
+    let mut block_parent: Option<usize> = None;
+    for line in yaml.lines() {
+        let text = line.trim();
+        if text.is_empty() || text.starts_with('#') {
+            continue;
+        }
+        let indent = line.len() - line.trim_start().len();
+        if let Some(parent) = block_parent {
+            if indent > parent {
+                continue;
+            }
+            block_parent = None;
+        }
+        let body = match text.strip_prefix('-') {
+            Some(item) if item.is_empty() || item.starts_with(' ') => item.trim_start(),
+            _ => text,
+        };
+        let value = body.split_once(':').map_or(body, |(_, value)| value);
+        if value_starts_node(value) || node_start(body) {
+            return true;
+        }
+        if value.trim_start().starts_with(['|', '>']) {
+            block_parent = Some(indent);
+        }
+    }
+    false
+}
+
+fn parse_yaml_frontmatter(yaml: &str) -> Result<FrontmatterFields, FrontmatterError> {
+    // Anchors and aliases are refused outright: they allow amplification.
+    if uses_anchor_or_alias(yaml) {
+        return Err(FrontmatterError::AliasForbidden);
     }
 
     let mut fields = FrontmatterFields::new();

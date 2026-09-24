@@ -200,6 +200,38 @@ description: Test skill
 
     let err = parse_skill_metadata(anchor_doc.as_bytes()).unwrap_err();
     assert_eq!(err, FrontmatterError::AliasForbidden);
+    // Anchors and aliases where YAML reads them: a sequence item, a flow
+    // element, a node on its own line.
+    for aliased in [
+        "tags: [*shared]",
+        "tags: [one, *shared]",
+        "tags:\n  - *shared",
+        "*shared",
+    ] {
+        let doc = format!("---\nname: s\ndescription: d\n{aliased}\n---\n");
+        assert_eq!(
+            parse_skill_metadata(doc.as_bytes()).unwrap_err(),
+            FrontmatterError::AliasForbidden,
+            "{aliased}"
+        );
+    }
+}
+
+#[test]
+fn ampersands_and_asterisks_in_prose_are_not_aliases() {
+    // Mid-text `&` and `*`, and Markdown inside a block scalar, are ordinary
+    // content: rejecting them excluded valid skills.
+    for description in [
+        "description: Build & deploy helpers",
+        "description: Formats *.rs files",
+        "description: |\n  Steps:\n  * run the tests\n  *emphasis* matters",
+        "description: >\n  Fold & keep\n  &this line",
+    ] {
+        let doc = format!("---\nname: prose\n{description}\n---\nBody\n");
+        let metadata = parse_skill_metadata(doc.as_bytes())
+            .unwrap_or_else(|err| panic!("{description}: {err}"));
+        assert!(!metadata.description.is_empty(), "{description}");
+    }
 }
 
 #[test]
