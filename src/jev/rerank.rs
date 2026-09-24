@@ -114,10 +114,14 @@ fn redacted_head(
     let field = redactor
         .redact_field(text)
         .map_err(|_| WideError::Redaction)?;
-    Ok((
-        field.as_str().chars().take(cap).collect(),
-        field.redaction_count(),
-    ))
+    let redacted = field.as_str();
+    let end = redacted
+        .char_indices()
+        .nth(cap)
+        .map_or(redacted.len(), |(i, _)| i);
+    // Never keep a fragment of a redaction marker or a stranded assignment.
+    let end = crate::privacy::redaction::redacted_head_end(redacted, end, end);
+    Ok((redacted[..end].to_owned(), field.redaction_count()))
 }
 
 fn describe(

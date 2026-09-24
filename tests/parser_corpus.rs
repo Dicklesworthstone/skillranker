@@ -35,8 +35,8 @@ use skillranker::output::{
     ErrorKind, MAX_OUTPUT_BYTES, MAX_TEXT_BYTES, OutputDocument, sanitize_diagnostic_text,
 };
 use skillranker::roster::explicit::{
-    ExplicitResolutionRequest, ExplicitResolutionResult, UnresolvedReason, parse_prompt_directives,
-    resolve_explicit_requirements,
+    DirectiveKind, ExplicitResolutionRequest, ExplicitResolutionResult, UnresolvedReason,
+    parse_prompt_directives, resolve_explicit_requirements,
 };
 use skillranker::roster::resolution::ResolvedRoster;
 use skillranker::roster::retrieval::{QueryInput, compile_query};
@@ -427,6 +427,58 @@ fn test_provider_json_codec_and_option_map_boundaries() {
 // ==============================================================================
 
 #[test]
+fn negated_directives_never_become_requirements() {
+    let kinds = |prompt: &str| -> Vec<(String, DirectiveKind)> {
+        parse_prompt_directives(prompt)
+            .into_iter()
+            .map(|d| (d.target, d.kind))
+            .collect()
+    };
+    let exclude = |target: &str| vec![(target.to_owned(), DirectiveKind::Exclude)];
+    // A typographic apostrophe, as phones and word processors type it, and
+    // other negations: never the opposite of what the user asked.
+    assert_eq!(kinds("Don\u{2019}t use skill deploy"), exclude("deploy"));
+    assert_eq!(kinds("don't use skill deploy"), exclude("deploy"));
+    assert_eq!(kinds("Never use skill deploy"), exclude("deploy"));
+    assert_eq!(kinds("dont use skill deploy"), exclude("deploy"));
+    for negated in [
+        "please avoid use skill deploy",
+        "we cannot use skill deploy",
+    ] {
+        assert!(
+            !kinds(negated)
+                .iter()
+                .any(|(_, kind)| *kind == DirectiveKind::Require),
+            "{negated}"
+        );
+    }
+    // Both kinds in one sentence, and a phrase after a non-matching one.
+    assert_eq!(
+        kinds("Don't use skill lint, use skill deploy"),
+        vec![
+            ("lint".to_owned(), DirectiveKind::Exclude),
+            ("deploy".to_owned(), DirectiveKind::Require),
+        ]
+    );
+    assert_eq!(
+        kinds("To reuse skill output, use skill deploy"),
+        vec![("deploy".to_owned(), DirectiveKind::Require)]
+    );
+    // Honest twins: an unnegated request, and "No," closing its own clause.
+    assert_eq!(
+        kinds("Please use skill deploy"),
+        vec![("deploy".to_owned(), DirectiveKind::Require)]
+    );
+    assert_eq!(
+        kinds("No, use skill deploy"),
+        vec![("deploy".to_owned(), DirectiveKind::Require)]
+    );
+    // Typographic quotes mark examples, like ASCII ones.
+    assert!(kinds("The guide says \u{201C}please use skill deploy\u{201D}.").is_empty());
+    assert!(kinds("The guide says \u{2018}use skill deploy\u{2019} first.").is_empty());
+}
+
+#[test]
 fn test_explicit_directive_resolution_adversarial_inputs() {
     // A. Directives in quotes must be ignored
     let quoted_prompt = "The user asked: \"use skill: git_commit\" but do not run it.";
@@ -638,6 +690,7 @@ fn test_cache_fingerprint_and_namespace_invariants() {
         adapter_version: "0.8.0",
         privacy_policy_version: "standard",
         excerpt_strategy: "head-tail",
+        paired_wide: None,
     };
 
     let fp1 = compute_request_fingerprint(&key, &ns_a, &req_input_1);

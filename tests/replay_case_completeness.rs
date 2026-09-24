@@ -130,10 +130,15 @@ fn case_with_confidence(stated: Option<f64>, visibility: Option<&str>) -> Replay
                 choice: "s_triage".into(),
                 choices_probability: 0.80,
                 gate_score: Some(0.80),
+                // A live wide answer covers every candidate it was offered.
                 distribution: vec![
                     ChoiceDistributionItem {
                         option_id: "s_triage".into(),
                         probability: 0.80,
+                    },
+                    ChoiceDistributionItem {
+                        option_id: "s_review".into(),
+                        probability: 0.0,
                     },
                     ChoiceDistributionItem {
                         option_id: "__none__".into(),

@@ -2,6 +2,7 @@
 use super::{PROVISIONAL_CLAUDE_CONTRACT, PipelineFailure, failure};
 use crate::identity::HarnessId;
 use crate::identity::SkillId;
+use crate::output::ErrorKind;
 use crate::privacy::SkillRoot;
 use crate::roster::Visibility;
 use crate::roster::discovery::claude_code_plan_with_roots;
@@ -37,8 +38,7 @@ impl Source<'_> {
         // that session cannot load.
         if self.manifest.is_none() && self.harness.as_str() != crate::adapter::CLAUDE_CODE_ID {
             return Err(failure(
-                5,
-                "unusable-roster",
+                ErrorKind::UnusableRoster,
                 "Skill discovery follows Claude Code's layout only; supply --roster for this harness",
             ));
         }
@@ -52,7 +52,12 @@ impl Source<'_> {
             },
             self.configured,
         )
-        .map_err(|_| failure(5, "unusable-roster", "Failed to create roster source plan"))?;
+        .map_err(|_| {
+            failure(
+                ErrorKind::UnusableRoster,
+                "Failed to create roster source plan",
+            )
+        })?;
         let overrides = BTreeMap::new();
         match self.manifest {
             Some(path) => {
@@ -69,8 +74,7 @@ impl Source<'_> {
                     validation_error(RevalidationError::Deadline)
                 } else {
                     failure(
-                        5,
-                        "unusable-roster",
+                        ErrorKind::UnusableRoster,
                         format!("Failed to resolve roster: {error:?}"),
                     )
                 }
@@ -108,8 +112,7 @@ fn import_error(error: ImportError) -> PipelineFailure {
         validation_error(RevalidationError::Deadline)
     } else {
         failure(
-            5,
-            "unusable-roster",
+            ErrorKind::UnusableRoster,
             format!("Failed to import roster: {error}"),
         )
     }
@@ -117,20 +120,20 @@ fn import_error(error: ImportError) -> PipelineFailure {
 
 fn validation_error(error: RevalidationError) -> PipelineFailure {
     match error {
-        RevalidationError::Changed => {
-            failure(5, "roster-changed", "Roster changed before publication")
-        }
+        RevalidationError::Changed => failure(
+            ErrorKind::RosterChanged,
+            "Roster changed before publication",
+        ),
         RevalidationError::Incomplete => failure(
-            5,
-            "incomplete-roster",
+            ErrorKind::IncompleteRoster,
             "Roster scope incomplete during revalidation",
         ),
-        RevalidationError::Deadline => {
-            failure(6, "timeout", "Deadline exceeded during roster validation")
-        }
+        RevalidationError::Deadline => failure(
+            ErrorKind::Timeout,
+            "Deadline exceeded during roster validation",
+        ),
         other => failure(
-            5,
-            "unusable-roster",
+            ErrorKind::UnusableRoster,
             format!("Roster validation failed: {other:?}"),
         ),
     }

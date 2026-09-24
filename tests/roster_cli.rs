@@ -301,7 +301,10 @@ fn configured_project_and_user_roots_reach_roster_doctor_and_snapshot() {
     assert!(!page.to_string().contains(f.root.to_str().unwrap()));
     let doctor = f.json(&["doctor", "--json"]);
     assert_eq!(doctor["checks"]["roster"]["skills"], 3);
-    assert_eq!(doctor["checks"]["roster"]["advisory"], 0);
+    // Configured roots are rankable, as rank suggests them, and are
+    // reported unverified.
+    assert_eq!(doctor["checks"]["roster"]["advisory"], 3);
+    assert_eq!(doctor["checks"]["roster"]["visibility"], "unverified");
     project_roots(&f, "[roster]\nroots=['.claude/skills', 'custom']\n");
     let reordered = f.json(&["roster", "--json"]);
     assert_eq!(page["snapshot"], reordered["snapshot"]);

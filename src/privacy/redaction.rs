@@ -16,10 +16,66 @@ use serde_json::Value;
 use std::{fmt, ops::Range, sync::LazyLock};
 
 pub const REDACTION_MARKER: &str = "[REDACTED]";
+/// Separates the head and tail of a redacted excerpt. The spaces keep it
+/// from joining a neighbouring word or marker into one value.
+pub const EXCERPT_JOIN: &str = " … ";
 pub const MAX_REDACTED_FIELD_BYTES: usize = NORMALIZED_CONTEXT_JSON_BYTES.max();
 pub const MAX_REDACTED_EXCERPT_SCALARS: usize = RENDERED_CONTEXT_SCALARS.max();
 pub const MAX_INSPECTED_PAYLOAD_BYTES: usize = SERIALIZED_REQUEST_BYTES.max();
 pub const MAX_INSPECTED_PAYLOAD_DEPTH: usize = NORMALIZED_CONTEXT_DEPTH.max();
+
+/// Where a head of redacted `text` cut at byte `at` may end, at most at byte
+/// `limit`. The head must not end inside a redaction marker, which would leave
+/// a fragment such as `password=[RED`. It must also not end between an
+/// assignment and its marker, leaving `password=` whose value is whatever
+/// follows (an ellipsis, an omission note). The payload scan reads either as a
+/// secret and refuses the whole request. Such a cut keeps the whole marker,
+/// with the quote closing a quoted one (`"[REDACTED]"`, since an unclosed
+/// quote makes the rest of the text the value), when `limit` allows, and
+/// otherwise drops the assignment's whole token.
+pub fn redacted_head_end(text: &str, at: usize, limit: usize) -> usize {
+    for (start, marker) in text.match_indices(REDACTION_MARKER) {
+        let end = start + marker.len();
+        let end = match (
+            text[..start].chars().next_back(),
+            text[end..].chars().next(),
+        ) {
+            (Some(open @ ('"' | '\'')), Some(close)) if close == open => end + 1,
+            _ => end,
+        };
+        // The quotes and spaces between an assignment and its value.
+        let lead = text[..start]
+            .trim_end_matches(|c: char| c.is_whitespace() || matches!(c, '"' | '\''))
+            .len();
+        if at < lead {
+            break;
+        }
+        if at < end {
+            if end <= limit {
+                return end;
+            }
+            // Back to the whitespace before the assignment's key.
+            return text[..lead]
+                .rfind(char::is_whitespace)
+                .map_or(0, |space| space + 1);
+        }
+    }
+    at
+}
+
+/// Where a tail of redacted `text` that would start at byte `at` starts: past
+/// a redaction marker it would otherwise begin inside of.
+pub fn redacted_tail_start(text: &str, at: usize) -> usize {
+    for (start, marker) in text.match_indices(REDACTION_MARKER) {
+        if start >= at {
+            break;
+        }
+        if at < start + marker.len() {
+            return start + marker.len();
+        }
+    }
+    at
+}
 
 /// Static diagnostics only; neither matches nor rejected JSON are retained.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -56,12 +112,21 @@ static PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         r"(?:gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9]{22,}_[A-Za-z0-9_]{59,})",
         r"eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+",
         r"(?i)\bbearer\s+[A-Za-z0-9_\-.~+/]+=*",
+        // Provider keys: OpenAI and Anthropic `sk-…`, Stripe-style `sk_live_…`.
+        r"\bsk-[A-Za-z0-9_-]{20,}",
+        r"\b[rs]k_(?:live|test)_[A-Za-z0-9]{16,}",
+        r"(?i)\bauthorization\s*[:=]\s*basic\s+[A-Za-z0-9+/]+=*",
         // Capture only the entire value, including quotes if present. Quoted
         // Unicode, escaped quotes, whitespace and unbounded-length values are
         // scanned within the complete-field cap. Unterminated quotes fail closed.
-        r#"(?i)\b(?:aws[_-]?secret(?:[_-]?access[_-]?key)?|secret[_-]?key|api[_-]?key|password|passwd|pwd|secret|token|credential)["']?\s*[:=]\s*("(?:\\[\s\S]|[^"\\])*(?:"|\\?$)|'(?:\\[\s\S]|[^'\\])*(?:'|\\?$)|[^\s"',;\}]+)"#,
-        // All URI schemes, not only databases. Userinfo as a whole is private.
-        r#"(?i)[a-z][a-z0-9+.-]*://([^\s/@"'<>]+)@"#,
+        // No leading word boundary: `_` is a word character, so `\b` would
+        // skip `OPENAI_API_KEY=`, `GITHUB_TOKEN=` or `DB_PASSWORD=`. The value
+        // must follow the keyword directly, which keeps `max_tokens: 5` out.
+        r#"(?i)(?:aws[_-]?secret(?:[_-]?access[_-]?key)?|secret[_-]?key|api[_-]?key|password|passwd|pwd|secret|token|credential)["']?\s*[:=]\s*("(?:\\[\s\S]|[^"\\])*(?:"|\\?$)|'(?:\\[\s\S]|[^'\\])*(?:'|\\?$)|[^\s"',;\}]+)"#,
+        // All URI schemes, not only databases. Userinfo as a whole is private,
+        // including an unencoded `@` inside a password: the host follows the
+        // last `@` before the path.
+        r#"(?i)[a-z][a-z0-9+.-]*://([^\s/"'<>]+)@"#,
         r"xox[baprs]-[0-9]{10,13}-[0-9]{10,13}[A-Za-z0-9-]*",
         r"https://hooks\.slack\.com/services/[A-Za-z0-9_-]+/[A-Za-z0-9_-]+/[A-Za-z0-9_-]+",
     ]
@@ -76,7 +141,9 @@ static PRIVATE_KEY_HEADER: LazyLock<Regex> = LazyLock::new(|| {
 static ENTROPY: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"[A-Za-z0-9+/=_\-]{32,}").expect("static entropy pattern"));
 static SECRET_KEY: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)^(?:aws[_-]?secret(?:[_-]?access[_-]?key)?|secret[_-]?key|api[_-]?key|password|passwd|pwd|secret|token|credential)$")
+    // A prefixed key names the same kind of value: `access_token`,
+    // `client_secret`, `db_password`.
+    Regex::new(r"(?i)^[a-z0-9_-]*(?:aws[_-]?secret(?:[_-]?access[_-]?key)?|secret[_-]?key|api[_-]?key|password|passwd|pwd|secret|token|credential)$")
         .expect("static secret key pattern")
 });
 
@@ -95,6 +162,22 @@ fn entropy(text: &str) -> f64 {
         .sum()
 }
 
+/// The part of a matched value to replace. A value in matching quotes keeps
+/// its quotes, so `password="x")` becomes `password="[REDACTED]")`. Replacing
+/// the quotes too would leave `password=[REDACTED])`, which a later scan reads
+/// as the unquoted value `[REDACTED])`: not the marker, so a "secret", and the
+/// whole request is refused. An unterminated quoted value runs to the end of
+/// the field, so nothing can follow it and it is replaced whole.
+fn inside_closing_quotes(value: &str, range: Range<usize>) -> Range<usize> {
+    let bytes = value.as_bytes();
+    match bytes {
+        [open @ (b'"' | b'\''), .., close] if bytes.len() > 2 && close == open => {
+            range.start + 1..range.end - 1
+        }
+        _ => range,
+    }
+}
+
 fn merged_spans(text: &str, scan_entropy: bool) -> Vec<Range<usize>> {
     let mut spans = Vec::new();
     for found in AWS.find_iter(text) {
@@ -111,7 +194,7 @@ fn merged_spans(text: &str, scan_entropy: bool) -> Vec<Range<usize>> {
                 // The fixed marker is safe on repeated passes, including when
                 // attached to an assignment key or URI userinfo.
                 if found.as_str().trim_matches(['\'', '"']) != REDACTION_MARKER {
-                    spans.push(found.range());
+                    spans.push(inside_closing_quotes(found.as_str(), found.range()));
                 }
             }
         }
@@ -230,9 +313,13 @@ impl Redactor {
         })
     }
 
-    /// Redact first, then retain ceil(limit/2) head and floor(limit/2) tail
-    /// Unicode scalars. The omission count is separate metadata; no marker
-    /// consumes an unbudgeted scalar. Zero keeps no text but still scans all.
+    /// Redact first, then keep a head and a tail of at most `max_scalars`
+    /// Unicode scalars in all, joined by a visible [`EXCERPT_JOIN`] that counts
+    /// toward the limit. A limit too small for the join keeps only a head. The
+    /// omission count is the scalars removed. Zero keeps no text but still
+    /// scans all. Cuts keep markers whole and assignments with their markers.
+    /// A hidden join could splice text into something new (`"api_key` +
+    /// `": "ok"`) that the payload scan reads as a secret assignment.
     pub fn redact_field_excerpt(
         &self,
         field: &str,
@@ -244,24 +331,33 @@ impl Redactor {
         let mut result = self.redact_field(field)?;
         let total = result.text.chars().count();
         if total > max_scalars {
-            let head = max_scalars.div_ceil(2);
-            let tail = max_scalars / 2;
-            let head_end = result
-                .text
-                .char_indices()
-                .nth(head)
-                .map_or(result.text.len(), |(i, _)| i);
-            let tail_start = if tail == 0 {
-                result.text.len()
-            } else {
-                result
-                    .text
-                    .char_indices()
-                    .nth_back(tail - 1)
-                    .map_or(0, |(i, _)| i)
+            let text = &result.text;
+            let byte_at = |chars: usize| {
+                text.char_indices()
+                    .nth(chars)
+                    .map_or(text.len(), |(i, _)| i)
             };
-            result.text.replace_range(head_end..tail_start, "");
-            result.omitted_scalars = total - max_scalars;
+            let join = EXCERPT_JOIN.chars().count();
+            let (head_end, tail_start) = if max_scalars <= join {
+                let end = byte_at(max_scalars);
+                (redacted_head_end(text, end, end), text.len())
+            } else {
+                let budget = max_scalars - join;
+                // The head may take the tail's share to keep a whole marker;
+                // the tail gets whatever the head leaves.
+                let head_end =
+                    redacted_head_end(text, byte_at(budget.div_ceil(2)), byte_at(budget));
+                let tail_chars = budget - text[..head_end].chars().count();
+                let tail_start = redacted_tail_start(text, byte_at(total - tail_chars));
+                (head_end, tail_start.max(head_end))
+            };
+            result.omitted_scalars = text[head_end..tail_start].chars().count();
+            let joined = if tail_start < result.text.len() {
+                EXCERPT_JOIN
+            } else {
+                ""
+            };
+            result.text.replace_range(head_end..tail_start, joined);
         }
         Ok(result)
     }

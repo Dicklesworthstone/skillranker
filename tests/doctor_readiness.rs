@@ -165,6 +165,28 @@ fn network_consent_follows_flags_and_trusted_settings() {
 }
 
 #[test]
+fn a_roster_rank_cannot_advise_from_is_not_called_ready() {
+    // Every skill is manual-only: rank would have nothing to suggest.
+    let home = Home::new();
+    for name in ["alpha", "beta"] {
+        let dir = home.root.join("workspace/.claude/skills").join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("SKILL.md"),
+            format!(
+                "---\ndescription: {name} skill.\ndisable-model-invocation: true\n---\nBody.\n"
+            ),
+        )
+        .unwrap();
+    }
+    let report = home.doctor(&["doctor", "--json"], &[]);
+    let roster = &report["checks"]["roster"];
+    assert_eq!(roster["skills"], 2);
+    assert_eq!(roster["advisory"], 0);
+    assert_eq!(roster["state"], "no-advisory-candidates");
+}
+
+#[test]
 fn roster_readiness_reports_counts_and_unverified_visibility() {
     let home = Home::new();
     home.skill("alpha");
@@ -172,11 +194,12 @@ fn roster_readiness_reports_counts_and_unverified_visibility() {
     let report = home.doctor(&["doctor", "--json"], &[]);
     let roster = &report["checks"]["roster"];
     assert_eq!(roster["skills"], 2);
-    // Claude visibility is unverified in this build: nothing is offered as
-    // automatic advice, and doctor says so instead of calling it ready.
-    assert_eq!(roster["advisory"], 0);
+    // Doctor mirrors rank: both skills are rankable under the provisional
+    // Claude contract, and their visibility is still reported unverified.
+    assert_eq!(roster["advisory"], 2);
     assert_eq!(roster["unverified"], 2);
-    assert_eq!(roster["state"], "no-advisory-candidates");
+    assert_eq!(roster["visibility"], "unverified");
+    assert_eq!(roster["state"], "ready");
     assert_eq!(roster["partial"], true);
     assert!(roster["snapshot"].as_str().unwrap().len() == 64);
     assert!(roster["source_causes"].get("root-unreadable").is_none());

@@ -183,3 +183,164 @@ cohort report (§7).
   moved the cohort forward to `fabe46a`. Deploys must check
   `docs/reality-check-bridge-plan.md` and this file's latest receipt before
   replacing the binary.
+
+## Redeployment — 2026-09-23 22:31Z (AzureJaguar, task-notification fix)
+
+- Binary: `~/.local/bin/sr`, SHA256
+  `e784d4db23f44a42b209ed04eaff4c29d5c533a39874a4cd191439e84af8034c`, built
+  `--release --locked` from a clean `git archive` export whose 102 build
+  inputs (everything outside `.beads/`, `docs/`, `tests/`, `scripts/` and the
+  top-level prose files) are byte-identical to the pushed revision `ad28bdd`.
+  It adds `sr-jdji` over the previous deploy. A background-task notification
+  that Claude delivers inside a running turn re-runs the hook with the turn's
+  `prompt_id`. It is no longer ranked as the turn's request or recorded as a
+  turn; it is counted in `hook-non-turns.log`, and `sr stats` reports it as
+  `hook_entries.non_turn_deliveries`. The previous `fabe46a` binary is kept as
+  `~/.local/bin/sr.backup.20260923T223042Z-fabe46a`. (A copy made by mistake
+  on 2026-09-23, `sr.backup.20260923T011950Z-c6999c3`, is also `fabe46a`,
+  SHA256 `ed75516e…`, despite its name.)
+- Checked before replacing: this file's latest receipt (`fabe46a`,
+  `ed75516e…`, which matched the installed binary) and
+  `docs/reality-check-bridge-plan.md`.
+- Pre-deploy smoke: `sr hook claude` replayed over the 80 most recent real
+  session transcripts in an isolated sandbox (no key, no network, no real
+  ledger). The candidate matched the installed binary's outcome on all 80:
+  54 clean, 24 stopped at the continuation gate by the replay's synthetic
+  prompt, 1 genuine fork, and 1 transcript that two processes append to.
+- Live check, before installing: the same binary was the `UserPromptSubmit`
+  hook of a throwaway Claude Code 2.1.280 session driven through NTM, with an
+  isolated `--dir`, `--offline` and `--shadow`. A background task finished
+  mid-turn, and the queue showed enqueue then remove. The ledger counted 2
+  hook entries and 1 non-turn delivery, and recorded 1 row, for the real turn.
+  The notification was neither ranked nor recorded.
+- Not changed: hook scope (project-local), consent and the credential. Live
+  turns still record `credential-absent` until agent panes are started from
+  shells that source the credential block (`sr-hook-credential-env-3i1n`).
+
+## Credential delivery at the hook — 2026-09-23 22:37Z (FuchsiaCave)
+
+Shell-rc sourcing did not reach the cohort. In the 27 hours after it landed,
+every shadow row in this repository still recorded `credential-absent` (31 rows,
+the last at 22:33Z). A read of each running Claude process's environment (checking
+for the key's presence only, never its value) showed why. Hooks inherit the Claude
+process's environment, and both Claude sessions working here had been launched
+from interactive shells opened before the rc change. One of those shells dated
+from 2026-09-17. Long-lived tmux and terminal shells never re-source `~/.zshrc`.
+The only keyed Claude process was working in another project, outside the
+project-local hook scope.
+
+The managed entry in `.claude/settings.local.json` therefore now loads the
+owner-only `.env` itself before exec'ing the pinned binary, so every session in
+this repository gets the credential however it was launched:
+
+```text
+/bin/sh -c 'set -a; . /data/projects/skillranker/.env; set +a; exec /home/ubuntu/.local/bin/sr hook claude'
+```
+
+The key never appears in the settings file. `.env` is `0600` and holds only
+`TYPESAFE_API_KEY`. The command still contains `hook claude`, so
+`sr uninstall-hook claude` recognises it as the managed entry. A backup of the
+previous settings file is kept outside the repository. Scope and consent are
+unchanged: a project-local hook with trusted-user network consent.
+
+Smoke, with an isolated ledger: the exact command, run from an empty environment
+(`env -i`, as a keyless Claude process gives its hooks), with a real payload for
+a session in this repository, completed a two-stage Jev evaluation. It exited 0
+with zero stdout, took 2.6 s against the 4 s hook timeout, recorded `ranked`
+with 18,109 input and 2,504 output tokens, and both attempts completed.
+
+Whether a running Claude session picks up the edited hook without a restart
+depends on Claude Code's settings reload. Sessions started after this change
+certainly do. Live rows other than `credential-absent` for this repository are
+the confirmation to look for.
+
+## Redeployment — 2026-09-24 13:22Z (AzureJaguar, review fixes incl. secret redaction)
+
+- Binary: `~/.local/bin/sr`, SHA256
+  `25786998f434d902afd76706f3aa6a4784fee233297efaa029ef6c5c256bec55`, built
+  `--release --locked` from a clean `git archive` export of the pushed revision
+  `f556751`, with its sources touched so the build could not reuse stale
+  artifacts. It adds the `sr-8ye6` review fixes over the previous deploy.
+  These matter for the cohort the moment the credential reaches the panes:
+  - `_`-prefixed secret assignments (`OPENAI_API_KEY=…`, `GITHUB_TOKEN=…`) are
+    now redacted;
+  - tool arguments are allowlisted before redaction;
+  - a negated directive never becomes a requirement;
+  - a skill reached through two names no longer fails the rank.
+  The previous `ad28bdd` binary (SHA256 `e784d4db…`, this file's prior
+  receipt) is kept as `~/.local/bin/sr.backup.20260924T132231Z-ad28bdd`.
+- Pre-deploy smoke: `sr hook claude` replayed over the 80 most recent real
+  session transcripts in an isolated sandbox (no key, no network, no real
+  ledger). The outcome matched the installed binary on all 80.
+- Post-install check: an offline `sr rank --dry-run` in an isolated HOME, whose
+  request contains `OPENAI_API_KEY=abc123def`, previews a request containing
+  `OPENAI_API_KEY=[REDACTED]`, and the value appears nowhere in the output.
+- Not changed: hook scope (project-local), consent, and the credential (still
+  `credential-absent` until agents start from fresh shells).
+
+## Redeployment — 2026-09-24 17:24Z (AzureJaguar, live redaction refusal)
+
+- Binary: `~/.local/bin/sr`, SHA256
+  `835857a1a39da8cf7363a59fec37ef5b1201805aab2e3ddc79bac50699166356`, built
+  `--release --locked` from a clean `git archive` export of the pushed revision
+  `b3e7387`, with its sources touched. The build ran through the shared target
+  directory, so the binary was copied out at once and identified by behavior
+  (below), not by path.
+  It adds, over the `f556751` deploy:
+  - `sr-dq5c`: skill frontmatter with trailing comments, quote escapes or
+    wrapped descriptions no longer excludes the skill;
+  - `sr-4bql`: lost-cache recordings are counted;
+  - `sr-b1ay`: the ledger keeps raw provider probabilities;
+  - `sr-mk0r`: overflow retrieval admits only admitted skills;
+  - `sr-p0ys`: truncation keeps redactions whole and visible;
+  - `sr-wx8t`: a redacted quoted secret keeps its quotes.
+  The previous binary (SHA256 `25786998…`) is kept as
+  `~/.local/bin/sr.backup.20260924T172424Z-f556751`.
+- Why now: two live shadow rows on 2026-09-24 (15:00:07Z and 16:03:41Z)
+  recorded `unsupported-input`, "The context could not be made safe to send".
+  Replaying the real transcript cut at 16:03:41Z offline (`--dry-run
+  --offline`, isolated state) reproduced it with the installed binary and with
+  an interim `ac046e3` build. Cause (`sr-wx8t`): redaction replaced a quoted
+  value together with its quotes. `f(password="x")` became
+  `f(password=[REDACTED])`, and the payload scan read `[REDACTED])` as an
+  unquoted secret. The `b3e7387` binary produces the request for the same
+  input, and all 120 recent fields of that cut pass the scan after redaction.
+- Pre-deploy smoke: `sr hook claude` replayed over the 80 most recent real
+  session transcripts in a keyless, network-less sandbox matched the installed
+  binary on all 80.
+- Gates on the exact revision: fmt, strict clippy, RCH full suite
+  1365 passed / 0 failed / 10 ignored; ubs 0 critical.
+- Credential correction: the previous receipt's "still `credential-absent`" is
+  out of date. The settings entry that sources `.env` (FuchsiaCave,
+  2026-09-23 22:37Z) delivers the key to every session. The last
+  `credential-absent` row is 2026-09-23 22:33Z, and credentialed evaluations
+  (ranked and abstain) have been recorded since 23:00Z that day. No agent
+  restart is needed.
+- Not changed: hook scope (project-local), consent, and the managed settings
+  entry.
+
+## Redeployment — 2026-09-24 18:17Z (AzureJaguar, window-stranded tool result)
+
+- Binary: `~/.local/bin/sr`, SHA256
+  `631128ee63926d393b0b0866147481f986d1843da3172e13feacf52e27f45a56`, built
+  `--release --locked` from a clean export of the pushed revision `54eecc7`
+  (sources touched; copied out of the shared target at once). It adds
+  `sr-l1nr` over `b3e7387`. The previous binary (SHA256 `835857a1…`) is kept
+  as `~/.local/bin/sr.backup.20260924T181719Z-b3e7387`.
+- Why: the live row at 2026-09-24 02:16:04Z (`ambiguous-branch`) replays from
+  the real transcript. The hook's 2 MiB tail began between one response's
+  parallel tool calls and their results, stranding Claude's dead-end side
+  result without its call, so every prompt was ambiguous until the window
+  moved on.
+- Verified on the real cut in sandboxed ledgers, with a placeholder key and a
+  refusing loopback endpoint so nothing leaves the machine:
+  - the previous binary: `ambiguous-branch` for both the notification turn
+    and an ordinary prompt;
+  - this binary: resolves both and stops only at the unreachable provider.
+  The 16:03:41Z redaction replay still produces its request.
+- Pre-deploy smoke: 80 most recent real transcripts in a keyless sandbox
+  matched the installed binary on all 80.
+- Gates on the exact revision: fmt, strict clippy, RCH full suite
+  1367 passed / 0 failed / 10 ignored; the new test fails against the
+  previous resolver.
+- Not changed: hook scope, consent, and the managed settings entry.

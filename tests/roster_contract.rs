@@ -188,6 +188,114 @@ name: skill-two
     assert_eq!(err_msg, "duplicate key rejected in skill frontmatter");
 }
 
+fn frontmatter(yaml: &str) -> Result<ParsedSkillMetadata, FrontmatterError> {
+    parse_skill_metadata(format!("---\n{yaml}\n---\n# Heading\n\nBody.\n").as_bytes())
+}
+
+#[test]
+fn scalars_are_decoded_as_yaml_reads_them() {
+    // A trailing comment is not part of a quoted or plain value, and must not
+    // turn a valid skill into an excluded "unclosed quote".
+    let parsed = frontmatter("name: \"deploy\" # primary\ndescription: don't # note").unwrap();
+    assert_eq!(parsed.name.as_deref(), Some("deploy"));
+    assert_eq!(parsed.description, "don't");
+    let parsed = frontmatter("disable-model-invocation: true # restricted").unwrap();
+    assert!(!parsed.agent_invocable);
+    // A `#` that is not preceded by whitespace is text.
+    let parsed = frontmatter("description: C# and F# at https://x.test/#top").unwrap();
+    assert_eq!(parsed.description, "C# and F# at https://x.test/#top");
+
+    // Escapes are decoded rather than passed through verbatim.
+    let parsed =
+        frontmatter("name: 'it''s'\ndescription: \"say \\\"hi\\\"\\tnow \\u00e9\"").unwrap();
+    assert_eq!(parsed.name.as_deref(), Some("it's"));
+    assert_eq!(parsed.description, "say \"hi\"\tnow \u{e9}");
+
+    // A wrapped value keeps its continuation lines, folded with spaces, and a
+    // value may begin on the line after its key.
+    let parsed = frontmatter(
+        "description: Use when the user\n  wants a deploy.\n\n  Not otherwise.\nname:\n  split\n  name",
+    )
+    .unwrap();
+    assert_eq!(
+        parsed.description,
+        "Use when the user wants a deploy.\nNot otherwise."
+    );
+    assert_eq!(parsed.name.as_deref(), Some("split name"));
+    let parsed = frontmatter("description: \"a quoted\n  value # kept\" # dropped").unwrap();
+    assert_eq!(parsed.description, "a quoted value # kept");
+
+    // Lists: comments, quoted commas, continued flow sequences and a lone
+    // scalar, which is a one-item list rather than silently nothing.
+    let parsed = frontmatter("tags: [\"a, b\", 'c''d'] # note\nphases: [plan,\n  build]").unwrap();
+    let tags: Vec<_> = parsed.tags.iter().map(|t| t.as_str().to_owned()).collect();
+    assert_eq!(tags, ["a, b", "c'd"]);
+    let phases: Vec<_> = parsed
+        .phases
+        .iter()
+        .map(|t| t.as_str().to_owned())
+        .collect();
+    assert_eq!(phases, ["plan", "build"]);
+    let parsed = frontmatter("aliases:\n- ship # the short one\n- 'go live'").unwrap();
+    assert_eq!(parsed.aliases, ["ship", "go live"]);
+    let parsed = frontmatter("tags: testing").unwrap();
+    assert_eq!(parsed.tags.len(), 1);
+    assert_eq!(parsed.tags[0].as_str(), "testing");
+
+    // Unknown keys may hold zero-indented sequences and continued flow values.
+    frontmatter("allowed-tools:\n- Bash\n- Read\nname: tools").unwrap();
+    frontmatter("allowed-tools: [Bash,\n  Read]\nname: tools").unwrap();
+}
+
+#[test]
+fn malformed_scalars_are_still_rejected() {
+    for yaml in [
+        "name: \"deploy\" trailing",
+        "name: 'unterminated",
+        "name: \"unterminated # not a comment\"x",
+        "description: \"bad \\q escape\"",
+        "description: \"bad \\u12 escape\"",
+        "description:\n  - a sequence",
+        "description:\n  key: a mapping",
+        "tags: [open # comment hides the close]",
+        "custom: [unclosed",
+    ] {
+        assert_eq!(
+            frontmatter(yaml).unwrap_err(),
+            FrontmatterError::InvalidYamlSyntax,
+            "{yaml:?}"
+        );
+    }
+}
+
+#[test]
+fn duplicate_keys_inside_nested_mappings_are_rejected() {
+    for yaml in [
+        "metadata:\n  owner: a\n  owner: b",
+        "metadata:\n  inner:\n    k: 1\n    k: 2",
+        "hooks:\n  - run: a\n    run: b",
+        "hooks:\n- run: a\n  run: b",
+        "metadata: # comment\n  owner: a\n  owner: b",
+        "metadata:\n  \"owner\": a\n  owner: b",
+    ] {
+        assert_eq!(
+            frontmatter(yaml).unwrap_err(),
+            FrontmatterError::DuplicateKey,
+            "{yaml:?}"
+        );
+    }
+    // Honest counterparts: the same key in sibling items, in different nested
+    // mappings, or as text inside a block scalar is not a duplicate.
+    for yaml in [
+        "hooks:\n  - run: a\n  - run: b",
+        "metadata:\n  a:\n    k: 1\n  b:\n    k: 2",
+        "metadata:\n  script: |\n    k: 1\n    k: 1\n  other: x",
+        "metadata:\n  owner: a\nother:\n  owner: b",
+    ] {
+        frontmatter(yaml).unwrap_or_else(|err| panic!("{yaml:?}: {err}"));
+    }
+}
+
 #[test]
 fn yaml_anchors_and_aliases_are_forbidden() {
     let anchor_doc = r#"---
@@ -200,6 +308,38 @@ description: Test skill
 
     let err = parse_skill_metadata(anchor_doc.as_bytes()).unwrap_err();
     assert_eq!(err, FrontmatterError::AliasForbidden);
+    // Anchors and aliases where YAML reads them: a sequence item, a flow
+    // element, a node on its own line.
+    for aliased in [
+        "tags: [*shared]",
+        "tags: [one, *shared]",
+        "tags:\n  - *shared",
+        "*shared",
+    ] {
+        let doc = format!("---\nname: s\ndescription: d\n{aliased}\n---\n");
+        assert_eq!(
+            parse_skill_metadata(doc.as_bytes()).unwrap_err(),
+            FrontmatterError::AliasForbidden,
+            "{aliased}"
+        );
+    }
+}
+
+#[test]
+fn ampersands_and_asterisks_in_prose_are_not_aliases() {
+    // Mid-text `&` and `*`, and Markdown inside a block scalar, are ordinary
+    // content: rejecting them excluded valid skills.
+    for description in [
+        "description: Build & deploy helpers",
+        "description: Formats *.rs files",
+        "description: |\n  Steps:\n  * run the tests\n  *emphasis* matters",
+        "description: >\n  Fold & keep\n  &this line",
+    ] {
+        let doc = format!("---\nname: prose\n{description}\n---\nBody\n");
+        let metadata = parse_skill_metadata(doc.as_bytes())
+            .unwrap_or_else(|err| panic!("{description}: {err}"));
+        assert!(!metadata.description.is_empty(), "{description}");
+    }
 }
 
 #[test]

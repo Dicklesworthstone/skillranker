@@ -479,11 +479,16 @@ impl Provider {
 
     /// Stop the server and return how many requests it actually served, which is
     /// the provider's own count rather than the ledger's claim about it.
-    fn finish(mut self) -> usize {
+    fn finish(self) -> usize {
+        self.served().len()
+    }
+
+    /// One line per served request: its stage, status and request body.
+    fn served(mut self) -> Vec<Value> {
         let mut done = std::net::TcpStream::connect(("127.0.0.1", self.port)).unwrap();
         std::io::Write::write_all(&mut done, b"DONE").unwrap();
         drop(done);
-        let mut served = 0usize;
+        let mut served = Vec::new();
         loop {
             let mut line = String::new();
             assert!(
@@ -492,13 +497,13 @@ impl Provider {
             );
             let value: Value = serde_json::from_str(&line).unwrap();
             if value["done"] == true {
-                assert_eq!(value["requests"].as_u64().unwrap() as usize, served);
+                assert_eq!(value["requests"].as_u64().unwrap() as usize, served.len());
                 break;
             }
             if value["handshake_rejected"] == true {
                 continue;
             }
-            served += 1;
+            served.push(value);
         }
         assert!(self.child.wait().unwrap().success(), "provider must finish");
         served
@@ -701,6 +706,125 @@ fn a_ranking_run_records_one_row_per_provider_attempt() {
     let rerank = rows.iter().find(|r| r.stage == "rerank").unwrap();
     assert_ne!(wide.request_fingerprint, rerank.request_fingerprint);
     assert!(!wide.request_fingerprint.is_empty());
+}
+
+#[test]
+fn candidate_rows_keep_the_provider_raw_probability_beside_the_normalized_one() {
+    // Live totals drift from one (the codec accepts within 0.1). Scoring uses
+    // the renormalized value, but the ledger must retain what was returned.
+    let f = Fixture::new();
+    f.claude_session("rec-drift", TASK);
+    f.ledger_init();
+    let provider = Provider::start(&f, "drift");
+    let out = f.rank(provider.port);
+    assert!(
+        out.status.success(),
+        "rank failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(provider.finish(), 2);
+    let conn = rusqlite::Connection::open(f.ledger_db()).unwrap();
+    let mut stmt = conn
+        .prepare(
+            "SELECT stage, raw_probability, normalized_probability FROM ranking_candidates \
+             WHERE NOT excluded",
+        )
+        .unwrap();
+    let rows: Vec<(String, f64, f64)> = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    for stage in ["wide", "rerank"] {
+        assert!(rows.iter().any(|row| row.0 == stage), "{stage}: {rows:?}");
+    }
+    for (stage, raw, normalized) in &rows {
+        assert!(
+            (raw - normalized * 0.92).abs() < 1e-9,
+            "{stage}: raw {raw} is not the returned value behind normalized {normalized}"
+        );
+    }
+}
+
+#[test]
+fn overflow_retrieval_cannot_readmit_a_reference_admission_removed_as_loaded() {
+    // Above 254 candidates Quill picks the wide set. It must choose among the
+    // admitted candidates, not re-select from the whole roster: a reference
+    // already loaded in this epoch would otherwise take a wide option and a
+    // shortlist slot, only to be removed after rerank.
+    let f = Fixture::new();
+    for index in 0..254 {
+        f.skill(&format!("catalog-{index:03}"), "Quasar diagnostics.");
+    }
+    let reference = f
+        .workspace()
+        .join(".claude/skills/quasar-reference/SKILL.md");
+    std::fs::create_dir_all(reference.parent().unwrap()).unwrap();
+    std::fs::write(
+        &reference,
+        "---\nname: quasar-reference\ndescription: Quasar quasar diagnose quasar reference.\n\
+         usage: reference\n---\nBody.\n",
+    )
+    .unwrap();
+    f.claude_session("overflow-loaded", "Open the quasar reference");
+    f.append_tool_use("overflow-loaded", "quasar-reference", 3);
+    f.append_tool_result("overflow-loaded", 4);
+    f.append_turn("overflow-loaded", "Diagnose the quasar.", 5);
+    // The reference's skill id, from the roster listing (128 records a page).
+    let mut cursor: Option<String> = None;
+    let reference_id = loop {
+        let mut args = vec!["roster", "--json"];
+        if let Some(cursor) = &cursor {
+            args.extend(["--cursor", cursor.as_str()]);
+        }
+        let page: Value = serde_json::from_slice(&f.command(1, &args).output().unwrap().stdout)
+            .expect("roster page");
+        if let Some(record) = page["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["invocation_name"] == "quasar-reference")
+        {
+            break record["skill_id"].as_str().unwrap().to_owned();
+        }
+        cursor = Some(
+            page["next_cursor"]
+                .as_str()
+                .expect("the reference is listed")
+                .to_owned(),
+        );
+    };
+    let provider = Provider::start(&f, "useful");
+    let out = f.rank_with(provider.port, &["--explain", "--why-not", &reference_id]);
+    assert!(
+        out.status.success(),
+        "rank failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let served = provider.served();
+    assert_eq!(served.len(), 2);
+    let doc: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(doc["roster"]["retrieval"], "quill-bm25", "{doc}");
+    // The load was recognized: admission removed the reference.
+    let removed = doc["trace"]["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["skill_id"] == reference_id.as_str() && e["stage"] == "local-policy");
+    assert_eq!(
+        removed.map(|e| &e["reason"]),
+        Some(&json!("already-loaded")),
+        "{doc}"
+    );
+    // Retrieval did not bring it back: the provider never saw it as an option,
+    // although it matches the request better than any other skill.
+    assert_eq!(served[0]["stage"], "wide");
+    let wide: Value = serde_json::from_str(served[0]["body"].as_str().unwrap()).unwrap();
+    let criteria = wide["questions"]["which"]["criteria"].to_string();
+    assert!(
+        !criteria.contains("quasar-reference"),
+        "a loaded reference reached the wide options"
+    );
 }
 
 #[test]
@@ -1102,7 +1226,16 @@ fn an_invocation_killed_after_its_request_reached_the_wire_owns_that_attempt() {
 #[test]
 fn the_documented_adoption_loop_reports_one_skill_as_one_row() {
     let f = Fixture::new();
-    f.claude_session("adoption-loop", TASK);
+    // Private text planted where the loop reads it, for the scan at the end: the user's
+    // request and a skill body. Neither may reach a stored row or file (sr-roadmap-l1i.6.26).
+    f.claude_session("adoption-loop", &format!("{TASK} {REQUEST_MARKER}"));
+    let alpha = f.workspace().join(".claude/skills/alpha/SKILL.md");
+    let text = std::fs::read_to_string(&alpha).unwrap();
+    std::fs::write(
+        &alpha,
+        text.replace("Body.", &format!("Body. {BODY_MARKER}")),
+    )
+    .unwrap();
     f.ledger_init();
 
     // Name-based feedback requires complete historical membership. Native discovery
@@ -1285,6 +1418,74 @@ fn the_documented_adoption_loop_reports_one_skill_as_one_row() {
         assert_eq!(other["judged_useful"].as_u64(), Some(0), "other: {other}");
         assert_eq!(other["observed_loads"].as_u64(), Some(0), "other: {other}");
     }
+
+    // Nothing the loop stored holds the request, a skill body or the credential: the ledger,
+    // its WAL and sidecars, the response cache and the entry counter, byte for byte. Command
+    // output must not echo the credential either.
+    let stored = files_under(&[f.data_home(), f.root.join("cache")]);
+    assert!(
+        stored.iter().any(|path| path.ends_with("ledger.sqlite3")),
+        "the scan must cover the ledger: {stored:?}"
+    );
+    for path in &stored {
+        let bytes = std::fs::read(path).unwrap();
+        for marker in [REQUEST_MARKER, BODY_MARKER, "synthetic-acceptance-canary"] {
+            assert!(
+                !contains(&bytes, marker.as_bytes()),
+                "{} stores private text {marker:?}",
+                path.display()
+            );
+        }
+    }
+    for output in [&ranked, &first, &second, &feedback, &stats] {
+        for stream in [&output.stdout, &output.stderr] {
+            assert!(!contains(stream, b"synthetic-acceptance-canary"));
+        }
+    }
+}
+
+const REQUEST_MARKER: &str = "zephyr-quill-4417";
+const BODY_MARKER: &str = "private-body-marmot-9920";
+
+fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+    haystack
+        .windows(needle.len())
+        .any(|window| window == needle)
+}
+
+/// Every regular file below the given roots.
+fn files_under(roots: &[PathBuf]) -> Vec<PathBuf> {
+    let mut pending: Vec<PathBuf> = roots.to_vec();
+    let mut files = Vec::new();
+    while let Some(dir) = pending.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let kind = entry.file_type().unwrap();
+            if kind.is_dir() {
+                pending.push(entry.path());
+            } else if kind.is_file() {
+                files.push(entry.path());
+            }
+        }
+    }
+    files
+}
+
+#[test]
+fn the_private_text_scan_finds_a_planted_marker() {
+    // Failure-detection control for the adoption loop's storage scan: a scanner that never
+    // matches would pass that check vacuously.
+    let f = Fixture::new();
+    let planted = f.data_home().join("sr-planted.bin");
+    std::fs::create_dir_all(planted.parent().unwrap()).unwrap();
+    std::fs::write(&planted, format!("prefix\0{BODY_MARKER}\0suffix")).unwrap();
+    let files = files_under(&[f.data_home()]);
+    assert!(files.contains(&planted), "{files:?}");
+    let bytes = std::fs::read(&planted).unwrap();
+    assert!(contains(&bytes, BODY_MARKER.as_bytes()));
+    assert!(!contains(&bytes, REQUEST_MARKER.as_bytes()));
 }
 
 /// One session, two agent branches. Both observations must be recorded (sr-mdng).

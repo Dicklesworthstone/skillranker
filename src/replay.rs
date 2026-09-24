@@ -322,7 +322,8 @@ impl ReplayCase {
 
         // Validate wide response if present
         if let Some(wide) = &self.recorded_responses.wide {
-            validate_distribution(&wide.distribution, &candidate_ids)?;
+            // The wide question offers every candidate.
+            validate_distribution(&wide.distribution, &candidate_ids, true, &wide.choice)?;
             if wide.choice != "__none__" && !candidate_ids.contains(&wide.choice) {
                 return Err(ReplayError::OptionMapMismatch(format!(
                     "wide choice {} not found in candidate options",
@@ -333,7 +334,23 @@ impl ReplayCase {
 
         // Validate rerank response if present
         if let Some(rerank) = &self.recorded_responses.rerank {
-            validate_distribution(&rerank.distribution, &candidate_ids)?;
+            // The rerank offers only the shortlist; its fits name the same set.
+            validate_distribution(&rerank.distribution, &candidate_ids, false, &rerank.choice)?;
+            if !rerank.fits.is_empty() {
+                let offered: BTreeSet<&str> = rerank
+                    .distribution
+                    .iter()
+                    .map(|d| d.option_id.as_str())
+                    .filter(|id| *id != "__none__")
+                    .collect();
+                let fitted: BTreeSet<&str> =
+                    rerank.fits.iter().map(|f| f.skill_id.as_str()).collect();
+                if offered != fitted {
+                    return Err(ReplayError::OptionMapMismatch(
+                        "rerank fits and distribution name different shortlists".into(),
+                    ));
+                }
+            }
             if rerank.choice != "__none__" && !candidate_ids.contains(&rerank.choice) {
                 return Err(ReplayError::OptionMapMismatch(format!(
                     "rerank choice {} not found in candidate options",
@@ -550,6 +567,11 @@ pub fn execute_replay(
     case: &ReplayCase,
     policy: Option<&ReplayPolicy>,
 ) -> Result<ReplayOutcome, ReplayError> {
+    // `ReplayCase` has public fields, so a case built in memory need not have passed
+    // through `from_json_bytes`. Validating here keeps scoring from reading an
+    // unvalidated distribution, where a missing `__none__` counts as zero and every
+    // candidate would beat none (sr-u66v).
+    case.validate()?;
     let hist_decision_str = case
         .historical_decision
         .get("decision")
@@ -998,9 +1020,17 @@ fn make_recomputed_ranked(
     recomputed
 }
 
+/// Checks a recorded distribution the way the live codec checks a live one, so
+/// replay cannot accept an answer a live run would refuse. `__none__` must be
+/// present: a missing sentinel would read as probability zero and let every
+/// candidate beat it. With `require_all`, every allowed option must be present
+/// too. The sum must be positive and within the codec's tolerance, and
+/// `choice` must be a maximum-probability option (ties allowed).
 fn validate_distribution(
     dist: &[ChoiceDistributionItem],
     candidate_ids: &BTreeSet<&String>,
+    require_all: bool,
+    choice: &str,
 ) -> Result<(), ReplayError> {
     if dist.is_empty() {
         return Err(ReplayError::InvalidField(
@@ -1008,6 +1038,8 @@ fn validate_distribution(
         ));
     }
     let mut sum = 0.0;
+    let mut maximum = f64::NEG_INFINITY;
+    let mut choice_probability = None;
     let mut seen = BTreeSet::new();
     for item in dist {
         if !seen.insert(&item.option_id) {
@@ -1029,11 +1061,30 @@ fn validate_distribution(
             )));
         }
         sum += item.probability;
+        maximum = maximum.max(item.probability);
+        if item.option_id == choice {
+            choice_probability = Some(item.probability);
+        }
     }
-    // Distribution sum must be positive and within 0.1 of 1.0 (per plan invariant)
-    if (sum - 1.0).abs() > 0.101 {
+    if !seen.iter().any(|id| id.as_str() == "__none__") {
+        return Err(ReplayError::OptionMapMismatch(
+            "distribution must include __none__".into(),
+        ));
+    }
+    if require_all && let Some(missing) = candidate_ids.iter().find(|id| !seen.contains(*id)) {
+        return Err(ReplayError::OptionMapMismatch(format!(
+            "distribution is missing candidate option {missing}"
+        )));
+    }
+    let tolerance = crate::jev::codec::SUM_TOLERANCE;
+    if sum <= 0.0 || (sum - 1.0).abs() > tolerance {
         return Err(ReplayError::InvalidField(format!(
-            "distribution probabilities must sum to 1.0 ± 0.1, got {sum}"
+            "distribution probabilities must sum to 1.0 ± {tolerance}, got {sum}"
+        )));
+    }
+    if choice_probability != Some(maximum) {
+        return Err(ReplayError::InvalidField(format!(
+            "choice {choice} is not a maximum-probability option"
         )));
     }
     Ok(())

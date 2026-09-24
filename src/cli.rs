@@ -810,6 +810,9 @@ pub fn run(clock: EntryClock) -> u8 {
     let args: Vec<OsString> = std::env::args_os().collect();
     let is_hook_claude = is_hook_claude_invocation(&args);
     let is_help = args.iter().any(|arg| arg == "--help" || arg == "-h");
+    if is_hook_claude && !is_help {
+        count_hook_entry(&args);
+    }
     let wants_json = args.iter().any(|arg| arg == "--json") || !io::stdout().is_terminal();
     let location = if let Some(dir) = try_extract_dir(&args) {
         crate::storage::LedgerLocation::Directory(dir)
@@ -918,6 +921,23 @@ fn storage_failure(
     }
 }
 
+/// Count a hook invocation beside the ledger before stdin is read, so a turn
+/// that never records a row still reaches the denominator (sr-01h3). The same
+/// flags that keep the hook out of the ledger keep it out of the counter, and
+/// every failure is silent.
+fn count_hook_entry(args: &[OsString]) {
+    if args
+        .iter()
+        .any(|arg| arg == "--no-ledger" || arg == "--no-persist")
+    {
+        return;
+    }
+    crate::storage::hook_entries::record_hook_invocation(
+        try_extract_dir(args).as_deref(),
+        crate::storage::hook_entries::HookCounter::Entries,
+    );
+}
+
 fn try_extract_dir(args: &[OsString]) -> Option<PathBuf> {
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
@@ -1012,6 +1032,19 @@ fn validate_rank_completion(
     } else {
         completed_in_time
     }
+}
+
+/// `sr observe` running out of time while reading the roster. It is a timeout, not a broken or
+/// malformed roster: under load, observe reported `unusable-roster` (exit 5) with the message
+/// "Failed to resolve roster: Deadline", sending the user to inspect skills that were fine.
+/// Rank's roster path already maps the same errors to `timeout`.
+fn observe_roster_timeout() -> Failure {
+    let kind = crate::output::ErrorKind::Timeout;
+    (
+        kind.exit_code() as u8,
+        kind.as_str(),
+        "Roster resolution reached the observation deadline".into(),
+    )
 }
 
 fn invalid(message: impl Into<String>) -> Failure {
@@ -1312,8 +1345,8 @@ fn feedback_command(
                 )
             }
             crate::storage::FeedbackError::RevisionConflict { expected, actual } => (
-                11u8,
-                "revision-conflict",
+                crate::output::ErrorKind::RevisionConflict.exit_code() as u8,
+                crate::output::ErrorKind::RevisionConflict.as_str(),
                 format!("Ledger revision conflict: expected {expected}, actual {actual}"),
             ),
             crate::storage::FeedbackError::IdenticalSkills => (
@@ -1335,7 +1368,11 @@ fn feedback_command(
                 format!("Ranking event '{id}' not found in ledger"),
             ),
             crate::storage::FeedbackError::StaleStamp => {
-                (11u8, "revision-conflict", "Ledger stamp is stale".into())
+                (
+                    crate::output::ErrorKind::RevisionConflict.exit_code() as u8,
+                    crate::output::ErrorKind::RevisionConflict.as_str(),
+                    "Ledger stamp is stale".into(),
+                )
             }
             crate::storage::FeedbackError::Store(err) => (
                 9u8,
@@ -1658,21 +1695,29 @@ fn observe_command(clock: &EntryClock, matches: &clap::ArgMatches) -> Result<Str
                 )
             })?;
             crate::roster::import::import_authorized(&bytes, &plan, &overrides, &cx, clock)
-                .map_err(|e| {
-                    (
+                .map_err(|e| match e {
+                    crate::roster::import::ImportError::Deadline
+                    | crate::roster::import::ImportError::Cancelled
+                    | crate::roster::import::ImportError::Resolution(
+                        crate::roster::resolution::ResolutionError::Deadline
+                        | crate::roster::resolution::ResolutionError::Cancelled,
+                    ) => observe_roster_timeout(),
+                    e => (
                         7u8,
                         "malformed-input",
                         format!("Failed to import roster: {e:?}"),
-                    )
+                    ),
                 })?
         }
         None => crate::roster::resolution::resolve_claude_plan(&plan, &overrides, &cx, clock)
-            .map_err(|error| {
-                (
+            .map_err(|error| match error {
+                crate::roster::resolution::ResolutionError::Deadline
+                | crate::roster::resolution::ResolutionError::Cancelled => observe_roster_timeout(),
+                error => (
                     5u8,
                     "unusable-roster",
                     format!("Failed to resolve roster: {error:?}"),
-                )
+                ),
             })?,
     };
 
@@ -1826,8 +1871,8 @@ fn observe_command(clock: &EntryClock, matches: &clap::ArgMatches) -> Result<Str
     )
     .map_err(|err| match err {
         crate::storage::StoreError::RecordConflict => (
-            11u8,
-            "revision-conflict",
+            crate::output::ErrorKind::RevisionConflict.exit_code() as u8,
+            crate::output::ErrorKind::RevisionConflict.as_str(),
             "Concurrent transcript observation or cursor conflict".into(),
         ),
         crate::storage::StoreError::Missing => (
@@ -1997,6 +2042,28 @@ fn format_stats_report(report: &crate::storage::StatsValueReport) -> String {
         for cause in &report.turns.failure_causes {
             let _ = writeln!(out, "  {}: {}", cause.reason, cause.count);
         }
+    }
+
+    if let Some(entries) = &report.hook_entries {
+        let _ = writeln!(
+            out,
+            "\nHook invocations counted at entry ({} to {}):",
+            crate::storage::format_unix_ms(entries.counted_since_unix_ms),
+            crate::storage::format_unix_ms(entries.counted_until_unix_ms)
+        );
+        let bound = if entries.counter_full {
+            " (counter full: lower bounds)"
+        } else {
+            ""
+        };
+        let _ = writeln!(
+            out,
+            "  counted: {}, recorded: {}, notifications inside a turn: {}, left no row: {} (upper bound on sr failures){bound}",
+            entries.counted_at_entry,
+            entries.recorded,
+            entries.non_turn_deliveries,
+            entries.unrecorded
+        );
     }
 
     if !report.turns.by_channel.is_empty() {
@@ -3905,11 +3972,17 @@ fn readiness(
     let home = std::env::var_os("HOME")
         .filter(|path| !path.is_empty())
         .map(PathBuf::from);
+    // Readiness answers whether `sr rank` can work, so it resolves the roster
+    // under the same provisional Claude contract rank uses. The report still
+    // labels that visibility unverified.
     let resolved = resolve_workspace_roster(
         clock,
         workspace,
         home.as_deref(),
         config.effective().roster_roots(),
+        crate::roster::Visibility::Verified {
+            contract_version: crate::pipeline::PROVISIONAL_CLAUDE_CONTRACT.into(),
+        },
     );
     let listing = resolved.as_ref().ok().map(crate::roster::inspect::listing);
     let roster = match (&resolved, &listing) {
@@ -4077,6 +4150,7 @@ fn roster_listing(clock: &EntryClock, matches: &clap::ArgMatches) -> Result<Stri
         &workspace,
         home.as_deref(),
         config.effective().roster_roots(),
+        crate::roster::Visibility::Unverified,
     )?;
     if let Some(target) = matches.get_one::<String>("snapshot") {
         let fresh = workspace_snapshot(&roster, &workspace, home.as_deref());
@@ -4112,20 +4186,19 @@ fn roster_listing(clock: &EntryClock, matches: &clap::ArgMatches) -> Result<Stri
     Ok(format!("{}\n", page.to_json()))
 }
 
-/// Discover and resolve the documented Claude roots of `workspace`. The Claude
-/// adapter's visibility is unverified, so no precedence is claimed.
+/// Discover and resolve the documented Claude roots of `workspace` under the
+/// given visibility. `sr roster` claims no precedence (`Unverified`); doctor
+/// uses rank's provisional contract so its readiness matches ranking.
 fn resolve_workspace_roster(
     clock: &EntryClock,
     workspace: &Path,
     home: Option<&Path>,
     configured: &[crate::privacy::SkillRoot],
+    visibility: crate::roster::Visibility,
 ) -> Result<crate::roster::resolution::ResolvedRoster, Failure> {
     let unusable = |message: &str| (5u8, "unusable-roster", message.to_owned());
     let plan = crate::roster::discovery::claude_code_plan_with_roots(
-        workspace,
-        home,
-        crate::roster::Visibility::Unverified,
-        configured,
+        workspace, home, visibility, configured,
     )
     .map_err(|_| unusable("The documented skill roots could not be planned"))?;
     let runtime_failure = |error| {
@@ -4246,6 +4319,13 @@ mod invocation_cleanup_tests {
     use std::time::Duration;
 
     #[test]
+    fn an_observe_roster_deadline_is_a_timeout_not_an_unusable_roster() {
+        let (code, kind, message) = observe_roster_timeout();
+        assert_eq!((code, kind), (6, "timeout"));
+        assert!(!message.contains("Deadline"), "no Debug text: {message}");
+    }
+
+    #[test]
     fn work_cutoff_preserves_unavailable_but_never_late_advice_or_artifacts() {
         let timeout = (
             6,
@@ -4280,7 +4360,13 @@ mod invocation_cleanup_tests {
         .unwrap();
         std::thread::sleep(Duration::from_millis(5));
         let workspace = std::env::current_dir().unwrap();
-        let result = resolve_workspace_roster(&clock, &workspace, None, &[]);
+        let result = resolve_workspace_roster(
+            &clock,
+            &workspace,
+            None,
+            &[],
+            crate::roster::Visibility::Unverified,
+        );
         assert!(matches!(result, Err((6, "timeout", _))), "{result:?}");
     }
 

@@ -91,7 +91,24 @@ where
     F: FnOnce() -> T + Send + 'static,
     T: Send + 'static,
 {
-    let clock = invocation.clock();
+    run_blocking_leaf_with_clock(invocation, invocation.clock(), cx, kind, uninterruptible, f)
+}
+
+/// [`run_blocking_leaf`] admitted and published against an explicit clock, for the one
+/// caller that runs on a different deadline than the invocation's own:
+/// [`EntryClock::for_failure_finalization`].
+pub fn run_blocking_leaf_with_clock<F, T>(
+    invocation: &ProcessInvocation,
+    clock: EntryClock,
+    cx: &Cx,
+    kind: BlockingLeafKind,
+    uninterruptible: bool,
+    f: F,
+) -> Result<BlockingOutcome<T>, RuntimeError>
+where
+    F: FnOnce() -> T + Send + 'static,
+    T: Send + 'static,
+{
     admit_blocking_leaf(&clock, kind, uninterruptible)?;
     invocation.runtime().block_on(async {
         let mut handle = cx

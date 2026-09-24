@@ -20,6 +20,7 @@ use crate::identity::{
     AgentId, BranchId, ContentHash, ContextEpoch, EventId, SessionIdentity, SkillId, ToolCallId,
     TurnId,
 };
+use crate::privacy::redaction::{REDACTION_MARKER, redacted_head_end, redacted_tail_start};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
@@ -74,42 +75,67 @@ pub fn head_tail_truncate(text: &str, max_chars: usize) -> String {
     );
     let marker_len = sample_marker.chars().count();
 
+    // Cuts never split a redaction marker or strand an assignment before one:
+    // the payload scan would take the leftover for a secret value.
+    let byte_at = |chars: usize| {
+        text.char_indices()
+            .nth(chars)
+            .map_or(text.len(), |(i, _)| i)
+    };
     if max_chars <= marker_len {
-        return text.chars().take(max_chars).collect();
+        // Too small for the marker; an ellipsis still shows the cut.
+        let Some(kept) = max_chars.checked_sub(1) else {
+            return String::new();
+        };
+        let end = redacted_head_end(text, byte_at(kept), byte_at(kept));
+        let head = &text[..end];
+        if !head.ends_with(REDACTION_MARKER) {
+            return format!("{head}…");
+        }
+        // Glued to the marker, the ellipsis would make one value of both.
+        if head.chars().count() + 2 <= max_chars {
+            return format!("{head} …");
+        }
+        let end = redacted_head_end(text, end - 1, end - 1);
+        return format!("{}…", &text[..end]);
     }
 
     let budget = max_chars - marker_len;
-    let head_chars = budget / 2;
-    let tail_chars = budget - head_chars;
-    let omitted = char_count.saturating_sub(head_chars + tail_chars);
+    // The head may take the tail's share to keep a whole marker; the tail
+    // gets whatever the head leaves.
+    let head_end = redacted_head_end(text, byte_at(budget / 2), byte_at(budget));
+    let tail_chars = budget - text[..head_end].chars().count();
+    let tail_start = redacted_tail_start(text, byte_at(char_count - tail_chars)).max(head_end);
+    let omitted = text[head_end..tail_start].chars().count();
     let marker = format!(" ... [{} chars omitted] ... ", omitted);
 
-    let head: String = text.chars().take(head_chars).collect();
-    let tail: String = text
-        .chars()
-        .skip(char_count.saturating_sub(tail_chars))
-        .collect();
+    format!("{}{}{}", &text[..head_end], marker, &text[tail_start..])
+}
 
-    format!("{}{}{}", head, marker, tail)
+/// Keep only allowlisted JSON argument values; every other value becomes
+/// `<omitted>`. Arguments that are not a JSON object are returned unchanged.
+/// Apply this to the original arguments, before redaction: redaction can
+/// rewrite quotes and escapes, and arguments that no longer parse as JSON
+/// would pass every field through.
+pub fn allowlist_tool_arguments(raw_args: &str) -> String {
+    let Ok(Value::Object(map)) = serde_json::from_str::<Value>(raw_args) else {
+        return raw_args.to_owned();
+    };
+    let mut filtered = serde_json::Map::new();
+    for (k, v) in map {
+        if ALLOWLISTED_TOOL_ARGUMENT_KEYS.contains(&k.as_str()) {
+            filtered.insert(k, v);
+        } else {
+            filtered.insert(k, Value::String("<omitted>".to_string()));
+        }
+    }
+    Value::Object(filtered).to_string()
 }
 
 /// Summarize tool arguments by retaining only allowlisted JSON keys,
 /// then applying bounded head/tail excerpting.
 pub fn summarize_tool_arguments(raw_args: &str, max_chars: usize) -> String {
-    if let Ok(Value::Object(map)) = serde_json::from_str::<Value>(raw_args) {
-        let mut filtered = serde_json::Map::new();
-        for (k, v) in map {
-            if ALLOWLISTED_TOOL_ARGUMENT_KEYS.contains(&k.as_str()) {
-                filtered.insert(k, v);
-            } else {
-                filtered.insert(k, Value::String("<omitted>".to_string()));
-            }
-        }
-        let serialized = Value::Object(filtered).to_string();
-        head_tail_truncate(&serialized, max_chars)
-    } else {
-        head_tail_truncate(raw_args, max_chars)
-    }
+    head_tail_truncate(&allowlist_tool_arguments(raw_args), max_chars)
 }
 
 /// Summarize tool results by detecting error lines and applying bounded head/tail excerpting.

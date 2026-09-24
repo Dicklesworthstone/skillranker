@@ -105,19 +105,22 @@ with fixed diagnostics. Optional unresolved references contain `reference` and a
 | Exit | Stable `error.kind` values |
 | --- | --- |
 | 2 | `invalid-usage`, `invalid-configuration` |
-| 3 | `missing-session`, `ambiguous-session`, `superseded` |
+| 3 | `missing-session`, `ambiguous-session`, `ambiguous-branch`, `superseded` |
 | 4 | `provider-failure`, `authentication`, `credential-absent`, `network-failure`, `request-budget`, `provider-cooldown`, `budget-state` |
 | 5 | `empty-roster`, `unusable-roster`, `unresolved-explicit`, `incomplete-roster`, `roster-changed`, `retrieval-empty`, `retrieval-failure` |
 | 6 | `timeout` |
 | 7 | `malformed-input`, `oversized-input`, `unsupported-input`, `unsupported-source-mode`, `insufficient-context`, `output-limit` |
 | 8 | `network-denied` |
-| 9 | `storage-failure` |
+| 9 | `storage-failure`, `revision-conflict` |
 | 10 | `invalid-provider-response` |
 | 11 | `cache-miss` |
 
 Codes and kinds must agree. A TypeSafe credential absent from the environment is
 `credential-absent`; a credential the provider rejects is `authentication`.
-Credentials themselves do not grant network consent. Retryability describes a
+Credentials themselves do not grant network consent. `ambiguous-branch` means the
+session's active agent branch could not be resolved from its transcript.
+`revision-conflict` means an explicit mutation lost its `--expected-version` or
+stamp check: re-read and rebase rather than retry. Retryability describes a
 fresh invocation with the intended inputs, not permission to retry past policy
 or deadline limits. Signals and broken pipes remain platform outcomes.
 
@@ -248,9 +251,35 @@ session mismatch, branch resolution) is still one `unavailable` row, with
 `agent_branch = "unresolved"` and event id `pre-context-<prompt_id>`, so a failing
 redelivery is not a second turn. The prefix keeps it apart from the full row a later
 successful delivery writes. Without a `prompt_id` the row is keyed to the invocation
-and a redelivery counts again. An invocation whose payload never parses
-has no turn identity and is not recorded: it is the one unmeasured residual of the
-operational-failure denominator.
+and a redelivery counts again. A failure at the work deadline is still recorded: the
+failure row alone may use half of the cleanup reserve. Two kinds of invocation still
+record no row: one whose payload never parses (it has no turn identity), and one
+starved past its own total deadline (there is no time left to write without risking
+the harness's outer timeout).
+
+Those are measured rather than declared. Before it reads stdin, `sr hook claude`
+appends one fixed-size record (a Unix time and a random token; no content or
+identity) to an owner-only counter beside an existing ledger. It does not count under
+`--no-ledger` or `--no-persist`, or where no ledger exists. It never blocks and fails
+silently, and it stops appending at 1 MiB. `hook_entries` then compares
+`counted_at_entry` with the hook-channel turns (`shadow`, `advisory-hook`)
+`recorded` over one span. `non_turn_deliveries` counts invocations that were a
+background-task notification Claude delivered inside a turn already under way: the
+payload repeats the running turn's `prompt_id` and its prompt is the
+`<task-notification>` text, so it is not a turn, and the hook neither ranks it nor
+records a row for it. `unrecorded` is `counted_at_entry - recorded -
+non_turn_deliveries`, not below zero. The
+span runs from `counted_since_unix_ms`, the later of the window start and the
+counter's oldest entry, to `counted_until_unix_ms`, one minute before `as_of`,
+because an invocation that entered later may still be running. `counter_full` marks
+the counts as lower bounds, and `unreadable_entries` counts records left out as
+malformed. A redelivered turn is two invocations and one row, so it adds one to
+`unrecorded`. `unrecorded` is therefore an upper bound on sr's own unrecorded
+failures, not a count of them, and an availability report must present it as a bound.
+`hook_entries` is absent, never zero, when nothing has been counted.
+`sr ledger prune` and `sr ledger clear` apply the same cutoff to both counters and
+report `hook_entries_pruned` or `hook_entries_cleared`, summed over them; `null` means
+a counter could not be aligned with the rows.
 
 `latency` reports `mean_ms`, `median_ms`, `p95_ms`, `min_ms`, `max_ms` over turns that
 finished, plus `excluded_unfinished`. An unfinished turn's recorded duration is a

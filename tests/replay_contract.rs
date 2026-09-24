@@ -192,6 +192,45 @@ fn replay_case_rejects_option_map_mismatch() {
 }
 
 #[test]
+fn replay_rejects_recorded_answers_the_live_codec_would_refuse() {
+    assert!(sample_ranked_case().validate().is_ok(), "the honest twin");
+    // Without __none__, its probability read as zero and every candidate
+    // beat it: the beat-none rule failed open.
+    let mut case = sample_ranked_case();
+    let rerank = case.recorded_responses.rerank.as_mut().unwrap();
+    rerank.distribution.retain(|d| d.option_id != "__none__");
+    rerank.distribution[1].probability = 0.20;
+    assert!(case.validate().is_err(), "rerank without __none__");
+    // The wide question offers every candidate.
+    let mut case = sample_ranked_case();
+    let wide = case.recorded_responses.wide.as_mut().unwrap();
+    wide.distribution.retain(|d| d.option_id != "s_review");
+    wide.distribution[0].probability = 0.95;
+    assert!(case.validate().is_err(), "wide answer missing a candidate");
+    // The recorded choice must be a maximum-probability option.
+    let mut case = sample_ranked_case();
+    case.recorded_responses.rerank.as_mut().unwrap().choice = "s_review".into();
+    assert!(case.validate().is_err(), "choice below the maximum");
+    // Fits and distribution must name one shortlist.
+    let mut case = sample_ranked_case();
+    case.recorded_responses.rerank.as_mut().unwrap().fits.pop();
+    assert!(case.validate().is_err(), "fits for a different shortlist");
+}
+
+#[test]
+fn replay_execution_refuses_an_unvalidated_in_memory_case() {
+    // Built in memory, so it never passed through from_json_bytes. Without __none__
+    // the beat-none rule would fail open if execution trusted it.
+    let mut case = sample_ranked_case();
+    let rerank = case.recorded_responses.rerank.as_mut().unwrap();
+    rerank.distribution.retain(|d| d.option_id != "__none__");
+    rerank.distribution[1].probability = 0.20;
+    assert!(execute_replay(&case, None).is_err());
+    // The honest twin still executes.
+    assert!(execute_replay(&sample_ranked_case(), None).is_ok());
+}
+
+#[test]
 fn replay_case_rejects_distribution_not_summing_to_one() {
     let mut case = sample_ranked_case();
     case.recorded_responses.wide.as_mut().unwrap().distribution[0].probability = 0.10; // Sum becomes 0.25, far from 1.0

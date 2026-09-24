@@ -351,19 +351,66 @@ impl Default for FrontmatterFields {
     }
 }
 
-fn parse_yaml_frontmatter(yaml: &str) -> Result<FrontmatterFields, FrontmatterError> {
-    // Check for YAML anchors/aliases to prevent amplification attacks
-    if yaml.contains('&') || yaml.contains('*') {
-        for line in yaml.lines() {
-            let t = line.trim();
-            if t.starts_with('&') || t.starts_with('*') || t.contains(" &") || t.contains(" *") {
-                return Err(FrontmatterError::AliasForbidden);
-            }
+/// Whether the YAML uses an anchor or alias: `&name` or `*name` where a node
+/// begins, meaning a value, a sequence item or a flow element. Elsewhere the
+/// characters are prose ("Build & deploy", "*.rs") or block scalar content
+/// (Markdown emphasis or bullets under `description: |`), which YAML never
+/// reads as anchors.
+fn uses_anchor_or_alias(yaml: &str) -> bool {
+    let node_start = |text: &str| {
+        let mut chars = text.trim_start().chars();
+        matches!(chars.next(), Some('&' | '*')) && chars.next().is_some_and(|c| !c.is_whitespace())
+    };
+    let value_starts_node = |value: &str| {
+        let value = value.trim();
+        match value.strip_prefix('[').or_else(|| value.strip_prefix('{')) {
+            Some(inner) => inner.split(',').any(|element| {
+                let element = element.trim_end_matches([']', '}']);
+                node_start(element.split_once(": ").map_or(element, |(_, v)| v))
+            }),
+            None => node_start(value),
         }
+    };
+    // Indentation of the line that opened a block scalar (`|` or `>`).
+    let mut block_parent: Option<usize> = None;
+    for line in yaml.lines() {
+        let text = line.trim();
+        if text.is_empty() || text.starts_with('#') {
+            continue;
+        }
+        let indent = line.len() - line.trim_start().len();
+        if let Some(parent) = block_parent {
+            if indent > parent {
+                continue;
+            }
+            block_parent = None;
+        }
+        let body = match text.strip_prefix('-') {
+            Some(item) if item.is_empty() || item.starts_with(' ') => item.trim_start(),
+            _ => text,
+        };
+        let value = body.split_once(':').map_or(body, |(_, value)| value);
+        if value_starts_node(value) || node_start(body) {
+            return true;
+        }
+        if value.trim_start().starts_with(['|', '>']) {
+            block_parent = Some(indent);
+        }
+    }
+    false
+}
+
+fn parse_yaml_frontmatter(yaml: &str) -> Result<FrontmatterFields, FrontmatterError> {
+    // Anchors and aliases are refused outright: they allow amplification.
+    if uses_anchor_or_alias(yaml) {
+        return Err(FrontmatterError::AliasForbidden);
     }
 
     let mut fields = FrontmatterFields::new();
     let mut seen_keys = HashSet::new();
+    // Mappings nested under the current top-level key, innermost last. Their
+    // contents carry no metadata, but YAML forbids duplicate keys at every level.
+    let mut nested = NestedMappings::default();
 
     let lines: Vec<&str> = yaml.lines().collect();
     let mut idx = 0;
@@ -378,11 +425,14 @@ fn parse_yaml_frontmatter(yaml: &str) -> Result<FrontmatterFields, FrontmatterEr
             continue;
         }
 
-        // Top-level key: must not be indented
-        if line.starts_with(' ') || line.starts_with('\t') {
+        // Anything indented, or a zero-indented sequence item, belongs to the
+        // previous top-level key's value.
+        if line.starts_with([' ', '\t']) || is_sequence_item(trimmed) {
+            nested.track(line.len() - line.trim_start().len(), trimmed)?;
             idx += 1;
             continue;
         }
+        nested = NestedMappings::default();
 
         let colon_pos = line.find(':').ok_or(FrontmatterError::InvalidYamlSyntax)?;
         let key = line[..colon_pos].trim().to_ascii_lowercase();
@@ -405,29 +455,27 @@ fn parse_yaml_frontmatter(yaml: &str) -> Result<FrontmatterFields, FrontmatterEr
 
         match key {
             "name" => {
-                require_scalar_value(value_after_colon)?;
-                let (val, next_idx) = parse_scalar_or_block(value_after_colon, &lines, idx + 1)?;
+                let (val, next_idx) = parse_string_field(value_after_colon, &lines, idx + 1)?;
                 fields.name = Some(val.trim().to_string());
                 idx = next_idx;
             }
             "description" => {
-                require_scalar_value(value_after_colon)?;
-                let (val, next_idx) = parse_scalar_or_block(value_after_colon, &lines, idx + 1)?;
+                let (val, next_idx) = parse_string_field(value_after_colon, &lines, idx + 1)?;
                 fields.description = val.trim().to_string();
                 idx = next_idx;
             }
             "disable-model-invocation" => {
-                let (val, next_idx) = parse_scalar_or_block(value_after_colon, &lines, idx + 1)?;
+                let (val, next_idx) = parse_string_field(value_after_colon, &lines, idx + 1)?;
                 fields.disable_model_invocation = parse_boolean(&val)?;
                 idx = next_idx;
             }
             "user-invocable" => {
-                let (val, next_idx) = parse_scalar_or_block(value_after_colon, &lines, idx + 1)?;
+                let (val, next_idx) = parse_string_field(value_after_colon, &lines, idx + 1)?;
                 fields.user_invocable = parse_boolean(&val)?;
                 idx = next_idx;
             }
             "usage" => {
-                let (val, next_idx) = parse_scalar_or_block(value_after_colon, &lines, idx + 1)?;
+                let (val, next_idx) = parse_string_field(value_after_colon, &lines, idx + 1)?;
                 let lower = val.trim().to_ascii_lowercase();
                 fields.usage_kind = match lower.as_str() {
                     "reference" => UsageKind::Reference,
@@ -437,7 +485,7 @@ fn parse_yaml_frontmatter(yaml: &str) -> Result<FrontmatterFields, FrontmatterEr
                 idx = next_idx;
             }
             "context" => {
-                let (val, next_idx) = parse_scalar_or_block(value_after_colon, &lines, idx + 1)?;
+                let (val, next_idx) = parse_string_field(value_after_colon, &lines, idx + 1)?;
                 fields.forked_context = val.trim().eq_ignore_ascii_case("fork");
                 idx = next_idx;
             }
@@ -457,9 +505,15 @@ fn parse_yaml_frontmatter(yaml: &str) -> Result<FrontmatterFields, FrontmatterEr
                 idx = next_idx;
             }
             _ => {
-                // Unknown field: consume safely without failure (bounded forward scan)
-                let (_, next_idx) = parse_scalar_or_block(value_after_colon, &lines, idx + 1)?;
-                idx = next_idx;
+                // Unknown field: consume a scalar value and validate its syntax.
+                // An empty value may open a nested collection, which the
+                // indented-line branch above checks for duplicate keys.
+                if strip_comment(value_after_colon).is_empty() {
+                    idx += 1;
+                } else {
+                    let (_, next_idx) = parse_scalar_or_block(value_after_colon, &lines, idx + 1)?;
+                    idx = next_idx;
+                }
             }
         }
     }
@@ -467,14 +521,34 @@ fn parse_yaml_frontmatter(yaml: &str) -> Result<FrontmatterFields, FrontmatterEr
     Ok(fields)
 }
 
-// A balanced flow collection is valid YAML, but not a string field. Quoted
-// bracketed text remains a legitimate name/description. Check the source type
-// before unquoting, since that distinction is lost after scalar decoding.
-fn require_scalar_value(value: &str) -> Result<(), FrontmatterError> {
-    if value.starts_with(['[', '{']) {
+/// A field whose value must be a string. An empty value continues on the
+/// indented lines below it, as YAML allows; a collection there or on the key's
+/// line is not a string. Quoted bracketed text remains a legitimate value, so
+/// the source type is checked before unquoting, which loses that distinction.
+fn parse_string_field(
+    immediate: &str,
+    lines: &[&str],
+    next_line_idx: usize,
+) -> Result<(String, usize), FrontmatterError> {
+    let immediate = strip_comment(immediate);
+    if immediate.is_empty() {
+        let following = lines[next_line_idx.min(lines.len())..]
+            .iter()
+            .map(|line| line.trim())
+            .find(|text| !text.is_empty() && !text.starts_with('#'));
+        if following.is_some_and(|text| is_sequence_item(text) || mapping_key(text).is_some()) {
+            return Err(FrontmatterError::InvalidYamlSyntax);
+        }
+        let (source, next_line_idx) = fold_continuation("", lines, next_line_idx);
+        if source.starts_with(['[', '{']) {
+            return Err(FrontmatterError::InvalidYamlSyntax);
+        }
+        return Ok((scalar(&source)?, next_line_idx));
+    }
+    if immediate.starts_with(['[', '{']) {
         return Err(FrontmatterError::InvalidYamlSyntax);
     }
-    Ok(())
+    parse_scalar_or_block(immediate, lines, next_line_idx)
 }
 
 fn parse_boolean(val: &str) -> Result<bool, FrontmatterError> {
@@ -536,34 +610,248 @@ fn parse_scalar_or_block(
         return Ok((result, next_line_idx));
     }
 
-    // Quoted strings
-    if (trimmed.starts_with('"') && trimmed.ends_with('"') && trimmed.len() >= 2)
-        || (trimmed.starts_with('\'') && trimmed.ends_with('\'') && trimmed.len() >= 2)
-    {
-        let unquoted = &trimmed[1..trimmed.len() - 1];
-        return Ok((unquoted.to_string(), next_line_idx));
-    }
+    // A plain, quoted or flow value may continue on indented lines.
+    let (source, next_line_idx) = fold_continuation(trimmed, lines, next_line_idx);
+    Ok((scalar(&source)?, next_line_idx))
+}
 
-    // Check for unclosed quotes
-    if trimmed.starts_with('"') || trimmed.starts_with('\'') {
+/// A value's source text: its first line plus the indented or blank lines that
+/// continue it, folded as YAML folds multi-line flow scalars. Lines join with a
+/// space and each blank line becomes a newline. Returns the index after the
+/// last line consumed.
+fn fold_continuation(first: &str, lines: &[&str], mut next_line_idx: usize) -> (String, usize) {
+    let mut folded = first.trim().to_owned();
+    let mut breaks = 0;
+    while next_line_idx < lines.len() {
+        let line = lines[next_line_idx];
+        let text = line.trim();
+        if text.is_empty() {
+            breaks += 1;
+        } else if line.starts_with([' ', '\t']) {
+            // Blank lines before the first text line are not content.
+            if !folded.is_empty() {
+                if breaks > 0 {
+                    folded.extend(std::iter::repeat_n('\n', breaks));
+                } else {
+                    folded.push(' ');
+                }
+            }
+            breaks = 0;
+            folded.push_str(text);
+        } else {
+            break;
+        }
+        next_line_idx += 1;
+    }
+    (folded, next_line_idx)
+}
+
+/// Decodes one flow scalar: a trailing comment is dropped, a quoted scalar is
+/// unquoted with its escapes applied, and a plain scalar must not leave a flow
+/// collection unclosed.
+fn scalar(source: &str) -> Result<String, FrontmatterError> {
+    let source = strip_comment(source);
+    if let Some((decoded, rest)) = split_quoted(source)? {
+        return if rest.trim().is_empty() {
+            Ok(decoded)
+        } else {
+            // Text after the closing quote is not part of any YAML scalar.
+            Err(FrontmatterError::InvalidYamlSyntax)
+        };
+    }
+    let count = |c: char| source.chars().filter(|&x| x == c).count();
+    if count('[') != count(']') || count('{') != count('}') {
         return Err(FrontmatterError::InvalidYamlSyntax);
     }
+    Ok(source.to_owned())
+}
 
-    // Check for unclosed flow collections in unquoted scalar
-    let open_brackets = trimmed.chars().filter(|&c| c == '[').count();
-    let close_brackets = trimmed.chars().filter(|&c| c == ']').count();
-    if open_brackets != close_brackets {
-        return Err(FrontmatterError::InvalidYamlSyntax);
+/// `value` without its trailing comment: a `#` at the start or after
+/// whitespace, outside any quoted scalar. A quote opens a scalar only where a
+/// node can begin, so an apostrophe inside plain text ("don't") opens nothing.
+fn strip_comment(value: &str) -> &str {
+    let mut quote = None;
+    let mut prev: Option<char> = None;
+    let mut chars = value.char_indices().peekable();
+    while let Some((at, c)) = chars.next() {
+        match quote {
+            Some('"') => match c {
+                '\\' => {
+                    chars.next();
+                }
+                '"' => quote = None,
+                _ => {}
+            },
+            Some(_) => {
+                if c == '\'' {
+                    if chars.peek().is_some_and(|&(_, next)| next == '\'') {
+                        chars.next();
+                    } else {
+                        quote = None;
+                    }
+                }
+            }
+            None => {
+                let at_boundary =
+                    prev.is_none_or(|p| p.is_whitespace() || matches!(p, '[' | '{' | ','));
+                match c {
+                    '#' if prev.is_none_or(char::is_whitespace) => return value[..at].trim_end(),
+                    '"' | '\'' if at_boundary => quote = Some(c),
+                    _ => {}
+                }
+            }
+        }
+        prev = Some(c);
     }
+    value.trim_end()
+}
 
-    let open_braces = trimmed.chars().filter(|&c| c == '{').count();
-    let close_braces = trimmed.chars().filter(|&c| c == '}').count();
-    if open_braces != close_braces {
-        return Err(FrontmatterError::InvalidYamlSyntax);
+/// A leading single- or double-quoted scalar, decoded, and the text after its
+/// closing quote. `None` when `value` does not start with a quote. A missing
+/// closing quote or an unknown escape is invalid.
+fn split_quoted(value: &str) -> Result<Option<(String, &str)>, FrontmatterError> {
+    let mut chars = value.chars();
+    let quote = match chars.next() {
+        Some(quote @ ('"' | '\'')) => quote,
+        _ => return Ok(None),
+    };
+    let mut decoded = String::new();
+    loop {
+        let c = chars.next().ok_or(FrontmatterError::InvalidYamlSyntax)?;
+        if c == quote {
+            // In single quotes, a doubled quote is a literal quote.
+            if quote == '\'' && chars.as_str().starts_with('\'') {
+                chars.next();
+                decoded.push('\'');
+                continue;
+            }
+            return Ok(Some((decoded, chars.as_str())));
+        }
+        if quote == '"' && c == '\\' {
+            decoded.push(double_quoted_escape(&mut chars)?);
+        } else {
+            decoded.push(c);
+        }
     }
+}
 
-    // Plain scalar
-    Ok((trimmed.to_string(), next_line_idx))
+/// The character a YAML double-quoted escape stands for, consuming the escape
+/// after its backslash.
+fn double_quoted_escape(chars: &mut std::str::Chars<'_>) -> Result<char, FrontmatterError> {
+    let hex = |chars: &mut std::str::Chars<'_>, digits: usize| {
+        let text: String = chars.by_ref().take(digits).collect();
+        if text.len() != digits || !text.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Err(FrontmatterError::InvalidYamlSyntax);
+        }
+        u32::from_str_radix(&text, 16)
+            .ok()
+            .and_then(char::from_u32)
+            .ok_or(FrontmatterError::InvalidYamlSyntax)
+    };
+    Ok(
+        match chars.next().ok_or(FrontmatterError::InvalidYamlSyntax)? {
+            '0' => '\0',
+            'a' => '\u{7}',
+            'b' => '\u{8}',
+            't' | '\t' => '\t',
+            'n' => '\n',
+            'v' => '\u{b}',
+            'f' => '\u{c}',
+            'r' => '\r',
+            'e' => '\u{1b}',
+            ' ' => ' ',
+            '"' => '"',
+            '/' => '/',
+            '\\' => '\\',
+            'N' => '\u{85}',
+            '_' => '\u{a0}',
+            'L' => '\u{2028}',
+            'P' => '\u{2029}',
+            'x' => hex(chars, 2)?,
+            'u' => hex(chars, 4)?,
+            'U' => hex(chars, 8)?,
+            _ => return Err(FrontmatterError::InvalidYamlSyntax),
+        },
+    )
+}
+
+fn is_sequence_item(text: &str) -> bool {
+    text == "-" || text.starts_with("- ") || text.starts_with("-\t")
+}
+
+/// The key of a block mapping entry, meaning a key followed by `:` and then
+/// whitespace or the end of the line, decoded if it is quoted.
+fn mapping_key(text: &str) -> Option<String> {
+    if text.starts_with(['#', '[', '{', '|', '>', '&', '*', '!']) {
+        return None;
+    }
+    let is_separator = |rest: &str| {
+        rest.strip_prefix(':')
+            .is_some_and(|after| after.is_empty() || after.starts_with([' ', '\t']))
+    };
+    if let Some((key, rest)) = split_quoted(text).ok().flatten() {
+        return is_separator(rest.trim_start()).then_some(key);
+    }
+    let text = strip_comment(text);
+    text.char_indices()
+        .find(|&(at, c)| c == ':' && is_separator(&text[at..]))
+        .map(|(at, _)| text[..at].trim_end().to_owned())
+}
+
+/// Duplicate-key tracking for the block mappings beneath one top-level key.
+#[derive(Default)]
+struct NestedMappings {
+    /// Open mappings, innermost last: the column of their keys and the keys
+    /// seen at that column.
+    scopes: Vec<(usize, HashSet<String>)>,
+    /// Column of a key whose block scalar content is being skipped.
+    block_parent: Option<usize>,
+}
+
+impl NestedMappings {
+    fn track(&mut self, indent: usize, text: &str) -> Result<(), FrontmatterError> {
+        if let Some(parent) = self.block_parent {
+            if indent > parent {
+                return Ok(());
+            }
+            self.block_parent = None;
+        }
+        let (column, entry) = match text.strip_prefix('-') {
+            Some(item) if is_sequence_item(text) => {
+                // Each sequence item begins a new node; mappings deeper than
+                // the item belonged to the previous one.
+                self.scopes.retain(|&(column, _)| column <= indent);
+                let entry = item.trim_start();
+                (indent + (text.len() - entry.len()), entry)
+            }
+            _ => (indent, text),
+        };
+        let Some(key) = mapping_key(entry) else {
+            return Ok(());
+        };
+        self.scopes.retain(|&(scope, _)| scope <= column);
+        match self.scopes.last_mut() {
+            Some((scope, keys)) if *scope == column => {
+                if !keys.insert(key) {
+                    return Err(FrontmatterError::DuplicateKey);
+                }
+            }
+            _ => {
+                if self.scopes.len() >= MAX_FRONTMATTER_DEPTH {
+                    return Err(FrontmatterError::NestingTooDeep);
+                }
+                self.scopes.push((column, HashSet::from([key])));
+            }
+        }
+        let value = entry
+            .split_once(':')
+            .map_or("", |(_, value)| value)
+            .trim_start();
+        if value.starts_with(['|', '>']) {
+            self.block_parent = Some(column);
+        }
+        Ok(())
+    }
 }
 
 fn parse_list_or_flow(
@@ -571,22 +859,37 @@ fn parse_list_or_flow(
     lines: &[&str],
     mut next_line_idx: usize,
 ) -> Result<(Vec<String>, usize), FrontmatterError> {
-    let trimmed = immediate.trim();
+    let trimmed = strip_comment(immediate);
 
-    // Flow sequence: [a, b, c]
+    // Flow sequence: [a, b, c], possibly continued on indented lines
     if trimmed.starts_with('[') {
-        if !trimmed.ends_with(']') {
-            return Err(FrontmatterError::InvalidYamlSyntax);
-        }
-        let inner = &trimmed[1..trimmed.len() - 1];
+        let (source, next_line_idx) = fold_continuation(trimmed, lines, next_line_idx);
+        let source = strip_comment(&source);
+        let inner = source
+            .strip_prefix('[')
+            .and_then(|rest| rest.strip_suffix(']'))
+            .ok_or(FrontmatterError::InvalidYamlSyntax)?;
         let mut items = Vec::new();
-        for item in inner.split(',') {
-            let clean = clean_scalar(item.trim())?;
+        for item in split_flow_items(inner) {
+            let clean = clean_scalar(item)?;
             if !clean.is_empty() {
                 items.push(clean);
             }
         }
         return Ok((items, next_line_idx));
+    }
+
+    // A single scalar stands for a one-item list rather than being dropped.
+    if !trimmed.is_empty() {
+        let (source, next_line_idx) = fold_continuation(trimmed, lines, next_line_idx);
+        let clean = clean_scalar(&source)?;
+        return Ok((
+            Some(clean)
+                .filter(|item| !item.is_empty())
+                .into_iter()
+                .collect(),
+            next_line_idx,
+        ));
     }
 
     // Block sequence: - item
@@ -620,17 +923,36 @@ fn parse_list_or_flow(
     Ok((items, next_line_idx))
 }
 
+/// A list item's value, trimmed.
 fn clean_scalar(s: &str) -> Result<String, FrontmatterError> {
-    let t = s.trim();
-    if (t.starts_with('"') && t.ends_with('"') && t.len() >= 2)
-        || (t.starts_with('\'') && t.ends_with('\'') && t.len() >= 2)
-    {
-        Ok(t[1..t.len() - 1].trim().to_string())
-    } else if t.starts_with('"') || t.starts_with('\'') {
-        Err(FrontmatterError::InvalidYamlSyntax)
-    } else {
-        Ok(t.to_string())
+    Ok(scalar(s.trim())?.trim().to_string())
+}
+
+/// The elements of a flow sequence's interior, split at commas outside quotes.
+fn split_flow_items(inner: &str) -> Vec<&str> {
+    let mut items = Vec::new();
+    let mut start = 0;
+    let mut quote = None;
+    let mut chars = inner.char_indices().peekable();
+    while let Some((at, c)) = chars.next() {
+        match (quote, c) {
+            (Some('"'), '\\') => {
+                chars.next();
+            }
+            (Some('\''), '\'') if chars.peek().is_some_and(|&(_, next)| next == '\'') => {
+                chars.next();
+            }
+            (Some(open), _) if c == open => quote = None,
+            (None, '"' | '\'') if inner[start..at].trim().is_empty() => quote = Some(c),
+            (None, ',') => {
+                items.push(inner[start..at].trim());
+                start = at + 1;
+            }
+            _ => {}
+        }
     }
+    items.push(inner[start..].trim());
+    items
 }
 
 // --- Markdown Elements Parser (H1, First Paragraph, Body Excerpt) ---

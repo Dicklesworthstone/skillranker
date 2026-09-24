@@ -6,8 +6,11 @@
 //!
 //! Every mutation is fenced by store incarnation, schema generation, and data generation.
 
+use super::hook_entries::HookCounter;
 use super::platform::{DirectoryIdentity, local_filesystem, storage_path};
-use crate::blocking::{BlockingLeafKind, remaining_busy_wait, run_blocking_leaf};
+use crate::blocking::{
+    BlockingLeafKind, remaining_busy_wait, run_blocking_leaf, run_blocking_leaf_with_clock,
+};
 use crate::jev::admission::{AttemptFailure, AttemptOutcome, AttemptProvenance, RankingStage};
 use crate::limits::MonotonicMillis;
 use crate::runtime::{EntryClock, ProcessInvocation};
@@ -528,6 +531,8 @@ pub struct PruneReport {
     pub provider_attempts_pruned: u64,
     pub snapshots_pruned: u64,
     pub shared_snapshots_preserved: u64,
+    /// Hook entries removed with the rows; `None` if the counter could not be pruned.
+    pub hook_entries_pruned: Option<u64>,
     pub stamp_before: LedgerStamp,
     pub stamp_after: LedgerStamp,
     pub affected_provenance: &'static str,
@@ -552,6 +557,8 @@ pub struct ClearPreview {
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ClearReport {
     pub records_cleared: u64,
+    /// Hook entries removed; `None` if the counter could not be reset.
+    pub hook_entries_cleared: Option<u64>,
     pub stamp_before: LedgerStamp,
     pub stamp_after: LedgerStamp,
     pub affected_provenance: &'static str,
@@ -692,6 +699,43 @@ pub struct SkillStatSummary {
     pub judged_neutral: u64,
 }
 
+/// Hook invocations counted at entry against the hook turns the ledger recorded, over
+/// the part of the window the entry counter covers (sr-01h3). A harness notification
+/// delivered inside a turn already under way is counted apart and subtracted (sr-jdji).
+/// The rest of the difference counts invocations that left no row: payloads that never
+/// parsed, invocations starved past their own deadline, and redeliveries of one turn.
+/// Only the first two are sr failures, so `unrecorded` is an upper bound on them.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct HookEntryReport {
+    /// Start of the compared span: the later of the window start and the counter's
+    /// oldest entry, so history from before the counter existed is not compared.
+    pub counted_since_unix_ms: i64,
+    /// End of the compared span. The last [`HOOK_ENTRY_SETTLE_MS`] are left out,
+    /// because an invocation that entered then may still be running.
+    pub counted_until_unix_ms: i64,
+    /// `sr hook claude` invocations counted at entry, before stdin was read.
+    pub counted_at_entry: u64,
+    /// Hook-channel turns (`shadow`, `advisory-hook`) recorded over the same span.
+    pub recorded: u64,
+    /// Invocations that were a harness notification delivered inside a turn already
+    /// under way (sr-jdji): not turns, so they never record a row.
+    pub non_turn_deliveries: u64,
+    /// `counted_at_entry - recorded - non_turn_deliveries`, not below zero:
+    /// invocations that left no row. Still an upper bound on sr's unrecorded
+    /// failures, because a genuine redelivery of one turn is two invocations and one
+    /// row.
+    pub unrecorded: u64,
+    /// The counter reached its size bound, so the counts above are lower bounds.
+    pub counter_full: bool,
+    /// Counter records that could not be read, left out of every count.
+    pub unreadable_entries: u64,
+}
+
+/// How long after entry a hook invocation may still be running. Wider than any hook
+/// deadline, so every invocation that entered before `as_of - HOOK_ENTRY_SETTLE_MS` has
+/// either recorded its row or never will.
+pub const HOOK_ENTRY_SETTLE_MS: i64 = 60_000;
+
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct StatsValueReport {
     pub as_of_unix_ms: i64,
@@ -704,6 +748,9 @@ pub struct StatsValueReport {
     pub retained: RetainedStats,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub by_skill: Option<Vec<SkillStatSummary>>,
+    /// Absent, not zero, when no hook invocation has ever been counted at entry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hook_entries: Option<HookEntryReport>,
 }
 
 /// Formats a unix millisecond timestamp as ISO-8601 UTC string (e.g. `2026-09-01T00:00:00Z`).
@@ -1847,7 +1894,7 @@ impl From<StoreError> for FeedbackError {
     }
 }
 
-fn generate_random_hex(byte_count: usize) -> String {
+pub(crate) fn generate_random_hex(byte_count: usize) -> String {
     use std::io::Read;
     let mut bytes = vec![0u8; byte_count];
     if let Ok(mut f) = std::fs::File::open("/dev/urandom") {
@@ -3633,6 +3680,8 @@ impl LedgerStore {
             None
         };
 
+        let hook_entries = self.hook_entry_report(since_unix_ms, as_of_unix_ms)?;
+
         // Released explicitly rather than by drop, so that a future edit moving work below this
         // point cannot silently read outside the snapshot the figures above were built from.
         snapshot.finish().map_err(StoreError::from)?;
@@ -3647,7 +3696,57 @@ impl LedgerStore {
             provider,
             retained,
             by_skill: by_skill_data,
+            hook_entries,
         })
+    }
+
+    /// Compare hook invocations counted at entry with the hook turns recorded. `None`
+    /// when nothing was ever counted: no counter is not a counter that saw nothing.
+    fn hook_entry_report(
+        &self,
+        since_unix_ms: i64,
+        as_of_unix_ms: i64,
+    ) -> Result<Option<HookEntryReport>, StoreError> {
+        let until = as_of_unix_ms.saturating_sub(HOOK_ENTRY_SETTLE_MS);
+        let count = super::hook_entries::count_hook_entries(
+            &self.directory.path,
+            HookCounter::Entries,
+            since_unix_ms,
+            until,
+        )?;
+        let Some(first_entry) = count.first_entry_unix_ms else {
+            return Ok(None);
+        };
+        let start = since_unix_ms.max(first_entry);
+        let recorded: i64 = if start > until {
+            0
+        } else {
+            self.connection.query_row(
+                "SELECT count(*) FROM ranking_events WHERE created_at_unix_ms >= ?1 AND created_at_unix_ms <= ?2 AND mode_channel IN ('shadow', 'advisory-hook')",
+                [start, until],
+                |r| r.get(0),
+            )?
+        };
+        let recorded = u64::try_from(recorded).map_err(|_| StoreError::InvalidRecord)?;
+        let non_turns = super::hook_entries::count_hook_entries(
+            &self.directory.path,
+            HookCounter::NonTurns,
+            start,
+            until,
+        )?;
+        Ok(Some(HookEntryReport {
+            counted_since_unix_ms: start,
+            counted_until_unix_ms: until,
+            counted_at_entry: count.entries,
+            recorded,
+            non_turn_deliveries: non_turns.entries,
+            unrecorded: count
+                .entries
+                .saturating_sub(recorded)
+                .saturating_sub(non_turns.entries),
+            counter_full: count.full,
+            unreadable_entries: count.unreadable,
+        }))
     }
 
     /// Previews retention cleanup for records created before cutoff timestamp without mutating storage.
@@ -3839,12 +3938,26 @@ impl LedgerStore {
         self.directory.verify_database_file(&self.file, clock, cx)?;
         check_work(clock, cx)?;
         tx.commit()?;
+        // The same cutoff for the hook entry counter, so entries and rows keep covering
+        // the same history. `None` reports a counter this prune could not align.
+        let hook_entries_pruned = [HookCounter::Entries, HookCounter::NonTurns]
+            .into_iter()
+            .map(|counter| {
+                super::hook_entries::prune_hook_entries(
+                    &self.directory.path,
+                    counter,
+                    cutoff_unix_ms,
+                )
+            })
+            .sum::<Result<u64, StoreError>>()
+            .ok();
 
         let stamp_before = self.stamp;
         self.stamp.data_generation = new_data_gen;
         let stamp_after = self.stamp;
 
         Ok(PruneReport {
+            hook_entries_pruned,
             cutoff_unix_ms,
             cutoff_iso: format_unix_ms(cutoff_unix_ms),
             events_pruned,
@@ -3974,12 +4087,20 @@ impl LedgerStore {
         self.directory.verify_database_file(&self.file, clock, cx)?;
         check_work(clock, cx)?;
         tx.commit()?;
+        // Cleared history has no rows, so it keeps no entries either; `None` reports a
+        // counter this clear could not reset.
+        let hook_entries_cleared = [HookCounter::Entries, HookCounter::NonTurns]
+            .into_iter()
+            .map(|counter| super::hook_entries::clear_hook_entries(&self.directory.path, counter))
+            .sum::<Result<u64, StoreError>>()
+            .ok();
 
         let stamp_before = self.stamp;
         self.stamp.data_generation = new_data_gen;
         let stamp_after = self.stamp;
 
         Ok(ClearReport {
+            hook_entries_cleared,
             records_cleared: preview.total_records,
             stamp_before,
             stamp_after,
@@ -5893,6 +6014,7 @@ pub fn record_ranking(
 ) -> Result<bool, StoreError> {
     record_ranking_with_attempts(
         invocation,
+        invocation.clock(),
         cx,
         access,
         location,
@@ -5904,9 +6026,13 @@ pub fn record_ranking(
 }
 
 /// Record a ranking event and the provider attempts it owns, in one transaction.
+///
+/// `clock` bounds every step of the write. It is the invocation's own clock except when
+/// finalizing a failure, which runs on [`EntryClock::for_failure_finalization`].
 #[allow(clippy::too_many_arguments)]
 pub fn record_ranking_with_attempts(
     invocation: &ProcessInvocation,
+    clock: EntryClock,
     cx: &Cx,
     access: LedgerAccess,
     location: LedgerLocation,
@@ -5918,14 +6044,14 @@ pub fn record_ranking_with_attempts(
     if access == LedgerAccess::Disabled {
         return Ok(false);
     }
-    let clock = invocation.clock();
     let child = cx.clone();
     let event = event.clone();
     let candidates = candidates.to_vec();
     let snapshot = snapshot.cloned();
     let attempts = attempts.to_vec();
-    let res = run_blocking_leaf(
+    let res = run_blocking_leaf_with_clock(
         invocation,
+        clock,
         cx,
         BlockingLeafKind::Database,
         false,

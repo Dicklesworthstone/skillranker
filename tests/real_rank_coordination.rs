@@ -316,8 +316,38 @@ fn ordinary_two_consumer_success_incurs_one_pair_and_subsequent_exact_offline_re
 /// The test then requires the coordination timeout, not the inspection one.
 const FOLLOWER_TIMEOUT_MS: u64 = 3_200;
 
+/// How many whole scenarios may be thrown away because the host starved the follower rather than
+/// coordination deciding anything. Two shapes were observed at load 120-170 (sr-oj8g): local
+/// inspection (config, roster, context), which runs before the lease wait, took the whole 3.2 s;
+/// or the wait finished but runtime shutdown could not fit the 200 ms reserve, so the CLI
+/// replaced the document with its minimal cleanup receipt. Neither proves anything about
+/// coordination, so the attempt is retried, as sr-5n0b does for starved runtime construction.
+/// The budget cannot widen instead: the 5 s lease and the leader's 4 s provider hold bound it.
+const STARVED_FOLLOWER_ATTEMPTS: usize = 6;
+
+/// Follower messages that report host starvation rather than a coordination outcome.
+const LOCAL_INSPECTION_TIMEOUT: &str = "Local inspection deadline exceeded";
+const CLEANUP_TIMEOUT: &str = "Runtime cleanup did not finish within the invocation deadline";
+
 #[test]
 fn follower_nearing_deadline_while_leader_active_makes_zero_provider_attempts() {
+    for attempt in 1..=STARVED_FOLLOWER_ATTEMPTS {
+        if follower_scenario_reached_coordination() {
+            return;
+        }
+        eprintln!("sr-oj8g: follower starved by the host; discarding attempt {attempt}");
+    }
+    panic!(
+        "in {STARVED_FOLLOWER_ATTEMPTS} attempts the host starved the follower every time (local \
+         inspection or runtime cleanup outran {FOLLOWER_TIMEOUT_MS} ms): this host is too loaded \
+         to run the case, and nothing here is evidence about coordination"
+    );
+}
+
+/// One whole scenario. Returns false only for a starved follower, after checking that it still
+/// sent nothing: the provider log proves that for every attempt, and the envelope's usage proves
+/// it too whenever the envelope carries usage. Every other outcome is asserted.
+fn follower_scenario_reached_coordination() -> bool {
     let f = Fixture::new(CONSENT);
     f.claude_session("session-coord-2", TASK);
     let marker = f.root.join("follower-wide-started");
@@ -358,12 +388,12 @@ fn follower_nearing_deadline_while_leader_active_makes_zero_provider_attempts() 
     let val_f: Value = serde_json::from_slice(&out_follower.stdout).unwrap();
     assert_eq!(val_f["decision"], "unavailable");
     let message = val_f["error"]["message"].as_str().unwrap_or("");
-    assert!(
-        message.contains("owned by active leader"),
-        "follower must time out in the coordination wait, not local inspection \
-         (timeout {FOLLOWER_TIMEOUT_MS} ms): {val_f}; stderr: {}",
-        String::from_utf8_lossy(&out_follower.stderr)
-    );
+    if message == CLEANUP_TIMEOUT {
+        // The minimal cleanup receipt carries no usage; the provider log above already proved
+        // this follower sent nothing.
+        return false;
+    }
+    // Zero sends holds whether or not the follower reached the wait.
     assert_eq!(
         val_f["usage"]["http_attempts"],
         0,
@@ -371,6 +401,15 @@ fn follower_nearing_deadline_while_leader_active_makes_zero_provider_attempts() 
         String::from_utf8_lossy(&out_follower.stderr)
     );
     assert_eq!(val_f["usage"]["requests"], 0);
+    if message == LOCAL_INSPECTION_TIMEOUT {
+        return false;
+    }
+    assert!(
+        message.contains("owned by active leader"),
+        "follower must time out in the coordination wait, not local inspection \
+         (timeout {FOLLOWER_TIMEOUT_MS} ms): {val_f}; stderr: {}",
+        String::from_utf8_lossy(&out_follower.stderr)
+    );
     let elapsed = val_f["elapsed_ms"].as_u64().unwrap_or(0);
     let waited_until = FOLLOWER_TIMEOUT_MS.saturating_sub(450);
     assert!(
@@ -378,6 +417,7 @@ fn follower_nearing_deadline_while_leader_active_makes_zero_provider_attempts() 
         "follower elapsed {elapsed} ms; coordination wait should consume the budget \
          down to the cleanup reserve (timeout {FOLLOWER_TIMEOUT_MS} ms)"
     );
+    true
 }
 
 fn wait_for_marker(marker: &std::path::Path) {
@@ -574,6 +614,44 @@ fn completed_lease_with_absent_pair_reacquires_leadership_before_fresh_evaluatio
 }
 
 #[test]
+fn an_unacquirable_lease_sends_uncoordinated_instead_of_a_false_timeout() {
+    // A lease that cannot be acquired (the store busy for the whole retry
+    // window) is no evidence of a leader. The run must send on its own, not
+    // fail as a follower whose leader never existed.
+    let f = Fixture::new(CONSENT);
+    f.claude_session("lease-busy", TASK);
+    let provider = Provider::start(&f, "useful", &[]);
+    let first = f.sr_command(&provider, &[]).output().unwrap();
+    assert_eq!(
+        first.status.code(),
+        Some(0),
+        "the first run creates the store"
+    );
+    // The same session with a new request: a different exact request, so no
+    // cached answer serves it.
+    f.claude_session("lease-busy", "Please draft release notes from git history");
+    let lock = rusqlite::Connection::open(f.cache_dir().join("sr/cache.sqlite3")).unwrap();
+    lock.execute_batch("BEGIN IMMEDIATE").unwrap();
+    let out = f
+        .sr_command(&provider, &["--timeout-ms", "12000"])
+        .output()
+        .unwrap();
+    lock.execute_batch("ROLLBACK").unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let doc: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_ne!(doc["decision"], "unavailable", "{doc}");
+    assert_eq!(
+        stages(&provider.finish()),
+        ["wide", "rerank", "wide", "rerank"]
+    );
+}
+
+#[test]
 fn no_cache_and_no_persist_preserve_documented_effects() {
     let f = Fixture::new(CONSENT);
     f.claude_session("session-nocache-1", TASK);
@@ -629,13 +707,15 @@ fn cache_generation_change_during_provider_work_keeps_valid_answer() {
     let doc: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(doc["decision"], "ranked");
     assert_eq!(doc["usage"]["requests"], 2);
-    assert!(
-        doc["warnings"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|w| w["kind"] == "cache-recording-unavailable")
-    );
+    let skipped = doc["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|w| w["kind"] == "cache-recording-unavailable")
+        .unwrap_or_else(|| panic!("{doc}"));
+    // The failed wide recording drops the store. The rerank recording that
+    // follows was skipped too, and must not be reported as written.
+    assert_eq!(skipped["count"], 2, "{doc}");
     let rows: i64 = cache
         .query_row("SELECT count(*) FROM sr_cache_response", [], |r| r.get(0))
         .unwrap();

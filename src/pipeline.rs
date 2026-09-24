@@ -76,8 +76,10 @@ mod roster;
 /// Failure tuple compatible with CLI error formatting: `(exit_code, kind, message)`.
 pub type PipelineFailure = (u8, &'static str, String);
 
-fn failure(code: u8, kind: &'static str, message: impl Into<String>) -> PipelineFailure {
-    (code, kind, message.into())
+/// The exit code is derived from the kind, so a pair that disagrees with the
+/// documented table cannot be written (sr-jeua).
+fn failure(kind: ErrorKind, message: impl Into<String>) -> PipelineFailure {
+    (kind.exit_code() as u8, kind.as_str(), message.into())
 }
 
 pub use crate::jev::client::JevTransport;
@@ -164,8 +166,7 @@ fn read_input_file(
     };
     let unsupported = || {
         failure(
-            7,
-            "unsupported-input",
+            ErrorKind::UnsupportedInput,
             "The input is not a readable regular file",
         )
     };
@@ -178,8 +179,7 @@ fn read_input_file(
         .map(|read| read.bytes().to_vec())
         .map_err(|error| match error {
             ReadError::TooLarge { .. } => failure(
-                7,
-                "oversized-input",
+                ErrorKind::OversizedInput,
                 "The input file exceeds its size limit",
             ),
             _ => unsupported(),
@@ -394,21 +394,19 @@ pub async fn execute_pipeline(
                 .first()
                 .map(|c| c.to_string())
                 .unwrap_or_else(|| "conflicting effect flags".to_owned());
-            failure(2, "invalid-usage", first)
+            failure(ErrorKind::InvalidUsage, first)
         })?;
     }
     let preview = args.gate.policy().flags().dry_run;
     if !preview && !args.shortlist_ids.is_empty() {
         return Err(failure(
-            2,
-            "invalid-usage",
+            ErrorKind::InvalidUsage,
             "Shortlist IDs are stage-2 evidence for --dry-run only",
         ));
     }
     if args.source_options.claude_hook && args.save_case.is_some() {
         return Err(failure(
-            2,
-            "invalid-usage",
+            ErrorKind::InvalidUsage,
             "--save-case is not permitted in hook mode",
         ));
     }
@@ -425,7 +423,6 @@ pub async fn execute_pipeline(
     {
         record_failed_attempts(
             invocation,
-            cx,
             &recording,
             error.1,
             clock.now().as_millis(),
@@ -448,8 +445,7 @@ pub async fn execute_pipeline(
     // because completing that lease is busy or unavailable.
     let result = if completion_superseded && result.is_ok() {
         Err(failure(
-            6,
-            "timeout",
+            ErrorKind::Timeout,
             "Leader was superseded by successor before lease completion",
         ))
     } else {
@@ -477,8 +473,7 @@ pub async fn execute_pipeline(
         ) {
             admit_publication(clock.deadline(), clock.now(), clock.now()).map_err(|error| {
                 failure(
-                    6,
-                    "timeout",
+                    ErrorKind::Timeout,
                     format!("Runtime suppressed late result: {error}"),
                 )
             })?;
@@ -537,15 +532,10 @@ pub async fn execute_pipeline(
                 historical_decision: doc.as_value().clone(),
             };
             case.validate().map_err(|err| {
-                failure(
-                    err.exit_code() as u8,
-                    err.kind().as_str(),
-                    format!("Replay case validation failed: {err}"),
-                )
+                failure(err.kind(), format!("Replay case validation failed: {err}"))
             })?;
-            case.save_to_file(save_path).map_err(|err| {
-                failure(err.exit_code() as u8, err.kind().as_str(), err.to_string())
-            })?;
+            case.save_to_file(save_path)
+                .map_err(|err| failure(err.kind(), err.to_string()))?;
         }
         Ok(doc)
     });
@@ -629,8 +619,7 @@ fn with_storage_warnings(
     );
     let doc = OutputDocument::from_value(value).map_err(|_| {
         failure(
-            5,
-            "contract-violation",
+            ErrorKind::OutputLimit,
             "Optional storage warning is invalid",
         )
     })?;
@@ -788,8 +777,7 @@ async fn rank_once(
 ) -> Result<OutputDocument, PipelineFailure> {
     clock.admit_new_work().map_err(|_| {
         failure(
-            6,
-            "timeout",
+            ErrorKind::Timeout,
             "Invocation deadline exceeded before ranking start",
         )
     })?;
@@ -826,16 +814,20 @@ async fn rank_once(
     // Validate size invariants: 1 <= top <= shortlist <= 32
     let sizes = Sizes::new(top, shortlist).map_err(|e| {
         failure(
-            2,
-            "invalid-configuration",
+            ErrorKind::InvalidConfiguration,
             format!("Invalid ranking sizes: {e:?}"),
         )
     })?;
 
     // 2. Select and ingest context source.
     let source_policy = gate.source_policy();
-    let workspace_id = WorkspaceId::new(args.workspace.to_string_lossy().as_ref())
-        .map_err(|_| failure(2, "invalid-configuration", "Invalid workspace root path"))?;
+    let workspace_id =
+        WorkspaceId::new(args.workspace.to_string_lossy().as_ref()).map_err(|_| {
+            failure(
+                ErrorKind::InvalidConfiguration,
+                "Invalid workspace root path",
+            )
+        })?;
 
     // Without an explicit source, rank discovers this workspace's Claude
     // sessions under trusted transcript roots: Claude's projects directory
@@ -875,13 +867,7 @@ async fn rank_once(
                 .map_err(|_| SourceError::IncompleteInventory)
             },
         )
-        .map_err(|err| {
-            failure(
-                err.kind().exit_code() as u8,
-                err.kind().as_str(),
-                err.to_string(),
-            )
-        })?;
+        .map_err(|err| failure(err.kind(), err.to_string()))?;
 
     let source_selection = match selection_outcome {
         SelectionOutcome::Selected(sel) => sel,
@@ -891,8 +877,7 @@ async fn rank_once(
             // usage error while the published envelope's `error.code` still said 3, because that
             // field comes from `kind.exit_code()`.
             return Err(failure(
-                3,
-                "ambiguous-session",
+                ErrorKind::AmbiguousSession,
                 "Multiple sessions available; selection required",
             ));
         }
@@ -928,8 +913,7 @@ async fn rank_once(
             )?;
             parse_normalized_context(&bytes).map_err(|e| {
                 failure(
-                    7,
-                    "malformed-input",
+                    ErrorKind::MalformedInput,
                     format!("Invalid normalized context: {e}"),
                 )
             })?
@@ -940,29 +924,28 @@ async fn rank_once(
             crate::runtime::read_stdin_platform_before_cleanup(clock, limit, &mut bytes).map_err(
                 |error| match error {
                     crate::runtime::RuntimeError::StdinTimeout => failure(
-                        6,
-                        "timeout",
+                        ErrorKind::Timeout,
                         "Normalized stdin reached the ranking deadline",
                     ),
                     crate::runtime::RuntimeError::Deadline(
                         crate::limits::LimitError::AboveLimit { .. },
                     ) => failure(
-                        7,
-                        "oversized-input",
+                        ErrorKind::OversizedInput,
                         "Normalized context on stdin exceeds 1 MiB",
                     ),
                     crate::runtime::RuntimeError::UnboundedLeaf => failure(
-                        7,
-                        "unsupported-input",
+                        ErrorKind::UnsupportedInput,
                         "Bounded stdin is unavailable on this platform",
                     ),
-                    _ => failure(7, "malformed-input", "Failed to read context from stdin"),
+                    _ => failure(
+                        ErrorKind::MalformedInput,
+                        "Failed to read context from stdin",
+                    ),
                 },
             )?;
             parse_normalized_context(&bytes).map_err(|e| {
                 failure(
-                    7,
-                    "malformed-input",
+                    ErrorKind::MalformedInput,
                     format!("Invalid normalized context: {e}"),
                 )
             })?
@@ -998,8 +981,7 @@ async fn rank_once(
                 && expected.session != session
             {
                 return Err(failure(
-                    3,
-                    "missing-session",
+                    ErrorKind::MissingSession,
                     "The discovered session changed before it was read",
                 ));
             }
@@ -1008,8 +990,7 @@ async fn rank_once(
                 snapshot_jsonl(invocation, cx, &transcript_path, None, CursorKind::Ranking)
                     .map_err(|e| {
                         failure(
-                            7,
-                            "malformed-input",
+                            ErrorKind::MalformedInput,
                             format!("Transcript snapshot failed: {e}"),
                         )
                     })?;
@@ -1057,20 +1038,22 @@ async fn rank_once(
             let mut bytes = Vec::new();
             crate::runtime::read_stdin_platform_before_cleanup(clock, limit, &mut bytes).map_err(
                 |error| match error {
-                    crate::runtime::RuntimeError::StdinTimeout => {
-                        failure(6, "timeout", "Hook stdin reached the ranking deadline")
-                    }
+                    crate::runtime::RuntimeError::StdinTimeout => failure(
+                        ErrorKind::Timeout,
+                        "Hook stdin reached the ranking deadline",
+                    ),
                     crate::runtime::RuntimeError::Deadline(
                         crate::limits::LimitError::AboveLimit { .. },
-                    ) => failure(7, "oversized-input", "Hook payload on stdin exceeds 1 MiB"),
+                    ) => failure(
+                        ErrorKind::OversizedInput,
+                        "Hook payload on stdin exceeds 1 MiB",
+                    ),
                     crate::runtime::RuntimeError::UnboundedLeaf => failure(
-                        7,
-                        "unsupported-input",
+                        ErrorKind::UnsupportedInput,
                         "Bounded stdin is unavailable on this platform",
                     ),
                     _ => failure(
-                        7,
-                        "malformed-input",
+                        ErrorKind::MalformedInput,
                         "Failed to read hook payload from stdin",
                     ),
                 },
@@ -1079,7 +1062,12 @@ async fn rank_once(
                 &bytes,
                 crate::adapter::UnknownFieldPolicy::RetainAdditive,
             )
-            .map_err(|e| failure(7, "malformed-input", format!("Invalid hook input: {e}")))?;
+            .map_err(|e| {
+                failure(
+                    ErrorKind::MalformedInput,
+                    format!("Invalid hook input: {e}"),
+                )
+            })?;
             // From here on a failure is a hook turn the availability cohort must
             // count. Arm the failure row now rather than after context capture, or
             // an overlay, roster or retrieval failure leaves no trace at all. The
@@ -1112,33 +1100,46 @@ async fn rank_once(
                 transcript_path: None,
                 authorized_root: None,
             };
-            let overlay = crate::context::overlay::apply_claude_prompt_overlay_before(
+            let overlay = match crate::context::overlay::apply_claude_prompt_overlay_before(
                 &overlay_request,
                 clock,
-            )
+            ) {
+                // Not a turn, so neither ranked nor recorded as one. It is
+                // counted apart so `hook_entries` can subtract it (sr-jdji).
+                Err(crate::context::overlay::OverlayError::NotificationInTurn) => {
+                    progress.failed_recording = None;
+                    if matches!(gate.ledger(), StoreAccess::Enabled) {
+                        crate::storage::hook_entries::record_hook_invocation(
+                            args.ledger_dir.as_deref(),
+                            crate::storage::hook_entries::HookCounter::NonTurns,
+                        );
+                    }
+                    return Err(failure(
+                        ErrorKind::UnsupportedInput,
+                        "A task notification inside a running turn is not a user turn",
+                    ));
+                }
+                overlay => overlay,
+            }
             .map_err(|e| match e {
                 crate::context::overlay::OverlayError::Deadline => {
-                    failure(6, "timeout", "Transcript overlay deadline exhausted")
+                    failure(ErrorKind::Timeout, "Transcript overlay deadline exhausted")
                 }
                 crate::context::overlay::OverlayError::MissingPrompt => failure(
-                    7,
-                    "malformed-input",
+                    ErrorKind::MalformedInput,
                     "Hook stdin payload is missing prompt text",
                 ),
                 crate::context::overlay::OverlayError::SessionMismatch { .. }
                 | crate::context::overlay::OverlayError::CrossSessionReadForbidden => failure(
-                    3,
-                    "missing-session",
+                    ErrorKind::MissingSession,
                     "Transcript session does not match hook session",
                 ),
                 crate::context::overlay::OverlayError::AmbiguousBranch => failure(
-                    7,
-                    "ambiguous-branch",
+                    ErrorKind::AmbiguousBranch,
                     "Transcript branch cannot be resolved",
                 ),
                 _ => failure(
-                    7,
-                    "malformed-input",
+                    ErrorKind::MalformedInput,
                     format!("Claude prompt overlay failed: {e}"),
                 ),
             })?;
@@ -1207,19 +1208,19 @@ async fn rank_once(
     let task_anchor_text = match &anchor_res {
         crate::context::anchor::AnchorResolution::Established(a) => a.text.as_str(),
         crate::context::anchor::AnchorResolution::MissingTaskContext { .. } => {
-            return Err(input_failure(
+            return Err(failure(
                 ErrorKind::InsufficientContext,
                 "The request continues a task whose instruction is not in the context",
             ));
         }
         crate::context::anchor::AnchorResolution::OversizedInput { .. } => {
-            return Err(input_failure(
+            return Err(failure(
                 ErrorKind::OversizedInput,
                 "The request is too large to inspect",
             ));
         }
         crate::context::anchor::AnchorResolution::ConflictingDirectives { .. } => {
-            return Err(input_failure(
+            return Err(failure(
                 ErrorKind::UnresolvedExplicit,
                 "The context both requires and excludes the same skill",
             ));
@@ -1339,8 +1340,7 @@ async fn rank_once(
         && cursor.snapshot_id != current_snapshot_id
     {
         return Err(failure(
-            5,
-            "roster-changed",
+            ErrorKind::RosterChanged,
             "The roster or query changed between trace pages.",
         ));
     }
@@ -1360,8 +1360,7 @@ async fn rank_once(
     };
     let explicit_result = resolve_explicit_requirements(&explicit_req, &roster).map_err(|e| {
         failure(
-            2,
-            "invalid-usage",
+            ErrorKind::InvalidUsage,
             format!("Explicit resolution error: {e}"),
         )
     })?;
@@ -1380,15 +1379,13 @@ async fn rank_once(
             )?;
             if let Revalidation::Superseded(fields) = reval {
                 return Err(failure(
-                    3,
-                    "superseded",
+                    ErrorKind::Superseded,
                     format!("Policy changed during evaluation: {fields:?}"),
                 ));
             }
             if let Revalidation::InvalidConfiguration = reval {
                 return Err(failure(
-                    2,
-                    "invalid-configuration",
+                    ErrorKind::InvalidConfiguration,
                     "Configuration became invalid before publication",
                 ));
             }
@@ -1406,10 +1403,14 @@ async fn rank_once(
                     event_id: event_id_str.clone(),
                     stage: crate::storage::CandidateStage::Wide,
                     skill_id: s.id.as_str().to_string(),
+                    // Explicit resolution yields a binding id, which differs
+                    // from the record id when the skill is reached by an alias.
                     skill_version: roster
                         .skills()
                         .iter()
-                        .find(|sk| sk.record().id == s.id)
+                        .find(|sk| {
+                            sk.record().id == s.id || sk.bindings().iter().any(|b| b.id == s.id)
+                        })
                         .map(|sk| sk.record().source_content.as_str().to_string())
                         .unwrap_or_default(),
                     raw_probability: None,
@@ -1449,8 +1450,7 @@ async fn rank_once(
             {
                 doc = doc.with_trace(trace_val).map_err(|e| {
                     failure(
-                        5,
-                        "contract-violation",
+                        ErrorKind::OutputLimit,
                         format!("Trace contract error: {e:?}"),
                     )
                 })?;
@@ -1567,7 +1567,12 @@ async fn rank_once(
                 false,
             )
             .with_unresolved(unresolved_refs)
-            .map_err(|e| failure(5, "unresolved-explicit", format!("Contract error: {e:?}")))?;
+            .map_err(|e| {
+                failure(
+                    ErrorKind::UnresolvedExplicit,
+                    format!("Contract error: {e:?}"),
+                )
+            })?;
             return Ok(doc);
         }
         ExplicitResolutionResult::NoneSpecified {
@@ -1617,16 +1622,27 @@ async fn rank_once(
         already_loaded: &loaded_refs,
     };
 
-    // Roster skills as AdvisorySkills
+    // Roster skills as AdvisorySkills: one per physical skill. Bindings of one
+    // skill are aliases of the same file (reached through two roots, or a
+    // symlink), and the provider's options are skills. Offering two would fail
+    // the whole ranking as a duplicate option and inflate the overflow count.
+    // Prefer a binding the agent may invoke, so admission still reports a
+    // restriction only when every alias carries it.
     let mut initial_advisory: Vec<AdvisorySkill> = Vec::new();
     for skill in roster.skills() {
-        for binding in skill.bindings() {
-            if matches!(binding.visibility, Visibility::Verified { .. }) {
-                initial_advisory.push(AdvisorySkill {
-                    record: skill.record(),
-                    binding,
-                });
-            }
+        let mut verified = skill
+            .bindings()
+            .iter()
+            .filter(|binding| matches!(binding.visibility, Visibility::Verified { .. }));
+        let chosen = verified
+            .clone()
+            .find(|binding| binding.restrictions.agent_invocable)
+            .or_else(|| verified.next());
+        if let Some(binding) = chosen {
+            initial_advisory.push(AdvisorySkill {
+                record: skill.record(),
+                binding,
+            });
         }
     }
 
@@ -1708,8 +1724,7 @@ async fn rank_once(
                 )? {
                     doc = doc.with_trace(trace_val).map_err(|e| {
                         failure(
-                            5,
-                            "contract-violation",
+                            ErrorKind::OutputLimit,
                             format!("Trace contract error: {e:?}"),
                         )
                     })?;
@@ -1743,28 +1758,45 @@ async fn rank_once(
     progress.evaluated.eligible = eligible_count;
 
     // 7. Bounded Quill retrieval if > 254 candidates
-    let (candidate_skills, ran_quill, quill_method) = if admission.admitted.len()
-        > wide::MAX_REAL_OPTIONS
-    {
-        let query_input = QueryInput {
-            latest_request: normalized_context.current_request.text.as_str(),
-            active_task: task_anchor_text,
-            recent_errors: "",
+    let (candidate_skills, ran_quill, quill_method) =
+        if admission.admitted.len() > wide::MAX_REAL_OPTIONS {
+            let query_input = QueryInput {
+                latest_request: normalized_context.current_request.text.as_str(),
+                active_task: task_anchor_text,
+                recent_errors: "",
+            };
+            let budget = RetrievalBudget::default();
+            // Quill must choose among what admission admitted, but it selects
+            // from the whole roster. So every skill admission removed (excluded,
+            // restricted or a loaded reference) is excluded here. One binding
+            // per skill suffices: any excluded binding drops its skill.
+            let admitted: BTreeSet<&SkillId> =
+                admission.admitted.iter().map(|s| &s.binding.id).collect();
+            let not_admitted: BTreeSet<SkillId> = roster
+                .skills()
+                .iter()
+                .filter(|skill| !skill.bindings().iter().any(|b| admitted.contains(&b.id)))
+                .filter_map(|skill| skill.bindings().first().map(|b| b.id.clone()))
+                .collect();
+            let selection = retrieve(&roster, &not_admitted, query_input, budget, cx, clock)
+                .await
+                .map_err(|err| match err.kind {
+                    RetrievalError::RetrievalEmpty => failure(
+                        ErrorKind::RetrievalEmpty,
+                        "Quill retrieval yielded 0 matches",
+                    ),
+                    RetrievalError::Deadline => {
+                        failure(ErrorKind::Timeout, "Retrieval exceeded deadline")
+                    }
+                    _ => failure(
+                        ErrorKind::RetrievalFailure,
+                        format!("Retrieval error: {err}"),
+                    ),
+                })?;
+            (selection.candidates, true, selection.diagnostics.method)
+        } else {
+            (admission.admitted, false, None)
         };
-        let budget = RetrievalBudget::default();
-        let selection = retrieve(&roster, &excluded_skills, query_input, budget, cx, clock)
-            .await
-            .map_err(|err| match err.kind {
-                RetrievalError::RetrievalEmpty => {
-                    failure(5, "retrieval-empty", "Quill retrieval yielded 0 matches")
-                }
-                RetrievalError::Deadline => failure(6, "timeout", "Retrieval exceeded deadline"),
-                _ => failure(5, "retrieval-failure", format!("Retrieval error: {err}")),
-            })?;
-        (selection.candidates, true, selection.diagnostics.method)
-    } else {
-        (admission.admitted, false, None)
-    };
 
     let admitted_ids: BTreeSet<&SkillId> = candidate_skills.iter().map(|s| &s.binding.id).collect();
     let retrieval_view = if ran_quill {
@@ -1821,8 +1853,7 @@ async fn rank_once(
         )? {
             doc = doc.with_trace(trace_val).map_err(|e| {
                 failure(
-                    5,
-                    "contract-violation",
+                    ErrorKind::OutputLimit,
                     format!("Trace contract error: {e:?}"),
                 )
             })?;
@@ -1877,16 +1908,16 @@ async fn rank_once(
     };
     let (rendered_context, disclosure_receipt) =
         render_context_and_receipt(&normalized_context, &render_opts).map_err(|e| match e {
-            crate::context::render::RenderContextError::UnsupportedContext(_) => input_failure(
+            crate::context::render::RenderContextError::UnsupportedContext(_) => failure(
                 ErrorKind::InsufficientContext,
                 "The request depends on content that is not in the context",
             ),
             crate::context::render::RenderContextError::Redaction(_)
-            | crate::context::render::RenderContextError::SecretsDetected(_) => input_failure(
+            | crate::context::render::RenderContextError::SecretsDetected(_) => failure(
                 ErrorKind::UnsupportedInput,
                 "The context could not be made safe to send",
             ),
-            crate::context::render::RenderContextError::Serialization(_) => input_failure(
+            crate::context::render::RenderContextError::Serialization(_) => failure(
                 ErrorKind::OversizedInput,
                 "The context could not be rendered within its bounds",
             ),
@@ -1916,7 +1947,7 @@ async fn rank_once(
     quality.prompt_complete &= request_truncated == 0;
     quality.history_windowed |= history_omitted + history_truncated > 0;
     if rendered_context.is_unsupported_context() || request_truncated > 0 {
-        return Err(input_failure(
+        return Err(failure(
             ErrorKind::InsufficientContext,
             "The request or its essential context does not fit the admitted input",
         ));
@@ -1926,7 +1957,7 @@ async fn rank_once(
     // directory, an enabled response-cache effect and a session identity to
     // scope them. Otherwise fingerprints are keyed with fresh randomness and
     // nothing outlives this invocation. An unusable store degrades to that.
-    let mut store = match (&args.cache_dir, &normalized_context.session_id) {
+    let store = match (&args.cache_dir, &normalized_context.session_id) {
         (Some(dir), Some(_)) => {
             match persistent::Store::open(invocation, cx, clock, &gate, dir).await {
                 Ok(opened) => {
@@ -1949,8 +1980,7 @@ async fn rank_once(
         Some(store) => store.key(),
         None => CacheKey::generate().map_err(|_| {
             failure(
-                9,
-                "storage-failure",
+                ErrorKind::StorageFailure,
                 "Fingerprint key could not be generated",
             )
         })?,
@@ -2091,13 +2121,7 @@ async fn rank_once(
         effective.model().as_str(),
         false, // include_stuck
     )
-    .map_err(|e| {
-        failure(
-            e.kind().exit_code() as u8,
-            e.kind().as_str(),
-            format!("Wide build failed: {e:?}"),
-        )
-    })?;
+    .map_err(|e| failure(e.kind(), format!("Wide build failed: {e:?}")))?;
 
     // A stateless preview: the exact redacted bytes a matching `--no-persist`
     // run would send. Stage 2 is previewed only for supplied shortlist IDs.
@@ -2108,7 +2132,8 @@ async fn rank_once(
             candidate_ids.len(),
         )?];
         if !args.shortlist_ids.is_empty() {
-            let (_, shortlist) = sizes.effective(candidate_ids.len());
+            // `effective` is `(M, K)`: a stage-2 shortlist holds up to M.
+            let (shortlist, _) = sizes.effective(candidate_ids.len());
             let mut seen = BTreeSet::new();
             if args.shortlist_ids.len() > shortlist
                 || args
@@ -2117,8 +2142,7 @@ async fn rank_once(
                     .any(|id| !candidate_ids.contains(id) || !seen.insert(id))
             {
                 return Err(failure(
-                    2,
-                    "invalid-usage",
+                    ErrorKind::InvalidUsage,
                     format!("Shortlist IDs must be distinct wide candidates, at most {shortlist}"),
                 ));
             }
@@ -2128,13 +2152,7 @@ async fn rank_once(
                 &rendered_context,
                 effective.model().as_str(),
             )
-            .map_err(|e| {
-                failure(
-                    e.kind().exit_code() as u8,
-                    e.kind().as_str(),
-                    format!("Rerank build failed: {e:?}"),
-                )
-            })?;
+            .map_err(|e| failure(e.kind(), format!("Rerank build failed: {e:?}")))?;
             stages.push(preview_stage(
                 "rerank",
                 rerank_builder.bytes(),
@@ -2143,11 +2161,7 @@ async fn rank_once(
         }
         let disclosure = serde_json::to_value(&disclosure_receipt).map_err(|_| {
             let kind = ErrorKind::OutputLimit;
-            failure(
-                kind.exit_code() as u8,
-                kind.as_str(),
-                "Disclosure receipt could not be encoded",
-            )
+            failure(kind, "Disclosure receipt could not be encoded")
         })?;
         return preview_document(
             Some(json!({
@@ -2182,8 +2196,7 @@ async fn rank_once(
     let endpoint = match effective.endpoint() {
         Some(ep) => EndpointConfig::from_override(ep).map_err(|_| {
             failure(
-                2,
-                "invalid-configuration",
+                ErrorKind::InvalidConfiguration,
                 "The configured endpoint is invalid",
             )
         })?,
@@ -2194,7 +2207,8 @@ async fn rank_once(
     let fingerprint = |stage: RequestStage,
                        candidates: &[CandidateDigest],
                        request: &[u8],
-                       version: &str|
+                       version: &str,
+                       paired_wide: Option<&RequestFingerprint>|
      -> RequestFingerprint {
         compute_request_fingerprint(
             &cache_key,
@@ -2210,6 +2224,7 @@ async fn rank_once(
                 adapter_version: "v1",
                 privacy_policy_version: "v1",
                 excerpt_strategy: "default",
+                paired_wide,
             },
         )
     };
@@ -2218,58 +2233,67 @@ async fn rank_once(
         &candidate_digests,
         wide_builder.bytes(),
         wide::WIDE_POLICY_VERSION,
+        None,
     );
 
     // An exact cached pair is served without a send. A cached wide answer is
     // used only when it needs no rerank, or when the rerank answer for its
     // shortlist is cached too: under an unpinned model alias a cached wide
     // answer is never paired with a fresh rerank.
-    let lookup_pair =
-        |store: &mut Option<persistent::Store>| -> Option<(Response, u64, Option<Response>)> {
-            let now_unix_ms = wall_clock_ms();
-            let (bytes, age_ms) = persistent::lookup(
+    let mut store = CacheSlot { store, lost: false };
+    let lookup_pair = |store: &mut CacheSlot| -> Option<(Response, u64, Option<Response>)> {
+        let now_unix_ms = wall_clock_ms();
+        let (bytes, age_ms) = persistent::lookup(
+            store,
+            invocation,
+            cx,
+            namespace,
+            RequestStage::Wide,
+            wide_req_fp,
+            active_model,
+            now_unix_ms,
+        )?;
+        let response = wide_builder.request().decode_response(&bytes).ok()?;
+        let outcome = wide::evaluate(&wide_builder, &response, gate_threshold, sizes).ok()?;
+        let mut rerank = None;
+        if let WideDecision::Shortlist(list) = &outcome.decision {
+            let ids: Vec<SkillId> = list.iter().map(|s| s.skill.binding.id.clone()).collect();
+            let builder = rerank::build(&roster, &ids, &rendered_context, active_model).ok()?;
+            // Keyed to this wide answer, so only the rerank recorded with it
+            // can complete the pair (sr-z1u0).
+            let rerank_fp = fingerprint(
+                RequestStage::Rerank,
+                &shortlist_digests(list),
+                builder.bytes(),
+                rerank::RERANK_POLICY_VERSION,
+                Some(&wide_req_fp),
+            );
+            let (bytes, _) = persistent::lookup(
                 store,
                 invocation,
                 cx,
                 namespace,
-                RequestStage::Wide,
-                wide_req_fp,
+                RequestStage::Rerank,
+                rerank_fp,
                 active_model,
                 now_unix_ms,
             )?;
-            let response = wide_builder.request().decode_response(&bytes).ok()?;
-            let outcome = wide::evaluate(&wide_builder, &response, gate_threshold, sizes).ok()?;
-            let mut rerank = None;
-            if let WideDecision::Shortlist(list) = &outcome.decision {
-                let ids: Vec<SkillId> = list.iter().map(|s| s.skill.binding.id.clone()).collect();
-                let builder = rerank::build(&roster, &ids, &rendered_context, active_model).ok()?;
-                let rerank_fp = fingerprint(
-                    RequestStage::Rerank,
-                    &shortlist_digests(list),
-                    builder.bytes(),
-                    rerank::RERANK_POLICY_VERSION,
-                );
-                let (bytes, _) = persistent::lookup(
-                    store,
-                    invocation,
-                    cx,
-                    namespace,
-                    RequestStage::Rerank,
-                    rerank_fp,
-                    active_model,
-                    now_unix_ms,
-                )?;
-                rerank = Some(builder.request().decode_response(&bytes).ok()?);
-            }
-            Some((response, age_ms, rerank))
-        };
+            rerank = Some(builder.request().decode_response(&bytes).ok()?);
+        }
+        Some((response, age_ms, rerank))
+    };
     let mut cached = lookup_pair(&mut store);
+    // Set only when another process leads this exact request and this run is
+    // not taking over: then sending would duplicate its evaluation. A lease that
+    // could not be read or acquired is no evidence of a leader, and the run
+    // sends uncoordinated.
+    let mut deferred_to_leader = false;
     // Single flight: on a miss, one process per exact request sends. Another
     // process with the same request waits for that lease and is then served
     // the pair it recorded; if the leader fails, the follower sends itself.
     // Leases need the persistent cache and persistent runtime state.
     if cached.is_none()
-        && store.is_some()
+        && store.store.is_some()
         && matches!(gate.runtime_state(), StoreAccess::Enabled)
         && let Some(dir) = &args.cache_dir
     {
@@ -2298,6 +2322,7 @@ async fn rank_once(
                 {
                     progress.lease = Some((leases, leader));
                 }
+                deferred_to_leader = cached.is_none() && progress.lease.is_none();
             }
             Some(LeaseAcquisition::AlreadyCompleted) => {
                 cached = lookup_pair(&mut store);
@@ -2387,19 +2412,13 @@ async fn rank_once(
         None => {
             if args.cursor.is_some() {
                 return Err(failure(
-                    11,
-                    "cache-miss",
+                    ErrorKind::CacheMiss,
                     "Trace continuation requires exact cached evaluation evidence",
                 ));
             }
-            if store.is_some()
-                && matches!(gate.runtime_state(), StoreAccess::Enabled)
-                && args.cache_dir.is_some()
-                && progress.lease.is_none()
-            {
+            if deferred_to_leader {
                 return Err(failure(
-                    6,
-                    "timeout",
+                    ErrorKind::Timeout,
                     "Follower deadline reached while request was owned by active leader",
                 ));
             }
@@ -2416,21 +2435,19 @@ async fn rank_once(
                 Some(transport) => transport,
                 None => &*owned_client.insert(JevClient::new(endpoint.clone()).map_err(|e| {
                     failure(
-                        2,
-                        "invalid-configuration",
+                        ErrorKind::InvalidConfiguration,
                         format!("Client init failed: {e}"),
                     )
                 })?),
             };
-            let credential =
-                match (resolved_config.credential(), client.origin()) {
-                    (Some(credential), Some(origin)) => Some(&*bound_credential.insert(
-                        OriginScopedCredential::bind(credential.clone(), origin).map_err(|_| {
-                            failure(4, "authentication", "Credential origin mismatch")
-                        })?,
-                    )),
-                    _ => None,
-                };
+            let credential = match (resolved_config.credential(), client.origin()) {
+                (Some(credential), Some(origin)) => Some(&*bound_credential.insert(
+                    OriginScopedCredential::bind(credential.clone(), origin).map_err(|_| {
+                        failure(ErrorKind::Authentication, "Credential origin mismatch")
+                    })?,
+                )),
+                _ => None,
+            };
             let active = session.insert({
                 let opened = RetrySession::new(
                     client,
@@ -2441,11 +2458,7 @@ async fn rank_once(
                 )
                 .map_err(|_| {
                     let kind = ErrorKind::BudgetState;
-                    failure(
-                        kind.exit_code() as u8,
-                        kind.as_str(),
-                        "The attempt allowance could not be opened",
-                    )
+                    failure(kind, "The attempt allowance could not be opened")
                 })?;
                 // Attached here rather than passed to `new`, because a session is usable
                 // without one: only a caller that wants crash evidence pays for it.
@@ -2478,8 +2491,7 @@ async fn rank_once(
     let wide_outcome = wide::evaluate(&wide_builder, &wide_response, gate_threshold, sizes)
         .map_err(|e| {
             failure(
-                10,
-                "invalid-provider-response",
+                ErrorKind::InvalidProviderResponse,
                 format!("Wide evaluation failed: {e:?}"),
             )
         })?;
@@ -2591,8 +2603,7 @@ async fn rank_once(
             )? {
                 doc = doc.with_trace(trace_val).map_err(|e| {
                     failure(
-                        5,
-                        "contract-violation",
+                        ErrorKind::OutputLimit,
                         format!("Trace contract error: {e:?}"),
                     )
                 })?;
@@ -2628,13 +2639,7 @@ async fn rank_once(
         &rendered_context,
         effective.model().as_str(),
     )
-    .map_err(|e| {
-        failure(
-            e.kind().exit_code() as u8,
-            e.kind().as_str(),
-            format!("Rerank build failed: {e:?}"),
-        )
-    })?;
+    .map_err(|e| failure(e.kind(), format!("Rerank build failed: {e:?}")))?;
 
     // A cached wide answer arrives with its cached rerank answer. Otherwise
     // rerank pairs with the wide answer this session produced; a wide answer
@@ -2648,6 +2653,7 @@ async fn rank_once(
             &shortlist_digests(&shortlisted),
             rerank_builder.bytes(),
             rerank::RERANK_POLICY_VERSION,
+            Some(&wide_req_fp),
         )
     });
     let rerank_req_fp: Option<String> = rerank_fp.map(|fp| fp.to_hex());
@@ -2666,15 +2672,13 @@ async fn rank_once(
         None => {
             if args.cursor.is_some() {
                 return Err(failure(
-                    11,
-                    "cache-miss",
+                    ErrorKind::CacheMiss,
                     "Trace continuation requires exact cached evaluation evidence",
                 ));
             }
             let Some(active) = session.as_mut() else {
                 return Err(failure(
-                    11,
-                    "cache-miss",
+                    ErrorKind::CacheMiss,
                     "A cached wide answer cannot be paired with a fresh rerank",
                 ));
             };
@@ -2703,8 +2707,7 @@ async fn rank_once(
 
     let rerank_outcome = rerank::evaluate(&rerank_builder, &rerank_response).map_err(|e| {
         failure(
-            10,
-            "invalid-provider-response",
+            ErrorKind::InvalidProviderResponse,
             format!("Rerank evaluation failed: {e:?}"),
         )
     })?;
@@ -2848,8 +2851,7 @@ async fn rank_once(
                 )? {
                     doc = doc.with_trace(trace_val).map_err(|e| {
                         failure(
-                            5,
-                            "contract-violation",
+                            ErrorKind::OutputLimit,
                             format!("Trace contract error: {e:?}"),
                         )
                     })?;
@@ -2909,15 +2911,13 @@ async fn rank_once(
     let weights = Weights::new(effective.w_fit(), effective.w_prior(), effective.w_phase())
         .map_err(|_| {
             failure(
-                2,
-                "invalid-configuration",
+                ErrorKind::InvalidConfiguration,
                 "Ranking weights are out of bounds",
             )
         })?;
     let scored_ranking = rank(&scoring_inputs, weights, top).map_err(|e| {
         failure(
-            10,
-            "invalid-provider-response",
+            ErrorKind::InvalidProviderResponse,
             format!("Scoring failed: {e:?}"),
         )
     })?;
@@ -2930,6 +2930,16 @@ async fn rank_once(
         .map(|e| e.as_str().to_string())
         .unwrap_or_else(|| derive_request_event_id(&normalized_context));
 
+    // Scoring uses renormalized probabilities; the ledger keeps the values the
+    // provider actually returned beside them.
+    let wide_raw = raw_skill_probabilities(
+        wide_response.answers.get(wide::WHICH),
+        wide_builder.options(),
+    );
+    let rerank_raw = raw_skill_probabilities(
+        rerank_response.answers.get(rerank::RERANK),
+        rerank_builder.options(),
+    );
     let mut ranking_candidates = Vec::new();
     for s in &shortlisted {
         ranking_candidates.push(crate::storage::NewRankingCandidate {
@@ -2937,7 +2947,7 @@ async fn rank_once(
             stage: crate::storage::CandidateStage::Wide,
             skill_id: s.skill.binding.id.as_str().to_string(),
             skill_version: s.skill.record.source_content.as_str().to_string(),
-            raw_probability: Some(s.wide_probability),
+            raw_probability: wide_raw.get(&s.skill.binding.id).copied(),
             normalized_probability: Some(s.wide_probability),
             fit_score: None,
             rank_score: None,
@@ -2953,7 +2963,7 @@ async fn rank_once(
             stage: crate::storage::CandidateStage::Rerank,
             skill_id: el.skill.binding.id.as_str().to_string(),
             skill_version: el.skill.record.source_content.as_str().to_string(),
-            raw_probability: Some(el.rerank),
+            raw_probability: rerank_raw.get(&el.skill.binding.id).copied(),
             normalized_probability: Some(el.rerank),
             fit_score: Some(el.fit),
             rank_score: Some(scored.rank_score),
@@ -3037,8 +3047,7 @@ async fn rank_once(
     )? {
         doc = doc.with_trace(trace_val).map_err(|e| {
             failure(
-                5,
-                "contract-violation",
+                ErrorKind::OutputLimit,
                 format!("Trace contract error: {e:?}"),
             )
         })?;
@@ -3078,15 +3087,13 @@ fn validate_advisory_publication(
     match revalidation {
         Revalidation::Superseded(fields) => {
             return Err(failure(
-                3,
-                "superseded",
+                ErrorKind::Superseded,
                 format!("Policy superseded before publication: {fields:?}"),
             ));
         }
         Revalidation::InvalidConfiguration => {
             return Err(failure(
-                2,
-                "invalid-configuration",
+                ErrorKind::InvalidConfiguration,
                 "Configuration became invalid before publication",
             ));
         }
@@ -3094,8 +3101,7 @@ fn validate_advisory_publication(
     }
     admit_publication(clock.deadline(), clock.now(), clock.now()).map_err(|error| {
         failure(
-            6,
-            "timeout",
+            ErrorKind::Timeout,
             format!("Runtime suppressed late result: {error}"),
         )
     })?;
@@ -3162,19 +3168,11 @@ fn roster_warnings(roster: &ResolvedRoster, source: Option<&Value>) -> (Vec<Valu
 }
 
 /// A typed input failure whose exit comes from its public error kind.
-fn input_failure(kind: ErrorKind, message: &str) -> PipelineFailure {
-    failure(kind.exit_code() as u8, kind.as_str(), message)
-}
-
 /// One previewed provider request: the exact serialized bytes as text.
 fn preview_stage(stage: &str, request: &[u8], candidates: usize) -> Result<Value, PipelineFailure> {
     let text = std::str::from_utf8(request).map_err(|_| {
         let kind = ErrorKind::OutputLimit;
-        failure(
-            kind.exit_code() as u8,
-            kind.as_str(),
-            "The request is not valid UTF-8",
-        )
+        failure(kind, "The request is not valid UTF-8")
     })?;
     Ok(json!({
         "stage": stage,
@@ -3204,11 +3202,7 @@ fn preview_document(
     }))
     .map_err(|_| {
         let kind = ErrorKind::OutputLimit;
-        failure(
-            kind.exit_code() as u8,
-            kind.as_str(),
-            "The preview exceeds the output contract",
-        )
+        failure(kind, "The preview exceeds the output contract")
     })
 }
 
@@ -3250,6 +3244,34 @@ fn cache_entry(
         original_usage: response.usage,
         attempt_id: None,
     }
+}
+
+/// Each skill's probability as the provider returned it in one Choice answer,
+/// before renormalization. Option IDs resolve only through the request's own
+/// option map.
+fn raw_skill_probabilities(
+    answer: Option<&crate::jev::codec::Answer>,
+    options: &crate::roster::resolution::OptionMap<'_>,
+) -> BTreeMap<SkillId, f64> {
+    let Some(crate::jev::codec::Answer::Choice(choice)) = answer else {
+        return BTreeMap::new();
+    };
+    choice
+        .raw_probabilities()
+        .iter()
+        .filter_map(|(option, &probability)| match options.resolve(option) {
+            Ok(ResolvedOption::Skill(skill)) => Some((skill.binding.id.clone(), probability)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The run's response-cache store. A store operation consumes the store, and a
+/// failed one does not return it, so the slot remembers the loss. Later
+/// recordings are then reported as skipped rather than as written.
+struct CacheSlot {
+    store: Option<persistent::Store>,
+    lost: bool,
 }
 
 /// The persistent exact response cache. Linux and macOS use the qualified store;
@@ -3450,7 +3472,7 @@ mod persistent {
     /// A fresh stored answer's bytes and age, or nothing.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn lookup(
-        slot: &mut Option<Store>,
+        slot: &mut super::CacheSlot,
         invocation: &ProcessInvocation,
         cx: &Cx,
         namespace: [u8; 32],
@@ -3459,11 +3481,13 @@ mod persistent {
         model: &str,
         now_unix_ms: u64,
     ) -> Option<(Vec<u8>, u64)> {
-        let Store(store) = slot.take()?;
-        let (store, entry) = store
-            .response(invocation, cx, namespace, stage, fingerprint)
-            .ok()?;
-        *slot = Some(Store(store));
+        let Store(store) = slot.store.take()?;
+        let Ok((store, entry)) = store.response(invocation, cx, namespace, stage, fingerprint)
+        else {
+            slot.lost = true;
+            return None;
+        };
+        slot.store = Some(Store(store));
         let entry = entry?;
         match entry.evaluate_freshness(now_unix_ms, model, None) {
             FreshnessStatus::Fresh { age_ms, .. } => Some((entry.response_bytes, age_ms)),
@@ -3471,16 +3495,18 @@ mod persistent {
         }
     }
 
+    /// Whether the entry was written, or nothing was required: `false` when a
+    /// store this run opened failed now or earlier.
     pub(super) fn record(
-        slot: &mut Option<Store>,
+        slot: &mut super::CacheSlot,
         invocation: &ProcessInvocation,
         cx: &Cx,
         namespace: [u8; 32],
         entry: CachedResponseEntry,
         fence: Option<&(std::path::PathBuf, LeaderContext)>,
     ) -> Result<bool, super::PipelineFailure> {
-        let Some(Store(store)) = slot.take() else {
-            return Ok(true);
+        let Some(Store(store)) = slot.store.take() else {
+            return Ok(!slot.lost);
         };
         let result = match fence {
             Some(fence) => {
@@ -3492,15 +3518,18 @@ mod persistent {
             }
         };
         match result {
-            Ok(store) => *slot = Some(Store(store)),
+            Ok(store) => slot.store = Some(Store(store)),
             Err(StoreError::LeaseSuperseded) => {
+                slot.lost = true;
                 return Err(super::failure(
-                    6,
-                    "timeout",
+                    super::ErrorKind::Timeout,
                     "Leader cache publication could not verify and retain lease ownership",
                 ));
             }
-            Err(_) => return Ok(false),
+            Err(_) => {
+                slot.lost = true;
+                return Ok(false);
+            }
         }
         Ok(true)
     }
@@ -3581,7 +3610,7 @@ mod persistent {
 
     #[allow(clippy::too_many_arguments)]
     pub(super) fn lookup(
-        _: &mut Option<Store>,
+        _: &mut super::CacheSlot,
         _: &ProcessInvocation,
         _: &Cx,
         _: [u8; 32],
@@ -3594,7 +3623,7 @@ mod persistent {
     }
 
     pub(super) fn record(
-        _: &mut Option<Store>,
+        _: &mut super::CacheSlot,
         _: &ProcessInvocation,
         _: &Cx,
         _: [u8; 32],
@@ -3624,8 +3653,7 @@ fn authorize_send(
     )?;
     if let Revalidation::InvalidConfiguration = reval {
         return Err(failure(
-            2,
-            "invalid-configuration",
+            ErrorKind::InvalidConfiguration,
             format!("Configuration invalid before {} send", stage.as_str()),
         ));
     }
@@ -3634,8 +3662,7 @@ fn authorize_send(
     admit_provider_attempt(consent, current.credential()).map_err(admission_refusal)?;
     if let Revalidation::Superseded(fields) = reval {
         return Err(failure(
-            3,
-            "superseded",
+            ErrorKind::Superseded,
             format!("Policy changed before {} send: {fields:?}", stage.as_str()),
         ));
     }
@@ -3691,25 +3718,22 @@ fn retry_failure(kind: RetryErrorKind, last: Option<TransportErrorKind>) -> Pipe
         RetryErrorKind::Transport(kind) => map_transport_error(kind),
         RetryErrorKind::Admission(refusal) => {
             let kind = refusal.error_kind();
-            failure(kind.exit_code() as u8, kind.as_str(), refusal.to_string())
+            failure(kind, refusal.to_string())
         }
         RetryErrorKind::Accounting => {
             let kind = ErrorKind::BudgetState;
-            failure(
-                kind.exit_code() as u8,
-                kind.as_str(),
-                "Attempt accounting failed",
-            )
+            failure(kind, "Attempt accounting failed")
         }
-        RetryErrorKind::PolicyChanged => failure(3, "superseded", "Policy changed before send"),
+        RetryErrorKind::PolicyChanged => {
+            failure(ErrorKind::Superseded, "Policy changed before send")
+        }
         // A transient provider failure with no retry left: report that failure.
         RetryErrorKind::RetryStopped(_) => last.map_or_else(
-            || failure(4, "provider-failure", "The provider request failed"),
+            || failure(ErrorKind::ProviderFailure, "The provider request failed"),
             map_transport_error,
         ),
         RetryErrorKind::ModelPairMismatch => failure(
-            10,
-            "invalid-provider-response",
+            ErrorKind::InvalidProviderResponse,
             "Wide and rerank answers came from different models",
         ),
     }
@@ -3720,33 +3744,35 @@ fn retry_failure(kind: RetryErrorKind, last: Option<TransportErrorKind>) -> Pipe
 /// (4): an environment gap, kept apart from a key the provider rejected.
 fn admission_refusal(refusal: ProviderAdmissionRefusal) -> PipelineFailure {
     let kind = refusal.kind();
-    failure(kind.exit_code() as u8, kind.as_str(), refusal.to_string())
+    failure(kind, refusal.to_string())
 }
 
 fn map_transport_error(kind: TransportErrorKind) -> PipelineFailure {
     match kind {
         TransportErrorKind::Deadline | TransportErrorKind::Cancelled => {
-            (6, "timeout", "Jev request exceeded deadline".into())
+            failure(ErrorKind::Timeout, "Jev request exceeded deadline")
         }
         TransportErrorKind::Admission(refusal) => admission_refusal(refusal),
-        TransportErrorKind::Response(_) => (
-            10,
-            "invalid-provider-response",
-            "The provider response failed validation".into(),
+        TransportErrorKind::Response(_) => failure(
+            ErrorKind::InvalidProviderResponse,
+            "The provider response failed validation",
         ),
         TransportErrorKind::CredentialOriginMismatch => {
-            (4, "authentication", "Credential origin mismatch".into())
+            failure(ErrorKind::Authentication, "Credential origin mismatch")
         }
         TransportErrorKind::HttpStatus(401 | 403) => {
-            (4, "authentication", "Invalid credentials".into())
+            failure(ErrorKind::Authentication, "Invalid credentials")
         }
         TransportErrorKind::HttpStatus(429) => {
-            (4, "provider-cooldown", "Rate limited by provider".into())
+            failure(ErrorKind::ProviderCooldown, "Rate limited by provider")
         }
         TransportErrorKind::HttpStatus(code) => {
-            (4, "provider-failure", format!("HTTP error {code}"))
+            failure(ErrorKind::ProviderFailure, format!("HTTP error {code}"))
         }
-        _ => (4, "network-failure", format!("Transport error: {kind:?}")),
+        _ => failure(
+            ErrorKind::NetworkFailure,
+            format!("Transport error: {kind:?}"),
+        ),
     }
 }
 
@@ -4106,6 +4132,7 @@ fn record_inflight_ranking(
     matches!(
         crate::storage::record_ranking_with_attempts(
             invocation,
+            invocation.clock(),
             cx,
             crate::storage::LedgerAccess::ExistingOnly,
             location,
@@ -4126,7 +4153,6 @@ fn record_inflight_ranking(
 /// so nothing free-form reaches the ledger.
 fn record_failed_attempts(
     invocation: &ProcessInvocation,
-    cx: &Cx,
     recording: &FailureRecording,
     reason: &str,
     elapsed_ms: u64,
@@ -4154,9 +4180,13 @@ fn record_failed_attempts(
         Some(dir) => crate::storage::LedgerLocation::Directory(dir.to_path_buf()),
         None => crate::storage::LedgerLocation::Platform,
     };
+    // The run may have failed because its work deadline passed, which would refuse this
+    // write too and drop the failure from the availability denominator. Record it inside
+    // the cleanup reserve on a cleanup context instead (sr-73b6).
     let _ = crate::storage::record_ranking_with_attempts(
         invocation,
-        cx,
+        invocation.clock().for_failure_finalization(),
+        &invocation.request_cleanup_cx(),
         crate::storage::LedgerAccess::ExistingOnly,
         location,
         &event,
@@ -4424,6 +4454,7 @@ fn try_record_ledger(
 
     crate::storage::record_ranking_with_attempts(
         invocation,
+        invocation.clock(),
         cx,
         crate::storage::LedgerAccess::ExistingOnly,
         location,
@@ -4590,8 +4621,7 @@ fn build_ranked_document(
 
     OutputDocument::from_value(val).map_err(|e| {
         failure(
-            10,
-            "invalid-provider-response",
+            ErrorKind::InvalidProviderResponse,
             format!("Output contract validation failed: {e:?}"),
         )
     })
@@ -4762,22 +4792,19 @@ fn trace_page(
             Ok(off) => off as usize,
             Err(ContractError::SnapshotChanged) => {
                 return Err(failure(
-                    5,
-                    "roster-changed",
+                    ErrorKind::RosterChanged,
                     "The roster or query changed between trace pages.",
                 ));
             }
             Err(ContractError::UnsupportedVersion) => {
                 return Err(failure(
-                    2,
-                    "invalid-usage",
+                    ErrorKind::InvalidUsage,
                     "Unsupported trace cursor schema version.",
                 ));
             }
             Err(ContractError::InvalidField) | Err(_) => {
                 return Err(failure(
-                    2,
-                    "invalid-usage",
+                    ErrorKind::InvalidUsage,
                     "Cursor offset exceeds total trace entries.",
                 ));
             }
@@ -4825,8 +4852,7 @@ fn trace_page(
 
     serde_json::to_value(stage_trace).map(Some).map_err(|e| {
         failure(
-            5,
-            "contract-violation",
+            ErrorKind::OutputLimit,
             format!("Trace serialization error: {e:?}"),
         )
     })

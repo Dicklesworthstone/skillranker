@@ -15,7 +15,7 @@
 
 use crate::context::signals::ProjectSignals;
 use crate::context::tool::{
-    DEFAULT_TOOL_EXCERPT_CHARS, head_tail_truncate, summarize_tool_arguments, summarize_tool_result,
+    DEFAULT_TOOL_EXCERPT_CHARS, allowlist_tool_arguments, head_tail_truncate, summarize_tool_result,
 };
 use crate::context::{EventKind, NormalizedContext, Role};
 use crate::limits::{RECENT_NORMALIZED_MESSAGES, RENDERED_CONTEXT_SCALARS};
@@ -455,13 +455,15 @@ pub fn render_context_and_receipt(
 
                         let mut summary_parts = Vec::new();
                         if let Some(args) = &tool_ev.arguments {
-                            let redacted_args = redactor.redact_field(args.as_str())?;
+                            // Allowlist, then redact, then truncate: redacted
+                            // JSON may no longer parse, and the allowlist must
+                            // not depend on it.
+                            let allowlisted = allowlist_tool_arguments(args.as_str());
+                            let redacted_args = redactor.redact_field(&allowlisted)?;
                             tool_redactions += redacted_args.redaction_count();
                             let raw_args_str = redacted_args.into_string();
-                            let arg_summary = summarize_tool_arguments(
-                                &raw_args_str,
-                                options.tool_excerpt_chars / 2,
-                            );
+                            let arg_summary =
+                                head_tail_truncate(&raw_args_str, options.tool_excerpt_chars / 2);
                             if raw_args_str.chars().count() > options.tool_excerpt_chars / 2 {
                                 tool_truncations += 1;
                             }

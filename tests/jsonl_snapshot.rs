@@ -203,7 +203,18 @@ fn tail_window_does_not_fabricate_a_cut_prefix() {
 
 #[test]
 fn symlink_and_directory_are_rejected_before_open() {
-    let invocation = ProcessInvocation::enter().unwrap();
+    // The property is the rejection reason, not the deadline. Under the default 3 s a
+    // starved worker reported Deadline before the path check ran (sr-87gj class).
+    let generous = || {
+        skillranker::runtime::EntryClock::capture()
+            .unwrap()
+            .with_total(
+                skillranker::limits::DurationMillis::new("test_deadline_ms", 60_000, 600_000)
+                    .unwrap(),
+            )
+            .unwrap()
+    };
+    let invocation = ProcessInvocation::from_clock(generous()).unwrap();
     let cx = invocation.request_cx().unwrap();
     let dir = temp_path("dir");
     fs::create_dir(&dir).unwrap();
@@ -215,7 +226,7 @@ fn symlink_and_directory_are_rejected_before_open() {
     write_file(&target, &line("e1", "user", "message", "x"));
     let link = temp_path("link");
     symlink(&target, &link).unwrap();
-    let invocation = ProcessInvocation::enter().unwrap();
+    let invocation = ProcessInvocation::from_clock(generous()).unwrap();
     let cx = invocation.request_cx().unwrap();
     let err = snapshot_jsonl(&invocation, &cx, &link, None, CursorKind::Ranking).unwrap_err();
     assert_eq!(err, JsonlError::UnsafePath);
@@ -240,5 +251,64 @@ fn observation_cursor_does_not_advance_across_unread_bytes() {
     assert_eq!(snap.events[0].event_id.as_ref().unwrap().as_str(), "o0");
     assert!(snap.unread_backlog);
     assert!(snap.cursor.byte_offset < fs::metadata(&path).unwrap().len());
+    fs::remove_file(&path).unwrap();
+}
+
+/// A resumed observation read rewinds a bounded overlap behind its cursor and no further
+/// (sr-jgez). Records are 64 KiB so the byte overlap, not the record budget, is what binds:
+/// the window must re-read the records just behind the watermark (so a tool pair straddling
+/// it can be repaired), must not reach back past the overlap, and must still deliver what was
+/// appended after it.
+#[test]
+fn a_resumed_observation_window_rewinds_exactly_the_bounded_overlap() {
+    use skillranker::context::jsonl::OBSERVATION_REPAIR_OVERLAP_BYTES;
+    let path = temp_path("overlap");
+    let filler = "c".repeat(64 * 1024);
+    let record = |id: &str| {
+        format!(
+            "{{\"event_id\":\"{id}\",\"role\":\"user\",\"kind\":\"message\",\"text\":\"{filler}\"}}\n"
+        )
+    };
+    let record_len = record("o00").len() as u64;
+    let old: Vec<String> = (0..40).map(|i| format!("o{i:02}")).collect();
+    write_file(&path, &old.iter().map(|id| record(id)).collect::<String>());
+    let first = read(&path, None, CursorKind::Observation);
+    assert_eq!(first.events.len(), 40);
+    assert!(!first.unread_backlog);
+    let watermark = first.cursor.byte_offset;
+    assert_eq!(watermark, fs::metadata(&path).unwrap().len());
+    assert!(
+        watermark > 2 * OBSERVATION_REPAIR_OVERLAP_BYTES,
+        "the file must be large enough for the overlap to bind"
+    );
+
+    append_file(&path, &(record("n0") + &record("n1")));
+    let second = read(&path, Some(&first.cursor), CursorKind::Observation);
+    assert!(!second.rebuilt, "a valid cursor is resumed, not rebuilt");
+    let ids: Vec<&str> = second
+        .events
+        .iter()
+        .map(|event| event.event_id.as_ref().unwrap().as_str())
+        .collect();
+    let reread: Vec<&&str> = ids.iter().filter(|id| id.starts_with('o')).collect();
+    assert!(
+        ids.contains(&"o39"),
+        "the record just behind the watermark is re-read: {ids:?}"
+    );
+    assert!(
+        ids.ends_with(&["n0", "n1"]),
+        "appended records still arrive: {ids:?}"
+    );
+    assert!(
+        !ids.contains(&"o00"),
+        "nothing beyond the overlap is re-read: {ids:?}"
+    );
+    let max_reread = OBSERVATION_REPAIR_OVERLAP_BYTES.div_ceil(record_len);
+    assert!(
+        !reread.is_empty() && reread.len() as u64 <= max_reread,
+        "re-read {} old records; the {OBSERVATION_REPAIR_OVERLAP_BYTES}-byte overlap holds at most \
+         {max_reread}",
+        reread.len()
+    );
     fs::remove_file(&path).unwrap();
 }

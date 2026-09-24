@@ -173,11 +173,13 @@ fn test_competing_assessors_revision_race() {
         .expect("run assessor B stale feedback");
     assert_eq!(
         out_b_conflict.status.code(),
-        Some(11),
-        "revision mismatch must fail with exit code 11 (revision-conflict)"
+        Some(9),
+        "revision mismatch is a required-storage conflict (exit 9), not a cache miss"
     );
     let err_json: serde_json::Value =
         serde_json::from_slice(&out_b_conflict.stdout).expect("parse err json");
+    assert_eq!(err_json["error"]["kind"], "revision-conflict", "{err_json}");
+    assert_eq!(err_json["error"]["code"], 9, "{err_json}");
     assert!(
         err_json["error"]["message"]
             .as_str()
@@ -236,8 +238,8 @@ fn test_competing_assessors_revision_race() {
         .expect("run assessor B stale update");
     assert_eq!(
         out_b_conflict2.status.code(),
-        Some(11),
-        "stale revision must fail with exit code 11"
+        Some(9),
+        "stale revision must fail with exit code 9 (revision-conflict)"
     );
 }
 

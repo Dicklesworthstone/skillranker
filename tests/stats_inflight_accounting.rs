@@ -621,3 +621,87 @@ fn several_labels_on_one_turn_do_not_divide_its_attempts_away() {
         "one real attempt was rounded away to zero while a token figure stood beside it: {text}"
     );
 }
+
+/// A run that failed at its work deadline can still record that it failed (sr-73b6).
+///
+/// Every ledger write used to be admitted against the work deadline, so a timeout had no time
+/// left to record itself and vanished from the availability denominator. The finalization clock
+/// gives that one write half of the cleanup reserve. The window here is wide (work ends at
+/// 200 ms, finalization at 1,100 ms) so the ordering holds on a loaded host.
+#[test]
+fn a_failure_past_the_work_deadline_is_still_recorded_within_the_cleanup_reserve() {
+    use skillranker::limits::DurationMillis;
+    use skillranker::runtime::EntryClock;
+    let dir = temp_private_dir("finalization");
+    let location = LedgerLocation::Directory(dir);
+    {
+        let (invocation, cx) = test_invocation();
+        init_ledger(&invocation, &cx, location.clone()).expect("init ledger");
+        let _ = invocation.shutdown();
+    }
+    let clock = EntryClock::capture_with(
+        DurationMillis::new("total", 2_000, 10_000).unwrap(),
+        DurationMillis::new("cleanup", 1_800, 10_000).unwrap(),
+    )
+    .unwrap();
+    let finalization = clock.for_failure_finalization();
+    assert_eq!(finalization.deadline().cleanup_reserve().as_millis(), 900);
+    assert_eq!(
+        finalization.deadline().expires_at(),
+        clock.deadline().expires_at(),
+        "finalization never extends the invocation"
+    );
+    let invocation = ProcessInvocation::from_clock(clock).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    assert!(
+        clock.admit_new_work().is_err(),
+        "the work deadline has passed"
+    );
+    let event = finished_event(
+        "ev-timeout",
+        "hook-shadow",
+        DecisionKind::Unavailable,
+        ExposureState::Prepared,
+        "timeout",
+        300,
+        BASE_MS + 100,
+    );
+    let cleanup = invocation.request_cleanup_cx();
+    let refused = record_ranking_with_attempts(
+        &invocation,
+        clock,
+        &cleanup,
+        LedgerAccess::ExistingOnly,
+        location.clone(),
+        &event,
+        &[],
+        None,
+        &[],
+    );
+    assert!(
+        !matches!(refused, Ok(true)),
+        "the invocation's own clock refuses work past its deadline: {refused:?}"
+    );
+    let recorded = record_ranking_with_attempts(
+        &invocation,
+        finalization,
+        &cleanup,
+        LedgerAccess::ExistingOnly,
+        location.clone(),
+        &event,
+        &[],
+        None,
+        &[],
+    );
+    assert!(
+        matches!(recorded, Ok(true)),
+        "the finalization clock records the failure: {recorded:?}"
+    );
+    let _ = invocation.shutdown_within(std::time::Duration::from_secs(1));
+
+    let (reader, cx) = test_invocation();
+    let report = ledger_stats(&reader, &cx, location, BASE_MS as i64 - 1, false).unwrap();
+    assert_eq!(report.turns.operational_failures, 1, "{:#?}", report.turns);
+    assert_eq!(report.turns.failure_causes[0].reason, "timeout");
+    let _ = reader.shutdown();
+}

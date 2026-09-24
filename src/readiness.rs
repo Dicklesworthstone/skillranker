@@ -178,11 +178,15 @@ pub fn report(inputs: &Inputs<'_>) -> Value {
             } else {
                 ("ready", Value::Null)
             };
+            // Doctor resolves under rank's provisional Claude contract: its
+            // bindings are rankable but not conformance-verified, exactly as
+            // rank labels them in every result.
             json!({
                 "state": state,
                 "skills": counts.skills,
                 "advisory": counts.advisory,
-                "unverified": counts.unverified,
+                "visibility": "unverified",
+                "unverified": counts.unverified + counts.verified,
                 "ambiguous": counts.ambiguous,
                 "manual_only": counts.manual_only,
                 "partial": evidence.partial,

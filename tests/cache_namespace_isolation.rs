@@ -47,6 +47,7 @@ fn fingerprint(key: &CacheKey, ns: &CacheNamespace) -> RequestFingerprint {
             adapter_version: "1",
             privacy_policy_version: "1",
             excerpt_strategy: "default",
+            paired_wide: None,
         },
     )
 }

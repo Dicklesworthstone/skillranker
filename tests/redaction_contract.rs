@@ -1,7 +1,7 @@
 //! Synthetic scanner regressions; see THIRD_PARTY_NOTICES.md for provenance.
 use skillranker::privacy::redaction::{
-    MAX_INSPECTED_PAYLOAD_BYTES, MAX_REDACTED_FIELD_BYTES, REDACTION_MARKER, RedactionError,
-    Redactor,
+    EXCERPT_JOIN, MAX_INSPECTED_PAYLOAD_BYTES, MAX_REDACTED_FIELD_BYTES, REDACTION_MARKER,
+    RedactionError, Redactor,
 };
 
 #[test]
@@ -61,13 +61,14 @@ fn secret_families_remove_complete_values_preserving_neighbors() {
             format!("xoxb-{}-{}abcdef", "0123456789", "0123456789"),
             REDACTION_MARKER.into(),
         ),
+        // A quoted value keeps its quotes (sr-wx8t).
         (
             format!("api_key = \"{}\"", "s".repeat(100)),
-            format!("api_key = {REDACTION_MARKER}"),
+            format!("api_key = \"{REDACTION_MARKER}\""),
         ),
         (
             "password='秘密 café phrase'".into(),
-            format!("password={REDACTION_MARKER}"),
+            format!("password='{REDACTION_MARKER}'"),
         ),
         (
             "credential=秘密値".into(),
@@ -81,6 +82,59 @@ fn secret_families_remove_complete_values_preserving_neighbors() {
         assert_eq!(result.as_str(), format!("before {expected} after"));
         assert_eq!(result.redaction_count(), 1);
     }
+}
+
+#[test]
+fn prefixed_key_names_and_provider_keys_are_private() {
+    // `_` is a word character: a `\b` before the keyword skipped all of these.
+    for (input, expected) in [
+        ("OPENAI_API_KEY=abc123def", "OPENAI_API_KEY=[REDACTED]"),
+        ("TYPESAFE_API_KEY=abc123def", "TYPESAFE_API_KEY=[REDACTED]"),
+        (
+            "export GITHUB_TOKEN=abc123def",
+            "export GITHUB_TOKEN=[REDACTED]",
+        ),
+        ("DB_PASSWORD=hunter2", "DB_PASSWORD=[REDACTED]"),
+        ("PGPASSWORD=hunter2", "PGPASSWORD=[REDACTED]"),
+        ("client_secret: s3cr3t", "client_secret: [REDACTED]"),
+        (
+            r#"{"access_token":"ya29abc"}"#,
+            r#"{"access_token":"[REDACTED]"}"#,
+        ),
+        (
+            "key sk-ant-api03-abcdefghijklmnopqrstuvwx here",
+            "key [REDACTED] here",
+        ),
+        (
+            "key sk-proj-abcdefghijklmnopqrstuvwx here",
+            "key [REDACTED] here",
+        ),
+        (
+            "stripe sk_live_abcdefghijklmnop1234 here",
+            "stripe [REDACTED] here",
+        ),
+        ("Authorization: Basic dXNlcjpwYXNz", "[REDACTED]"),
+        ("postgres://user:p@ss@db/x", "postgres://[REDACTED]@db/x"),
+    ] {
+        let result = Redactor::default().redact_field(input).unwrap();
+        assert_eq!(result.as_str(), expected, "{input}");
+    }
+    // Honest twins: counts and prose that only resemble keys stay readable.
+    for text in [
+        "max_tokens: 5",
+        "input_tokens=120",
+        "the secretary: Jane",
+        "a basic introduction to caching",
+        "tokenizer=bpe",
+    ] {
+        let result = Redactor::default().redact_field(text).unwrap();
+        assert_eq!(result.as_str(), text);
+    }
+    // The payload scan treats a prefixed key's value as private too.
+    assert!(matches!(
+        Redactor::default().inspect_payload(br#"{"access_token":"ya29abc"}"#),
+        Err(RedactionError::SecretsDetected { .. })
+    ));
 }
 
 #[test]
@@ -117,7 +171,7 @@ fn complete_and_unterminated_private_blocks_are_removed() {
 fn overlapping_assignment_and_token_count_once() {
     let input = format!("api_key='ghp_{}'", "b".repeat(36));
     let result = Redactor::default().redact_field(&input).unwrap();
-    assert_eq!(result.as_str(), "api_key=[REDACTED]");
+    assert_eq!(result.as_str(), "api_key='[REDACTED]'");
     assert_eq!(result.redaction_count(), 1);
 }
 
@@ -143,8 +197,129 @@ fn redaction_before_truncation() {
         assert_eq!(result.redaction_count(), 1);
         assert!(result.as_str().chars().count() <= budget);
     }
+    // The visible join counts toward the limit: head `é`, join, tail `z`.
     let result = scanner.redact_field_excerpt("éabc界xyz", 5).unwrap();
-    assert_eq!(result.omitted_scalars(), 3);
+    assert_eq!(result.as_str(), format!("é{EXCERPT_JOIN}z"));
+    assert_eq!(result.omitted_scalars(), 6);
+}
+
+/// Whether `text` holds a piece of a redaction marker. The inputs below are
+/// lowercase apart from their markers, so any capital left after removing
+/// whole markers is a fragment.
+fn has_marker_fragment(text: &str) -> bool {
+    text.replace(REDACTION_MARKER, "")
+        .chars()
+        .any(|c| c.is_ascii_uppercase())
+}
+
+#[test]
+fn no_cut_leaves_a_fragment_of_a_redaction_marker() {
+    // A fragment such as `password=[RED` no longer reads as a redaction, and
+    // the final payload scan takes it for a secret: the whole request fails.
+    // Also: a cut must not strand `password=` before its marker, nor glue text
+    // onto one (`[REDACTED]…`); the scan reads either as a secret value.
+    let scanner = Redactor::default();
+    let clean = |text: &str| {
+        !has_marker_fragment(text)
+            && scanner
+                .inspect_payload(serde_json::json!({ "text": text }).to_string().as_bytes())
+                .is_ok()
+    };
+    for raw in [
+        "check password=supersecretvalue1234 then token=abcdefghij0123456789 end",
+        r#"args {"api_key": "abcdefghijklmnopqrstuvwxyz0123", "note": "ok"} done"#,
+    ] {
+        truncations_stay_clean(&scanner, raw, &clean);
+    }
+}
+
+fn truncations_stay_clean(scanner: &Redactor, raw: &str, clean: &dyn Fn(&str) -> bool) {
+    let redacted = scanner.redact_field(raw).unwrap();
+    assert!(redacted.redaction_count() > 0, "{}", redacted.as_str());
+    let length = redacted.as_str().chars().count();
+    for budget in 0..=length {
+        let excerpt = scanner.redact_field_excerpt(raw, budget).unwrap();
+        assert!(clean(excerpt.as_str()), "{budget}: {}", excerpt.as_str());
+        assert!(excerpt.as_str().chars().count() <= budget);
+        // The omission count is what was removed; the join is not source text.
+        let join = if excerpt.as_str().contains(EXCERPT_JOIN) {
+            EXCERPT_JOIN.chars().count()
+        } else {
+            0
+        };
+        assert_eq!(
+            excerpt.omitted_scalars(),
+            length - (excerpt.as_str().chars().count() - join),
+            "{budget}: {}",
+            excerpt.as_str()
+        );
+        let truncated = skillranker::context::head_tail_truncate(redacted.as_str(), budget);
+        assert!(clean(&truncated), "{budget}: {truncated}");
+        assert!(
+            truncated.chars().count() <= budget.max(1),
+            "{budget}: {truncated}"
+        );
+        if budget > 0 && budget < length {
+            assert!(
+                truncated.contains('…') || truncated.contains("chars omitted"),
+                "a cut must stay visible: {budget}: {truncated}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_quoted_secret_keeps_its_quotes_so_redacted_text_passes_the_payload_scan() {
+    // A live shadow refusal (sr-wx8t). Replacing a quoted value together with
+    // its quotes turned `f(password="x")` into `f(password=[REDACTED])`, and
+    // the scan read `[REDACTED])` as an unquoted secret. The whole request
+    // was refused as SecretsDetected.
+    let scanner = Redactor::default();
+    for (input, secret, expected) in [
+        (
+            r#"f(password="hunter2")"#,
+            "hunter2",
+            r#"f(password="[REDACTED]")"#,
+        ),
+        (
+            r#"`"api_key": "ok"`."#,
+            "\"ok\"",
+            r#"`"api_key": "[REDACTED]"`."#,
+        ),
+        (
+            "call(token='xyz789').then()",
+            "xyz789",
+            "call(token='[REDACTED]').then()",
+        ),
+        (
+            r#"{"secret": "abc"}, next"#,
+            "abc",
+            r#"{"secret": "[REDACTED]"}, next"#,
+        ),
+    ] {
+        let first = scanner.redact_field(input).unwrap();
+        assert_eq!(first.as_str(), expected, "{input}");
+        assert!(!first.as_str().contains(secret), "{input}");
+        let again = scanner.redact_field(first.as_str()).unwrap();
+        assert_eq!(
+            again.as_str(),
+            first.as_str(),
+            "redaction is idempotent: {input}"
+        );
+        assert_eq!(again.redaction_count(), 0, "{input}");
+        let payload = serde_json::json!({ "text": first.as_str() }).to_string();
+        assert!(
+            scanner.inspect_payload(payload.as_bytes()).is_ok(),
+            "redacted text must pass the scan: {}",
+            first.as_str()
+        );
+    }
+    // An unterminated quoted value runs to the end of the field and is still
+    // replaced whole.
+    assert_eq!(
+        scanner.redact_field("password='abc").unwrap().as_str(),
+        "password=[REDACTED]"
+    );
 }
 
 #[test]

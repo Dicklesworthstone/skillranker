@@ -6,6 +6,7 @@
 
 pub mod export;
 mod filesystem;
+pub mod hook_entries;
 // The permission diagnosis is deliberately public while the directory admission itself stays
 // private: the CLI needs to explain a refusal, not to make one (sr-488b).
 pub use filesystem::{PermissionRefusal, RequiredMode, diagnose_owner_only};

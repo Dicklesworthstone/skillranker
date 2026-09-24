@@ -154,6 +154,25 @@ fn ids(listing: &Value) -> BTreeSet<String> {
 }
 
 #[test]
+fn a_skill_reached_through_two_names_is_one_candidate() {
+    // One SKILL.md, a second skill directory whose SKILL.md links to it: one
+    // physical skill with two bindings. Offering both bindings to the wide
+    // request was a duplicate option, and the whole ranking failed.
+    let fixture = Fixture::new();
+    fixture.skill("home", "alpha", "");
+    fixture.skill("home", "beta", "");
+    let alias = fixture.root.join("home/.claude/skills/alpha-alias");
+    fs::create_dir_all(&alias).unwrap();
+    symlink(
+        fixture.root.join("home/.claude/skills/alpha/SKILL.md"),
+        alias.join("SKILL.md"),
+    )
+    .unwrap();
+    // Two physical skills: the alias is not a third candidate.
+    fixture.assert_cache_miss(2);
+}
+
+#[test]
 fn one_unrelated_directory_link_never_turns_three_skills_into_empty_roster() {
     let fixture = Fixture::new();
     for name in ["alpha", "beta", "gamma"] {

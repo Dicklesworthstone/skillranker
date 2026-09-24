@@ -18,6 +18,11 @@ fn request(records: &[serde_json::Value], prompt_id: &str) -> ClaudeOverlayReque
 
 /// Like [`request`], from raw JSONL lines, for records `json!` cannot build.
 fn request_lines(lines: &[String], prompt_id: &str) -> ClaudeOverlayRequest {
+    request_prompt(lines, prompt_id, "current request")
+}
+
+/// Like [`request_lines`], with the hook payload's prompt text chosen.
+fn request_prompt(lines: &[String], prompt_id: &str, prompt: &str) -> ClaudeOverlayRequest {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let root = std::env::temp_dir().join(format!(
         "sr-overlay-safety-{}-{}-{}",
@@ -32,7 +37,7 @@ fn request_lines(lines: &[String], prompt_id: &str) -> ClaudeOverlayRequest {
     let path = root.join("session.jsonl");
     let bytes = lines.iter().map(|l| format!("{l}\n")).collect::<String>();
     fs::write(&path, bytes).unwrap();
-    let hook = json!({"hook_event_name":"UserPromptSubmit","session_id":"expected-session","prompt_id":prompt_id,"prompt":"current request","transcript_path":path});
+    let hook = json!({"hook_event_name":"UserPromptSubmit","session_id":"expected-session","prompt_id":prompt_id,"prompt":prompt,"transcript_path":path});
     ClaudeOverlayRequest {
         hook_input: ClaudeUserPromptSubmit::from_json(
             &serde_json::to_vec(&hook).unwrap(),
@@ -553,6 +558,137 @@ fn an_injected_document_record_is_context_but_a_submitted_one_is_not_dropped() {
                                "message":{"role":"user","content":content}});
         assert!(apply_claude_prompt_overlay(&request(&with_middle(submitted), "new")).is_err());
     }
+}
+
+/// A turn under prompt id `turn-prompt`, as Claude records it: the user's
+/// prompt, a tool call, and the call's result, each carrying `promptId`.
+fn running_turn(first: serde_json::Value) -> Vec<String> {
+    let mut prompt = first;
+    prompt["promptId"] = json!("turn-prompt");
+    let mut result = tool_result("result", "call");
+    result["promptId"] = json!("turn-prompt");
+    [
+        event("root", None),
+        prompt,
+        tool_call("call", "prompt"),
+        result,
+    ]
+    .iter()
+    .map(ToString::to_string)
+    .collect()
+}
+
+const NOTIFICATION: &str =
+    "<task-notification>\n<task-id>b1</task-id>\n<status>completed</status>\n</task-notification>";
+
+#[test]
+fn a_task_notification_inside_a_running_turn_is_not_a_user_turn() {
+    let user_prompt = json!({"type":"user","uuid":"prompt","parentUuid":"root","sessionId":"expected-session",
+                             "message":{"role":"user","content":"fix the failing test"}});
+    // Claude re-runs the hook for a background task that finished mid-turn,
+    // repeating the turn's prompt id with the notification as the prompt.
+    let lines = running_turn(user_prompt.clone());
+    assert!(matches!(
+        apply_claude_prompt_overlay(&request_prompt(&lines, "turn-prompt", NOTIFICATION)),
+        Err(OverlayError::NotificationInTurn)
+    ));
+    // The same text under a new prompt id is whatever the user submitted.
+    assert!(
+        apply_claude_prompt_overlay(&request_prompt(&lines, "new-prompt", NOTIFICATION)).is_ok()
+    );
+    // A redelivery of the turn's own prompt is still that turn.
+    assert!(
+        apply_claude_prompt_overlay(&request_prompt(
+            &lines,
+            "turn-prompt",
+            "fix the failing test"
+        ))
+        .is_ok()
+    );
+    // A notification that started a turn of its own, while the agent was
+    // idle, is that turn's request: no other record proves an earlier turn.
+    let mut notification_turn = user_prompt;
+    notification_turn["message"]["content"] = json!(NOTIFICATION);
+    let mut lines = running_turn(notification_turn);
+    lines.pop();
+    assert!(
+        apply_claude_prompt_overlay(&request_prompt(&lines, "turn-prompt", NOTIFICATION)).is_ok()
+    );
+}
+
+#[test]
+fn a_notification_turn_already_in_the_transcript_is_that_turn() {
+    // Measured live (2026-09-24 02:16Z): a background task that finishes while
+    // the agent is idle starts a turn of its own. Claude writes that record
+    // BEFORE running the hook, so the prompt is already the transcript's
+    // newest leaf. It carries the hook's prompt id as `promptId`, under its
+    // own `uuid`, and it is marked as a system-originated notification.
+    let records = [
+        json!({"type":"user","uuid":"root","parentUuid":null,"sessionId":"expected-session",
+               "promptId":"earlier","message":{"role":"user","content":"do it"}}),
+        json!({"type":"assistant","uuid":"answer","parentUuid":"root","sessionId":"expected-session",
+               "message":{"role":"assistant","id":"m1","content":[{"type":"text","text":"done"}]}}),
+        json!({"type":"system","subtype":"turn_duration","uuid":"duration","parentUuid":"answer",
+               "sessionId":"expected-session"}),
+        json!({"type":"user","uuid":"note","parentUuid":"duration","sessionId":"expected-session",
+               "promptId":"notification-turn","origin":{"kind":"task-notification"},
+               "promptSource":"system","message":{"role":"user","content":NOTIFICATION}}),
+    ];
+    let lines: Vec<String> = records.iter().map(ToString::to_string).collect();
+    let overlay =
+        apply_claude_prompt_overlay(&request_prompt(&lines, "notification-turn", NOTIFICATION))
+            .expect("a notification that starts its own turn is that turn's request");
+    assert_eq!(overlay.current_request.text.as_str(), NOTIFICATION);
+    // The prompt is one event on the one chain, not a second leaf beside the
+    // record that already holds it.
+    let ids: Vec<_> = overlay
+        .events
+        .iter()
+        .filter_map(|e| e.event_id.as_ref().map(|id| id.as_str().to_owned()))
+        .collect();
+    assert_eq!(
+        ids.iter().filter(|id| id.as_str() == "note").count(),
+        1,
+        "{ids:?}"
+    );
+    assert!(ids.contains(&"root".to_owned()), "{ids:?}");
+}
+
+#[test]
+fn a_parallel_call_cut_by_the_window_does_not_make_the_prompt_ambiguous() {
+    // Measured live (sr-l1nr): the bounded tail began between one response's
+    // two parallel calls and their results. Both call records were outside
+    // the window. One result is the dead-end side record Claude files beside
+    // its own call; the conversation continues from the other.
+    let result = |id: &str, call: &str| {
+        json!({"type":"user","uuid":id,"parentUuid":call,"sessionId":"expected-session",
+               "message":{"role":"user","content":[{"type":"tool_result","tool_use_id":format!("toolu-{call}"),"is_error":false,"content":"ok"}]}})
+    };
+    let records = [
+        result("side-result", "call-before-window-1"),
+        result("main-result", "call-before-window-2"),
+        json!({"type":"assistant","uuid":"answer","parentUuid":"main-result","sessionId":"expected-session",
+               "message":{"role":"assistant","id":"m2","content":[{"type":"text","text":"both passed"}]}}),
+    ];
+    let overlay = apply_claude_prompt_overlay(&request(&records, "new"))
+        .expect("a stranded side result is not a conversation leaf");
+    let ids: Vec<_> = overlay
+        .events
+        .iter()
+        .filter_map(|e| e.event_id.as_ref().map(|id| id.as_str().to_owned()))
+        .collect();
+    assert!(ids.contains(&"answer".to_owned()), "{ids:?}");
+    assert!(!ids.contains(&"side-result".to_owned()), "{ids:?}");
+
+    // Honest counterpart: an orphaned MESSAGE is not a side record. Two
+    // conversation leaves with unseen parents remain a fork the prompt must
+    // not choose between by file order.
+    let orphan = |id: &str, parent: &str| {
+        json!({"type":"user","uuid":id,"parentUuid":parent,"sessionId":"expected-session",
+               "message":{"role":"user","content":"history"}})
+    };
+    let fork = [orphan("left", "before-1"), orphan("right", "before-2")];
+    assert!(apply_claude_prompt_overlay(&request(&fork, "new")).is_err());
 }
 
 #[test]

@@ -21,11 +21,14 @@ changes no configuration. Invalid configuration fails first, with
 Notes:
 - A present key is presence, never authentication. Only a separately
   authorized, budgeted live check could verify transport.
-- Roster readiness uses the documented Claude roots through the same
-  resolution as `sr roster`. It reports counts, `partial`, discovery
-  `source_causes` and excluded-record `record_causes`. Claude visibility is
-  unverified in this build, so skills appear but none is offered as automatic
-  advice. Doctor reports `no-advisory-candidates` rather than `ready`.
+- Roster readiness resolves the documented Claude roots under the same
+  provisional precedence contract `sr rank` uses, so `advisory` counts the
+  skills rank can suggest (shadowed, ambiguous, withheld and manual-only
+  entries excluded). Claude visibility is unverified in this build: the report
+  carries `visibility: "unverified"`, as every rank result does. `sr roster`
+  itself claims no precedence. Doctor reports `no-advisory-candidates` only
+  when rank would have nothing to suggest. It also reports counts, `partial`,
+  discovery `source_causes` and excluded-record `record_causes`.
 - Network consent comes from `effects::EffectGate` for the given flags and
   trusted configuration.
 

@@ -287,6 +287,22 @@ impl<'a> Index<'a> {
                 prune(result, &mut children, &mut pruned);
             }
         }
+        // A tool result whose call precedes a truncated window (sr-l1nr). A
+        // bounded tail read can begin between a response's parallel calls and
+        // their results, stranding the side result filed beside its own call
+        // without that call to prove it. The conversation never continues from
+        // such a fragment, since its newest records are all in the window. An
+        // orphan of any other kind is left alone and still counts as a fork.
+        for (&key, event) in &self.events {
+            if !pruned.contains(&key)
+                && is_leaf(&children, &key)
+                && event.kind == EventKind::ToolResult
+                && event.parent_id.is_some()
+                && matches!(self.parent(event), Ok(None))
+            {
+                pruned.insert(key);
+            }
+        }
 
         if !self.responses.is_empty() {
             let mut kids: BTreeMap<EventKey<'a>, Vec<EventKey<'a>>> = BTreeMap::new();
