@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "decision": "unavailable",
+  "error": {
+    "code": 4,
+    "kind": "authentication",
+    "message": "Provider credentials are unavailable.",
+    "hint": "Configure your own TypeSafe API key.",
+    "retryable": false
+  }
+}

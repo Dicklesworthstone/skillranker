@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "kind": "replay",
+  "actionable": false,
+  "run_status": "complete",
+  "gate_status": "not-established",
+  "evidence_origin": "recorded",
+  "completeness": {
+    "cases_requested": 1,
+    "cases_completed": 1,
+    "stages_required": 1,
+    "stages_completed": 1,
+    "evidence_compatible": true
+  },
+  "historical": {
+    "schema_version": 1,
+    "decision": "unavailable",
+    "error": {
+      "code": 4,
+      "kind": "authentication",
+      "message": "Provider credentials are unavailable.",
+      "hint": "Configure your own TypeSafe API key.",
+      "retryable": false
+    }
+  }
+}

@@ -432,6 +432,9 @@ the normal overflow policy uses local prefiltering.
 
 ### JSON output
 
+The [versioned output contract](docs/output-contract.md) specifies decision,
+error, quality, trace, and non-actionable report schemas.
+
 This illustrative result has two eligible candidates. The score arithmetic uses
 `w_fit = 1`, with priors and phase weighting disabled; timing and usage are examples.
 
@@ -443,13 +446,26 @@ This illustrative result has two eligible candidates. The score arithmetic uses
   "reason": "eligible-candidates",
   "harness": "claude_code",
   "context_quality": "complete",
+  "quality": {
+    "prompt_complete": true,
+    "task_anchor_known": true,
+    "history_windowed": true,
+    "attachments_omitted": false,
+    "source_gaps": false
+  },
   "roster": {
     "total": 2,
     "eligible": 2,
     "wide_candidates": 2,
     "shortlist": 2,
     "partial": false,
-    "retrieval": "full"
+    "retrieval": "full",
+    "provenance": {
+      "snapshot_id": "000000000000000000000000000000000000000000000000000000000000000a",
+      "policy_version": "ranking-v1",
+      "wide_set_id": "000000000000000000000000000000000000000000000000000000000000000b",
+      "rerank_set_id": "000000000000000000000000000000000000000000000000000000000000000c"
+    }
   },
   "needs_skill": 0.74,
   "choice_confidence": 0.81,
@@ -466,7 +482,7 @@ This illustrative result has two eligible candidates. The score arithmetic uses
       "wide_probability": 0.55,
       "fits": 0.80,
       "path": ".claude/skills/rust-test-triage/SKILL.md",
-      "content_hash": "example-content-digest-01"
+      "content_hash": "0000000000000000000000000000000000000000000000000000000000000001"
     },
     {
       "rank": 2,
@@ -478,7 +494,7 @@ This illustrative result has two eligible candidates. The score arithmetic uses
       "wide_probability": 0.35,
       "fits": 0.50,
       "path": ".claude/skills/rust-code-review/SKILL.md",
-      "content_hash": "example-content-digest-02"
+      "content_hash": "0000000000000000000000000000000000000000000000000000000000000002"
     }
   ],
   "omitted_rank_mass": 0.0,
@@ -504,6 +520,7 @@ This illustrative result has two eligible candidates. The score arithmetic uses
   },
   "persistence": "recorded",
   "warnings": [],
+  "warnings_omitted": 0,
   "elapsed_ms": 720
 }
 ```

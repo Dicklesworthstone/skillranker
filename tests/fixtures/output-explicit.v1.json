@@ -1,0 +1,84 @@
+{
+  "schema_version": 1,
+  "event_id": "example-event-001",
+  "decision": "explicit",
+  "reason": "user-required",
+  "harness": "claude_code",
+  "context_quality": "complete",
+  "quality": {
+    "prompt_complete": true,
+    "task_anchor_known": true,
+    "history_windowed": true,
+    "attachments_omitted": false,
+    "source_gaps": false
+  },
+  "roster": {
+    "total": 2,
+    "eligible": 2,
+    "wide_candidates": 0,
+    "shortlist": 0,
+    "partial": false,
+    "retrieval": "not-evaluated",
+    "provenance": {
+      "snapshot_id": "000000000000000000000000000000000000000000000000000000000000000a",
+      "policy_version": "ranking-v1",
+      "wide_set_id": null,
+      "rerank_set_id": null
+    }
+  },
+  "needs_skill": null,
+  "choice_confidence": null,
+  "none_probability": null,
+  "phase": null,
+  "skills": [
+    {
+      "rank": 1,
+      "skill_id": "s_01",
+      "name": "rust-test-triage",
+      "invocation_name": "rust-test-triage",
+      "rank_score": null,
+      "rerank_probability": null,
+      "wide_probability": null,
+      "fits": null,
+      "path": ".claude/skills/rust-test-triage/SKILL.md",
+      "content_hash": "0000000000000000000000000000000000000000000000000000000000000001"
+    },
+    {
+      "rank": 2,
+      "skill_id": "s_02",
+      "name": "rust-code-review",
+      "invocation_name": "rust-code-review",
+      "rank_score": null,
+      "rerank_probability": null,
+      "wide_probability": null,
+      "fits": null,
+      "path": ".claude/skills/rust-code-review/SKILL.md",
+      "content_hash": "0000000000000000000000000000000000000000000000000000000000000002"
+    }
+  ],
+  "omitted_rank_mass": null,
+  "cache": {
+    "hit": false,
+    "wide_hit": false,
+    "rerank_hit": false,
+    "age_ms": null,
+    "stale": false
+  },
+  "model": {
+    "requested": null,
+    "wide_returned": null,
+    "rerank_returned": null,
+    "immutable_revision": null
+  },
+  "usage": {
+    "requests": 0,
+    "http_attempts": 0,
+    "input_tokens": 0,
+    "output_tokens": 0,
+    "unknown_usage_attempts": 0
+  },
+  "persistence": "recorded",
+  "warnings": [],
+  "warnings_omitted": 0,
+  "elapsed_ms": 720
+}
