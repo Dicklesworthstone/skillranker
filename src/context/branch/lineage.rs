@@ -21,6 +21,12 @@ struct Index<'a> {
     conflicts: BTreeSet<EventKey<'a>>,
     /// Provider response each event is a fragment of, when the source says.
     responses: &'a BTreeMap<EventId, String>,
+    /// Compaction boundaries whose logical parent is one of their own
+    /// descendants. Claude's partial compaction names the tail of a preserved
+    /// segment it rewrites after the boundary, so following that link would
+    /// close a cycle (sr-8tlh). The link is severed and the boundary is a root
+    /// that claims a parent it does not have.
+    severed: BTreeSet<EventKey<'a>>,
 }
 
 fn key(event: &NormalizedEvent) -> Option<EventKey<'_>> {
@@ -80,6 +86,7 @@ impl<'a> Index<'a> {
             by_agent: BTreeMap::new(),
             conflicts: BTreeSet::new(),
             responses,
+            severed: BTreeSet::new(),
         };
         for event in events {
             let Some(key) = key(event) else {
@@ -96,6 +103,25 @@ impl<'a> Index<'a> {
                 Entry::Occupied(_) => {} // Identical redelivery, not another definition.
             }
         }
+        let severed: BTreeSet<EventKey<'a>> = index
+            .events
+            .iter()
+            .filter(|(_, event)| event.kind == EventKind::Compaction)
+            .filter(|&(&boundary, &event)| {
+                // Bounded by the event count, so any other cycle cannot spin.
+                let mut current = event;
+                for _ in 0..index.events.len() {
+                    match index.parent(current) {
+                        Ok(Some(parent)) if key(parent) == Some(boundary) => return true,
+                        Ok(Some(parent)) => current = parent,
+                        _ => return false,
+                    }
+                }
+                false
+            })
+            .map(|(&boundary, _)| boundary)
+            .collect();
+        index.severed = severed;
         index
     }
 
@@ -106,6 +132,9 @@ impl<'a> Index<'a> {
         let Some(parent) = event.parent_id.as_ref() else {
             return Ok(None);
         };
+        if key(event).is_some_and(|event| self.severed.contains(&event)) {
+            return Ok(None);
+        }
         if let Some(event) =
             self.events
                 .get(&(event.agent_id.as_ref(), event.branch_id.as_ref(), parent))
@@ -197,10 +226,64 @@ impl<'a> Index<'a> {
                 match substantive.as_slice() {
                     [leaf] => Ok(*leaf),
                     [] => Err(Self::forks(&leaves)),
-                    _ => Err(Self::forks(&substantive)),
+                    _ => self
+                        .after_unlinked_compaction(events, &substantive)
+                        .ok_or_else(|| Self::forks(&substantive)),
                 }
             }
         }
+    }
+
+    /// The one leaf continuing the latest unlinked compaction (sr-8tlh).
+    /// Claude's partial compaction can name a logical parent it never writes,
+    /// so the boundary starts a chain that nothing links to the conversation
+    /// it summarized. That conversation's tip is superseded: it precedes the
+    /// boundary in the transcript, and the compacted chain is where the
+    /// conversation goes on. The harness marks the break explicitly, so this
+    /// is not a file-order guess between siblings. The rule applies only to a
+    /// boundary that claims a parent which cannot be found. A boundary claiming
+    /// no parent at all proves nothing about which conversation it
+    /// summarized, and stays a second root. Two leaves descending from the
+    /// boundary, or an older leaf written after it, remain a fork.
+    fn after_unlinked_compaction(
+        &self,
+        events: &'a [NormalizedEvent],
+        leaves: &[&'a NormalizedEvent],
+    ) -> Option<&'a NormalizedEvent> {
+        let (position, boundary) = events.iter().enumerate().rev().find(|(_, event)| {
+            event.kind == EventKind::Compaction
+                && event.parent_id.is_some()
+                && matches!(self.parent(event), Ok(None))
+        })?;
+        let boundary = key(boundary)?;
+        let descends = |leaf: &'a NormalizedEvent| {
+            let mut current = leaf;
+            // Bounded by the event count, so a malformed cycle cannot spin.
+            for _ in 0..=events.len() {
+                if key(current) == Some(boundary) {
+                    return true;
+                }
+                match self.parent(current) {
+                    Ok(Some(parent)) => current = parent,
+                    _ => return false,
+                }
+            }
+            false
+        };
+        let written_before = |leaf: &NormalizedEvent| {
+            events[..position]
+                .iter()
+                .any(|event| std::ptr::eq(event, leaf))
+        };
+        let mut continuing = leaves.iter().copied().filter(|leaf| descends(leaf));
+        let leaf = continuing.next()?;
+        if continuing.next().is_some() {
+            return None;
+        }
+        leaves
+            .iter()
+            .all(|other| std::ptr::eq(*other, leaf) || written_before(other))
+            .then_some(leaf)
     }
 
     fn forks(leaves: &[&NormalizedEvent]) -> UnresolvedBranchReason {
