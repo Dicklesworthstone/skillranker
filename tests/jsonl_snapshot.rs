@@ -203,7 +203,18 @@ fn tail_window_does_not_fabricate_a_cut_prefix() {
 
 #[test]
 fn symlink_and_directory_are_rejected_before_open() {
-    let invocation = ProcessInvocation::enter().unwrap();
+    // The property is the rejection reason, not the deadline. Under the default 3 s a
+    // starved worker reported Deadline before the path check ran (sr-87gj class).
+    let generous = || {
+        skillranker::runtime::EntryClock::capture()
+            .unwrap()
+            .with_total(
+                skillranker::limits::DurationMillis::new("test_deadline_ms", 60_000, 600_000)
+                    .unwrap(),
+            )
+            .unwrap()
+    };
+    let invocation = ProcessInvocation::from_clock(generous()).unwrap();
     let cx = invocation.request_cx().unwrap();
     let dir = temp_path("dir");
     fs::create_dir(&dir).unwrap();
@@ -215,7 +226,7 @@ fn symlink_and_directory_are_rejected_before_open() {
     write_file(&target, &line("e1", "user", "message", "x"));
     let link = temp_path("link");
     symlink(&target, &link).unwrap();
-    let invocation = ProcessInvocation::enter().unwrap();
+    let invocation = ProcessInvocation::from_clock(generous()).unwrap();
     let cx = invocation.request_cx().unwrap();
     let err = snapshot_jsonl(&invocation, &cx, &link, None, CursorKind::Ranking).unwrap_err();
     assert_eq!(err, JsonlError::UnsafePath);
