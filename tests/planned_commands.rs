@@ -85,28 +85,15 @@ fn an_implemented_command_is_never_reported_as_planned() {
 
 #[test]
 fn planned_flags_name_their_phase_before_reading_inputs() {
-    for (args, phase, flag) in [
-        (
-            vec!["doctor", "--descriptions", "--json"],
-            "P9",
-            "--descriptions",
-        ),
-        (
-            vec!["eval", "--dataset", "/missing", "--online", "--json"],
-            "P5",
-            "--online",
-        ),
-    ] {
-        let (code, value) = run(&args);
-        assert_eq!(code, Some(2), "{value}");
-        let message = value["error"]["message"].as_str().unwrap();
-        assert!(
-            message.contains(phase)
-                && message.contains(flag)
-                && message.contains("sr capabilities"),
-            "{message}"
-        );
-    }
+    let (code, value) = run(&["doctor", "--descriptions", "--json"]);
+    assert_eq!(code, Some(2), "{value}");
+    let message = value["error"]["message"].as_str().unwrap();
+    assert!(
+        message.contains("P9")
+            && message.contains("--descriptions")
+            && message.contains("sr capabilities"),
+        "{message}"
+    );
 }
 
 #[test]

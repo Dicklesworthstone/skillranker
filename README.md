@@ -399,7 +399,7 @@ request or runtime limit is reached and reports unfinished cases.
 |---|---|---|
 | `--dataset FILE` | Required | Versioned, consented evaluation data and compatible recorded responses for replay |
 | `--labels FILE` | Off | Independent judged labels; `--dataset` is then a labeled case frame scored with the frozen 0/1/2 loss |
-| `--online` | Off | Permit fresh Jev evaluations when network access is separately authorized |
+| `--online` | Off | With `--labels`, rank each case's request context fresh against the current roster when network access is separately authorized |
 | `--max-requests N` | Required for live runs | Maximum HTTP attempts across the batch, including retries |
 | `--max-runtime-ms N` | `600000` | Overall batch deadline, in addition to per-case deadlines |
 | `--sample-size N` | Full supplied frame | Select a bounded sample of task-family representatives |
@@ -411,9 +411,18 @@ request or runtime limit is reached and reports unfinished cases.
 sr eval --dataset scratch/frame.jsonl --labels scratch/labels.jsonl --sample-size 100 --seed 42
 
 # Draw and record a random sample, then authorize a bounded live evaluation.
-sr eval --dataset scratch/evaluation.json --sample-size 100 \
+sr eval --dataset scratch/live-cases.jsonl --labels scratch/labels.jsonl --sample-size 100 \
   --online --allow-network --max-requests 400 --max-runtime-ms 600000
 ```
+
+A live case carries its frame key, split and a normalized request `context`; it is
+a fresh evaluation of today's selector and roster, not a replay. A case is sent only
+while its worst-case attempts still fit the cap. Cases without a judgment, or whose
+judgment names a skill missing from the current roster, are reported not estimable
+and are never sent. Before the first request, every remaining case is previewed
+with no network; a refused preview is never sent, and the report freezes the
+batch's disclosure totals and receipt digest. An authentication or consent failure
+stops scheduling. Live runs write nothing to the ledger or response cache.
 
 Sampling does not grant network access or enlarge the request budget. Missing
 stage responses remain unevaluated in replay; they are never replaced with

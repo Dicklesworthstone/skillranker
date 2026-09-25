@@ -223,12 +223,14 @@ fn real_walk_ceiling_retains_clean_names_and_the_actual_personal_winner() {
     for name in ["alpha", "beta", "gamma"] {
         fixture.skill("workspace", name, "");
     }
+    // A skill's own directories are never walked, so the flood sits in a
+    // container without a skill file, at the same depth as a skill's files.
     let references = fixture
         .root
-        .join("workspace/.claude/skills/alpha/references");
+        .join("workspace/.claude/skills/archive/references");
     fs::create_dir_all(&references).unwrap();
     // The breadth-first walk must visit all three direct SKILL.md files before
-    // reaching these support files, independent of filesystem entry order.
+    // reaching these nested files, independent of filesystem entry order.
     for index in 0..=DISCOVERY_FILES.max() {
         fs::write(references.join(format!("note-{index:05}.txt")), "note").unwrap();
     }

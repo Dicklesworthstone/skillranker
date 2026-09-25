@@ -193,7 +193,9 @@ fn real_entry_ceiling_preserves_names_and_resolves_shallow_personal_overrides() 
     }
     // Breadth-first traversal necessarily observes all direct SKILL.md files
     // before entering this depth-two directory, regardless of readdir order.
-    let references = workspace.join(".claude/skills/alpha/references");
+    // It sits in a container without a skill file: a skill's own directories
+    // are never walked.
+    let references = workspace.join(".claude/skills/archive/references");
     fs::create_dir_all(&references).unwrap();
     for index in 0..=DISCOVERY_FILES.max() {
         fs::write(references.join(format!("note-{index:05}.txt")), "note").unwrap();

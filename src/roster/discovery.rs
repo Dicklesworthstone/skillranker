@@ -570,6 +570,14 @@ impl Discovery {
                 continue;
             };
             let mut iterator = listing.iter();
+            // A directory holding the skill file is one skill: its other
+            // subdirectories are that skill's references, scripts and assets,
+            // never further skills. Descending them was most of every walk
+            // (1,281 directories for 206 skills measured) and could exhaust
+            // the entry budget. Roots and plain container directories are
+            // still descended, so nested files stay visible as candidates.
+            let mut holds_skill_file = false;
+            let mut subdirectories = Vec::new();
             loop {
                 checkpoint()?;
                 let entry = self.next_entry(iterator.next(), &planned.spec.source);
@@ -615,6 +623,7 @@ impl Discovery {
                         && !(relative.as_os_str().is_empty()
                             && matches!(kind, Type::Directory)) =>
                     {
+                        holds_skill_file = true;
                         self.push_candidate(
                             planned,
                             directory.as_fd(),
@@ -624,13 +633,7 @@ impl Discovery {
                             limits,
                         );
                     }
-                    Type::Directory => {
-                        if depth + 1 > limits.depth {
-                            self.note(Diagnostic::DepthLimitReached(planned.spec.source.clone()));
-                            continue;
-                        }
-                        queue.push_back((planned, root, relative.join(name), depth + 1));
-                    }
+                    Type::Directory => subdirectories.push(name.to_owned()),
                     Type::Symlink => {
                         self.note(Diagnostic::SymlinkedDirectorySkipped(
                             planned.spec.source.clone(),
@@ -642,6 +645,16 @@ impl Discovery {
                 if self.stopped {
                     return Ok(());
                 }
+            }
+            if holds_skill_file && !relative.as_os_str().is_empty() {
+                continue;
+            }
+            for name in subdirectories {
+                if depth + 1 > limits.depth {
+                    self.note(Diagnostic::DepthLimitReached(planned.spec.source.clone()));
+                    continue;
+                }
+                queue.push_back((planned, root, relative.join(name), depth + 1));
             }
         }
         checkpoint()?;

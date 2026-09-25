@@ -134,16 +134,14 @@ fn help_names_implemented_commands_and_no_planned_ones() {
 fn planned_flags_contract() {
     let root = home();
     let planned_flags = registry()["planned_flags"].as_array().unwrap().clone();
-    assert_eq!(planned_flags.len(), 3);
-    for (command, flag, phase) in [
-        ("doctor", "--descriptions", "p9"),
-        ("eval", "--online", "p5"),
-        ("eval", "--max-requests", "p5"),
-    ] {
-        assert!(planned_flags.iter().any(|entry| entry["command"] == command
-            && entry["flag"] == flag
-            && entry["earliest_phase"] == phase));
-    }
+    assert_eq!(planned_flags.len(), 1);
+    assert!(
+        planned_flags
+            .iter()
+            .any(|entry| entry["command"] == "doctor"
+                && entry["flag"] == "--descriptions"
+                && entry["earliest_phase"] == "p9")
+    );
     // Conflicts are still reported as conflicts.
     let conflict = run(
         &root,

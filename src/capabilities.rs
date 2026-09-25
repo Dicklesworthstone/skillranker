@@ -42,27 +42,12 @@ pub struct PlannedFlag {
     pub takes_value: bool,
 }
 
-pub const PLANNED_FLAGS: &[PlannedFlag] = &[
-    PlannedFlag {
-        command: "doctor",
-        flag: "descriptions",
-        phase: PhaseGate::P9,
-        takes_value: false,
-    },
-    // Live batches: remove both entries when eval executes fresh Jev requests.
-    PlannedFlag {
-        command: "eval",
-        flag: "online",
-        phase: PhaseGate::P5,
-        takes_value: false,
-    },
-    PlannedFlag {
-        command: "eval",
-        flag: "max-requests",
-        phase: PhaseGate::P5,
-        takes_value: true,
-    },
-];
+pub const PLANNED_FLAGS: &[PlannedFlag] = &[PlannedFlag {
+    command: "doctor",
+    flag: "descriptions",
+    phase: PhaseGate::P9,
+    takes_value: false,
+}];
 
 /// The phase a named command is planned for, when this build does not implement
 /// it yet. `None` for an implemented command or an unknown name.

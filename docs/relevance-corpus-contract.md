@@ -346,3 +346,12 @@ Non-claims: constructed requests, AI adjudicators and 18 cases support no promot
 calibration or population claim. The intervals show the uncertainty is wide. The gate
 stays `not-established`. This measures the deployed selector on single-turn requests
 only; history, tools and overflow retrieval were not exercised.
+
+Repeated through the product path on 2026-09-25: `sr eval --dataset CASES --labels
+LABELS --online --allow-network --max-requests 80 --explain` ran the same 18 cases.
+It completed with 33 HTTP attempts (286k input / 44k output tokens) and no
+operational failures. It matched the scripted run on 17 of 18 cases. One no-match
+case (`pilot-08`) abstained the first time and received a suggestion the second
+time, so needless suggestions rose to 2/5 and mean loss to 0.44. A single run of a
+borderline no-match case is therefore noisy; replicate cases before comparing
+policies on this scale.

@@ -285,6 +285,42 @@ fn enumeration_stops_at_declared_ceilings() {
 }
 
 #[test]
+fn a_skill_directory_is_not_descended_but_container_directories_are() {
+    let tree = temp_tree("skill-internals");
+    write(&tree.join("alpha/SKILL.md"), "alpha");
+    // A skill's own files: never further skills, never walked.
+    write(&tree.join("alpha/references/guide.md"), "guide");
+    write(&tree.join("alpha/assets/template/SKILL.md"), "template");
+    // A container without a skill file is still walked to its nested skill.
+    write(&tree.join("group/inner/SKILL.md"), "inner");
+    write(&tree.join("group/inner/scripts/tool/SKILL.md"), "tool");
+    // A skill file at the root itself does not stop the walk.
+    write(&tree.join("SKILL.md"), "root");
+    let plan = plan_with(vec![(
+        spec("configured.internals", SourceKind::Generic, 10),
+        tree.clone(),
+    )]);
+    let discovery = plan.discover();
+    let mut found = relatives(&discovery);
+    found.sort();
+    assert_eq!(
+        found,
+        vec![
+            "SKILL.md".to_owned(),
+            "alpha/SKILL.md".to_owned(),
+            "group/inner/SKILL.md".to_owned()
+        ]
+    );
+    assert!(
+        !discovery
+            .diagnostics()
+            .contains(&Diagnostic::DepthLimitReached(source(
+                "configured.internals"
+            )))
+    );
+}
+
+#[test]
 fn deep_trees_stop_at_the_depth_bound() {
     let tree = temp_tree("depth");
     let mut deep = tree.clone();

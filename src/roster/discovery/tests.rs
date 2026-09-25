@@ -246,8 +246,9 @@ fn shallower_skills_in_every_root_precede_another_roots_nested_support_files() {
     for index in 0..100 {
         fs::write(references.join(format!("note-{index}")), "note").unwrap();
     }
-    // 3 root entries + 3 SKILL.md entries + 1 references directory.
-    // The next entry is the sole overflow sentinel, not another skill.
+    // 3 root entries + 3 SKILL.md entries + 1 references directory. The
+    // references directory belongs to the skill `alpha` and is never walked,
+    // so its 100 notes cost nothing and cannot exhaust a budget of exactly 7.
     for order in [[0, 1, 2], [2, 1, 0]] {
         let roots = [&project, &personal, &configured];
         let mut plan = DiscoveryPlan::new(HarnessId::new("claude_code").unwrap());
@@ -260,8 +261,8 @@ fn shallower_skills_in_every_root_precede_another_roots_nested_support_files() {
         }
         let discovery = plan.discover_with(limits(7, 100));
         assert_eq!(discovery.candidates().len(), 3);
-        assert_eq!(discovery.entries_examined(), 8);
-        assert_eq!(discovery.diagnostics(), &[Diagnostic::EntryLimitReached]);
+        assert_eq!(discovery.entries_examined(), 7);
+        assert!(discovery.diagnostics().is_empty(), "complete, not partial");
         let sources: Vec<_> = discovery
             .candidates()
             .iter()
