@@ -1,8 +1,8 @@
 //! Bounded offline replay batches. Recorded decisions are observations, not
 //! independent usefulness labels: replay success cannot pass a quality gate.
-//! Live execution remains unsupported until provider admission and accounting
-//! are connected to the batch runner. A labeled case frame is scored against
-//! independent judgments by `execute_labeled_frame_evaluation`.
+//! A labeled case frame is scored against independent judgments by
+//! `execute_labeled_frame_evaluation`; `execute_live_frame_evaluation` ranks
+//! labeled requests fresh under batch-wide request and runtime caps.
 
 use crate::evaluation::design_weighted::{
     DesignWeightedLossReport, SampledCaseLoss, compute_design_weighted_loss_from_manifest,
@@ -13,12 +13,14 @@ use crate::evaluation::stratified::{
     verify_manifest_against_frame,
 };
 use crate::evaluation::{
-    CaseKey, EvaluationError, EvaluationMetrics, LabelStatus, ReconciliationManifest,
-    RelevanceClass, compute_metrics, join_evaluation_frame, parse_case_records_streaming,
-    parse_labels_streaming, read_bounded_line, verify_split_isolation,
+    CaseKey, EvaluationCaseRecord, EvaluationError, EvaluationMetrics, EvaluationSplit,
+    LabelStatus, ReconciliationManifest, RelevanceClass, compute_metrics, join_evaluation_frame,
+    parse_bounded_json, parse_case_records_streaming, parse_labels_streaming, read_bounded_line,
+    resolve_label_revisions, verify_split_isolation,
 };
 use crate::limits::{
     DEFAULT_EVAL_BATCH_RUNTIME_MS, EVALUATION_CASE_RECORDS, EVALUATION_DATASET_BYTES,
+    EVALUATION_DATASET_DEPTH,
 };
 use crate::output::{GateStatus, OutputDocument, RunStatus, SCHEMA_VERSION};
 use crate::replay::{ReplayCase, ReplayPolicy, execute_replay_comparison};
@@ -288,10 +290,6 @@ pub(crate) fn validate_batch_config(config: &BatchConfig) -> Result<(), Evaluati
                 "online live evaluation requires an explicit --max-requests cap".into(),
             ));
         }
-        return Err(EvaluationError::InvalidField(
-            "live batch execution is not implemented; supply recorded replay cases in offline mode"
-                .into(),
-        ));
     }
     if config.evidence_origin == EvidenceOrigin::Live {
         return Err(EvaluationError::InvalidField(
@@ -319,6 +317,11 @@ pub fn execute_evaluation_batch<R: BufRead>(
     clock: &EntryClock,
 ) -> Result<EvaluationBatchReport, EvaluationError> {
     validate_batch_config(config)?;
+    if config.online {
+        return Err(EvaluationError::InvalidField(
+            "a live batch ranks labeled cases fresh; replay datasets run offline".into(),
+        ));
+    }
     let expires = clock
         .now()
         .as_millis()
@@ -484,29 +487,75 @@ pub fn execute_labeled_frame_evaluation<C: BufRead, L: BufRead>(
     let records = parse_case_records_streaming(cases)?;
     let labels = parse_labels_streaming(labels)?;
     verify_split_isolation(&records)?;
-    let (evaluated, manifest) = match sampling {
-        None => (records, None),
-        Some(request) => {
-            let (manifest, representatives) =
-                freeze_frame_sample(&records, request, created_at_unix_ms)?;
-            let selected: BTreeSet<&CaseKey> = manifest
-                .selected_cases
-                .iter()
-                .map(|entry| &entry.case_key)
-                .collect();
-            let sampled = representatives
-                .into_iter()
-                .filter(|case| selected.contains(&case.key))
-                .collect();
-            (sampled, Some(manifest))
-        }
+    let (evaluated, manifest) = select_frame(records, sampling, created_at_unix_ms)?;
+    score_frame(evaluated, &labels, manifest, FrameRun::recorded())
+}
+
+/// The frame's cases to evaluate: all of them, or the representatives a
+/// sample froze (and verified) before any label or outcome is consulted.
+fn select_frame(
+    records: Vec<crate::evaluation::EvaluationCaseRecord>,
+    sampling: Option<FrameSampling>,
+    created_at_unix_ms: u64,
+) -> Result<
+    (
+        Vec<crate::evaluation::EvaluationCaseRecord>,
+        Option<FrozenSampleManifest>,
+    ),
+    EvaluationError,
+> {
+    let Some(request) = sampling else {
+        return Ok((records, None));
     };
-    let (resolved, reconciliation) = join_evaluation_frame(&evaluated, &labels)?;
+    let (manifest, representatives) = freeze_frame_sample(&records, request, created_at_unix_ms)?;
+    let selected: BTreeSet<&CaseKey> = manifest
+        .selected_cases
+        .iter()
+        .map(|entry| &entry.case_key)
+        .collect();
+    let sampled = representatives
+        .into_iter()
+        .filter(|case| selected.contains(&case.key))
+        .collect();
+    Ok((sampled, Some(manifest)))
+}
+
+/// How a scored frame's decisions were produced, and the selected cases that
+/// never produced one.
+struct FrameRun {
+    evidence_origin: &'static str,
+    accounting: BatchAccounting,
+    /// Selected cases never ranked, in selection order, with why.
+    skipped: Vec<(CaseKey, CaseExecutionStatus)>,
+    /// Why scheduling stopped early; reported only for a partial run.
+    error: Option<ReportError>,
+    elapsed_ms: BTreeMap<CaseKey, u64>,
+}
+
+impl FrameRun {
+    fn recorded() -> Self {
+        Self {
+            evidence_origin: "recorded",
+            accounting: BatchAccounting::default(),
+            skipped: Vec::new(),
+            error: None,
+            elapsed_ms: BTreeMap::new(),
+        }
+    }
+}
+
+fn score_frame(
+    evaluated: Vec<crate::evaluation::EvaluationCaseRecord>,
+    labels: &[crate::evaluation::JudgedLabel],
+    manifest: Option<FrozenSampleManifest>,
+    run: FrameRun,
+) -> Result<EvaluationBatchReport, EvaluationError> {
+    let (resolved, reconciliation) = join_evaluation_frame(&evaluated, labels)?;
     let metrics = compute_metrics(&resolved);
 
     let mut loss_summary = BatchLossSummary::default();
     let mut losses_by_case = BTreeMap::new();
-    let mut reports = Vec::with_capacity(resolved.len());
+    let mut reports = Vec::with_capacity(resolved.len() + run.skipped.len());
     let mut completed = 0;
     for case in &resolved {
         let judged = matches!(case.label_status, LabelStatus::Resolved { .. });
@@ -552,6 +601,20 @@ pub fn execute_labeled_frame_evaluation<C: BufRead, L: BufRead>(
             case_id: case.record.key.case_id.clone(),
             family_id: Some(case.record.key.family_id.clone()),
             status,
+            elapsed_ms: run.elapsed_ms.get(&case.record.key).copied().unwrap_or(0),
+        });
+    }
+    // Never-ranked cases stay in the denominator of what was requested; they
+    // carry no loss and are never counted as successes.
+    for (key, status) in run.skipped {
+        match &status {
+            CaseExecutionStatus::Unfinished { .. } => loss_summary.unfinished_cases += 1,
+            _ => loss_summary.not_estimable_cases += 1,
+        }
+        reports.push(BatchCaseReport {
+            case_id: key.case_id,
+            family_id: Some(key.family_id),
+            status,
             elapsed_ms: 0,
         });
     }
@@ -562,8 +625,8 @@ pub fn execute_labeled_frame_evaluation<C: BufRead, L: BufRead>(
         loss_summary.mean_normalized_loss = Some(mean / 2.0);
     }
     // A fixed seed supports reproduction only; its selection has no design
-    // inclusion probabilities to weight by. Explicit and unjudged cases stay
-    // Missing, so the reported bounds widen rather than hide them.
+    // inclusion probabilities to weight by. Explicit, unjudged and never-ranked
+    // cases stay Missing, so the reported bounds widen rather than hide them.
     let design_weighted_loss = match &manifest {
         Some(manifest) if manifest.design_status != DesignStatus::DiagnosticFixed => Some(
             compute_design_weighted_loss_from_manifest(
@@ -576,20 +639,21 @@ pub fn execute_labeled_frame_evaluation<C: BufRead, L: BufRead>(
         _ => None,
     };
 
-    let requested = resolved.len();
+    let requested = reports.len();
+    let complete = completed == requested;
     let report = EvaluationBatchReport {
         schema_version: SCHEMA_VERSION,
         kind: "report".into(),
         actionable: false,
-        run_status: if completed == requested {
+        run_status: if complete {
             RunStatus::Complete
         } else {
             RunStatus::Partial
         },
-        // Recorded decisions scored here are evidence for a promotion review,
-        // not a passed gate; the frozen promotion thresholds are applied there.
+        // Decisions scored here are evidence for a promotion review, not a
+        // passed gate; the frozen promotion thresholds are applied there.
         gate_status: GateStatus::NotEstablished,
-        evidence_origin: "recorded".into(),
+        evidence_origin: run.evidence_origin.into(),
         completeness: CompletenessReport {
             cases_requested: requested,
             cases_completed: completed,
@@ -598,14 +662,14 @@ pub fn execute_labeled_frame_evaluation<C: BufRead, L: BufRead>(
             evidence_compatible: reconciliation.reconciled,
         },
         loss_summary,
-        accounting: BatchAccounting::default(),
+        accounting: run.accounting,
         metrics: Some(metrics),
         reconciliation: Some(reconciliation),
         sample_manifest: manifest,
         design_weighted_loss,
         explanation: None,
         cases: reports,
-        error: None,
+        error: if complete { None } else { run.error },
     };
     report.to_document().map_err(|e| {
         EvaluationError::InvalidField(format!(
@@ -613,6 +677,242 @@ pub fn execute_labeled_frame_evaluation<C: BufRead, L: BufRead>(
         ))
     })?;
     Ok(report)
+}
+
+/// One case of a live batch: its frame identity and the normalized request
+/// context ranked fresh against the current roster. A fresh evaluation, not a
+/// replay: no historical candidate evidence or embedded path is consulted.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LiveEvaluationCase {
+    pub schema_version: u64,
+    pub key: CaseKey,
+    pub split: EvaluationSplit,
+    pub context: Value,
+}
+
+/// Stream live cases with the dataset's size, record and depth bounds.
+pub fn parse_live_cases_streaming<R: BufRead>(
+    mut reader: R,
+) -> Result<Vec<LiveEvaluationCase>, EvaluationError> {
+    let mut cases = Vec::new();
+    let mut keys = BTreeSet::new();
+    let mut total_bytes = 0usize;
+    let mut line = String::new();
+    while read_bounded_line(
+        &mut reader,
+        &mut line,
+        &mut total_bytes,
+        EVALUATION_DATASET_BYTES.max(),
+    )? > 0
+    {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            line.clear();
+            continue;
+        }
+        if cases.len() >= EVALUATION_CASE_RECORDS.max() {
+            return Err(EvaluationError::RecordLimitReached {
+                count: cases.len() + 1,
+                max: EVALUATION_CASE_RECORDS.max(),
+            });
+        }
+        let value = parse_bounded_json(trimmed.as_bytes(), EVALUATION_DATASET_DEPTH.max())?;
+        let case: LiveEvaluationCase = serde_json::from_value(value)
+            .map_err(|e| EvaluationError::InvalidField(format!("malformed live case: {e}")))?;
+        if case.schema_version != SCHEMA_VERSION {
+            return Err(EvaluationError::UnsupportedVersion(case.schema_version));
+        }
+        if case.key.is_null() || !keys.insert(case.key.clone()) {
+            return Err(EvaluationError::CardinalityViolation(
+                "empty or duplicate live case key".into(),
+            ));
+        }
+        cases.push(case);
+        line.clear();
+    }
+    Ok(cases)
+}
+
+/// What one live ranking produced, read from its decision document.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct LiveRankOutcome {
+    pub decision: String,
+    pub suggested_skills: Vec<String>,
+    pub requests: usize,
+    pub http_attempts: usize,
+    pub unknown_usage_attempts: usize,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    /// The error kind of an unavailable decision.
+    pub error_kind: Option<String>,
+    pub elapsed_ms: u64,
+}
+
+/// Batch-wide caps of a live run.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct LiveBatchLimits {
+    /// HTTP attempts across the whole batch, retries included.
+    pub max_requests: usize,
+    pub max_runtime_ms: u64,
+    /// The most attempts one ranking can make; a case is admitted only while
+    /// its worst case still fits under `max_requests`.
+    pub attempts_per_case: usize,
+}
+
+/// Errors after which no further case can succeed: scheduling stops.
+const FATAL_LIVE_KINDS: [(&str, u8); 3] = [
+    ("authentication", 4),
+    ("credential-absent", 4),
+    ("network-denied", 8),
+];
+
+/// Rank selected labeled cases live, then score them like a recorded frame.
+///
+/// Selection (and any sample manifest) is frozen before the first ranking.
+/// A case without an independent judgment, or whose judgment names a skill
+/// absent from `current_roster`, is not estimable and is never sent. A case
+/// is admitted only while the batch deadline and its worst-case attempts fit;
+/// every later case is reported unfinished, as is every case after a fatal
+/// provider error. Provider usage is summed exactly as each ranking reported it.
+#[allow(clippy::too_many_arguments)]
+pub fn execute_live_frame_evaluation<L: BufRead>(
+    cases: Vec<LiveEvaluationCase>,
+    labels: L,
+    sampling: Option<FrameSampling>,
+    current_roster: &BTreeSet<String>,
+    limits: LiveBatchLimits,
+    clock: &EntryClock,
+    created_at_unix_ms: u64,
+    mut rank: impl FnMut(&LiveEvaluationCase) -> LiveRankOutcome,
+) -> Result<EvaluationBatchReport, EvaluationError> {
+    if limits.max_requests == 0 || limits.attempts_per_case == 0 || limits.max_runtime_ms == 0 {
+        return Err(EvaluationError::InvalidField(
+            "live batches need positive request, attempt and runtime caps".into(),
+        ));
+    }
+    let labels = parse_labels_streaming(labels)?;
+    let judgments = resolve_label_revisions(&labels)?;
+    let stub = |case: &LiveEvaluationCase| EvaluationCaseRecord {
+        schema_version: SCHEMA_VERSION,
+        key: case.key.clone(),
+        split: case.split,
+        prompt_summary: Some("live request".into()),
+        roster_skills: Vec::new(),
+        decision: "pending".into(),
+        suggested_skills: Vec::new(),
+        fits: BTreeMap::new(),
+        gate_score: None,
+        relevance_abstention: false,
+        operational_failure: false,
+    };
+    let stubs: Vec<EvaluationCaseRecord> = cases.iter().map(stub).collect();
+    verify_split_isolation(&stubs)?;
+    let (selected, manifest) = select_frame(stubs, sampling, created_at_unix_ms)?;
+    let by_key: BTreeMap<&CaseKey, &LiveEvaluationCase> =
+        cases.iter().map(|case| (&case.key, case)).collect();
+
+    let expires = clock
+        .now()
+        .as_millis()
+        .saturating_add(limits.max_runtime_ms);
+    let mut run = FrameRun {
+        evidence_origin: "live",
+        ..FrameRun::recorded()
+    };
+    let mut executed = Vec::with_capacity(selected.len());
+    let mut stopped: Option<(String, ReportError)> = None;
+    for mut record in selected {
+        let case = by_key[&record.key];
+        let judgment = judgments.get(&record.key.case_id);
+        let off_roster = judgment.is_some_and(|label| {
+            label
+                .acceptable_skills
+                .iter()
+                .chain(label.explicit_directive.as_ref())
+                .any(|skill| !current_roster.contains(skill))
+        });
+        let skip = match (judgment, off_roster) {
+            (None, _) => Some("no independent judgment for this case; not sent"),
+            (Some(_), true) => Some("a judged skill is absent from the current roster; not sent"),
+            _ => None,
+        };
+        if let Some(reason) = skip {
+            run.skipped.push((
+                record.key,
+                CaseExecutionStatus::NotEstimable {
+                    reason: reason.into(),
+                },
+            ));
+            continue;
+        }
+        if stopped.is_none() {
+            if clock.now().as_millis() >= expires {
+                stopped = Some((
+                    "batch runtime deadline expired".into(),
+                    ReportError {
+                        code: 6,
+                        kind: "timeout".into(),
+                        message: "The live batch reached --max-runtime-ms".into(),
+                        hint: "Raise --max-runtime-ms or evaluate a smaller sample".into(),
+                        retryable: false,
+                    },
+                ));
+            } else if run.accounting.http_attempts + limits.attempts_per_case > limits.max_requests
+            {
+                stopped = Some((
+                    "request cap reached before this case".into(),
+                    ReportError {
+                        code: 4,
+                        kind: "request-budget".into(),
+                        message: "The live batch reached --max-requests".into(),
+                        hint: "Raise --max-requests or evaluate a smaller sample".into(),
+                        retryable: false,
+                    },
+                ));
+            }
+        }
+        if let Some((reason, _)) = &stopped {
+            run.skipped.push((
+                record.key,
+                CaseExecutionStatus::Unfinished {
+                    reason: reason.clone(),
+                },
+            ));
+            continue;
+        }
+        let outcome = rank(case);
+        let accounting = &mut run.accounting;
+        accounting.requests += outcome.requests;
+        accounting.http_attempts += outcome.http_attempts;
+        accounting.unknown_usage_attempts += outcome.unknown_usage_attempts;
+        accounting.input_tokens += outcome.input_tokens;
+        accounting.output_tokens += outcome.output_tokens;
+        run.elapsed_ms
+            .insert(record.key.clone(), outcome.elapsed_ms);
+        if let Some((kind, code)) = FATAL_LIVE_KINDS
+            .iter()
+            .find(|(kind, _)| outcome.error_kind.as_deref() == Some(*kind))
+        {
+            stopped = Some((
+                format!("stopped after a fatal {kind} error"),
+                ReportError {
+                    code: *code,
+                    kind: (*kind).into(),
+                    message: "A fatal provider error stopped the live batch".into(),
+                    hint: "Fix the credential or network authorization, then rerun".into(),
+                    retryable: false,
+                },
+            ));
+        }
+        record.decision = outcome.decision.clone();
+        record.relevance_abstention = outcome.decision == "abstain";
+        record.operational_failure = outcome.decision == "unavailable";
+        record.suggested_skills = outcome.suggested_skills;
+        executed.push(record);
+    }
+    run.error = stopped.map(|(_, error)| error);
+    score_frame(executed, &labels, manifest, run)
 }
 
 /// Draw and verify the manifest before any label is read into the result.

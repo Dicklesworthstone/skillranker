@@ -211,6 +211,8 @@ struct Progress {
     /// this its provider cost exists nowhere durable — and a failed attempt is
     /// exactly the cost that no other record accounts for.
     failed_recording: Option<FailureRecording>,
+    /// Normalized context bytes supplied in memory instead of the named file.
+    supplied_context: Option<Vec<u8>>,
 }
 
 /// Identity and cost carried out of a failing run, so an unavailable event can
@@ -380,8 +382,32 @@ struct Admitted {
 pub async fn execute_pipeline(
     invocation: &ProcessInvocation,
     cx: &Cx,
+    args: RankArgs,
+    transport: Option<&dyn JevTransport>,
+) -> Result<OutputDocument, PipelineFailure> {
+    execute_pipeline_supplied(invocation, cx, args, transport, None).await
+}
+
+/// Rank one normalized context already held in memory, such as a case of an
+/// evaluation batch. `args.source_options.context` must name the case (it
+/// selects normalized input); these bytes replace reading that path and meet
+/// the same size bound and parser.
+pub async fn execute_pipeline_with_context(
+    invocation: &ProcessInvocation,
+    cx: &Cx,
+    args: RankArgs,
+    transport: Option<&dyn JevTransport>,
+    context: Vec<u8>,
+) -> Result<OutputDocument, PipelineFailure> {
+    execute_pipeline_supplied(invocation, cx, args, transport, Some(context)).await
+}
+
+async fn execute_pipeline_supplied(
+    invocation: &ProcessInvocation,
+    cx: &Cx,
     mut args: RankArgs,
     transport: Option<&dyn JevTransport>,
+    supplied_context: Option<Vec<u8>>,
 ) -> Result<OutputDocument, PipelineFailure> {
     let clock = &invocation.clock();
     // Every effect restriction comes from the gate; `args.dry_run` can only add
@@ -412,7 +438,10 @@ pub async fn execute_pipeline(
     }
     let save_case = args.save_case.clone();
     let effects = args.gate.receipt();
-    let mut progress = Progress::default();
+    let mut progress = Progress {
+        supplied_context,
+        ..Progress::default()
+    };
     let result = rank_once(invocation, clock, cx, args, transport, &mut progress).await;
     // Finalize every armed failure, including refusals before attempt admission:
     // those runs have finished and must not retain their generated/in-flight row.
@@ -906,11 +935,20 @@ async fn rank_once(
     let mut transcript_gaps = false;
     let mut normalized_context = match source_selection.target() {
         SourceTarget::NormalizedFile(path) => {
-            let bytes = read_input_file(
-                &args.workspace,
-                path.as_path(),
-                crate::limits::NORMALIZED_CONTEXT_JSON_BYTES,
-            )?;
+            let bytes = match progress.supplied_context.take() {
+                Some(bytes) if bytes.len() > crate::limits::NORMALIZED_CONTEXT_JSON_BYTES.max() => {
+                    return Err(failure(
+                        ErrorKind::OversizedInput,
+                        "Normalized context exceeds 1 MiB",
+                    ));
+                }
+                Some(bytes) => bytes,
+                None => read_input_file(
+                    &args.workspace,
+                    path.as_path(),
+                    crate::limits::NORMALIZED_CONTEXT_JSON_BYTES,
+                )?,
+            };
             parse_normalized_context(&bytes).map_err(|e| {
                 failure(
                     ErrorKind::MalformedInput,

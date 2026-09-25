@@ -4,7 +4,7 @@ use crate::authorized_read::{AuthorizedRoot, AuthorizedRoots, ReadError};
 use crate::config::{
     ConfigSources, MAX_LAYER_ENTRIES, RawValue, ResolvedConfig, SettingKey, ValueSource,
 };
-use crate::limits::{CONFIG_FILE_BYTES, DurationMillis};
+use crate::limits::{CONFIG_FILE_BYTES, DEFAULT_OUTPUT_CLEANUP_RESERVE_MS, DurationMillis};
 use crate::output::OutputDocument;
 use crate::runtime::EntryClock;
 use clap::{Arg, ArgAction, Command};
@@ -13,9 +13,9 @@ use std::ffi::OsString;
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
-const HELP: &str = "SkillRanker — powered by TypeSafe.ai Jev\n\nUsage: sr [rank] [--context FILE | --transcript FILE --harness NAME | --session PATH | --latest]\n                 [--roster FILE] [--require-skill ID] [--dry-run [--shortlist-ids ID,...]]\n                 [--offline | --allow-network] [--json | --table]\n                 [--top N] [--shortlist M] [--gate FLOAT] [--fits FLOAT]\n                 [--explain] [--why-not ID] [--cursor TOKEN] [--no-tools] [--no-cache]\n                 [--save-case FILE]\n       sr doctor [--json | --table] [--offline | --allow-network]\n       sr doctor --config [--json | --table] [--top N] [--shortlist N]\n       sr roster [--json] [--limit N] [--cursor TOKEN]\n       sr roster --snapshot FILE | --diff FILE\n       sr capabilities [--json]\n       sr demo --case <useful|none|explicit|unavailable> [--json | --table]\n       sr replay FILE [--policy FILE] [--compare-policy FILE] [--json | --table]\n       sr eval --dataset FILE [--allow-network] [--max-runtime-ms MS] [--timeout-ms MS] [--policy FILE] [--compare-policy FILE] [--explain] [--json | --table]\n       sr eval --dataset FRAME --labels FILE [--sample-size N [--seed S]] [--explain] [--json | --table]\n       sr feedback <EVENT_ID> --skill ID [--instead ID] [--verdict <useful|not-useful|unknown>] [--reason CODE] [--provenance TEXT] [--expected-version GEN] [--dir DIR] [--json]\n       sr ledger <init|migrate|status|prune|clear> [--before TIME] [--apply] [--json]\n       sr observe [--context FILE | --transcript FILE --harness NAME | --session PATH] [--branch NAME] [--roster FILE] [--dir DIR] [--json]\n       sr stats [--since DURATION] [--by-skill] [--dir DIR] [--json | --table]\n       sr hook <claude> [--shadow] [--offline | --allow-network] [--dir DIR]\n       sr install-hook <claude> [--settings FILE] [--target-dir DIR] [--apply] [--json]\n       sr uninstall-hook <claude> [--settings FILE] [--target-dir DIR] [--apply] [--json]\n       sr --help | --version\n\nRank the next step of an agent session using TypeSafe Jev.\nRequires your own TypeSafe API key (TYPESAFE_API_KEY) and network consent (--allow-network).\n";
+const HELP: &str = "SkillRanker — powered by TypeSafe.ai Jev\n\nUsage: sr [rank] [--context FILE | --transcript FILE --harness NAME | --session PATH | --latest]\n                 [--roster FILE] [--require-skill ID] [--dry-run [--shortlist-ids ID,...]]\n                 [--offline | --allow-network] [--json | --table]\n                 [--top N] [--shortlist M] [--gate FLOAT] [--fits FLOAT]\n                 [--explain] [--why-not ID] [--cursor TOKEN] [--no-tools] [--no-cache]\n                 [--save-case FILE]\n       sr doctor [--json | --table] [--offline | --allow-network]\n       sr doctor --config [--json | --table] [--top N] [--shortlist N]\n       sr roster [--json] [--limit N] [--cursor TOKEN]\n       sr roster --snapshot FILE | --diff FILE\n       sr capabilities [--json]\n       sr demo --case <useful|none|explicit|unavailable> [--json | --table]\n       sr replay FILE [--policy FILE] [--compare-policy FILE] [--json | --table]\n       sr eval --dataset FILE [--allow-network] [--max-runtime-ms MS] [--timeout-ms MS] [--policy FILE] [--compare-policy FILE] [--explain] [--json | --table]\n       sr eval --dataset FRAME --labels FILE [--sample-size N [--seed S]] [--online --allow-network --max-requests N [--max-runtime-ms MS]] [--explain] [--json | --table]\n       sr feedback <EVENT_ID> --skill ID [--instead ID] [--verdict <useful|not-useful|unknown>] [--reason CODE] [--provenance TEXT] [--expected-version GEN] [--dir DIR] [--json]\n       sr ledger <init|migrate|status|prune|clear> [--before TIME] [--apply] [--json]\n       sr observe [--context FILE | --transcript FILE --harness NAME | --session PATH] [--branch NAME] [--roster FILE] [--dir DIR] [--json]\n       sr stats [--since DURATION] [--by-skill] [--dir DIR] [--json | --table]\n       sr hook <claude> [--shadow] [--offline | --allow-network] [--dir DIR]\n       sr install-hook <claude> [--settings FILE] [--target-dir DIR] [--apply] [--json]\n       sr uninstall-hook <claude> [--settings FILE] [--target-dir DIR] [--apply] [--json]\n       sr --help | --version\n\nRank the next step of an agent session using TypeSafe Jev.\nRequires your own TypeSafe API key (TYPESAFE_API_KEY) and network consent (--allow-network).\n";
 
-const EVAL_HELP: &str = "sr eval --dataset FILE [--allow-network] [--max-runtime-ms MS] [--timeout-ms MS] [--policy FILE] [--compare-policy FILE] [--explain] [--json | --table]\n       sr eval --dataset FRAME --labels FILE [--sample-size N [--seed S]] [--explain] [--json | --table]\n\nEvaluate recorded or synthetic replay batches against local or comparison policies with bounded runtime and explicit accounting.\nWith --labels, score a labeled case frame against independent judgments, optionally over a stratified sample frozen before labels are joined.\n";
+const EVAL_HELP: &str = "sr eval --dataset FILE [--allow-network] [--max-runtime-ms MS] [--timeout-ms MS] [--policy FILE] [--compare-policy FILE] [--explain] [--json | --table]\n       sr eval --dataset FRAME --labels FILE [--sample-size N [--seed S]] [--online --allow-network --max-requests N [--max-runtime-ms MS]] [--explain] [--json | --table]\n\nEvaluate recorded or synthetic replay batches against local or comparison policies with bounded runtime and explicit accounting.\nWith --labels, score a labeled case frame against independent judgments, optionally over a stratified sample frozen before labels are joined.\n";
 
 const STATS_HELP: &str = "sr stats [--since DURATION] [--by-skill] [--dir DIR] [--json | --table]\n\nReport observation and operational metrics across honest cohorts (evaluations, suggestions, abstentions, latency, loads, judgments, tokens, and cost).\n";
 
@@ -329,12 +329,7 @@ fn command() -> Command {
                         .long("labels")
                         .value_name("FILE")
                         .help("Independent judged labels; the dataset is then a labeled case frame")
-                        .conflicts_with_all([
-                            "policy",
-                            "compare-policy",
-                            "timeout-ms",
-                            "max-runtime-ms",
-                        ])
+                        .conflicts_with_all(["policy", "compare-policy", "timeout-ms"])
                         .action(ArgAction::Set),
                 )
                 .arg(
@@ -343,6 +338,21 @@ fn command() -> Command {
                         .value_name("N")
                         .help("Freeze a stratified sample of N task-family representatives")
                         .requires("labels")
+                        .action(ArgAction::Set),
+                )
+                .arg(
+                    Arg::new("online")
+                        .long("online")
+                        .help("Rank the labeled cases fresh with Jev (needs network authorization and --max-requests)")
+                        .requires("labels")
+                        .action(ArgAction::SetTrue),
+                )
+                .arg(
+                    Arg::new("max-requests")
+                        .long("max-requests")
+                        .value_name("N")
+                        .help("Maximum HTTP attempts across the live batch, retries included")
+                        .requires("online")
                         .action(ArgAction::Set),
                 )
                 .arg(
@@ -2879,8 +2889,14 @@ fn eval_command(clock: &EntryClock, eval_matches: &clap::ArgMatches) -> Result<S
     if let Some(labels_str) = eval_matches.get_one::<String>("labels") {
         return eval_frame_command(clock, eval_matches, dataset_str, labels_str);
     }
-    // `--online` and `--max-requests` are planned flags refused before dispatch,
-    // so this build only replays recorded cases.
+    // A live batch ranks labeled requests fresh; a replay dataset has none.
+    if eval_matches.get_flag("online") || eval_matches.get_one::<String>("max-requests").is_some() {
+        return Err((
+            2,
+            "invalid-usage",
+            "--online and --max-requests evaluate labeled cases; pass --labels".into(),
+        ));
+    }
     let allow_network = eval_matches.get_flag("allow-network");
 
     let max_runtime_ms = if let Some(s) = eval_matches.get_one::<String>("max-runtime-ms") {
@@ -3016,6 +3032,24 @@ fn eval_frame_command(
         }),
         None => None,
     };
+    if eval_matches.get_flag("online") {
+        return eval_live_command(clock, eval_matches, dataset_str, labels_str, sampling);
+    }
+    if eval_matches.get_one::<String>("max-requests").is_some() {
+        return Err((
+            2,
+            "invalid-usage",
+            "--max-requests caps a live batch; add --online".into(),
+        ));
+    }
+    if eval_matches.get_one::<String>("max-runtime-ms").is_some() {
+        return Err((
+            2,
+            "invalid-usage",
+            "--max-runtime-ms bounds a live or replay batch; scoring recorded decisions takes none"
+                .into(),
+        ));
+    }
     let cases = std::io::BufReader::new(open_eval_input(dataset_str, "dataset")?);
     let labels = std::io::BufReader::new(open_eval_input(labels_str, "labels")?);
     timely(clock)?;
@@ -3037,6 +3071,244 @@ fn eval_frame_command(
     timely(clock)?;
     render_eval_report(report, eval_matches)
 }
+
+/// Rank labeled cases fresh with Jev, then score them. Consent, the credential,
+/// caps and inputs are all checked before the first request; nothing is
+/// written to the ledger or response cache.
+fn eval_live_command(
+    clock: &EntryClock,
+    eval_matches: &clap::ArgMatches,
+    dataset_str: &str,
+    labels_str: &str,
+    sampling: Option<crate::evaluation::batch::FrameSampling>,
+) -> Result<String, Failure> {
+    let max_requests = eval_matches
+        .get_one::<String>("max-requests")
+        .ok_or_else(|| invalid("A live batch requires an explicit --max-requests cap"))?
+        .parse::<u32>()
+        .ok()
+        .filter(|n| *n > 0)
+        .ok_or_else(|| invalid("Invalid --max-requests: must be a positive integer"))?;
+    let max_runtime_ms = match eval_matches.get_one::<String>("max-runtime-ms") {
+        Some(text) => text
+            .parse::<u64>()
+            .ok()
+            .filter(|ms| (1..=MAX_EVAL_RUNTIME_MS).contains(ms))
+            .ok_or_else(|| invalid("Invalid --max-runtime-ms: must be 1 to 86400000"))?,
+        None => crate::limits::DEFAULT_EVAL_BATCH_RUNTIME_MS,
+    };
+    // The batch owns its deadline; every ranking inside it gets a fresh,
+    // shorter one that cannot outlast the batch.
+    let batch_clock = DurationMillis::new(
+        "max_runtime_ms",
+        max_runtime_ms.saturating_add(DEFAULT_OUTPUT_CLEANUP_RESERVE_MS),
+        MAX_EVAL_RUNTIME_MS + DEFAULT_OUTPUT_CLEANUP_RESERVE_MS,
+    )
+    .map_err(crate::runtime::RuntimeError::from)
+    .and_then(|total| clock.with_total(total))
+    .map_err(|_| invalid("Invalid live batch deadline"))?;
+    let clock = &batch_clock;
+
+    let mut sources = ConfigSources::default();
+    environment_sources(&mut sources)?;
+    let workspace = std::env::current_dir().map_err(|_| invalid("Workspace is unavailable"))?;
+    let user_root = user_config_root()?;
+    let home = std::env::var_os("HOME")
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from);
+    let flags = crate::privacy::EffectFlags {
+        allow_network: eval_matches.get_flag("allow-network"),
+        no_persist: true,
+        ..Default::default()
+    };
+    let gate = crate::effects::EffectGate::new(flags, crate::effects::Scope::Rank)
+        .map_err(|_| invalid("Conflicting live batch effects"))?;
+    let config = ConfigFiles::new(workspace.clone(), user_root.clone())
+        .load(clock, sources.clone())
+        .map_err(|_| {
+            (
+                2,
+                "invalid-configuration",
+                "The configuration is invalid; run `sr doctor --config`".into(),
+            )
+        })?;
+    if !matches!(
+        gate.network_consent(&config),
+        crate::privacy::NetworkConsent::Authorized(_)
+    ) {
+        return Err((
+            8,
+            "network-denied",
+            "A live batch needs --allow-network or trusted network authorization".into(),
+        ));
+    }
+    if config.credential().is_none() {
+        return Err((
+            4,
+            "credential-absent",
+            "A live batch needs your own TypeSafe API key in TYPESAFE_API_KEY".into(),
+        ));
+    }
+    let eval_error = |err: crate::evaluation::EvaluationError| {
+        let kind = err.kind();
+        (kind.exit_code() as u8, kind.as_str(), err.to_string())
+    };
+    let cases = crate::evaluation::batch::parse_live_cases_streaming(std::io::BufReader::new(
+        open_eval_input(dataset_str, "dataset")?,
+    ))
+    .map_err(eval_error)?;
+    let labels = std::io::BufReader::new(open_eval_input(labels_str, "labels")?);
+    timely(clock)?;
+    let roster = resolve_workspace_roster(
+        clock,
+        &workspace,
+        home.as_deref(),
+        config.effective().roster_roots(),
+        crate::roster::Visibility::Verified {
+            contract_version: crate::pipeline::PROVISIONAL_CLAUDE_CONTRACT.into(),
+        },
+    )?;
+    let current_roster: std::collections::BTreeSet<String> = roster
+        .skills()
+        .iter()
+        .flat_map(|skill| skill.bindings().iter().map(|b| b.id.as_str().to_owned()))
+        .collect();
+    let per_case_ms = config.effective().timeout_ms();
+    let now_unix_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| {
+            u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
+        });
+    let limits = crate::evaluation::batch::LiveBatchLimits {
+        max_requests: max_requests as usize,
+        max_runtime_ms,
+        attempts_per_case: crate::limits::DEFAULT_HTTP_ATTEMPTS as usize,
+    };
+    let report = crate::evaluation::batch::execute_live_frame_evaluation(
+        cases,
+        labels,
+        sampling,
+        &current_roster,
+        limits,
+        clock,
+        now_unix_ms,
+        |case| {
+            let args = crate::pipeline::RankArgs {
+                workspace: workspace.clone(),
+                user_config_root: user_root.clone(),
+                home: home.clone(),
+                cache_dir: None,
+                ledger_dir: None,
+                sources: sources.clone(),
+                gate,
+                source_options: crate::context::source::SourceOptions {
+                    // Names the case; its bytes are supplied in memory.
+                    context: Some(crate::roster::LocalPath::new(PathBuf::from(format!(
+                        "eval-case:{}",
+                        case.key.case_id
+                    )))),
+                    ..Default::default()
+                },
+                require_skills: Vec::new(),
+                shortlist_ids: Vec::new(),
+                roster_file: None,
+                explain: false,
+                why_not: None,
+                cursor: None,
+                output_json: true,
+                output_table: false,
+                dry_run: false,
+                save_case: None,
+            };
+            rank_live_case(clock, per_case_ms, args, case)
+        },
+    )
+    .map_err(eval_error)?;
+    render_eval_report(report, eval_matches)
+}
+
+/// One case's fresh ranking under its own deadline, bounded by the batch's.
+fn rank_live_case(
+    batch: &EntryClock,
+    per_case_ms: u64,
+    args: crate::pipeline::RankArgs,
+    case: &crate::evaluation::batch::LiveEvaluationCase,
+) -> crate::evaluation::batch::LiveRankOutcome {
+    use crate::evaluation::batch::LiveRankOutcome;
+    let started = std::time::Instant::now();
+    let unavailable = |kind: &str| LiveRankOutcome {
+        decision: "unavailable".into(),
+        error_kind: Some(kind.to_owned()),
+        elapsed_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+        ..LiveRankOutcome::default()
+    };
+    let remaining = batch.remaining_until_expiry().as_millis();
+    let total = per_case_ms.min(remaining);
+    let Ok(clock) = DurationMillis::new("case_timeout_ms", total, crate::config::MAX_TIMEOUT_MS)
+        .and_then(|total_ms| {
+            DurationMillis::new(
+                "case_cleanup_reserve_ms",
+                DEFAULT_OUTPUT_CLEANUP_RESERVE_MS.min(total / 2).max(1),
+                DEFAULT_OUTPUT_CLEANUP_RESERVE_MS,
+            )
+            .map(|reserve| (total_ms, reserve))
+        })
+        .map_err(crate::runtime::RuntimeError::from)
+        .and_then(|(total_ms, reserve)| EntryClock::capture_with(total_ms, reserve))
+    else {
+        return unavailable("timeout");
+    };
+    let Ok(context) = serde_json::to_vec(&case.context) else {
+        return unavailable("malformed-input");
+    };
+    let Ok(invocation) = crate::runtime::ProcessInvocation::from_clock(clock) else {
+        return unavailable("timeout");
+    };
+    let outcome = invocation
+        .request_cx()
+        .map_err(|_| (6u8, "timeout", "Local runtime unavailable".into()))
+        .and_then(|cx| {
+            invocation.block_on_cancellable(
+                &cx,
+                crate::pipeline::execute_pipeline_with_context(
+                    &invocation,
+                    &cx,
+                    args,
+                    None,
+                    context,
+                ),
+            )
+        });
+    let document = match finish_invocation(invocation, outcome) {
+        Ok(document) => document,
+        Err((_, kind, _)) => return unavailable(kind),
+    };
+    let value = document.as_value();
+    let usage = |name: &str| value["usage"][name].as_u64().unwrap_or(0);
+    LiveRankOutcome {
+        decision: value["decision"]
+            .as_str()
+            .unwrap_or("unavailable")
+            .to_owned(),
+        suggested_skills: value["skills"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|skill| skill["skill_id"].as_str().map(str::to_owned))
+            .collect(),
+        requests: usize::try_from(usage("requests")).unwrap_or(usize::MAX),
+        http_attempts: usize::try_from(usage("http_attempts")).unwrap_or(usize::MAX),
+        unknown_usage_attempts: usize::try_from(usage("unknown_usage_attempts"))
+            .unwrap_or(usize::MAX),
+        input_tokens: usage("input_tokens"),
+        output_tokens: usage("output_tokens"),
+        error_kind: value["error"]["kind"].as_str().map(str::to_owned),
+        elapsed_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+    }
+}
+
+/// The longest live or replay batch deadline accepted: one day.
+const MAX_EVAL_RUNTIME_MS: u64 = 86_400_000;
 
 fn render_eval_report(
     mut report: crate::evaluation::batch::EvaluationBatchReport,
@@ -3142,18 +3414,7 @@ fn doctor_command(clock: &EntryClock, doctor: &clap::ArgMatches) -> Result<Strin
             sources.cli.push((key.path().into(), value));
         }
     }
-    // Snapshot only recognized namespace candidates; the resolver rejects unknown SR_*.
-    for (name, value) in std::env::vars_os() {
-        if name.as_encoded_bytes().starts_with(b"SR_")
-            || name == "TYPESAFE_API_KEY"
-            || name == "TYPESAFE_ENDPOINT"
-        {
-            if sources.environment.len() == MAX_LAYER_ENTRIES {
-                return Err(invalid("Too many environment settings"));
-            }
-            sources.environment.push((name, value));
-        }
-    }
+    environment_sources(&mut sources)?;
     timely(clock)?;
     // The current directory is the exact workspace. Never run Git or search ancestors.
     let workspace = std::env::current_dir().map_err(|_| invalid("Workspace is unavailable"))?;
@@ -3181,6 +3442,22 @@ fn doctor_command(clock: &EntryClock, doctor: &clap::ArgMatches) -> Result<Strin
         }
         Ok(output)
     }
+}
+
+/// Snapshot only recognized namespace candidates; the resolver rejects unknown SR_*.
+fn environment_sources(sources: &mut ConfigSources) -> Result<(), Failure> {
+    for (name, value) in std::env::vars_os() {
+        if name.as_encoded_bytes().starts_with(b"SR_")
+            || name == "TYPESAFE_API_KEY"
+            || name == "TYPESAFE_ENDPOINT"
+        {
+            if sources.environment.len() == MAX_LAYER_ENTRIES {
+                return Err(invalid("Too many environment settings"));
+            }
+            sources.environment.push((name, value));
+        }
+    }
+    Ok(())
 }
 
 fn rank_command(
@@ -3254,18 +3531,7 @@ fn rank_command(
         }
     }
 
-    // Snapshot only recognized namespace candidates; the resolver rejects unknown SR_*.
-    for (name, value) in std::env::vars_os() {
-        if name.as_encoded_bytes().starts_with(b"SR_")
-            || name == "TYPESAFE_API_KEY"
-            || name == "TYPESAFE_ENDPOINT"
-        {
-            if sources.environment.len() == MAX_LAYER_ENTRIES {
-                return Err(invalid("Too many environment settings"));
-            }
-            sources.environment.push((name, value));
-        }
-    }
+    environment_sources(&mut sources)?;
 
     let workspace = std::env::current_dir().map_err(|_| invalid("Workspace is unavailable"))?;
     let user_root = user_config_root()?;

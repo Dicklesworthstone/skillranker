@@ -136,8 +136,8 @@ fn eval_help_flag_succeeds_and_documents_options() {
     assert_eq!(out.status.code(), Some(0));
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("sr eval --dataset FILE"));
-    assert!(!stdout.contains("--online"));
-    assert!(!stdout.contains("--max-requests"));
+    assert!(stdout.contains("--online"));
+    assert!(stdout.contains("--max-requests"));
     assert!(stdout.contains("--max-runtime-ms"));
 }
 
@@ -194,32 +194,70 @@ fn eval_offline_replay_batch_succeeds_with_json_report() {
 }
 
 #[test]
-fn eval_online_is_a_planned_flag_refused_before_reading_the_dataset() {
+fn a_live_batch_needs_labels_consent_a_cap_and_a_key_before_reading_input() {
     let root = temp_root();
     let dataset_file = root.join("workspace/dataset.jsonl");
     fs::write(&dataset_file, format!("{}\n", make_replay_case_json())).unwrap();
     let dataset = dataset_file.to_str().unwrap();
-    for (options, flag) in [
+    // Every refusal names its cause before any input is opened: the frame and
+    // label paths do not exist.
+    for (options, code, kind) in [
         (
-            vec!["--online", "--allow-network", "--max-requests", "1"],
-            "--online",
+            vec!["--online", "--allow-network", "--max-requests", "4"],
+            2,
+            "invalid-usage",
         ),
-        (vec!["--online"], "--online"),
-        (vec!["--max-requests", "1"], "--max-requests"),
+        (
+            vec!["--labels", "/missing", "--max-requests", "4"],
+            2,
+            "invalid-usage",
+        ),
+        (
+            vec!["--labels", "/missing", "--online", "--max-requests", "4"],
+            8,
+            "network-denied",
+        ),
+        (
+            vec!["--labels", "/missing", "--online", "--allow-network"],
+            2,
+            "invalid-usage",
+        ),
+        (
+            vec![
+                "--labels",
+                "/missing",
+                "--online",
+                "--allow-network",
+                "--max-requests",
+                "0",
+            ],
+            2,
+            "invalid-usage",
+        ),
+        (
+            vec![
+                "--labels",
+                "/missing",
+                "--online",
+                "--allow-network",
+                "--max-requests",
+                "4",
+            ],
+            4,
+            "credential-absent",
+        ),
     ] {
-        let mut args = vec!["eval", "--dataset", dataset, "--json"];
+        let mut args = vec!["eval", "--dataset", "/missing", "--json"];
         args.extend(options);
         let out = run_sr(&root, &args);
-        assert_eq!(out.status.code(), Some(2), "{args:?}: {out:?}");
-        let error: Value = serde_json::from_slice(&out.stdout).unwrap();
-        assert_eq!(error["error"]["kind"], "invalid-usage");
-        let message = error["error"]["message"].as_str().unwrap();
-        assert!(
-            message.contains(flag) && message.contains("P5") && message.contains("sr capabilities"),
-            "{message}"
-        );
+        assert_eq!(out.status.code(), Some(code), "{args:?}: {out:?}");
+        // Usage errors from argument parsing are plain; typed refusals are JSON.
+        if code != 2 {
+            let error: Value = serde_json::from_slice(&out.stdout).unwrap();
+            assert_eq!(error["error"]["kind"], kind, "{args:?}: {error}");
+        }
     }
-    // Offline replay of the same dataset still runs.
+    // Offline replay of a recorded dataset still runs.
     let out = run_sr(&root, &["eval", "--dataset", dataset, "--json"]);
     assert_eq!(out.status.code(), Some(0), "{out:?}");
 }
@@ -662,4 +700,355 @@ fn explain_derives_equations_from_the_report_without_changing_it() {
         "{text}"
     );
     assert!(text.contains("not a passed quality gate"), "{text}");
+}
+
+/// The loopback TLS Jev fixture (synthetic data only), as rank's real tests use it.
+struct LiveProvider {
+    child: std::process::Child,
+    lines: std::io::BufReader<std::process::ChildStdout>,
+    port: u16,
+}
+
+impl LiveProvider {
+    fn start(root: &std::path::Path, scenario: &str) -> Self {
+        use std::io::BufRead;
+        let dir = root.join("provider");
+        fs::create_dir_all(&dir).unwrap();
+        for (name, bytes) in [
+            (
+                "provider_server.py",
+                &include_bytes!("fixtures/jev-tls/provider_server.py")[..],
+            ),
+            (
+                "server.pem",
+                &include_bytes!("fixtures/jev-tls/server.pem")[..],
+            ),
+            (
+                "server.key",
+                &include_bytes!("fixtures/jev-tls/server.key")[..],
+            ),
+        ] {
+            fs::write(dir.join(name), bytes).unwrap();
+        }
+        let mut child = Command::new("/usr/bin/python3")
+            .arg(dir.join("provider_server.py"))
+            .arg(scenario)
+            .env_clear()
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .unwrap();
+        let mut lines = std::io::BufReader::new(child.stdout.take().unwrap());
+        let mut hello = String::new();
+        lines.read_line(&mut hello).unwrap();
+        let hello: Value = serde_json::from_str(&hello).unwrap();
+        let port = u16::try_from(hello["port"].as_u64().unwrap()).unwrap();
+        Self { child, lines, port }
+    }
+
+    /// Every request the provider answered, in order.
+    fn finish(mut self) -> Vec<Value> {
+        use std::io::BufRead;
+        let mut done = std::net::TcpStream::connect(("127.0.0.1", self.port)).unwrap();
+        std::io::Write::write_all(&mut done, b"DONE").unwrap();
+        drop(done);
+        let mut served = Vec::new();
+        loop {
+            let mut line = String::new();
+            assert!(
+                self.lines.read_line(&mut line).unwrap() > 0,
+                "provider ended early"
+            );
+            let value: Value = serde_json::from_str(&line).unwrap();
+            if value["done"] == true {
+                break;
+            }
+            if value["handshake_rejected"] != true {
+                served.push(value);
+            }
+        }
+        let _ = self.child.wait();
+        served
+    }
+}
+
+impl Drop for LiveProvider {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+fn live_workspace() -> PathBuf {
+    let root = temp_root();
+    for (name, description) in [
+        ("alpha", "Runs and repairs failing rust tests."),
+        ("beta", "Drafts release notes from git history."),
+    ] {
+        let dir = root.join("workspace/.claude/skills").join(name);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: {description}\n---\nBody.\n"),
+        )
+        .unwrap();
+    }
+    fs::write(
+        root.join("fixture-ca.pem"),
+        include_bytes!("fixtures/jev-tls/ca.pem"),
+    )
+    .unwrap();
+    root
+}
+
+fn run_live(root: &PathBuf, port: u16, args: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_sr"))
+        .env_clear()
+        .env("HOME", root)
+        .env("XDG_CONFIG_HOME", root.join("config"))
+        .env("TYPESAFE_API_KEY", "synthetic-eval-canary")
+        .env("TYPESAFE_ENDPOINT", format!("https://localhost:{port}"))
+        .env("SSL_CERT_FILE", root.join("fixture-ca.pem"))
+        .current_dir(root.join("workspace"))
+        .args(args)
+        .output()
+        .unwrap()
+}
+
+fn roster_ids(root: &PathBuf) -> Vec<String> {
+    let out = run_sr(root, &["roster", "--json"]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let listing: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let mut ids: Vec<String> = listing["records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|skill| skill["skill_id"].as_str().unwrap().to_owned())
+        .collect();
+    ids.sort();
+    ids
+}
+
+/// Live cases, each a normalized single-request context, plus their labels.
+fn live_inputs(root: &std::path::Path, labels: &[(&str, &[String])]) -> (String, String) {
+    let cases: Vec<Value> = labels
+        .iter()
+        .map(|(id, _)| {
+            serde_json::json!({
+                "schema_version": 1,
+                "key": {"frame_id": "live-frame", "family_id": format!("fam-{id}"),
+                        "case_id": id, "replicate": 0, "policy_id": "deployed"},
+                "split": "holdout",
+                "context": {
+                    "schema_version": 1, "harness": "claude_code", "producer_id": "eval-test",
+                    "workspace_root": root.join("workspace").to_str().unwrap(),
+                    "session_id": format!("session-{id}"), "agent_id": null, "branch_id": null,
+                    "context_epoch": null,
+                    "current_request": {"event_id": format!("{id}-request"),
+                        "text": "Our rust test suite started failing; find out why.",
+                        "attachments_omitted": false, "essential_attachment_missing": false},
+                    "events": [], "explicit_skill_references": [], "supplied_loads": []
+                }
+            })
+        })
+        .collect();
+    let judged: Vec<Value> = labels
+        .iter()
+        .map(|(id, acceptable)| {
+            serde_json::json!({
+                "schema_version": 1, "case_id": id, "revision": 1,
+                "acceptable_skills": acceptable, "no_skill_needed": acceptable.is_empty(),
+                "adjudicator": "judge-a", "created_at_unix_ms": 1_726_700_000_000u64
+            })
+        })
+        .collect();
+    (
+        write_jsonl(root, "live-cases.jsonl", &cases),
+        write_jsonl(root, "live-labels.jsonl", &judged),
+    )
+}
+
+#[test]
+fn a_live_batch_ranks_each_case_fresh_and_accounts_every_attempt() {
+    let root = live_workspace();
+    let ids = roster_ids(&root);
+    assert_eq!(ids.len(), 2);
+    let (cases, labels) = live_inputs(&root, &[("case-a", &ids[..1]), ("case-b", &ids[1..])]);
+    let provider = LiveProvider::start(&root, "useful");
+    let out = run_live(
+        &root,
+        provider.port,
+        &[
+            "eval",
+            "--dataset",
+            &cases,
+            "--labels",
+            &labels,
+            "--online",
+            "--allow-network",
+            "--max-requests",
+            "8",
+            "--explain",
+            "--json",
+        ],
+    );
+    let served = provider.finish();
+    let report = json_report(&out);
+    assert_eq!(report["evidence_origin"], "live");
+    assert_eq!(report["run_status"], "complete", "{report}");
+    assert_eq!(report["gate_status"], "not-established");
+    assert_eq!(report["completeness"]["cases_requested"], 2);
+    assert_eq!(report["completeness"]["cases_completed"], 2);
+    // Both cases were ranked fresh, and the report's accounting is exactly
+    // what the provider served: wide and rerank for each.
+    assert_eq!(served.len(), 4, "{served:?}");
+    assert_eq!(report["accounting"]["http_attempts"], 4);
+    assert_eq!(report["accounting"]["requests"], 4);
+    assert_eq!(report["accounting"]["input_tokens"], 2 * (100 + 120));
+    assert_eq!(report["accounting"]["output_tokens"], 2 * (25 + 30));
+    assert_eq!(report["metrics"]["judged_cases"], 2);
+    for case in report["cases"].as_array().unwrap() {
+        assert_eq!(case["status"]["status"], "completed", "{case}");
+        assert_eq!(case["status"]["decision"], "ranked", "{case}");
+    }
+    // Exactly one label can match the provider's favored first option, so
+    // one case is a hit and the other a wrong suggestion: loss 0 + 2.
+    assert_eq!(report["loss_summary"]["total_loss"], 2, "{report}");
+    assert!(
+        report["explanation"]["assumptions"]
+            .to_string()
+            .contains("evaluation_policy.v1")
+    );
+}
+
+#[test]
+fn the_request_cap_admits_a_case_only_while_its_worst_case_fits() {
+    let root = live_workspace();
+    let ids = roster_ids(&root);
+    let (cases, labels) = live_inputs(
+        &root,
+        &[
+            ("case-a", &ids[..1]),
+            ("case-b", &ids[..1]),
+            ("case-c", &ids[..1]),
+        ],
+    );
+    let provider = LiveProvider::start(&root, "useful");
+    // Four attempts cover exactly one ranking's worst case: the first case
+    // runs (two attempts), and no later case can be admitted.
+    let out = run_live(
+        &root,
+        provider.port,
+        &[
+            "eval",
+            "--dataset",
+            &cases,
+            "--labels",
+            &labels,
+            "--online",
+            "--allow-network",
+            "--max-requests",
+            "4",
+            "--json",
+        ],
+    );
+    let served = provider.finish();
+    let report = json_report(&out);
+    assert_eq!(served.len(), 2, "{served:?}");
+    assert_eq!(report["accounting"]["http_attempts"], 2);
+    assert_eq!(report["run_status"], "partial");
+    assert_eq!(report["completeness"]["cases_requested"], 3);
+    assert_eq!(report["completeness"]["cases_completed"], 1);
+    assert_eq!(report["loss_summary"]["unfinished_cases"], 2);
+    assert_eq!(report["error"]["kind"], "request-budget");
+    let unfinished = report["cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|case| case["status"]["status"] == "unfinished")
+        .count();
+    assert_eq!(unfinished, 2);
+    // Never-ranked cases carry no loss and are not counted as successes.
+    assert_eq!(report["loss_summary"]["attempted_cases"], 1);
+}
+
+#[test]
+fn a_fatal_authentication_error_stops_the_batch_after_partial_work() {
+    let root = live_workspace();
+    let ids = roster_ids(&root);
+    let (cases, labels) = live_inputs(&root, &[("case-a", &ids[..1]), ("case-b", &ids[..1])]);
+    let provider = LiveProvider::start(&root, "unauthorized");
+    let out = run_live(
+        &root,
+        provider.port,
+        &[
+            "eval",
+            "--dataset",
+            &cases,
+            "--labels",
+            &labels,
+            "--online",
+            "--allow-network",
+            "--max-requests",
+            "20",
+            "--json",
+        ],
+    );
+    let served = provider.finish();
+    let report = json_report(&out);
+    // Authentication is not retried blindly, and the second case is never sent.
+    assert_eq!(served.len(), 1, "{served:?}");
+    assert_eq!(report["accounting"]["http_attempts"], 1);
+    assert_eq!(report["run_status"], "partial");
+    assert_eq!(report["error"]["kind"], "authentication");
+    assert_eq!(report["loss_summary"]["operational_failures"], 1);
+    assert_eq!(report["loss_summary"]["unfinished_cases"], 1);
+}
+
+#[test]
+fn a_label_naming_a_skill_off_the_current_roster_is_never_sent() {
+    let root = live_workspace();
+    let ids = roster_ids(&root);
+    let gone =
+        vec!["s_0000000000000000000000000000000000000000000000000000000000000000".to_owned()];
+    let (cases, labels) = live_inputs(&root, &[("case-a", &ids[..1]), ("case-gone", &gone)]);
+    let provider = LiveProvider::start(&root, "useful");
+    let out = run_live(
+        &root,
+        provider.port,
+        &[
+            "eval",
+            "--dataset",
+            &cases,
+            "--labels",
+            &labels,
+            "--online",
+            "--allow-network",
+            "--max-requests",
+            "8",
+            "--json",
+        ],
+    );
+    let served = provider.finish();
+    let report = json_report(&out);
+    assert_eq!(served.len(), 2, "only case-a is ranked: {served:?}");
+    assert_eq!(report["run_status"], "partial");
+    let gone_case = report["cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|case| case["case_id"] == "case-gone")
+        .unwrap();
+    assert_eq!(
+        gone_case["status"]["status"], "not-estimable",
+        "{gone_case}"
+    );
+    assert!(
+        gone_case["status"]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("current roster")
+    );
+    assert_eq!(report["loss_summary"]["not_estimable_cases"], 1);
 }
