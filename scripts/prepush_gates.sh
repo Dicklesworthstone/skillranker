@@ -61,6 +61,8 @@ else
 fi
 
 LAST_LOG=""
+LOG_DIR="${TMPDIR:-/tmp}"
+LOG_DIR="${LOG_DIR%/}"
 FAILED=()
 PASSED=()
 SKIPPED=()
@@ -72,9 +74,18 @@ REVIEW=()
 gate() {
   local name="$1"; shift
   local log
-  log=$(mktemp "${TMPDIR:-/tmp}/sr-gate-XXXXXX.log")
-  LAST_LOG="$log"
   printf '\n=== %s ===\n' "$name"
+  # The X's must end the template. BSD/macOS mktemp randomizes only trailing X's, so a
+  # `...-XXXXXX.log` template is a literal file name there: the first gate created it and
+  # every later gate failed to get a log and was reported FAIL without having run.
+  if ! log=$(mktemp "$LOG_DIR/sr-gate.XXXXXX"); then
+    # An infrastructure failure, not the gate's: say so instead of reporting a verdict.
+    printf '  ERROR  cannot create a log file in %s; %s did not run\n' "$LOG_DIR" "$name"
+    FAILED+=("$name (did not run: no log file)")
+    LAST_LOG=""
+    return 0
+  fi
+  LAST_LOG="$log"
   if "$@" >"$log" 2>&1; then
     # Kept on success, not only on failure. A passing gate is the one you quote, and a receipt
     # that says "tests passed" without the counts is the kind of claim this script exists to
@@ -111,9 +122,12 @@ else
   gate "cargo test --locked" "${CARGO_PREFIX[@]}" cargo test --locked --no-fail-fast
   # The aggregate across every target, printed so a receipt can carry counts rather than a word.
   if [ -f "$LAST_LOG" ]; then
+    # POSIX awk only: the three-argument match() is a gawk extension, and macOS awk rejects
+    # the whole program as a syntax error, so the counts silently never appeared there.
     tr '\r' '\n' <"$LAST_LOG" | awk '
-      match($0, /([0-9]+) passed; ([0-9]+) failed; ([0-9]+) ignored/, m) {
-        n++; p += m[1]; f += m[2]; i += m[3]
+      match($0, /[0-9]+ passed; [0-9]+ failed; [0-9]+ ignored/) {
+        split(substr($0, RSTART, RLENGTH), c, /[^0-9]+/)
+        n++; p += c[1]; f += c[2]; i += c[3]
       }
       END { if (n > 0) printf "  %d report(s) | %d passed | %d failed | %d ignored\n", n, p, f, i }
     '
@@ -130,9 +144,11 @@ if command -v ubs >/dev/null 2>&1; then
   #
   # A critical on a line you wrote is not advisory. Fix it, as 7ebbf82 did.
   printf '\n=== ubs --diff ===\n'
-  UBS_LOG=$(mktemp "${TMPDIR:-/tmp}/sr-gate-ubs-XXXXXX.log")
-  ubs --diff >"$UBS_LOG" 2>&1
-  if grep -qE '^Critical: [1-9]' "$UBS_LOG"; then
+  # Without a log there is nothing to grep, and "no criticals found" would be a false green.
+  if ! UBS_LOG=$(mktemp "$LOG_DIR/sr-gate-ubs.XXXXXX"); then
+    printf '  ERROR  cannot create a log file in %s; ubs --diff did not run\n' "$LOG_DIR"
+    FAILED+=("ubs --diff (did not run: no log file)")
+  elif ubs --diff >"$UBS_LOG" 2>&1; grep -qE '^Critical: [1-9]' "$UBS_LOG"; then
     printf '  REVIEW  ubs --diff reports criticals in the files you touched\n'
     grep -E 'CRITICAL|rule:' "$UBS_LOG" | head -30 | sed 's/^/  /'
     printf -- '  --- full output: %s ---\n' "$UBS_LOG"
