@@ -355,3 +355,30 @@ case (`pilot-08`) abstained the first time and received a suggestion the second
 time, so needless suggestions rose to 2/5 and mean loss to 0.44. A single run of a
 borderline no-match case is therefore noisy; replicate cases before comparing
 policies on this scale.
+
+### 10.3 First baseline comparison (2026-09-25, diagnostic)
+
+A third live run of the same 18 cases (33 attempts, no operational failures)
+reported the baseline comparison of `sr eval --online`. It scores every policy
+from the same answers on one judged cohort (13 positive and 5 no-match cases), so
+no extra request was made:
+
+| Policy | Top-one precision | Positive cases served | Needless (no-match) | Mean loss |
+|---|---|---|---|---|
+| choice-only (wide gate, top wide probability) | 12/15 | 12/13 | 2/5 | 0.33 |
+| fit-only (gate, highest fit ≥ threshold) | 9/15 | 9/13 | 2/5 | 0.67 |
+| blend (production) | 11/15 | 11/13 | 2/5 | 0.44 |
+
+Intrinsic coverage was complete: all 13 positive cases admitted an acceptable
+skill, and all 13 passed the gate with one in the shortlist. Fit calibration over
+120 judged reranked pairs had a Brier score of 0.079. Below 0.4, 0 of 85 pairs were
+acceptable. The top bin was overconfident: 18 of 25 pairs with fit ≥ 0.8
+(mean 0.91) were acceptable.
+
+Every policy shares the gate, so they all err on the same no-match cases.
+Choice-only outscoring the production blend is a hypothesis for the held-out
+corpus, not a finding. Its Wilson intervals (for example positive cases:
+0.67–0.99 against 0.58–0.96) overlap almost entirely, and the labels come from AI
+adjudicators on constructed requests. The Quill-only baseline and the
+latest-request-only context ablation were not run; the report names both as not
+computed.
