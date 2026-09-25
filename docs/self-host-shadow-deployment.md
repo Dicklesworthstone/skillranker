@@ -371,3 +371,33 @@ the confirmation to look for.
   `context_contract::branch_and_worktree` failure under load was rerun green
   four times and filed as `sr-bytg`.
 - Not changed: hook scope, consent, and the managed settings entry.
+
+## Redeployment — 2026-09-25 05:16Z (AzureJaguar, signals and atomic cache)
+
+- Binary: `~/.local/bin/sr`, SHA256
+  `5e0a98687b1f5ffc9a2b105470b13d38d3d6e9e70a2681b9c573d0c1426823b2`, built
+  `--release --locked` through RCH from a clean export of the pushed revision
+  `ca172d6`. Freshness was proven by a string only that revision contains,
+  not by mtime. The previous binary (SHA256 `53d7e1d2…`) is kept as
+  `~/.local/bin/sr.backup.20260925T051604Z-7054402`.
+- Adds over `7054402`:
+  - `sr-c4v6` (`01d437c`): SIGTERM and SIGINT cancel the running rank or
+    hook, which drains and records the turn as an unavailable timeout.
+    Before, the process died with its row in flight, the common outcome when
+    Claude's hook timeout fires under load.
+  - `sr-ron8` (`ca172d6`): a wide answer and its rerank are published in one
+    transaction that also completes the lease, so the cache never pairs
+    answers from two evaluations. A superseded leader stops before paying
+    for a rerank.
+- Pre-deploy check, now a repository tool:
+  `python3 scripts/sweep_prompt_moments.py --compare <new sr>` replays
+  every real prompt moment of this workspace's transcripts through both
+  binaries. It runs in an owner-only sandbox with a placeholder key and a
+  refusing loopback endpoint, and prints session:line and outcomes only.
+  Result: 83 moments, identical outcomes. 71 reach the provider stage, 10
+  are honest `insufficient-context` refusals after partial compactions that
+  keep no summary, and 2 are `no-row` redeliveries sharing a prompt id with
+  an earlier record of the same turn.
+- Gates: `01d437c` remote full suite 1376/0/10; `ca172d6` remote full suite
+  1375/0/10. Both fmt and strict clippy, and ubs 0 critical.
+- Not changed: hook scope, consent, and the managed settings entry.
