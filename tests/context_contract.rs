@@ -52,15 +52,22 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+/// A fresh directory per call. A failed run skips cleanup, so a reused PID must
+/// not inherit its repositories and branches: the name includes the time and
+/// creation is exclusive, so a collision fails loudly instead of reusing state.
 fn temp_dir(label: &str) -> PathBuf {
     static SEQ: AtomicU64 = AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
     let path = std::env::temp_dir().join(format!(
-        "sr-ctx-test-{}-{}-{}",
+        "sr-ctx-test-{}-{nanos}-{}-{}",
         std::process::id(),
         SEQ.fetch_add(1, Ordering::Relaxed),
         label
     ));
-    fs::create_dir_all(&path).unwrap();
+    fs::create_dir(&path).unwrap();
     path
 }
 
