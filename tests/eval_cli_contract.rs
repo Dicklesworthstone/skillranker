@@ -920,6 +920,13 @@ fn a_live_batch_ranks_each_case_fresh_and_accounts_every_attempt() {
             .to_string()
             .contains("evaluation_policy.v1")
     );
+    // Both cases were previewed with no network before the first send; the
+    // provider's exact request count above proves the previews sent nothing.
+    let frozen = &report["disclosure_preflight"];
+    assert_eq!(frozen["cases_checked"], 2, "{frozen}");
+    assert_eq!(frozen["cases_refused"], 0);
+    assert!(frozen["disclosed_bytes"].as_u64().unwrap() > 0);
+    assert_eq!(frozen["receipts_digest"].as_str().unwrap().len(), 64);
 }
 
 #[test]

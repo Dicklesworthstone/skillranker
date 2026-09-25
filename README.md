@@ -419,8 +419,10 @@ A live case carries its frame key, split and a normalized request `context`; it 
 a fresh evaluation of today's selector and roster, not a replay. A case is sent only
 while its worst-case attempts still fit the cap. Cases without a judgment, or whose
 judgment names a skill missing from the current roster, are reported not estimable
-and are never sent. An authentication or consent failure stops scheduling. Live
-runs write nothing to the ledger or response cache.
+and are never sent. Before the first request, every remaining case is previewed
+with no network; a refused preview is never sent, and the report freezes the
+batch's disclosure totals and receipt digest. An authentication or consent failure
+stops scheduling. Live runs write nothing to the ledger or response cache.
 
 Sampling does not grant network access or enlarge the request budget. Missing
 stage responses remain unevaluated in replay; they are never replaced with

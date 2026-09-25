@@ -187,6 +187,9 @@ pub struct EvaluationBatchReport {
     /// diagnostic fixed-seed selection.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub design_weighted_loss: Option<DesignWeightedLossReport>,
+    /// A live batch's disclosure, previewed for every case before any send.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub disclosure_preflight: Option<DisclosurePreflight>,
     /// Requested by `--explain`; derived only from this report's own values.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub explanation: Option<ReportExplanation>,
@@ -446,6 +449,7 @@ pub fn execute_evaluation_batch<R: BufRead>(
         reconciliation: None,
         sample_manifest: None,
         design_weighted_loss: None,
+        disclosure_preflight: None,
         explanation: None,
         cases: reports,
         error,
@@ -530,6 +534,7 @@ struct FrameRun {
     /// Why scheduling stopped early; reported only for a partial run.
     error: Option<ReportError>,
     elapsed_ms: BTreeMap<CaseKey, u64>,
+    preflight: Option<DisclosurePreflight>,
 }
 
 impl FrameRun {
@@ -540,6 +545,7 @@ impl FrameRun {
             skipped: Vec::new(),
             error: None,
             elapsed_ms: BTreeMap::new(),
+            preflight: None,
         }
     }
 }
@@ -667,6 +673,7 @@ fn score_frame(
         reconciliation: Some(reconciliation),
         sample_manifest: manifest,
         design_weighted_loss,
+        disclosure_preflight: run.preflight,
         explanation: None,
         cases: reports,
         error: if complete { None } else { run.error },
@@ -760,6 +767,23 @@ pub struct LiveBatchLimits {
     pub attempts_per_case: usize,
 }
 
+/// What a live batch will disclose, frozen before its first request: every
+/// case to be sent was previewed locally with no network, and a case whose
+/// preview was refused is never sent.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DisclosurePreflight {
+    pub cases_checked: usize,
+    pub cases_refused: usize,
+    /// Cases whose preview ends locally, so a live run sends nothing for them.
+    pub cases_without_request: usize,
+    pub disclosed_bytes: u64,
+    pub total_redactions: u64,
+    pub total_truncated: u64,
+    pub total_omitted: u64,
+    /// BLAKE3 over each checked case's ID and receipt, in selection order.
+    pub receipts_digest: String,
+}
+
 /// Errors after which no further case can succeed: scheduling stops.
 const FATAL_LIVE_KINDS: [(&str, u8); 3] = [
     ("authentication", 4),
@@ -771,7 +795,10 @@ const FATAL_LIVE_KINDS: [(&str, u8); 3] = [
 ///
 /// Selection (and any sample manifest) is frozen before the first ranking.
 /// A case without an independent judgment, or whose judgment names a skill
-/// absent from `current_roster`, is not estimable and is never sent. A case
+/// absent from `current_roster`, is not estimable and is never sent. Every
+/// remaining case is then previewed by `preflight` with no network (`Ok(None)`
+/// when its preview sends nothing), and the batch's disclosure is frozen into
+/// the report; a refused preview is never sent. A case
 /// is admitted only while the batch deadline and its worst-case attempts fit;
 /// every later case is reported unfinished, as is every case after a fatal
 /// provider error. Provider usage is summed exactly as each ranking reported it.
@@ -784,6 +811,7 @@ pub fn execute_live_frame_evaluation<L: BufRead>(
     limits: LiveBatchLimits,
     clock: &EntryClock,
     created_at_unix_ms: u64,
+    mut preflight: impl FnMut(&LiveEvaluationCase) -> Result<Option<Value>, String>,
     mut rank: impl FnMut(&LiveEvaluationCase) -> LiveRankOutcome,
 ) -> Result<EvaluationBatchReport, EvaluationError> {
     if limits.max_requests == 0 || limits.attempts_per_case == 0 || limits.max_runtime_ms == 0 {
@@ -820,10 +848,8 @@ pub fn execute_live_frame_evaluation<L: BufRead>(
         evidence_origin: "live",
         ..FrameRun::recorded()
     };
-    let mut executed = Vec::with_capacity(selected.len());
-    let mut stopped: Option<(String, ReportError)> = None;
-    for mut record in selected {
-        let case = by_key[&record.key];
+    let mut pending = Vec::with_capacity(selected.len());
+    for record in selected {
         let judgment = judgments.get(&record.key.case_id);
         let off_roster = judgment.is_some_and(|label| {
             label
@@ -846,6 +872,56 @@ pub fn execute_live_frame_evaluation<L: BufRead>(
             ));
             continue;
         }
+        pending.push(record);
+    }
+
+    // Freeze the whole batch's disclosure before its first request.
+    let mut frozen = DisclosurePreflight::default();
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"skillranker:live_disclosure_preflight:v1\n");
+    let mut admitted = Vec::with_capacity(pending.len());
+    for record in pending {
+        frozen.cases_checked += 1;
+        let case_id = record.key.case_id.as_bytes();
+        hasher.update(&(case_id.len() as u64).to_le_bytes());
+        hasher.update(case_id);
+        match preflight(by_key[&record.key]) {
+            Ok(receipt) => {
+                let bytes = serde_json::to_vec(&receipt).unwrap_or_default();
+                hasher.update(&(bytes.len() as u64).to_le_bytes());
+                hasher.update(&bytes);
+                match &receipt {
+                    Some(receipt) => {
+                        let count = |name: &str| receipt[name].as_u64().unwrap_or(0);
+                        frozen.disclosed_bytes += count("disclosed_bytes");
+                        frozen.total_redactions += count("total_redactions");
+                        frozen.total_truncated += count("total_truncated");
+                        frozen.total_omitted += count("total_omitted");
+                    }
+                    None => frozen.cases_without_request += 1,
+                }
+                admitted.push(record);
+            }
+            Err(kind) => {
+                hasher.update(b"refused\0");
+                hasher.update(kind.as_bytes());
+                frozen.cases_refused += 1;
+                run.skipped.push((
+                    record.key,
+                    CaseExecutionStatus::NotEstimable {
+                        reason: format!("disclosure preflight refused ({kind}); not sent"),
+                    },
+                ));
+            }
+        }
+    }
+    frozen.receipts_digest = hasher.finalize().to_hex().to_string();
+    run.preflight = Some(frozen);
+
+    let mut executed = Vec::with_capacity(admitted.len());
+    let mut stopped: Option<(String, ReportError)> = None;
+    for mut record in admitted {
+        let case = by_key[&record.key];
         if stopped.is_none() {
             if clock.now().as_millis() >= expires {
                 stopped = Some((

@@ -3184,6 +3184,45 @@ fn eval_live_command(
         max_runtime_ms,
         attempts_per_case: crate::limits::DEFAULT_HTTP_ATTEMPTS as usize,
     };
+    // The preview runs the same pipeline as a stateless dry run: no network.
+    let preview_gate = crate::effects::EffectGate::new(
+        crate::privacy::EffectFlags {
+            dry_run: true,
+            ..Default::default()
+        },
+        crate::effects::Scope::Rank,
+    )
+    .map_err(|_| invalid("Conflicting live batch effects"))?;
+    let case_args = |case: &crate::evaluation::batch::LiveEvaluationCase,
+                     gate: crate::effects::EffectGate| {
+        crate::pipeline::RankArgs {
+            workspace: workspace.clone(),
+            user_config_root: user_root.clone(),
+            home: home.clone(),
+            cache_dir: None,
+            ledger_dir: None,
+            sources: sources.clone(),
+            gate,
+            source_options: crate::context::source::SourceOptions {
+                // Names the case; its bytes are supplied in memory.
+                context: Some(crate::roster::LocalPath::new(PathBuf::from(format!(
+                    "eval-case:{}",
+                    case.key.case_id
+                )))),
+                ..Default::default()
+            },
+            require_skills: Vec::new(),
+            shortlist_ids: Vec::new(),
+            roster_file: None,
+            explain: false,
+            why_not: None,
+            cursor: None,
+            output_json: true,
+            output_table: false,
+            dry_run: gate.policy().flags().dry_run,
+            save_case: None,
+        }
+    };
     let report = crate::evaluation::batch::execute_live_frame_evaluation(
         cases,
         labels,
@@ -3192,59 +3231,24 @@ fn eval_live_command(
         limits,
         clock,
         now_unix_ms,
-        |case| {
-            let args = crate::pipeline::RankArgs {
-                workspace: workspace.clone(),
-                user_config_root: user_root.clone(),
-                home: home.clone(),
-                cache_dir: None,
-                ledger_dir: None,
-                sources: sources.clone(),
-                gate,
-                source_options: crate::context::source::SourceOptions {
-                    // Names the case; its bytes are supplied in memory.
-                    context: Some(crate::roster::LocalPath::new(PathBuf::from(format!(
-                        "eval-case:{}",
-                        case.key.case_id
-                    )))),
-                    ..Default::default()
-                },
-                require_skills: Vec::new(),
-                shortlist_ids: Vec::new(),
-                roster_file: None,
-                explain: false,
-                why_not: None,
-                cursor: None,
-                output_json: true,
-                output_table: false,
-                dry_run: false,
-                save_case: None,
-            };
-            rank_live_case(clock, per_case_ms, args, case)
-        },
+        |case| preview_live_case(clock, per_case_ms, case_args(case, preview_gate), case),
+        |case| rank_live_case(clock, per_case_ms, case_args(case, gate), case),
     )
     .map_err(eval_error)?;
     render_eval_report(report, eval_matches)
 }
 
-/// One case's fresh ranking under its own deadline, bounded by the batch's.
-fn rank_live_case(
+/// Run one case's pipeline under its own deadline, bounded by the batch's.
+/// A bare failure yields its error kind.
+fn run_case_pipeline(
     batch: &EntryClock,
     per_case_ms: u64,
     args: crate::pipeline::RankArgs,
     case: &crate::evaluation::batch::LiveEvaluationCase,
-) -> crate::evaluation::batch::LiveRankOutcome {
-    use crate::evaluation::batch::LiveRankOutcome;
-    let started = std::time::Instant::now();
-    let unavailable = |kind: &str| LiveRankOutcome {
-        decision: "unavailable".into(),
-        error_kind: Some(kind.to_owned()),
-        elapsed_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
-        ..LiveRankOutcome::default()
-    };
+) -> Result<OutputDocument, &'static str> {
     let remaining = batch.remaining_until_expiry().as_millis();
     let total = per_case_ms.min(remaining);
-    let Ok(clock) = DurationMillis::new("case_timeout_ms", total, crate::config::MAX_TIMEOUT_MS)
+    let clock = DurationMillis::new("case_timeout_ms", total, crate::config::MAX_TIMEOUT_MS)
         .and_then(|total_ms| {
             DurationMillis::new(
                 "case_cleanup_reserve_ms",
@@ -3255,15 +3259,9 @@ fn rank_live_case(
         })
         .map_err(crate::runtime::RuntimeError::from)
         .and_then(|(total_ms, reserve)| EntryClock::capture_with(total_ms, reserve))
-    else {
-        return unavailable("timeout");
-    };
-    let Ok(context) = serde_json::to_vec(&case.context) else {
-        return unavailable("malformed-input");
-    };
-    let Ok(invocation) = crate::runtime::ProcessInvocation::from_clock(clock) else {
-        return unavailable("timeout");
-    };
+        .map_err(|_| "timeout")?;
+    let context = serde_json::to_vec(&case.context).map_err(|_| "malformed-input")?;
+    let invocation = crate::runtime::ProcessInvocation::from_clock(clock).map_err(|_| "timeout")?;
     let outcome = invocation
         .request_cx()
         .map_err(|_| (6u8, "timeout", "Local runtime unavailable".into()))
@@ -3279,9 +3277,52 @@ fn rank_live_case(
                 ),
             )
         });
-    let document = match finish_invocation(invocation, outcome) {
+    finish_invocation(invocation, outcome).map_err(|(_, kind, _)| kind)
+}
+
+/// A case's disclosure preview with no network: its receipt, `None` when the
+/// preview ends locally without a request, or the refusal's kind.
+fn preview_live_case(
+    batch: &EntryClock,
+    per_case_ms: u64,
+    args: crate::pipeline::RankArgs,
+    case: &crate::evaluation::batch::LiveEvaluationCase,
+) -> Result<Option<Value>, String> {
+    let document = run_case_pipeline(batch, per_case_ms, args, case)?;
+    let value = document.as_value();
+    if let Some(receipt) = value.get("disclosure") {
+        return Ok(Some(receipt.clone()));
+    }
+    let local = value.get("local_decision").unwrap_or(value);
+    match local["decision"].as_str() {
+        Some("unavailable") | None => Err(local["error"]["kind"]
+            .as_str()
+            .unwrap_or("unavailable")
+            .to_owned()),
+        Some(_) => Ok(None),
+    }
+}
+
+/// One case's fresh ranking under its own deadline, bounded by the batch's.
+fn rank_live_case(
+    batch: &EntryClock,
+    per_case_ms: u64,
+    args: crate::pipeline::RankArgs,
+    case: &crate::evaluation::batch::LiveEvaluationCase,
+) -> crate::evaluation::batch::LiveRankOutcome {
+    use crate::evaluation::batch::LiveRankOutcome;
+    let started = std::time::Instant::now();
+    let elapsed = || u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    let document = match run_case_pipeline(batch, per_case_ms, args, case) {
         Ok(document) => document,
-        Err((_, kind, _)) => return unavailable(kind),
+        Err(kind) => {
+            return LiveRankOutcome {
+                decision: "unavailable".into(),
+                error_kind: Some(kind.to_owned()),
+                elapsed_ms: elapsed(),
+                ..LiveRankOutcome::default()
+            };
+        }
     };
     let value = document.as_value();
     let usage = |name: &str| value["usage"][name].as_u64().unwrap_or(0);
@@ -3303,7 +3344,7 @@ fn rank_live_case(
         input_tokens: usage("input_tokens"),
         output_tokens: usage("output_tokens"),
         error_kind: value["error"]["kind"].as_str().map(str::to_owned),
-        elapsed_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+        elapsed_ms: elapsed(),
     }
 }
 

@@ -251,6 +251,7 @@ fn the_runtime_cap_stops_scheduling_halfway_and_reports_unfinished_cases() {
         },
         &EntryClock::capture().unwrap(),
         0,
+        |_| Ok(Some(json!({"disclosed_bytes": 10}))),
         |case| {
             ranked.push(case.key.case_id.clone());
             // Each ranking outlasts the whole batch deadline.
@@ -296,6 +297,7 @@ fn the_runtime_cap_stops_scheduling_halfway_and_reports_unfinished_cases() {
         },
         &EntryClock::capture().unwrap(),
         0,
+        |_| Ok(None),
         |_| LiveRankOutcome {
             decision: "ranked".into(),
             suggested_skills: vec!["s_alpha".into()],
@@ -307,4 +309,75 @@ fn the_runtime_cap_stops_scheduling_halfway_and_reports_unfinished_cases() {
     assert_eq!(report.run_status, RunStatus::Complete);
     assert_eq!(report.accounting.http_attempts, 6);
     assert!(report.error.is_none());
+}
+
+#[test]
+fn a_refused_disclosure_preview_is_never_sent_and_the_preflight_is_frozen_first() {
+    use skillranker::evaluation::batch::{
+        LiveBatchLimits, LiveRankOutcome, execute_live_frame_evaluation,
+    };
+    let ids = ["a", "b", "c"];
+    let roster = std::collections::BTreeSet::from(["s_alpha".to_owned()]);
+    let run = || {
+        let order = std::cell::RefCell::new(Vec::new());
+        let report = execute_live_frame_evaluation(
+            ids.iter().map(|id| live_case(id)).collect(),
+            live_labels(&ids),
+            None,
+            &roster,
+            LiveBatchLimits {
+                max_requests: 100,
+                max_runtime_ms: 60_000,
+                attempts_per_case: 4,
+            },
+            &EntryClock::capture().unwrap(),
+            0,
+            |case| {
+                order
+                    .borrow_mut()
+                    .push(format!("preview {}", case.key.case_id));
+                match case.key.case_id.as_str() {
+                    "b" => Err("unsupported-input".to_owned()),
+                    _ => Ok(Some(json!({"disclosed_bytes": 100, "total_redactions": 1}))),
+                }
+            },
+            |case| {
+                order
+                    .borrow_mut()
+                    .push(format!("send {}", case.key.case_id));
+                LiveRankOutcome {
+                    decision: "ranked".into(),
+                    suggested_skills: vec!["s_alpha".into()],
+                    http_attempts: 2,
+                    ..LiveRankOutcome::default()
+                }
+            },
+        )
+        .unwrap();
+        (report, order.into_inner())
+    };
+    let (report, order) = run();
+    // Every preview precedes every send, and the refused case is never sent.
+    assert_eq!(
+        order,
+        ["preview a", "preview b", "preview c", "send a", "send c"]
+    );
+    let frozen = report.disclosure_preflight.as_ref().unwrap();
+    assert_eq!(frozen.cases_checked, 3);
+    assert_eq!(frozen.cases_refused, 1);
+    assert_eq!(frozen.disclosed_bytes, 200);
+    assert_eq!(frozen.total_redactions, 2);
+    assert_eq!(frozen.receipts_digest.len(), 64);
+    let refused = report.cases.iter().find(|c| c.case_id == "b").unwrap();
+    assert!(matches!(
+        &refused.status,
+        CaseExecutionStatus::NotEstimable { reason } if reason.contains("unsupported-input")
+    ));
+    assert_eq!(report.run_status, RunStatus::Partial);
+    assert_eq!(report.accounting.http_attempts, 4);
+    // The same inputs freeze the same digest.
+    assert_eq!(
+        run().0.disclosure_preflight.unwrap().receipts_digest,
+        frozen.receipts_digest
+    );
 }
