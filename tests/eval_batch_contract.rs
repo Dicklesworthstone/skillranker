@@ -464,6 +464,11 @@ fn baselines_score_every_policy_on_the_same_judged_cohort_from_one_runs_answers(
                 .into(),
                 suggested_skills: suggested,
                 http_attempts: 2,
+                elapsed_ms: match case.key.case_id.as_str() {
+                    "pos-1" => 100,
+                    "pos-2" => 200,
+                    _ => 300,
+                },
                 evidence: Some(evidence),
                 ..LiveRankOutcome::default()
             }
@@ -553,6 +558,22 @@ fn baselines_score_every_policy_on_the_same_judged_cohort_from_one_runs_answers(
         .map(|bin| (bin.pairs, bin.acceptable.successes))
         .collect();
     assert_eq!(counts, [(0, 0), (1, 0), (0, 0), (0, 0), (2, 1)]);
+    // Only the blend publishes a list: pos-1's covers alpha, pos-2's is empty.
+    let top_k = policy("blend").top_k_coverage.unwrap();
+    assert_eq!((top_k.successes, top_k.denominator), (1, 2));
+    assert!(policy("choice-only").top_k_coverage.is_none());
+    // Nearest-rank percentiles over every executed ranking.
+    let latency = baselines.latency_ms.unwrap();
+    assert_eq!(
+        (
+            latency.cases,
+            latency.p50,
+            latency.p95,
+            latency.p99,
+            latency.max
+        ),
+        (3, 200, 300, 300, 300)
+    );
 }
 
 #[test]

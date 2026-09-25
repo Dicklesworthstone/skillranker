@@ -1003,12 +1003,14 @@ pub fn execute_live_frame_evaluation<L: BufRead>(
         executed.push(record);
     }
     run.error = stopped.map(|(_, error)| error);
-    run.baselines = Some(compare_baselines(
+    let mut comparison = compare_baselines(
         &executed,
         &judgments,
         &evidence_by_case,
         limits.fit_threshold,
-    ));
+    );
+    comparison.latency_ms = latency_summary(run.elapsed_ms.values().copied().collect());
+    run.baselines = Some(comparison);
     score_frame(executed, &labels, manifest, run)
 }
 
@@ -1063,6 +1065,10 @@ pub struct PolicyScore {
     pub needless_suggestion_rate: Ratio,
     /// Positive cases the policy abstained on.
     pub false_abstention_rate: Ratio,
+    /// Positive cases where any published suggestion is acceptable; only the
+    /// production blend publishes more than one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub top_k_coverage: Option<Ratio>,
     /// Mean `evaluation_policy.v1` loss over the evaluated cases.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mean_loss: Option<f64>,
@@ -1084,6 +1090,38 @@ pub struct BaselineComparison {
     /// Fit calibration on judged reranked pairs.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fit_calibration: Option<FitCalibration>,
+    /// Wall time of each live ranking, including local work and retries.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latency_ms: Option<LatencySummary>,
+}
+
+/// Nearest-rank percentiles of per-case ranking time; every executed case
+/// counts, failures and timeouts included.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LatencySummary {
+    pub cases: usize,
+    pub p50: u64,
+    pub p95: u64,
+    pub p99: u64,
+    pub max: u64,
+}
+
+fn latency_summary(mut samples: Vec<u64>) -> Option<LatencySummary> {
+    if samples.is_empty() {
+        return None;
+    }
+    samples.sort_unstable();
+    let rank = |q: f64| {
+        let index = ((q * samples.len() as f64).ceil() as usize).clamp(1, samples.len()) - 1;
+        samples[index]
+    };
+    Some(LatencySummary {
+        cases: samples.len(),
+        p50: rank(0.50),
+        p95: rank(0.95),
+        p99: rank(0.99),
+        max: samples[samples.len() - 1],
+    })
 }
 
 /// Fit estimates scored against judgments. The sampling frame is every
@@ -1281,6 +1319,19 @@ fn compare_baselines(
             positive_suggestion_rate: Ratio::of(positive_hits, positive_cases),
             needless_suggestion_rate: Ratio::of(needless, no_match_cases),
             false_abstention_rate: Ratio::of(abstentions, positive_cases),
+            top_k_coverage: (name == "blend").then(|| {
+                let covered = cohort
+                    .iter()
+                    .filter(|(record, label, _)| {
+                        positive(label)
+                            && record
+                                .suggested_skills
+                                .iter()
+                                .any(|id| acceptable(label, id))
+                    })
+                    .count();
+                Ratio::of(covered, positive_cases)
+            }),
             mean_loss: (evaluated > 0).then(|| f64::from(total_loss) / evaluated as f64),
         });
     }
