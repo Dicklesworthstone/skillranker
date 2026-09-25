@@ -700,8 +700,9 @@ pub struct SkillStatSummary {
 }
 
 /// Hook invocations counted at entry against the hook turns the ledger recorded, over
-/// the part of the window the entry counter covers (sr-01h3). A harness notification
-/// delivered inside a turn already under way is counted apart and subtracted (sr-jdji).
+/// the part of the window the entry counter covers (sr-01h3). A harness task
+/// notification that is not a user turn is counted apart and subtracted: one delivered
+/// inside a turn already under way (sr-jdji), or one skipped by policy (sr-sif6).
 /// The rest of the difference counts invocations that left no row: payloads that never
 /// parsed, invocations starved past their own deadline, and redeliveries of one turn.
 /// Only the first two are sr failures, so `unrecorded` is an upper bound on them.
@@ -717,8 +718,10 @@ pub struct HookEntryReport {
     pub counted_at_entry: u64,
     /// Hook-channel turns (`shadow`, `advisory-hook`) recorded over the same span.
     pub recorded: u64,
-    /// Invocations that were a harness notification delivered inside a turn already
-    /// under way (sr-jdji): not turns, so they never record a row.
+    /// Invocations that were a harness task notification rather than a user turn,
+    /// so they never record a row: one delivered inside a turn already under way
+    /// (sr-jdji), and, under the default `hook.notification_turns = "skip"`, one
+    /// that started a turn while the agent was idle (sr-sif6).
     pub non_turn_deliveries: u64,
     /// `counted_at_entry - recorded - non_turn_deliveries`, not below zero:
     /// invocations that left no row. Still an upper bound on sr's unrecorded
