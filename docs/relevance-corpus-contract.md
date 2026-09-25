@@ -382,3 +382,22 @@ corpus, not a finding. Its Wilson intervals (for example positive cases:
 adjudicators on constructed requests. The Quill-only baseline and the
 latest-request-only context ablation were not run; the report names both as not
 computed.
+
+A fourth live run (2026-09-25) added the Quill-only baseline: Quill ranks the
+admitted roster locally (no network), and its top match is the policy's pick,
+with no gate. Jev's answers carry nearly all of the selection quality:
+
+| Policy | Top-one precision | Positive cases served | Needless (no-match) | Mean loss |
+|---|---|---|---|---|
+| quill-only | 1/18 | 1/13 | 5/5 | 1.89 |
+| choice-only | 12/15 | 12/13 | 2/5 | 0.33 |
+| fit-only | 10/15 | 10/13 | 2/5 | 0.56 |
+| blend (production) | 11/15 | 11/13 | 2/5 | 0.44 |
+
+The production blend's published top-K list held an acceptable skill in 13 of 13
+positive cases. Fit-only moved from 9 to 10 between runs, the same
+run-to-run variance seen before. Per-case ranking time with no response cache
+(roster resolution, two Jev stages, and this evaluation's local lexical pass) was
+p50 1,763 ms, p95 and maximum 2,134 ms over 18 cases. That is above the warm
+p95 target of 1,500 ms, which assumes an exact cache hit or warm transport; this run
+had neither. The same non-claims apply.
