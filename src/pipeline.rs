@@ -413,6 +413,54 @@ pub async fn execute_pipeline_with_context(
     .await
 }
 
+/// How many lexical hits an evaluation keeps for the Quill-only baseline.
+const LEXICAL_EVIDENCE_LIMIT: usize = 10;
+
+/// Quill's ranking of exactly the admitted skills, for evaluation only. A
+/// lexical miss is `Some(empty)`; an engine, budget or deadline failure is
+/// `None`, never an invented miss.
+async fn lexical_baseline(
+    roster: &ResolvedRoster,
+    admitted: &[crate::roster::resolution::AdvisorySkill<'_>],
+    input: QueryInput<'_>,
+    cx: &Cx,
+    clock: &EntryClock,
+) -> Option<Vec<String>> {
+    let admitted_ids: BTreeSet<&SkillId> = admitted.iter().map(|s| &s.binding.id).collect();
+    let not_admitted: BTreeSet<SkillId> = roster
+        .skills()
+        .iter()
+        .filter(|skill| {
+            !skill
+                .bindings()
+                .iter()
+                .any(|b| admitted_ids.contains(&b.id))
+        })
+        .filter_map(|skill| skill.bindings().first().map(|b| b.id.clone()))
+        .collect();
+    match crate::roster::retrieval::retrieve_ranked(
+        roster,
+        &not_admitted,
+        input,
+        RetrievalBudget::default(),
+        cx,
+        clock,
+    )
+    .await
+    {
+        Ok(selection) => Some(
+            selection
+                .candidates
+                .iter()
+                .take(LEXICAL_EVIDENCE_LIMIT)
+                .map(|s| s.binding.id.as_str().to_owned())
+                .collect(),
+        ),
+        Err(failure) if failure.kind == RetrievalError::RetrievalEmpty => Some(Vec::new()),
+        Err(_) => None,
+    }
+}
+
 /// What each ranking stage produced for one evaluated case: the input to
 /// baseline comparisons, which reuse these answers and make no extra request.
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -424,6 +472,10 @@ pub struct StageEvidence {
     pub quill_ranked: bool,
     pub wide: Option<WideEvidence>,
     pub rerank: Option<RerankEvidence>,
+    /// Quill's lexical ranking of the admitted skills (at most ten), run for
+    /// evaluation even when production admits the whole roster. `None` when
+    /// it could not run; an empty list is a lexical miss.
+    pub lexical: Option<Vec<String>>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -1896,8 +1948,35 @@ async fn rank_once(
                         format!("Retrieval error: {err}"),
                     ),
                 })?;
+            if let Some(evidence) = progress.stage_evidence.as_mut() {
+                evidence.lexical = Some(
+                    selection
+                        .candidates
+                        .iter()
+                        .take(LEXICAL_EVIDENCE_LIMIT)
+                        .map(|s| s.binding.id.as_str().to_owned())
+                        .collect(),
+                );
+            }
             (selection.candidates, true, selection.diagnostics.method)
         } else {
+            if progress.stage_evidence.is_some() {
+                let lexical = lexical_baseline(
+                    &roster,
+                    &admission.admitted,
+                    QueryInput {
+                        latest_request: normalized_context.current_request.text.as_str(),
+                        active_task: task_anchor_text,
+                        recent_errors: "",
+                    },
+                    cx,
+                    clock,
+                )
+                .await;
+                if let Some(evidence) = progress.stage_evidence.as_mut() {
+                    evidence.lexical = lexical;
+                }
+            }
             (admission.admitted, false, None)
         };
 

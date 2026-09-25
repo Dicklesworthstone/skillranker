@@ -412,6 +412,7 @@ fn baselines_score_every_policy_on_the_same_judged_cohort_from_one_runs_answers(
     let stages = |shortlist: &[(&str, f64)], fits: &[(&str, f64)]| StageEvidence {
         admitted: vec!["s_alpha".into(), "s_beta".into()],
         quill_ranked: false,
+        lexical: None,
         wide: Some(WideEvidence {
             needs_skill: 0.9,
             none_probability: 0.1,
@@ -444,7 +445,7 @@ fn baselines_score_every_policy_on_the_same_judged_cohort_from_one_runs_answers(
             // pos-1: wide prefers beta, fit prefers alpha, production emits alpha.
             // pos-2: the gate stops the run; everyone abstains.
             // none:  wide prefers beta, fit prefers beta, production abstains.
-            let (evidence, suggested) = match case.key.case_id.as_str() {
+            let (mut evidence, suggested) = match case.key.case_id.as_str() {
                 "pos-1" => (
                     stages(
                         &[("s_beta", 0.6), ("s_alpha", 0.3)],
@@ -454,6 +455,13 @@ fn baselines_score_every_policy_on_the_same_judged_cohort_from_one_runs_answers(
                 ),
                 "pos-2" => (stages(&[], &[]), vec![]),
                 _ => (stages(&[("s_beta", 0.7)], &[("s_beta", 0.8)]), vec![]),
+            };
+            // Quill ranks alpha first for pos-1, finds nothing for the no-match
+            // case, and could not run for pos-2.
+            evidence.lexical = match case.key.case_id.as_str() {
+                "pos-1" => Some(vec!["s_alpha".to_owned(), "s_beta".to_owned()]),
+                "pos-2" => None,
+                _ => Some(Vec::new()),
             };
             LiveRankOutcome {
                 decision: if suggested.is_empty() {
@@ -538,11 +546,24 @@ fn baselines_score_every_policy_on_the_same_judged_cohort_from_one_runs_answers(
     assert_eq!(blend.mean_loss, Some(1.0 / 3.0));
     assert!(blend.top1_precision.wilson_95.is_some());
     assert!(
-        baselines
+        !baselines
             .not_computed
             .iter()
             .any(|note| note.starts_with("quill-only"))
     );
+    // quill-only: pos-1 -> alpha (0), none -> abstain (0); pos-2 not evaluated.
+    let quill = policy("quill-only");
+    assert_eq!((quill.evaluated_cases, quill.not_evaluated_cases), (2, 1));
+    assert_eq!(
+        (
+            quill.top1_precision.successes,
+            quill.top1_precision.denominator
+        ),
+        (1, 1)
+    );
+    assert_eq!(quill.needless_suggestion_rate.successes, 0);
+    assert_eq!(quill.mean_loss, Some(0.0));
+    assert_eq!(policy("blend").not_evaluated_cases, 0);
     // Reranked pairs: pos-1 alpha 0.9 (acceptable), pos-1 beta 0.2 (not), and
     // none beta 0.8 (not). Brier = (0.01 + 0.04 + 0.64) / 3 = 0.23.
     let calibration = baselines.fit_calibration.unwrap();

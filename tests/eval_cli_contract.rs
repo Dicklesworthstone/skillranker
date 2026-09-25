@@ -936,7 +936,16 @@ fn a_live_batch_ranks_each_case_fresh_and_accounts_every_attempt() {
         .iter()
         .map(|p| p["policy"].as_str().unwrap())
         .collect();
-    assert_eq!(names, ["choice-only", "fit-only", "blend"], "{baselines}");
+    assert_eq!(
+        names,
+        ["quill-only", "choice-only", "fit-only", "blend"],
+        "{baselines}"
+    );
+    // Quill ranked the two-skill roster locally for every case.
+    assert_eq!(
+        baselines["policies"][0]["not_evaluated_cases"], 0,
+        "{baselines}"
+    );
     assert_eq!(
         baselines["coverage"]["admitted"]["denominator"], 2,
         "{baselines}"

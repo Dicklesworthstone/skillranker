@@ -1057,6 +1057,8 @@ pub struct PolicyScore {
     pub policy: String,
     pub definition: String,
     pub evaluated_cases: usize,
+    /// Judged cases this policy's stage evidence could not score.
+    pub not_evaluated_cases: usize,
     /// Precision of emitted top-one suggestions.
     pub top1_precision: Ratio,
     /// Positive cases whose emitted top-one suggestion is acceptable.
@@ -1183,18 +1185,32 @@ fn fit_calibration(pairs: &[(f64, bool)]) -> Option<FitCalibration> {
     })
 }
 
-type Policy = fn(&crate::pipeline::StageEvidence, &EvaluationCaseRecord, f64) -> Option<String>;
+/// A policy's top-one pick (`None` abstains), or `Err` when this case's stage
+/// evidence cannot score it.
+type Policy =
+    fn(&crate::pipeline::StageEvidence, &EvaluationCaseRecord, f64) -> Result<Option<String>, ()>;
 
-const BASELINE_POLICIES: [(&str, &str, Policy); 3] = [
+const BASELINE_POLICIES: [(&str, &str, Policy); 4] = [
+    (
+        "quill-only",
+        "Quill's top lexical match among the admitted skills; no gate and no Jev answer.",
+        |evidence, _, _| {
+            evidence
+                .lexical
+                .as_ref()
+                .map(|hits| hits.first().cloned())
+                .ok_or(())
+        },
+    ),
     (
         "choice-only",
         "The wide gate, then the shortlist's highest raw wide probability; no rerank.",
         |evidence, _, _| {
-            let wide = evidence.wide.as_ref()?;
+            let wide = evidence.wide.as_ref().ok_or(())?;
             if wide.low_need {
-                return None;
+                return Ok(None);
             }
-            wide.shortlist.first().map(|(id, _)| id.clone())
+            Ok(wide.shortlist.first().map(|(id, _)| id.clone()))
         },
     ),
     (
@@ -1202,20 +1218,24 @@ const BASELINE_POLICIES: [(&str, &str, Policy); 3] = [
         "The wide gate, then the reranked skill with the highest fit at or above the \
          fit threshold; the rerank choice distribution is ignored.",
         |evidence, _, threshold| {
-            let rerank = evidence.rerank.as_ref()?;
-            rerank
+            let wide = evidence.wide.as_ref().ok_or(())?;
+            let Some(rerank) = evidence.rerank.as_ref() else {
+                // The gate stopped the run: this policy abstains with it.
+                return if wide.low_need { Ok(None) } else { Err(()) };
+            };
+            Ok(rerank
                 .candidates
                 .iter()
                 .filter(|(_, _, fit)| *fit >= threshold)
                 .max_by(|a, b| a.2.total_cmp(&b.2).then_with(|| b.0.cmp(&a.0)))
-                .map(|(id, _, _)| id.clone())
+                .map(|(id, _, _)| id.clone()))
         },
     ),
     (
         "blend",
         "The production decision: gate, rerank choice, per-candidate none check, fit \
          eligibility and blended score.",
-        |_, record, _| record.suggested_skills.first().cloned(),
+        |_, record, _| Ok(record.suggested_skills.first().cloned()),
     ),
 ];
 
@@ -1227,9 +1247,6 @@ fn compare_baselines(
 ) -> BaselineComparison {
     let mut comparison = BaselineComparison {
         not_computed: vec![
-            "quill-only: needs a lexical ranking of the whole roster; production admits \
-             every advisory skill without one unless the roster overflows"
-                .into(),
             "context ablation: needs a second, latest-request-only run of every case".into(),
         ],
         ..BaselineComparison::default()
@@ -1290,8 +1307,14 @@ fn compare_baselines(
     for (name, definition, policy) in BASELINE_POLICIES {
         let (mut emitted, mut precise, mut positive_hits, mut positive_cases) = (0, 0, 0, 0);
         let (mut needless, mut no_match_cases, mut abstentions, mut total_loss) = (0, 0, 0, 0u32);
+        let mut evaluated = 0;
+        let mut not_evaluated = 0;
         for (record, label, stages) in &cohort {
-            let top = policy(stages, record, fit_threshold);
+            let Ok(top) = policy(stages, record, fit_threshold) else {
+                not_evaluated += 1;
+                continue;
+            };
+            evaluated += 1;
             let hit = top.as_deref().is_some_and(|id| acceptable(label, id));
             emitted += usize::from(top.is_some());
             precise += usize::from(hit);
@@ -1310,11 +1333,11 @@ fn compare_baselines(
                 total_loss += if top.is_some() { 2 } else { 0 };
             }
         }
-        let evaluated = cohort.len();
         comparison.policies.push(PolicyScore {
             policy: name.into(),
             definition: definition.into(),
             evaluated_cases: evaluated,
+            not_evaluated_cases: not_evaluated,
             top1_precision: Ratio::of(precise, emitted),
             positive_suggestion_rate: Ratio::of(positive_hits, positive_cases),
             needless_suggestion_rate: Ratio::of(needless, no_match_cases),

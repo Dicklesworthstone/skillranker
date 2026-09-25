@@ -518,3 +518,63 @@ fn lexical_coverage_is_observed_separately_from_semantic_relevance() {
     report("paraphrase_lexical_miss", &error.diagnostics);
     assert!(runtime.shutdown());
 }
+#[test]
+fn the_quill_only_baseline_ranks_a_roster_that_production_admits_whole() {
+    let root = tree();
+    let (clock, runtime, cx) = runtime();
+    let mut skills = entries(&root, 3);
+    fs::write(
+        root.join("latency.md"),
+        "---\nname: Latency\ndescription: profile tail latency regressions in rust services\n---\nbody",
+    )
+    .unwrap();
+    skills.push(entry(&root, "latency.md", "latency-profiler", true));
+    let roster = ResolvedRoster::resolve(skills, false, &cx, &clock).unwrap();
+    let run = |ranked: bool| {
+        let input = query("our p95 latency regressed; profile where the time goes");
+        let future = async {
+            if ranked {
+                retrieve_ranked(
+                    &roster,
+                    &BTreeSet::new(),
+                    input,
+                    RetrievalBudget::default(),
+                    &cx,
+                    &clock,
+                )
+                .await
+            } else {
+                retrieve(
+                    &roster,
+                    &BTreeSet::new(),
+                    input,
+                    RetrievalBudget::default(),
+                    &cx,
+                    &clock,
+                )
+                .await
+            }
+        };
+        runtime.runtime().block_on(future).unwrap()
+    };
+    // Production admits the whole four-skill roster without a lexical pass.
+    let production = run(false);
+    assert_eq!(
+        production.diagnostics.method,
+        Some(RetrievalMethod::FullRoster)
+    );
+    assert_eq!(production.candidates.len(), 4);
+    // The baseline ranks the same roster with Quill; the matching skill leads.
+    let baseline = run(true);
+    assert_eq!(
+        baseline.diagnostics.method,
+        Some(RetrievalMethod::QuillBm25)
+    );
+    assert!(baseline.diagnostics.search_us.is_some());
+    assert_eq!(
+        baseline.candidates[0].binding.invocation.as_str(),
+        "latency-profiler"
+    );
+    report("quill-only-baseline", &baseline.diagnostics);
+    assert!(runtime.shutdown());
+}

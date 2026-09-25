@@ -452,6 +452,31 @@ pub async fn retrieve<'a>(
     cx: &Cx,
     clock: &crate::runtime::EntryClock,
 ) -> Result<RetrievalSelection<'a>, RetrievalFailure> {
+    retrieve_with(roster, excluded, input, budget, cx, clock, false).await
+}
+
+/// Rank the eligible roster lexically with Quill even when it fits the wide
+/// stage: the Quill-only evaluation baseline. Production never calls this.
+pub async fn retrieve_ranked<'a>(
+    roster: &'a super::resolution::ResolvedRoster,
+    excluded: &BTreeSet<crate::identity::SkillId>,
+    input: QueryInput<'_>,
+    budget: RetrievalBudget,
+    cx: &Cx,
+    clock: &crate::runtime::EntryClock,
+) -> Result<RetrievalSelection<'a>, RetrievalFailure> {
+    retrieve_with(roster, excluded, input, budget, cx, clock, true).await
+}
+
+async fn retrieve_with<'a>(
+    roster: &'a super::resolution::ResolvedRoster,
+    excluded: &BTreeSet<crate::identity::SkillId>,
+    input: QueryInput<'_>,
+    budget: RetrievalBudget,
+    cx: &Cx,
+    clock: &crate::runtime::EntryClock,
+    always_rank: bool,
+) -> Result<RetrievalSelection<'a>, RetrievalFailure> {
     let mut diagnostics = RetrievalDiagnostics {
         policy_version: RETRIEVAL_VERSION,
         engine_version: frankensearch_quill::FRANKENSEARCH_QUILL_CRATE_VERSION,
@@ -500,7 +525,7 @@ pub async fn retrieve<'a>(
         if selected.is_empty() {
             return Err(RetrievalError::NoEligibleCandidates);
         }
-        if selected.len() <= MAX_CANDIDATES {
+        if selected.len() <= MAX_CANDIDATES && !always_rank {
             diagnostics.admitted_count = selected.len();
             return Ok(selected);
         }
