@@ -429,7 +429,7 @@ e2e_cases = ["full-transport-suite"]
 assertion_ids = ["p1_gate_passed"]
 platforms = ["linux"]
 features = []
-status = "executed"
+status = "planned"
 
 # ==============================================================================
 # Phase P2: Standalone Roster, Privacy and Quill Retrieval
@@ -820,7 +820,7 @@ status = "planned"
 [[boundaries]]
 id = "p3_tool_associations"
 owner_bead = "sr-roadmap-l1i.4.7"
-member_beads = ["sr-roadmap-l1i.4.7"]
+member_beads = ["sr-roadmap-l1i.4.7", "sr-roadmap-l1i.4.7.1"]
 phase = "P3"
 title = "Normalize tool/result associations and local load evidence"
 unit_property_tests = [
@@ -968,7 +968,7 @@ status = "planned"
 [[boundaries]]
 id = "p4_rank_pipeline"
 owner_bead = "sr-roadmap-l1i.5.11"
-member_beads = ["sr-roadmap-l1i.5.11"]
+member_beads = ["sr-roadmap-l1i.5.11", "sr-roadmap-l1i.5.11.1"]
 phase = "P4"
 title = "Assemble the two-stage rank pipeline and final revalidation"
 unit_property_tests = [
@@ -985,7 +985,7 @@ e2e_cases = ["two-stage-rank-pipeline"]
 assertion_ids = ["pipeline_assembly_verified"]
 platforms = ["linux"]
 features = []
-status = "executed"
+status = "planned"
 
 [[boundaries]]
 id = "p4_versioned_json_failure_envelopes"
@@ -1007,7 +1007,7 @@ e2e_cases = ["versioned-failure-envelopes"]
 assertion_ids = ["bounded_versioned_json_verified"]
 platforms = ["linux"]
 features = []
-status = "executed"
+status = "planned"
 
 [[boundaries]]
 id = "p4_table_and_decision_views"
@@ -1028,12 +1028,12 @@ e2e_cases = ["table-and-decision-views"]
 assertion_ids = ["safe_readable_tables_verified"]
 platforms = ["linux"]
 features = []
-status = "executed"
+status = "planned"
 
 [[boundaries]]
 id = "p4_explain_exclusion_stages"
 owner_bead = "sr-roadmap-l1i.5.14"
-member_beads = ["sr-roadmap-l1i.5.14"]
+member_beads = ["sr-roadmap-l1i.5.14", "sr-roadmap-l1i.5.14.1", "sr-roadmap-l1i.5.14.2"]
 phase = "P4"
 title = "Explain exclusion stages without changing evaluation"
 unit_property_tests = [
@@ -1049,7 +1049,7 @@ e2e_cases = ["stage-trace-and-why-not"]
 assertion_ids = ["exclusion_stages_explained"]
 platforms = ["linux"]
 features = []
-status = "executed"
+status = "planned"
 
 [[boundaries]]
 id = "p4_dry_run"
@@ -1140,7 +1140,7 @@ assertion_ids = [
 ]
 platforms = ["linux"]
 features = []
-status = "executed"
+status = "planned"
 
 [[boundaries]]
 id = "p4_parser_corpus"
@@ -1179,12 +1179,12 @@ assertion_ids = [
 ]
 platforms = ["linux"]
 features = []
-status = "executed"
+status = "planned"
 
 [[boundaries]]
 id = "p4_core_cli_acceptance"
 owner_bead = "sr-roadmap-l1i.5.21"
-member_beads = ["sr-roadmap-l1i.5.21", "sr-roadmap-l1i.5.10", "sr-roadmap-l1i.5.11", "sr-roadmap-l1i.5.12", "sr-roadmap-l1i.5.13", "sr-roadmap-l1i.5.14", "sr-roadmap-l1i.5.17", "sr-roadmap-l1i.5.18", "sr-roadmap-l1i.5.19", "sr-roadmap-l1i.5.2", "sr-roadmap-l1i.5.20", "sr-roadmap-l1i.5.22", "sr-roadmap-l1i.5.3", "sr-roadmap-l1i.5.4", "sr-roadmap-l1i.5.5", "sr-roadmap-l1i.5.6", "sr-roadmap-l1i.5.7", "sr-roadmap-l1i.5.8", "sr-roadmap-l1i.5.9"]
+member_beads = ["sr-roadmap-l1i.5.21", "sr-roadmap-l1i.5.10", "sr-roadmap-l1i.5.17", "sr-roadmap-l1i.5.18", "sr-roadmap-l1i.5.19", "sr-roadmap-l1i.5.2", "sr-roadmap-l1i.5.3", "sr-roadmap-l1i.5.4", "sr-roadmap-l1i.5.5", "sr-roadmap-l1i.5.6", "sr-roadmap-l1i.5.7", "sr-roadmap-l1i.5.8", "sr-roadmap-l1i.5.9", "sr-roadmap-l1i.5.10.1", "sr-roadmap-l1i.5.10.2", "sr-roadmap-l1i.5.10.3", "sr-roadmap-l1i.5.24", "sr-roadmap-l1i.5.24.1", "sr-roadmap-l1i.5.24.2", "sr-roadmap-l1i.5.25", "sr-roadmap-l1i.5.26", "sr-roadmap-l1i.5.27", "sr-roadmap-l1i.5.27.1", "sr-roadmap-l1i.5.28", "sr-roadmap-l1i.5.29"]
 phase = "P4"
 title = "Accept the useful standalone core CLI"
 unit_property_tests = [
@@ -1195,7 +1195,7 @@ e2e_cases = ["full-core-cli-suite"]
 assertion_ids = ["p4_gate_passed"]
 platforms = ["linux"]
 features = []
-status = "executed"
+status = "planned"
 
 # ==============================================================================
 # Phase P5: Local Evidence, Replay, Feedback and Evaluation
@@ -1222,7 +1222,7 @@ e2e_cases = ["ledger-schema", "ledger-repositories"]
 assertion_ids = ["storage_intact"]
 platforms = ["linux"]
 features = []
-status = "executed"
+status = "planned"
 
 [[boundaries]]
 id = "p5_quota_headroom"
@@ -1243,7 +1243,7 @@ e2e_cases = ["ledger-quota-headroom", "ledger-bounded-maintenance"]
 assertion_ids = ["quota_headroom_enforced"]
 platforms = ["linux"]
 features = []
-status = "executed"
+status = "planned"
 
 [[boundaries]]
 id = "p5_ledger_init_migration"
@@ -1266,7 +1266,7 @@ e2e_cases = ["ledger-init-migration", "ledger-wal-backup-recover"]
 assertion_ids = ["ledger_init_migration_idempotent"]
 platforms = ["linux"]
 features = []
-status = "executed"
+status = "planned"
 
 [[boundaries]]
 id = "p5_ledger_retention_prune_clear"
@@ -1289,7 +1289,7 @@ e2e_cases = ["ledger-retention-prune-clear"]
 assertion_ids = ["ledger_retention_prune_clear_enforced"]
 platforms = ["linux"]
 features = []
-status = "executed"
+status = "planned"
 
 [[boundaries]]
 id = "p5_ledger_paired_correction"
@@ -1314,7 +1314,7 @@ e2e_cases = ["ledger-paired-correction"]
 assertion_ids = ["snapshot_deduplication_and_paired_correction_enforced"]
 platforms = ["linux"]
 features = []
-status = "executed"
+status = "planned"
 
 [[boundaries]]
 id = "p5_ledger_exposure_lifecycle"
@@ -1338,7 +1338,7 @@ e2e_cases = ["ledger-exposure-lifecycle"]
 assertion_ids = ["exposure_states_recorded_separately"]
 platforms = ["linux"]
 features = []
-status = "executed"
+status = "planned"
 
 [[boundaries]]
 id = "p5_observation_watermark"
@@ -1365,7 +1365,7 @@ e2e_cases = ["ledger-observation-watermark", "ledger-load-attribution"]
 assertion_ids = ["observation_watermark_atomic", "load_attribution_enforced"]
 platforms = ["linux"]
 features = []
-status = "executed"
+status = "planned"
 
 [[boundaries]]
 id = "p5_stats_value_report"
@@ -1389,7 +1389,7 @@ e2e_cases = ["stats-value-report"]
 assertion_ids = ["stats_value_report_enforced"]
 platforms = ["linux"]
 features = []
-status = "executed"
+status = "planned"
 
 [[boundaries]]
 id = "p5_offline_replay"
@@ -1405,7 +1405,7 @@ e2e_cases = ["replay-matches-original"]
 assertion_ids = ["faithful_replay"]
 platforms = ["linux"]
 features = []
-status = "executed"
+status = "planned"
 
 [[boundaries]]
 id = "p5_replay_isolation"
@@ -1423,7 +1423,7 @@ e2e_cases = ["replay-isolation-guarantees"]
 assertion_ids = ["replay_isolation_verified"]
 platforms = ["linux"]
 features = []
-status = "executed"
+status = "planned"
 
 [[boundaries]]
 id = "p5_eval_accounting"
@@ -1439,7 +1439,7 @@ e2e_cases = ["loss-denominators-exact"]
 assertion_ids = ["math_correct"]
 platforms = ["linux"]
 features = []
-status = "executed"
+status = "planned"
 
 # ==============================================================================
 # Phase P6: Recorded Claude Shadow Hooks and User Controls
@@ -1475,7 +1475,7 @@ e2e_cases = ["quiet-on-failure", "stdin-deadline-enforced"]
 assertion_ids = ["non_blocking_hook"]
 platforms = ["linux"]
 features = []
-status = "executed"
+status = "planned"
 
 # ==============================================================================
 # Phase P7: Measured Advisory Rollout and Release
@@ -1598,7 +1598,7 @@ status = "planned"
 [[boundaries]]
 id = "p5_acceptance_gate"
 owner_bead = "sr-roadmap-l1i.6.29"
-member_beads = ["sr-roadmap-l1i.6.29", "sr-roadmap-l1i.6.10", "sr-roadmap-l1i.6.11", "sr-roadmap-l1i.6.12", "sr-roadmap-l1i.6.13", "sr-roadmap-l1i.6.14", "sr-roadmap-l1i.6.15", "sr-roadmap-l1i.6.17", "sr-roadmap-l1i.6.18", "sr-roadmap-l1i.6.19", "sr-roadmap-l1i.6.2", "sr-roadmap-l1i.6.20", "sr-roadmap-l1i.6.21", "sr-roadmap-l1i.6.22", "sr-roadmap-l1i.6.23", "sr-roadmap-l1i.6.24", "sr-roadmap-l1i.6.25", "sr-roadmap-l1i.6.26", "sr-roadmap-l1i.6.27", "sr-roadmap-l1i.6.3", "sr-roadmap-l1i.6.7"]
+member_beads = ["sr-roadmap-l1i.6.29", "sr-roadmap-l1i.6.10", "sr-roadmap-l1i.6.11", "sr-roadmap-l1i.6.12", "sr-roadmap-l1i.6.14", "sr-roadmap-l1i.6.15", "sr-roadmap-l1i.6.17", "sr-roadmap-l1i.6.18", "sr-roadmap-l1i.6.19", "sr-roadmap-l1i.6.2", "sr-roadmap-l1i.6.20", "sr-roadmap-l1i.6.21", "sr-roadmap-l1i.6.22", "sr-roadmap-l1i.6.23", "sr-roadmap-l1i.6.24", "sr-roadmap-l1i.6.25", "sr-roadmap-l1i.6.26", "sr-roadmap-l1i.6.7", "sr-roadmap-l1i.6.19.1"]
 phase = "P5"
 title = "Accept local evidence, faithful replay and bounded evaluation"
 unit_property_tests = ["tests/p5_gate.rs::all_p5_contracts_verified"]

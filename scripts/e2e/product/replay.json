@@ -13,7 +13,8 @@
     "observation_contract",
     "replay_case_completeness",
     "replay_cli_contract",
-    "replay_contract"
+    "replay_contract",
+    "stats_value_report_contract"
   ],
   "cases": [
     {
@@ -209,6 +210,23 @@
         "evaluation_design_weighted_contract::test_missing_labels_bounds_and_conservative_upper_assignment",
         "evaluation_design_weighted_contract::test_full_census_zero_sampling_variance",
         "evaluation_design_weighted_contract::test_design_weighted_ratio_estimator"
+      ]
+    },
+    {
+      "id": "stats-value-report",
+      "assertions": [
+        "stats_value_report_enforced"
+      ],
+      "tests": [
+        "stats_value_report_contract::empty_ledger_stats_reports_clean_zeros_and_not_estimable",
+        "stats_value_report_contract::mixed_cohorts_and_channels_preserve_distinct_denominators",
+        "stats_value_report_contract::latency_summary_computes_accurate_percentiles",
+        "stats_value_report_contract::provider_metrics_tracks_tokens_and_cache_served_events",
+        "stats_value_report_contract::observations_and_adoption_rate_tracked_with_caveats",
+        "stats_value_report_contract::judgments_and_cost_per_useful_suggestion_calculated",
+        "stats_value_report_contract::by_skill_breakdown_orders_by_recommendations_and_shortlist",
+        "stats_value_report_contract::time_window_filtering_respects_since_duration",
+        "stats_value_report_contract::cli_stats_json_and_table_output_and_missing_store_handled"
       ]
     },
     {

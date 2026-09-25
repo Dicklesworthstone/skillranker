@@ -150,6 +150,11 @@ else
 fi
 
 gate "validate_public_contracts.py" python3 scripts/validate_public_contracts.py
+# The contract matrix, its reviewed authority file and the product e2e catalogs drifted apart
+# for days (GH #7) because nothing here loaded them. Both checks read only checked-in files.
+gate "validate_contract_matrix.py" python3 -I -B scripts/validate_contract_matrix.py
+gate "product e2e catalogs" sh -c \
+  'for c in scripts/e2e/product/*.json; do python3 -I -B scripts/e2e/product_cases.py check "$c" || exit 1; done'
 
 printf '\n========================================\n'
 printf 'passed:  %d\n' "${#PASSED[@]}"

@@ -692,6 +692,80 @@ fn a_parallel_call_cut_by_the_window_does_not_make_the_prompt_ambiguous() {
 }
 
 #[test]
+fn a_partial_compaction_with_an_unwritten_logical_parent_is_where_the_session_goes_on() {
+    // Measured live (sr-8tlh): Claude's partial compaction names a
+    // `logicalParentUuid` it never writes, so the boundary starts a chain
+    // nothing links to the summarized conversation, whose tip stays a leaf.
+    let old_chain = [
+        event("root", None),
+        tool_call("call", "root"),
+        tool_result("old-tip", "call"),
+    ];
+    let boundary = json!({"type":"system","subtype":"compact_boundary","uuid":"boundary","parentUuid":null,
+                          "logicalParentUuid":"never-written","sessionId":"expected-session",
+                          "content":"Conversation compacted"});
+    let attachment = json!({"type":"attachment","uuid":"after-boundary","parentUuid":"boundary",
+                            "sessionId":"expected-session","attachment":{"type":"date"}});
+    let ids_of = |records: &[serde_json::Value]| -> Result<Vec<String>, String> {
+        apply_claude_prompt_overlay(&request(records, "new"))
+            .map(|overlay| {
+                overlay
+                    .events
+                    .iter()
+                    .filter_map(|e| e.event_id.as_ref().map(|id| id.as_str().to_owned()))
+                    .collect()
+            })
+            .map_err(|error| format!("{error}"))
+    };
+
+    // The boundary chain is still only harness records.
+    let mut records = old_chain.to_vec();
+    records.extend([boundary.clone(), attachment.clone()]);
+    let ids = ids_of(&records).expect("the compacted chain is the conversation");
+    assert!(ids.contains(&"boundary".to_owned()), "{ids:?}");
+    assert!(!ids.contains(&"old-tip".to_owned()), "{ids:?}");
+
+    // The compacted chain has grown: an answer after the boundary.
+    let answer = json!({"type":"assistant","uuid":"answer","parentUuid":"after-boundary","sessionId":"expected-session",
+                        "message":{"role":"assistant","id":"m9","content":[{"type":"text","text":"continuing"}]}});
+    let mut grown = records.clone();
+    grown.push(answer.clone());
+    let ids = ids_of(&grown).expect("the grown compacted chain is the conversation");
+    assert!(ids.contains(&"answer".to_owned()), "{ids:?}");
+
+    // The preserved-segment layout: the logical parent is the tail of a
+    // preserved segment Claude rewrites AFTER the boundary, beneath it. That
+    // link would close a cycle, so it is severed and the chain continues.
+    let mut preserved = old_chain.to_vec();
+    let mut cyclic_boundary = boundary.clone();
+    cyclic_boundary["logicalParentUuid"] = json!("preserved-tail");
+    preserved.extend([
+        cyclic_boundary,
+        attachment.clone(),
+        json!({"type":"user","uuid":"preserved-tail","parentUuid":"after-boundary",
+               "sessionId":"expected-session","message":{"role":"user","content":"kept message"}}),
+        json!({"type":"assistant","uuid":"kept-reply","parentUuid":"preserved-tail","sessionId":"expected-session",
+               "message":{"role":"assistant","id":"m11","content":[{"type":"text","text":"on it"}]}}),
+    ]);
+    let ids = ids_of(&preserved).expect("a logical link into its own descendants is severed");
+    assert!(ids.contains(&"kept-reply".to_owned()), "{ids:?}");
+    assert!(!ids.contains(&"old-tip".to_owned()), "{ids:?}");
+
+    // Honest counterparts, which remain forks:
+    // - two branches after the boundary (a rewind after compaction);
+    let mut forked = grown.clone();
+    forked.push(json!({"type":"assistant","uuid":"other-answer","parentUuid":"after-boundary",
+                       "sessionId":"expected-session",
+                       "message":{"role":"assistant","id":"m10","content":[{"type":"text","text":"elsewhere"}]}}));
+    assert!(ids_of(&forked).is_err());
+    // - an older-chain leaf written after the boundary.
+    let mut late = old_chain[..2].to_vec();
+    late.extend([boundary, attachment]);
+    late.push(tool_result("old-tip", "call"));
+    assert!(ids_of(&late).is_err());
+}
+
+#[test]
 fn a_rewound_tool_exchange_is_still_a_real_fork() {
     // After a rewind, the abandoned branch can end in a tool result whose
     // call has no other child. That branch is not a side record of an

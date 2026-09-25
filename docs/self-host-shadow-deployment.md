@@ -344,3 +344,30 @@ the confirmation to look for.
   1367 passed / 0 failed / 10 ignored; the new test fails against the
   previous resolver.
 - Not changed: hook scope, consent, and the managed settings entry.
+
+## Redeployment — 2026-09-24 23:20Z (AzureJaguar, partial compaction)
+
+- Binary: `~/.local/bin/sr`, SHA256
+  `53d7e1d22f5dc111faf74b41e4aff6e7878e80c4f6877bce8b6dd532ed3360a7`, built
+  `--release --locked` from a clean export of the pushed revision `7054402`
+  (sources touched; copied out of the shared target at once). It adds
+  `sr-8tlh` over `54eecc7`. The previous binary (SHA256 `631128ee…`) is kept
+  as `~/.local/bin/sr.backup.20260924T232001Z-54eecc7`.
+- Why: every real prompt moment in this project's six transcripts (78) was
+  replayed through the deployed hook in a sandbox, with a placeholder key and
+  a refusing loopback endpoint. 12 were `ambiguous-branch`, all caused by
+  Claude's partial (`preservedSegment`) auto-compaction. Its boundary names a
+  logical parent that is never written, or one rewritten after the boundary
+  beneath it, which closes a cycle. Every later prompt in such a session
+  failed. Live session `ee53c3fa` compacted this way at 21:46Z; the previous
+  binary could not resolve it, and this one does.
+- After: 0 of 78 are `ambiguous-branch`. Ten of the twelve now stop at
+  `insufficient-context`, which is honest: this compaction format writes no
+  summary to the transcript. Smoke over the 80 most recent transcripts: 79
+  identical, 1 improved (`ee53c3fa`).
+- Gates: fmt and strict clippy on `7054402`; RCH full suite 1374 passed /
+  0 failed / 10 ignored on the same change one rebase earlier (`9c19470`);
+  focused binaries on `7054402` pass. One intermittent
+  `context_contract::branch_and_worktree` failure under load was rerun green
+  four times and filed as `sr-bytg`.
+- Not changed: hook scope, consent, and the managed settings entry.
