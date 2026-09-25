@@ -401,3 +401,31 @@ the confirmation to look for.
 - Gates: `01d437c` remote full suite 1376/0/10; `ca172d6` remote full suite
   1375/0/10. Both fmt and strict clippy, and ubs 0 critical.
 - Not changed: hook scope, consent, and the managed settings entry.
+
+## Redeployment — 2026-09-25 05:58Z (AzureJaguar, idle notification turns skipped)
+
+- Binary: `~/.local/bin/sr`, SHA256
+  `b945c644ce24e0318bddff9f4158ae7e7366ae2cf77fbf2953abc773a670f699`, built
+  `--release --locked` through RCH from the pushed revision `455037c`
+  (freshness proven by a string only that revision contains). The previous
+  binary (SHA256 `5e0a9868…`) is kept as
+  `~/.local/bin/sr.backup.20260925T055814Z-ca172d6`.
+- Adds `sr-sif6`: the trusted setting `hook.notification_turns`, default
+  `skip`. A turn that a background task's `<task-notification>` started while
+  the agent was idle is counted as a non-turn and never sent. Measured live,
+  such turns were 36 of 63 credentialed evaluations and most of the provider
+  spend. This deployment runs the default (`sr doctor --config`: `skip`, from
+  `built-in`).
+- Sweep with `--notifications` (the sweep tool gained the flag), previous
+  binary against this one, over 226 real moments:
+  - 141 notification turns moved from evaluated (`request-budget`) to
+    skipped (`no-row`), and 2 load-overrun ones likewise;
+  - one later notification record became its turn's first evaluation (a
+    replay-order artifact);
+  - the 83 submitted user prompts had identical outcomes.
+- Cohort impact: the shadow ledger stops recording evaluations for idle
+  notification turns. They appear as non-turn hook entries in `sr stats`.
+  Relevance-corpus work that wanted them must opt in with `rank` in trusted
+  configuration.
+- Gates on `455037c`: fmt, strict clippy, remote full suite 1377/0/10; the
+  public-contract and contract-matrix validators pass.

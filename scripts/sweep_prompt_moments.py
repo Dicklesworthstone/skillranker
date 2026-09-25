@@ -44,8 +44,9 @@ def encoded_project_dir(workspace: Path) -> Path:
     return Path.home() / ".claude" / "projects" / resolved.replace("/", "-")
 
 
-def prompt_moments(transcript: Path):
-    """Yield (line index, record) for each prompt the user submitted."""
+def prompt_moments(transcript: Path, notifications: bool = False):
+    """Yield (line index, record) for each prompt the user submitted, and with
+    `notifications` also each turn a task notification started."""
     with transcript.open(encoding="utf-8", errors="replace") as handle:
         for index, line in enumerate(handle):
             try:
@@ -54,13 +55,18 @@ def prompt_moments(transcript: Path):
                 continue
             content = (record.get("message") or {}).get("content")
             if (
-                record.get("type") == "user"
-                and record.get("promptId")
-                and not record.get("isSidechain")
-                and isinstance(content, str)
-                and (record.get("origin") or {}).get("kind") in (None, "human")
-                and record.get("promptSource") != "system"
+                record.get("type") != "user"
+                or not record.get("promptId")
+                or record.get("isSidechain")
+                or not isinstance(content, str)
             ):
+                continue
+            submitted = (record.get("origin") or {}).get("kind") in (
+                None,
+                "human",
+            ) and record.get("promptSource") != "system"
+            notified = (record.get("origin") or {}).get("kind") == "task-notification"
+            if submitted or (notifications and notified):
                 yield index, record
 
 
@@ -122,6 +128,11 @@ def main() -> int:
     parser.add_argument("--compare", help="a second sr binary to diff against")
     parser.add_argument("--workspace", type=Path, default=Path.cwd())
     parser.add_argument("--limit", type=int, default=0, help="at most N moments (0: all)")
+    parser.add_argument(
+        "--notifications",
+        action="store_true",
+        help="also replay turns that a task notification started",
+    )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
@@ -145,7 +156,7 @@ def main() -> int:
         results = []
         for transcript in transcripts:
             lines = transcript.read_bytes().splitlines(keepends=True)
-            for index, record in prompt_moments(transcript):
+            for index, record in prompt_moments(transcript, args.notifications):
                 if args.limit and len(results) >= args.limit:
                     break
                 cut = cuts / f"{transcript.stem}__{index:06d}.jsonl"
