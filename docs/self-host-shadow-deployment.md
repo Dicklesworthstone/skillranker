@@ -429,3 +429,29 @@ the confirmation to look for.
   configuration.
 - Gates on `455037c`: fmt, strict clippy, remote full suite 1377/0/10; the
   public-contract and contract-matrix validators pass.
+
+## Redeployment — 2026-09-25 06:36Z (AzureJaguar, cache schema v4)
+
+- Binary: `~/.local/bin/sr`, SHA256
+  `ee76564d4e4a8df12dfbb44b9a32ea18c8954258052f5c63a6b05964da7a8a83`, built
+  `--release --locked` through RCH from `2c3dc46` (freshness proven by the new
+  `received_boot_id` column name in the binary). The previous binary (SHA256
+  `b945c644…`) is kept as `~/.local/bin/sr.backup.20260925T064500Z-455037c`.
+- Adds `sr-4t02`: each cached response records its receipt on the boot clock,
+  so a wall clock stepped back can no longer extend its life past the TTL.
+  The response cache is now schema version 4.
+- Planned cache reset: as the storage policy requires, the new binary refuses
+  the old v3 store without migrating it. Rank would then run uncached until the
+  store is replaced. The three v3 files were therefore renamed in place, not
+  deleted, to `~/.cache/sr/cache.sqlite3{,-wal,-shm}` with the suffix
+  `.retired-v3-20260925` (4 response rows, at most ten minutes of answers).
+  The next hook invocation creates a fresh v4 store.
+- Sweep of every submitted user prompt of the workspace's transcripts, the
+  previous binary against this one: no moment's outcome differed. The same 13 moments right after
+  compaction are refused locally by both (11 `insufficient-context`,
+  2 `no-row`). A 5-moment sandbox smoke of the installed binary reached the
+  provider stage on all 5.
+- Pending: no live hook had fired by 06:57Z (all panes idle), so the live v4
+  store's creation has not yet been observed.
+- Gates on `2c3dc46`: fmt, strict clippy and the remote full suite (1379
+  passed, 0 failed).
