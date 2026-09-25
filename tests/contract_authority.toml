@@ -585,7 +585,7 @@ id = "p3_tool_associations"
 owner_bead = "sr-roadmap-l1i.4.7"
 phase = "P3"
 title = "Normalize tool/result associations and local load evidence"
-member_beads = ["sr-roadmap-l1i.4.7"]
+member_beads = ["sr-roadmap-l1i.4.7", "sr-roadmap-l1i.4.7.1"]
 platforms = ["linux"]
 features = []
 e2e_suite = "context"
@@ -689,6 +689,54 @@ e2e_cases = ["unknown-flag-rejected", "config-precedence-verified"]
 assertion_ids = ["strict_cli_parsing"]
 
 [[boundaries]]
+id = "p4_rank_pipeline"
+owner_bead = "sr-roadmap-l1i.5.11"
+phase = "P4"
+title = "Assemble the two-stage rank pipeline and final revalidation"
+member_beads = ["sr-roadmap-l1i.5.11", "sr-roadmap-l1i.5.11.1"]
+platforms = ["linux"]
+features = []
+e2e_suite = "core-cli"
+e2e_cases = ["two-stage-rank-pipeline"]
+assertion_ids = ["pipeline_assembly_verified"]
+
+[[boundaries]]
+id = "p4_versioned_json_failure_envelopes"
+owner_bead = "sr-roadmap-l1i.5.12"
+phase = "P4"
+title = "Render bounded versioned JSON and stable failure envelopes"
+member_beads = ["sr-roadmap-l1i.5.12"]
+platforms = ["linux"]
+features = []
+e2e_suite = "core-cli"
+e2e_cases = ["versioned-failure-envelopes"]
+assertion_ids = ["bounded_versioned_json_verified"]
+
+[[boundaries]]
+id = "p4_table_and_decision_views"
+owner_bead = "sr-roadmap-l1i.5.13"
+phase = "P4"
+title = "Render safe readable tables and explicit decision views"
+member_beads = ["sr-roadmap-l1i.5.13"]
+platforms = ["linux"]
+features = []
+e2e_suite = "core-cli"
+e2e_cases = ["table-and-decision-views"]
+assertion_ids = ["safe_readable_tables_verified"]
+
+[[boundaries]]
+id = "p4_explain_exclusion_stages"
+owner_bead = "sr-roadmap-l1i.5.14"
+phase = "P4"
+title = "Explain exclusion stages without changing evaluation"
+member_beads = ["sr-roadmap-l1i.5.14", "sr-roadmap-l1i.5.14.1", "sr-roadmap-l1i.5.14.2"]
+platforms = ["linux"]
+features = []
+e2e_suite = "core-cli"
+e2e_cases = ["stage-trace-and-why-not"]
+assertion_ids = ["exclusion_stages_explained"]
+
+[[boundaries]]
 id = "p4_dry_run"
 owner_bead = "sr-roadmap-l1i.5.15"
 phase = "P4"
@@ -713,11 +761,35 @@ e2e_cases = ["demo-inert-envelope"]
 assertion_ids = ["non_actionable_envelope"]
 
 [[boundaries]]
+id = "p4_cache_isolation"
+owner_bead = "sr-roadmap-l1i.5.20"
+phase = "P4"
+title = "Prove real cache isolation, invalidation and concurrent ownership"
+member_beads = ["sr-roadmap-l1i.5.20"]
+platforms = ["linux"]
+features = []
+e2e_suite = "cache"
+e2e_cases = ["cache-isolation-and-invalidation", "stale-policy-authority-withheld", "network-only-revocation-preserves-local", "no-cache-no-persist-isolation", "concurrent-lease-coordination-and-recovery"]
+assertion_ids = ["cache_isolation_verified"]
+
+[[boundaries]]
+id = "p4_parser_corpus"
+owner_bead = "sr-roadmap-l1i.5.22"
+phase = "P4"
+title = "Build bounded parser, property and fuzz regression campaigns"
+member_beads = ["sr-roadmap-l1i.5.22"]
+platforms = ["linux"]
+features = []
+e2e_suite = "parser-corpus"
+e2e_cases = ["config-and-authority-fuzz-boundaries", "context-and-transcript-tail-fuzz-boundaries", "roster-frontmatter-alias-adversarial-corpus", "quill-query-escaping-and-bounds", "provider-json-codec-option-map-boundaries", "explicit-directive-resolution-adversarial-corpus", "scoring-normalization-finite-arithmetic-fuzz", "cache-fingerprint-namespace-invariants", "bounded-output-sanitization-corpus", "deterministic-fuzz-smoke-campaign", "full-parser-corpus-suite"]
+assertion_ids = ["parser_corpus_verified"]
+
+[[boundaries]]
 id = "p4_core_cli_acceptance"
 owner_bead = "sr-roadmap-l1i.5.21"
 phase = "P4"
 title = "Accept the useful standalone core CLI"
-member_beads = ["sr-roadmap-l1i.5.21", "sr-roadmap-l1i.5.10", "sr-roadmap-l1i.5.11", "sr-roadmap-l1i.5.12", "sr-roadmap-l1i.5.13", "sr-roadmap-l1i.5.14", "sr-roadmap-l1i.5.17", "sr-roadmap-l1i.5.18", "sr-roadmap-l1i.5.19", "sr-roadmap-l1i.5.2", "sr-roadmap-l1i.5.20", "sr-roadmap-l1i.5.22", "sr-roadmap-l1i.5.3", "sr-roadmap-l1i.5.4", "sr-roadmap-l1i.5.5", "sr-roadmap-l1i.5.6", "sr-roadmap-l1i.5.7", "sr-roadmap-l1i.5.8", "sr-roadmap-l1i.5.9"]
+member_beads = ["sr-roadmap-l1i.5.21", "sr-roadmap-l1i.5.10", "sr-roadmap-l1i.5.17", "sr-roadmap-l1i.5.18", "sr-roadmap-l1i.5.19", "sr-roadmap-l1i.5.2", "sr-roadmap-l1i.5.3", "sr-roadmap-l1i.5.4", "sr-roadmap-l1i.5.5", "sr-roadmap-l1i.5.6", "sr-roadmap-l1i.5.7", "sr-roadmap-l1i.5.8", "sr-roadmap-l1i.5.9", "sr-roadmap-l1i.5.10.1", "sr-roadmap-l1i.5.10.2", "sr-roadmap-l1i.5.10.3", "sr-roadmap-l1i.5.24", "sr-roadmap-l1i.5.24.1", "sr-roadmap-l1i.5.24.2", "sr-roadmap-l1i.5.25", "sr-roadmap-l1i.5.26", "sr-roadmap-l1i.5.27", "sr-roadmap-l1i.5.27.1", "sr-roadmap-l1i.5.28", "sr-roadmap-l1i.5.29"]
 platforms = ["linux"]
 features = []
 e2e_suite = "core-cli"
@@ -737,6 +809,90 @@ e2e_cases = ["ledger-schema", "ledger-repositories"]
 assertion_ids = ["storage_intact"]
 
 [[boundaries]]
+id = "p5_quota_headroom"
+owner_bead = "sr-roadmap-l1i.6.3"
+phase = "P5"
+title = "Reserve quota headroom and preflight bounded maintenance"
+member_beads = ["sr-roadmap-l1i.6.3"]
+platforms = ["linux"]
+features = []
+e2e_suite = "replay"
+e2e_cases = ["ledger-quota-headroom", "ledger-bounded-maintenance"]
+assertion_ids = ["quota_headroom_enforced"]
+
+[[boundaries]]
+id = "p5_ledger_init_migration"
+owner_bead = "sr-roadmap-l1i.6.4"
+phase = "P5"
+title = "Implement explicit idempotent ledger init and recoverable migration"
+member_beads = ["sr-roadmap-l1i.6.4"]
+platforms = ["linux"]
+features = []
+e2e_suite = "replay"
+e2e_cases = ["ledger-init-migration", "ledger-wal-backup-recover"]
+assertion_ids = ["ledger_init_migration_idempotent"]
+
+[[boundaries]]
+id = "p5_ledger_retention_prune_clear"
+owner_bead = "sr-roadmap-l1i.6.5"
+phase = "P5"
+title = "Implement logical retention, cleanup debt, and explicit prune/clear"
+member_beads = ["sr-roadmap-l1i.6.5"]
+platforms = ["linux"]
+features = []
+e2e_suite = "replay"
+e2e_cases = ["ledger-retention-prune-clear"]
+assertion_ids = ["ledger_retention_prune_clear_enforced"]
+
+[[boundaries]]
+id = "p5_ledger_paired_correction"
+owner_bead = "sr-roadmap-l1i.6.6"
+phase = "P5"
+title = "Persist deduplicated full historical membership snapshots and paired correction labels"
+member_beads = ["sr-roadmap-l1i.6.6"]
+platforms = ["linux"]
+features = []
+e2e_suite = "replay"
+e2e_cases = ["ledger-paired-correction"]
+assertion_ids = ["snapshot_deduplication_and_paired_correction_enforced"]
+
+[[boundaries]]
+id = "p5_ledger_exposure_lifecycle"
+owner_bead = "sr-roadmap-l1i.6.8"
+phase = "P5"
+title = "Record generated, prepared, emitted and acknowledged separately"
+member_beads = ["sr-roadmap-l1i.6.8"]
+platforms = ["linux"]
+features = []
+e2e_suite = "replay"
+e2e_cases = ["ledger-exposure-lifecycle"]
+assertion_ids = ["exposure_states_recorded_separately"]
+
+[[boundaries]]
+id = "p5_observation_watermark"
+owner_bead = "sr-roadmap-l1i.6.9"
+phase = "P5"
+title = "Implement load attribution and atomic observation watermarks"
+member_beads = ["sr-roadmap-l1i.6.9"]
+platforms = ["linux"]
+features = []
+e2e_suite = "replay"
+e2e_cases = ["ledger-observation-watermark", "ledger-load-attribution"]
+assertion_ids = ["observation_watermark_atomic", "load_attribution_enforced"]
+
+[[boundaries]]
+id = "p5_stats_value_report"
+owner_bead = "sr-roadmap-l1i.6.13"
+phase = "P5"
+title = "Report usefulness, interruption, provider metrics and cost in sr stats"
+member_beads = ["sr-roadmap-l1i.6.13"]
+platforms = ["linux"]
+features = []
+e2e_suite = "replay"
+e2e_cases = ["stats-value-report"]
+assertion_ids = ["stats_value_report_enforced"]
+
+[[boundaries]]
 id = "p5_offline_replay"
 owner_bead = "sr-roadmap-l1i.6.16"
 phase = "P5"
@@ -747,6 +903,18 @@ features = []
 e2e_suite = "replay"
 e2e_cases = ["replay-matches-original"]
 assertion_ids = ["faithful_replay"]
+
+[[boundaries]]
+id = "p5_replay_isolation"
+owner_bead = "sr-roadmap-l1i.6.27"
+phase = "P5"
+title = "Prove capture, replay isolation and history non-leakage"
+member_beads = ["sr-roadmap-l1i.6.27"]
+platforms = ["linux"]
+features = []
+e2e_suite = "replay"
+e2e_cases = ["replay-isolation-guarantees"]
+assertion_ids = ["replay_isolation_verified"]
 
 [[boundaries]]
 id = "p5_eval_accounting"
@@ -873,7 +1041,7 @@ id = "p5_acceptance_gate"
 owner_bead = "sr-roadmap-l1i.6.29"
 phase = "P5"
 title = "Accept local evidence, faithful replay and bounded evaluation"
-member_beads = ["sr-roadmap-l1i.6.29", "sr-roadmap-l1i.6.10", "sr-roadmap-l1i.6.11", "sr-roadmap-l1i.6.12", "sr-roadmap-l1i.6.13", "sr-roadmap-l1i.6.14", "sr-roadmap-l1i.6.15", "sr-roadmap-l1i.6.17", "sr-roadmap-l1i.6.18", "sr-roadmap-l1i.6.19", "sr-roadmap-l1i.6.2", "sr-roadmap-l1i.6.20", "sr-roadmap-l1i.6.21", "sr-roadmap-l1i.6.22", "sr-roadmap-l1i.6.23", "sr-roadmap-l1i.6.24", "sr-roadmap-l1i.6.25", "sr-roadmap-l1i.6.26", "sr-roadmap-l1i.6.27", "sr-roadmap-l1i.6.3", "sr-roadmap-l1i.6.4", "sr-roadmap-l1i.6.5", "sr-roadmap-l1i.6.6", "sr-roadmap-l1i.6.7", "sr-roadmap-l1i.6.8", "sr-roadmap-l1i.6.9"]
+member_beads = ["sr-roadmap-l1i.6.29", "sr-roadmap-l1i.6.10", "sr-roadmap-l1i.6.11", "sr-roadmap-l1i.6.12", "sr-roadmap-l1i.6.14", "sr-roadmap-l1i.6.15", "sr-roadmap-l1i.6.17", "sr-roadmap-l1i.6.18", "sr-roadmap-l1i.6.19", "sr-roadmap-l1i.6.2", "sr-roadmap-l1i.6.20", "sr-roadmap-l1i.6.21", "sr-roadmap-l1i.6.22", "sr-roadmap-l1i.6.23", "sr-roadmap-l1i.6.24", "sr-roadmap-l1i.6.25", "sr-roadmap-l1i.6.26", "sr-roadmap-l1i.6.7", "sr-roadmap-l1i.6.19.1"]
 platforms = ["linux"]
 features = []
 e2e_suite = "replay"
@@ -929,6 +1097,7 @@ e2e_cases = ["complete-phase-coverage"]
 assertion_ids = ["complete_independent_evidence"]
 
 # Reality-check corrective boundary; planned, not execution evidence.
+
 [[boundaries]]
 id = "p1_stdin_deadline_repair"
 owner_bead = "sr-roadmap-l1i.2.13"
@@ -942,6 +1111,7 @@ e2e_cases = ["stdin-held-open", "stdin-late-eof", "stdin-exact-cap", "stdin-time
 assertion_ids = ["bounded_stdin_cleanup", "inclusive_byte_cap", "no_late_publication"]
 
 # Reality-check corrective boundary; planned, not execution evidence.
+
 [[boundaries]]
 id = "p4_macos_storage_qualification"
 owner_bead = "sr-roadmap-l1i.5.23"
