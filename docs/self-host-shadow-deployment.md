@@ -502,3 +502,19 @@ the confirmation to look for.
   and ubs on the change.
 - Pending: no live turn had run on this binary by 21:55Z. The expected effect
   is a shorter Rerank sent-to-completed time in `provider_attempts`.
+- 21:58Z: the first live turn on this binary never finished. Its row stayed
+  `in-flight`, with the Wide attempt `sent` and never completed. The binary
+  was rolled back to `40092605…` at 22:00Z while this was investigated.
+- Investigation, with synthetic input only: an invented one-prompt transcript
+  against the production endpoint.
+  - With a placeholder key (401), both binaries behave the same.
+  - With the maintainer key, 7 of 7 turns on this binary completed. Rerank
+    sent-to-completed was 175-289 ms, against 480-497 ms for the previous
+    binary on the same input (2 turns). About 280 ms is saved per ranked turn.
+- Diagnosis: at 21:58Z the host's load average was about 100. The failed turn
+  spent 1.7 s on local work before its Wide attempt left, leaving about
+  1.1 s of a 3 s budget for the provider. It matches `sr-9fzp`: a run that
+  overruns its deadline cannot record its failure and stays `in-flight`. The
+  previous binary behaves the same under that load; this change shortens the
+  turn.
+- Redeployed `9c1c026a…` at 22:05Z.
