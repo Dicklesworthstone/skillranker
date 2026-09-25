@@ -1193,7 +1193,7 @@ fn fit_calibration(pairs: &[(f64, bool)]) -> Option<FitCalibration> {
 type Policy =
     fn(&crate::pipeline::StageEvidence, &EvaluationCaseRecord, f64) -> Result<Option<String>, ()>;
 
-const BASELINE_POLICIES: [(&str, &str, Policy); 4] = [
+const BASELINE_POLICIES: [(&str, &str, Policy); 5] = [
     (
         "quill-only",
         "Quill's top lexical match among the admitted skills; no gate and no Jev answer.",
@@ -1231,6 +1231,38 @@ const BASELINE_POLICIES: [(&str, &str, Policy); 4] = [
                 .iter()
                 .filter(|(_, _, fit)| *fit >= threshold)
                 .max_by(|a, b| a.2.total_cmp(&b.2).then_with(|| b.0.cmp(&a.0)))
+                .map(|(id, _, _)| id.clone()))
+        },
+    ),
+    (
+        "cookbook-approx",
+        "The TypeSafe skill-suggestion cookbook's rule: the gate, the wide top three, \
+         nothing when their best fit is below the fit threshold, else the highest rerank \
+         choice probability among them. Approximate: this run reranked the whole shortlist, \
+         so the probabilities come from a larger choice than the cookbook's three.",
+        |evidence, _, threshold| {
+            let wide = evidence.wide.as_ref().ok_or(())?;
+            if wide.low_need {
+                return Ok(None);
+            }
+            let rerank = evidence.rerank.as_ref().ok_or(())?;
+            let top_three: Vec<&str> = wide
+                .shortlist
+                .iter()
+                .take(3)
+                .map(|(id, _)| id.as_str())
+                .collect();
+            let finalists: Vec<&(String, f64, f64)> = rerank
+                .candidates
+                .iter()
+                .filter(|(id, _, _)| top_three.contains(&id.as_str()))
+                .collect();
+            if !finalists.iter().any(|(_, _, fit)| *fit >= threshold) {
+                return Ok(None);
+            }
+            Ok(finalists
+                .iter()
+                .max_by(|a, b| a.1.total_cmp(&b.1).then_with(|| b.0.cmp(&a.0)))
                 .map(|(id, _, _)| id.clone()))
         },
     ),

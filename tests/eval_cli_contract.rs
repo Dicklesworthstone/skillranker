@@ -938,7 +938,13 @@ fn a_live_batch_ranks_each_case_fresh_and_accounts_every_attempt() {
         .collect();
     assert_eq!(
         names,
-        ["quill-only", "choice-only", "fit-only", "blend"],
+        [
+            "quill-only",
+            "choice-only",
+            "fit-only",
+            "cookbook-approx",
+            "blend"
+        ],
         "{baselines}"
     );
     // Quill ranked the two-skill roster locally for every case.

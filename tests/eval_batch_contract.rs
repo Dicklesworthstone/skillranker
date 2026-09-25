@@ -569,6 +569,14 @@ fn baselines_score_every_policy_on_the_same_judged_cohort_from_one_runs_answers(
     assert_eq!(quill.needless_suggestion_rate.successes, 0);
     assert_eq!(quill.mean_loss, Some(0.0));
     assert_eq!(policy("blend").not_evaluated_cases, 0);
+    // cookbook-approx: pos-1's top three hold alpha (fit 0.9) and beta; their
+    // rerank probabilities tie, broken by ID to alpha (0). pos-2 is gated (1);
+    // none suggests beta with fit 0.8 (needless, 2).
+    let cookbook = policy("cookbook-approx");
+    assert_eq!(cookbook.evaluated_cases, 3);
+    assert_eq!(cookbook.positive_suggestion_rate.successes, 1);
+    assert_eq!(cookbook.needless_suggestion_rate.successes, 1);
+    assert_eq!(cookbook.mean_loss, Some(1.0));
     // Reranked pairs: pos-1 alpha 0.9 (acceptable), pos-1 beta 0.2 (not), and
     // none beta 0.8 (not). Brier = (0.01 + 0.04 + 0.64) / 3 = 0.23.
     let calibration = baselines.fit_calibration.unwrap();
