@@ -538,6 +538,21 @@ fn baselines_score_every_policy_on_the_same_judged_cohort_from_one_runs_answers(
             .iter()
             .any(|note| note.starts_with("quill-only"))
     );
+    // Reranked pairs: pos-1 alpha 0.9 (acceptable), pos-1 beta 0.2 (not), and
+    // none beta 0.8 (not). Brier = (0.01 + 0.04 + 0.64) / 3 = 0.23.
+    let calibration = baselines.fit_calibration.unwrap();
+    assert_eq!(calibration.pairs, 3);
+    assert!(
+        (calibration.brier - 0.23).abs() < 1e-12,
+        "{}",
+        calibration.brier
+    );
+    let counts: Vec<(usize, usize)> = calibration
+        .bins
+        .iter()
+        .map(|bin| (bin.pairs, bin.acceptable.successes))
+        .collect();
+    assert_eq!(counts, [(0, 0), (1, 0), (0, 0), (0, 0), (2, 1)]);
 }
 
 #[test]

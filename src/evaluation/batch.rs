@@ -1081,6 +1081,68 @@ pub struct BaselineComparison {
     pub explicit_cases_excluded: usize,
     /// Baselines this run's answers cannot support, and why.
     pub not_computed: Vec<String>,
+    /// Fit calibration on judged reranked pairs.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fit_calibration: Option<FitCalibration>,
+}
+
+/// Fit estimates scored against judgments. The sampling frame is every
+/// reranked (case, skill) pair of the judged advisory cohort; it says nothing
+/// about calibration over the whole roster.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct FitCalibration {
+    pub frame: String,
+    pub pairs: usize,
+    /// Mean squared error of fit against acceptability (1 if the skill is in
+    /// the case's acceptable set, else 0).
+    pub brier: f64,
+    pub bins: Vec<CalibrationBin>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct CalibrationBin {
+    pub lower: f64,
+    pub upper: f64,
+    pub pairs: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mean_fit: Option<f64>,
+    pub acceptable: Ratio,
+}
+
+fn fit_calibration(pairs: &[(f64, bool)]) -> Option<FitCalibration> {
+    if pairs.is_empty() {
+        return None;
+    }
+    let brier = pairs
+        .iter()
+        .map(|(fit, ok)| (fit - f64::from(u8::from(*ok))).powi(2))
+        .sum::<f64>()
+        / pairs.len() as f64;
+    let bins = (0..5)
+        .map(|bin| {
+            let lower = f64::from(bin) / 5.0;
+            let upper = f64::from(bin + 1) / 5.0;
+            let members: Vec<&(f64, bool)> = pairs
+                .iter()
+                .filter(|(fit, _)| *fit >= lower && (*fit < upper || (bin == 4 && *fit <= upper)))
+                .collect();
+            CalibrationBin {
+                lower,
+                upper,
+                pairs: members.len(),
+                mean_fit: (!members.is_empty()).then(|| {
+                    members.iter().map(|(fit, _)| fit).sum::<f64>() / members.len() as f64
+                }),
+                acceptable: Ratio::of(members.iter().filter(|(_, ok)| *ok).count(), members.len()),
+            }
+        })
+        .collect();
+    Some(FitCalibration {
+        frame: "every reranked (case, skill) pair of the judged advisory cohort".into(),
+        pairs: pairs.len(),
+        brier,
+        bins,
+    })
 }
 
 type Policy = fn(&crate::pipeline::StageEvidence, &EvaluationCaseRecord, f64) -> Option<String>;
@@ -1172,6 +1234,18 @@ fn compare_baselines(
             _ => comparison.coverage.shortlist_gated_out += 1,
         }
     }
+    let calibration_pairs: Vec<(f64, bool)> = cohort
+        .iter()
+        .flat_map(|(_, label, stages)| {
+            stages.rerank.iter().flat_map(move |rerank| {
+                rerank
+                    .candidates
+                    .iter()
+                    .map(move |(id, _, fit)| (*fit, acceptable(label, id)))
+            })
+        })
+        .collect();
+    comparison.fit_calibration = fit_calibration(&calibration_pairs);
     comparison.coverage.admitted = Ratio::of(admitted_hits, positives);
     comparison.coverage.shortlist = Ratio::of(shortlist_hits, shortlist_cases);
 
