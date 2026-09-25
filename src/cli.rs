@@ -3402,9 +3402,10 @@ fn rank_command(
         .request_cx()
         .map_err(|_| (6u8, "timeout", "Local runtime unavailable".into()))
         .and_then(|cx| {
-            invocation.runtime().block_on(async {
-                crate::pipeline::execute_pipeline(&invocation, &cx, args, None).await
-            })
+            invocation.block_on_cancellable(
+                &cx,
+                crate::pipeline::execute_pipeline(&invocation, &cx, args, None),
+            )
         });
     // Completion must precede the work cutoff, but teardown may use the
     // reserved cleanup window. Do not reclassify timely work as late merely
@@ -3642,9 +3643,10 @@ fn hook_claude_command(clock: &EntryClock, m: &clap::ArgMatches) -> Result<Strin
         .request_cx()
         .map_err(|_| (6u8, "timeout", "Local runtime unavailable".into()))
         .and_then(|cx| {
-            invocation.runtime().block_on(async {
-                crate::pipeline::execute_pipeline(&invocation, &cx, args, None).await
-            })
+            invocation.block_on_cancellable(
+                &cx,
+                crate::pipeline::execute_pipeline(&invocation, &cx, args, None),
+            )
         });
     let completed_in_time = timely(clock);
     let output_doc = finish_invocation(invocation, outcome)?;

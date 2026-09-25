@@ -1122,6 +1122,60 @@ fn an_invocation_killed_mid_flight_is_still_recorded() {
 }
 
 #[test]
+fn a_terminated_invocation_drains_and_records_its_turn() {
+    // sr-c4v6. Claude's hook timeout sends SIGTERM and kills only about 1.2 s
+    // later. SIGTERM is routed to user cancellation, so the invocation drains
+    // its provider wait and finalizes the turn as an unavailable timeout
+    // instead of dying with the row still in flight (the SIGKILL case above).
+    let f = Fixture::new();
+    f.claude_session("rec-term", TASK);
+    f.ledger_init();
+    let target = f.root.join("provider-target.txt");
+    std::fs::write(&target, "unused").unwrap();
+    let provider = Provider::start_with(&f, "slow-wide", &[target.to_str().unwrap(), "10"]);
+    let mut child = f
+        .rank_command(provider.port, &[])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    assert!(
+        f.wait_for_event(std::time::Duration::from_secs(20)),
+        "the invocation never recorded itself before sending"
+    );
+    let sent = std::time::Instant::now();
+    let kill = Command::new("kill")
+        .args(["-TERM", &child.id().to_string()])
+        .status()
+        .unwrap();
+    assert!(kill.success());
+    let status = child.wait().unwrap();
+    // Well inside the harness's SIGKILL grace, not the provider's ten seconds.
+    assert!(
+        sent.elapsed() < std::time::Duration::from_millis(1_500),
+        "SIGTERM did not drain promptly: {:?}",
+        sent.elapsed()
+    );
+    // A drained rank exits with its timeout category, not killed by the signal.
+    assert_eq!(status.code(), Some(6), "{status:?}");
+
+    let events = f.events();
+    assert_eq!(events.len(), 1, "{events:#?}");
+    let (_, decision, _, reason) = &events[0];
+    assert_eq!(decision, "unavailable");
+    assert_eq!(
+        reason, "timeout",
+        "the turn is finalized, not left in flight"
+    );
+    // The wide request reached the provider, so its possible cost stays recorded.
+    let attempts = f.attempts();
+    assert_eq!(attempts.len(), 1, "{attempts:#?}");
+    assert!(attempts[0].sent_at.is_some(), "{attempts:#?}");
+    drop(provider);
+}
+
+#[test]
 fn an_invocation_killed_after_its_request_reached_the_wire_owns_that_attempt() {
     // sr-roadmap-l1i.6.7's reached-wire clause, which PurpleFrog was right to insist the
     // earlier hard-kill case did not cover. That case waited for the invocation's *event*

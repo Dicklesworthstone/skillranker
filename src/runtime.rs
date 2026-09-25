@@ -241,6 +241,47 @@ impl ProcessInvocation {
         cx.cancel_with(CancelKind::User, Some("process cancellation"));
     }
 
+    /// Drive `work` on the invocation's runtime, routing SIGTERM and SIGINT to
+    /// user cancellation of `cx`, so the work drains and finalizes on its own
+    /// cancellation paths instead of dying mid-flight. Claude's hook timeout
+    /// sends SIGTERM and kills only about 1.2 s later; a signalled turn is then
+    /// recorded, not left in flight (sr-c4v6). The signal streams are polled
+    /// beside the work, never spawned, so nothing outlives the invocation.
+    /// Where a signal stream is unavailable, the work simply runs.
+    pub fn block_on_cancellable<F: std::future::Future>(&self, cx: &Cx, work: F) -> F::Output {
+        use asupersync::signal::{SignalKind, signal};
+        use std::future::Future;
+        use std::task::Poll;
+        self.runtime.block_on(async {
+            let mut signals: Vec<_> = [SignalKind::terminate(), SignalKind::interrupt()]
+                .into_iter()
+                .filter_map(|kind| signal(kind).ok())
+                .collect();
+            let mut work = std::pin::pin!(work);
+            let mut cancelled = false;
+            std::future::poll_fn(|task| {
+                if let Poll::Ready(output) = work.as_mut().poll(task) {
+                    return Poll::Ready(output);
+                }
+                if !cancelled {
+                    // `recv` is cancel-safe and the delivery count lives on
+                    // the stream, so a fresh receive per poll misses nothing.
+                    let signalled = signals
+                        .iter_mut()
+                        .any(|stream| std::pin::pin!(stream.recv()).poll(task).is_ready());
+                    if signalled {
+                        cancelled = true;
+                        self.cancel_user(cx);
+                        // Let the work observe the cancellation now.
+                        return work.as_mut().poll(task);
+                    }
+                }
+                Poll::Pending
+            })
+            .await
+        })
+    }
+
     pub fn shutdown(self) -> bool {
         let remaining = self.clock.remaining_until_expiry();
         let bound = Duration::from_millis(remaining.as_millis().max(1));
