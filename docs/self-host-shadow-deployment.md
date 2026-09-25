@@ -455,3 +455,28 @@ the confirmation to look for.
   store's creation has not yet been observed.
 - Gates on `2c3dc46`: fmt, strict clippy and the remote full suite (1379
   passed, 0 failed).
+- Observed at 17:18Z: the live hook created the v4 store, its rows carry boot
+  receipts, and both turns ranked.
+
+## Redeployment — 2026-09-25 19:56Z (AzureJaguar, cheaper skill discovery)
+
+- Binary: `~/.local/bin/sr`, SHA256
+  `4009260592e160e9802fe98e516913fa023c27ee6d1673c4d3ac06078b3ca764`, built
+  `--release --locked` through RCH from `2c77b46` (freshness proven by a
+  string from `11ba4dc` that the previous build lacks). The previous binary
+  (SHA256 `ee76564d…`) is kept as
+  `~/.local/bin/sr.backup.20260925T195800Z-2c3dc46`.
+- Discovery no longer walks a skill's own subdirectories. On the live roots
+  `sr roster --json` output is byte-identical to the previous binary (205
+  records, same counts and causes). openat falls from 5,667 to 1,117 calls,
+  and median CPU time from 388 ms to 224 ms.
+- Also carries `11ba4dc` (live evaluation batches, `sr eval --online`), which
+  the hook does not use.
+- The sweep tool now skips compaction summaries and harness meta records. The
+  13 "local refusals" of earlier sweeps were such records, not live failures.
+  Sweep, previous binary against this one: all 74 submitted prompts end at the
+  provider stage with both, and no outcome differs.
+- Gates on `2c77b46`: remote full suite 1383 passed, with 2 wall-clock-bound
+  failures on a slow run (writer lock 576 ms, Retry-After 655 ms), both green
+  on rerun (storage_contract 25/0, transport_failures 8/0); strict clippy on
+  the change.
