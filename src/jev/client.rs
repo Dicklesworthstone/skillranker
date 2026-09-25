@@ -3,6 +3,7 @@
 //! Retries, attempt budgets and ranking policy belong to the caller. This
 //! boundary never follows redirects, inherits a proxy, or retries internally.
 
+use super::admission::RankingStage;
 use super::codec::{CodecError, MAX_RESPONSE_BYTES, Request, Response};
 use super::retry::RetryAfter;
 use super::{EndpointConfig, OriginScopedCredential, SKILLRANKER_USER_AGENT};
@@ -57,6 +58,22 @@ pub trait JevTransport: Send + Sync {
         })
     }
 
+    /// One attempt of a known ranking stage. A real transport may keep a Wide
+    /// attempt's connection for the Rerank that follows; doubles ignore it.
+    #[allow(clippy::too_many_arguments)]
+    fn send_stage_accounted<'a>(
+        &'a self,
+        _stage: RankingStage,
+        request: &'a Request,
+        credential: Option<&'a OriginScopedCredential>,
+        consent: NetworkConsent,
+        cx: &'a Cx,
+        clock: &'a EntryClock,
+        on_start: &'a mut (dyn FnMut() -> Result<(), TransportError> + Send),
+    ) -> TransportFuture<'a> {
+        self.send_accounted(request, credential, consent, cx, clock, on_start)
+    }
+
     /// The origin a credential is bound to, when this transport reaches one.
     fn origin(&self) -> Option<&super::CanonicalOrigin> {
         None
@@ -87,7 +104,29 @@ impl JevTransport for JevClient {
         on_start: &'a mut (dyn FnMut() -> Result<(), TransportError> + Send),
     ) -> TransportFuture<'a> {
         Box::pin(JevClient::send_accounted(
-            self, request, credential, consent, cx, clock, on_start,
+            self, request, credential, consent, cx, clock, on_start, false,
+        ))
+    }
+
+    fn send_stage_accounted<'a>(
+        &'a self,
+        stage: RankingStage,
+        request: &'a Request,
+        credential: Option<&'a OriginScopedCredential>,
+        consent: NetworkConsent,
+        cx: &'a Cx,
+        clock: &'a EntryClock,
+        on_start: &'a mut (dyn FnMut() -> Result<(), TransportError> + Send),
+    ) -> TransportFuture<'a> {
+        Box::pin(JevClient::send_accounted(
+            self,
+            request,
+            credential,
+            consent,
+            cx,
+            clock,
+            on_start,
+            stage == RankingStage::Wide,
         ))
     }
 
@@ -199,12 +238,22 @@ impl JevClient {
         cx: &Cx,
         clock: &EntryClock,
     ) -> Result<Response, TransportError> {
-        self.send_accounted(request, credential, consent, cx, clock, || Ok(()))
+        self.send_accounted(request, credential, consent, cx, clock, || Ok(()), false)
             .await
     }
 
     /// Call the accounting hook after local validation, immediately before
     /// entering the HTTP future. The hook cannot perform asynchronous work.
+    ///
+    /// `keep_connection` leaves this exchange's connection in the client's
+    /// single-connection pool for the next request of the same invocation.
+    /// Only a Wide attempt asks for it: its Rerank follows within
+    /// milliseconds and then skips a TCP and TLS handshake, measured at about
+    /// 230 ms against the provider. Every other request, including each
+    /// Rerank, sends `Connection: close`, so no socket outlives the last
+    /// request. A kept socket is dropped with the client, on cancellation, or
+    /// when the provider answers `Connection: close`.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn send_accounted(
         &self,
         request: &Request,
@@ -213,6 +262,7 @@ impl JevClient {
         cx: &Cx,
         clock: &EntryClock,
         on_start: impl FnOnce() -> Result<(), TransportError>,
+        keep_connection: bool,
     ) -> Result<Response, TransportError> {
         admit_provider_attempt(
             consent,
@@ -238,15 +288,18 @@ impl JevClient {
             .map_err(|e| failure(TransportErrorKind::Request(e), false))?;
         budget(cx, clock, false)?;
         let timeout = Duration::from_millis(clock.remaining_before_cleanup().as_millis());
-        let exchange = self
+        let mut exchange = self
             .http
             .post(self.endpoint.target_url().as_str())
             .header("Authorization", header)
             .header("Accept", "application/json")
-            .header("Accept-Encoding", "identity")
-            // No idle sockets survive a completed request. The exchange's own
+            .header("Accept-Encoding", "identity");
+        if !keep_connection {
+            // No idle socket survives this request. The exchange's own
             // connection is also dropped by Asupersync on deadline/cancellation.
-            .header("Connection", "close")
+            exchange = exchange.header("Connection", "close");
+        }
+        let exchange = exchange
             .content_type("application/json")
             .body(bytes)
             .timeout(timeout)

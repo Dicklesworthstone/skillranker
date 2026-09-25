@@ -26,10 +26,17 @@ emit({"port": listener.getsockname()[1]})
 times = []
 closed = []
 request_bytes = 0
+# A "reuse" step answers without closing and reads the next step's request
+# from the same connection; every other step closes after its response.
+connections = 0
+connection_headers = []
+stream = None
 for step in steps:
-    connection, _ = listener.accept()
-    connection.settimeout(5)
-    stream = context.wrap_socket(connection, server_side=True)
+    if stream is None:
+        connection, _ = listener.accept()
+        connection.settimeout(5)
+        stream = context.wrap_socket(connection, server_side=True)
+        connections += 1
     raw = b""
     while b"\r\n\r\n" not in raw:
         block = stream.recv(4096)
@@ -50,12 +57,16 @@ for step in steps:
     assert lines[0] == "POST /v1/systemone HTTP/1.1"
     # ubs:ignore -- public synthetic canary, not a credential or authentication service.
     assert fields["authorization"] == "Bearer synthetic-retry-canary"
-    assert fields["connection"].lower() == "close"
+    mode, _, argument = step.partition(":")
+    # Only a Wide attempt may keep its connection; the tests assert which did.
+    connection_header = fields.get("connection", "").lower()
+    assert connection_header in ("close", "", "keep-alive")
+    assert mode != "reuse" or connection_header != "close"
+    connection_headers.append(connection_header)
     assert json.loads(body)["state"] == "synthetic retry probe"
     times.append(time.monotonic_ns())
     request_bytes += size
-    mode, _, argument = step.partition(":")
-    status = 200 if mode in ("ok", "malformed", "slow", "cancel") else int(mode)
+    status = 200 if mode in ("ok", "malformed", "slow", "cancel", "reuse") else int(mode)
     response = json.dumps({
         "model": argument or "synthetic-revision-1",
         "answers": {"fit": {"type": "noul", "noul": 0.75}},
@@ -72,16 +83,20 @@ for step in steps:
             extra = "Retry-After: 0\r\nRetry-After: 1\r\n"
         else:
             extra = f"Retry-After: {argument}\r\n"
-    stream.sendall((f"HTTP/1.1 {status} Test\r\nContent-Type: application/json\r\n{extra}Content-Length: {len(response)}\r\nConnection: close\r\n\r\n").encode())
+    close = "" if mode == "reuse" else "Connection: close\r\n"
+    stream.sendall((f"HTTP/1.1 {status} Test\r\nContent-Type: application/json\r\n{extra}Content-Length: {len(response)}\r\n{close}\r\n").encode())
     if mode == "cancel":
         emit({"body_pending": True})
     if mode not in ("slow", "cancel"):
         stream.sendall(response)
+    if mode == "reuse":
+        continue
     try:
         closed.append(stream.recv(1) == b"")
     except (ssl.SSLError, ConnectionResetError, BrokenPipeError):
         closed.append(True)
     stream.close()
+    stream = None
 
 # Catch an unexpected fifth/repeated attempt independently of Rust counters.
 listener.settimeout(0.25)
@@ -93,4 +108,5 @@ except (TimeoutError, socket.timeout):
     extra_connections = 0
 listener.close()
 emit({"requests": len(times), "received_ns": times, "closed": closed,
-      "extra_connections": extra_connections, "request_bytes": request_bytes})
+      "extra_connections": extra_connections, "request_bytes": request_bytes,
+      "connections": connections, "connection_headers": connection_headers})

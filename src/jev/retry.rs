@@ -315,7 +315,8 @@ impl<'a> RetrySession<'a> {
             let result = {
                 let mut on_start = || flight.start();
                 self.client
-                    .send_accounted(
+                    .send_stage_accounted(
+                        stage,
                         request,
                         self.credential,
                         consent,

@@ -28,9 +28,16 @@ encoding and rejects compressed responses rather than inflating them. Only JSON
 success responses are decoded; duplicate content-type/encoding headers, redirects,
 non-success status codes and invalid answer maps fail explicitly.
 
-Automatic redirects, retries, ambient proxies and cookies are disabled. Each
-exchange requests `Connection: close`; no idle connection is retained between
-calls. Retry/backoff and process-level signal handling belong to the owning
+Automatic redirects, retries, ambient proxies and cookies are disabled. The
+client pools at most one connection. A Wide attempt made through the retry
+session leaves its connection open for the Rerank that follows in the same
+invocation. That saves a TCP and TLS handshake, about 230 ms measured against
+the provider. Every other exchange, each Rerank included, requests
+`Connection: close`, so no connection outlives the invocation's last request. A
+kept connection is also dropped when the provider answers `Connection: close`,
+on cancellation, and with the client. A stale kept connection is never retried
+inside the transport: the POST fails as one attempt, and the retry session
+decides. Retry/backoff and process-level signal handling belong to the owning
 invocation, not a hidden second transport or background worker.
 
 Errors contain closed kinds and bounded HTTP status codes. They never retain

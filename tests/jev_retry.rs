@@ -251,6 +251,51 @@ fn transient_sequence_then_rerank_uses_exactly_four_admissions() {
 }
 
 #[test]
+fn a_rerank_reuses_the_wide_connection_and_closes_it() {
+    let server = Server::new(&["reuse", "ok"]);
+    let (client, key) = server.client();
+    let run = Run::new(5000);
+    let mut session = run.session(&client, &key);
+    for stage in [RankingStage::Wide, RankingStage::Rerank] {
+        let answer = run
+            .invocation
+            .runtime()
+            .block_on(session.send_stage(stage, &request("jev-latest"), &run.cx, || Ok(CONSENT)))
+            .unwrap();
+        assert_eq!(answer.attempts, 1);
+    }
+    let report = server.finish("rerank-reuses-wide-connection", 2);
+    // One handshake for both stages. The Wide attempt kept its connection;
+    // the Rerank, the invocation's last request, asked to close it and did.
+    assert_eq!(report["connections"], 1);
+    assert_ne!(report["connection_headers"][0], "close");
+    assert_eq!(report["connection_headers"][1], "close");
+    assert_eq!(report["closed"], json!([true]));
+    run.finish();
+}
+
+#[test]
+fn a_wide_answered_with_close_is_not_reused() {
+    // The provider may refuse keep-alive: the client then opens a fresh
+    // connection for the Rerank, and still closes it afterwards.
+    let server = Server::new(&["ok", "ok"]);
+    let (client, key) = server.client();
+    let run = Run::new(5000);
+    let mut session = run.session(&client, &key);
+    for stage in [RankingStage::Wide, RankingStage::Rerank] {
+        run.invocation
+            .runtime()
+            .block_on(session.send_stage(stage, &request("jev-latest"), &run.cx, || Ok(CONSENT)))
+            .unwrap();
+    }
+    let report = server.finish("wide-close-not-reused", 2);
+    assert_eq!(report["connections"], 2);
+    assert_eq!(report["connection_headers"][1], "close");
+    assert_eq!(report["closed"], json!([true, true]));
+    run.finish();
+}
+
+#[test]
 fn four_transient_errors_never_send_a_fifth_attempt() {
     let server = Server::new(&["503", "502", "500", "504"]);
     let (client, key) = server.client();
