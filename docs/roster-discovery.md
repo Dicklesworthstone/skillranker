@@ -41,6 +41,12 @@ refused rather than followed, which also means cycles cannot occur. Entry types
 come from `readdir` where the filesystem supplies them and from
 `fstatat(AT_SYMLINK_NOFOLLOW)` where it does not.
 
+A directory below a root that holds the skill file is one skill, so its other
+subdirectories (references, scripts, assets) are not descended: they are that
+skill's own files, never further skills. Roots and container directories
+without a skill file are still descended, so a nested skill file there is still
+a candidate. On a measured personal root this walked 278 of 1,281 directories.
+
 `DiscoveryLimits::defaults()` are the plan's documented ceilings: 10,000 entries
 examined and 32 MiB of candidate bytes (`DISCOVERY_FILES` and
 `DISCOVERY_PARSED_BYTES`), plus `MAX_ROOT_DEPTH` (8) directory levels. Reaching

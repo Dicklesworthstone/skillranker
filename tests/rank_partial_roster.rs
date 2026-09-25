@@ -377,7 +377,9 @@ fn real_entry_ceiling_keeps_personal_precedence_through_ranking() {
     fixture.skill(false, "beta", false);
     fixture.skill(true, "beta", true);
     expected.insert("delta", fixture.skill(true, "delta", false));
-    let references = fixture.workspace.join(".claude/skills/alpha/references");
+    // A container without a skill file: a skill's own directories are never
+    // walked, so only a non-skill directory can reach the entry ceiling.
+    let references = fixture.workspace.join(".claude/skills/archive/references");
     fs::create_dir_all(&references).unwrap();
     for index in 0..=DISCOVERY_FILES.max() {
         fs::write(references.join(format!("note-{index:05}.txt")), "note").unwrap();

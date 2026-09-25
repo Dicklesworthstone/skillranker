@@ -54,10 +54,16 @@ def prompt_moments(transcript: Path, notifications: bool = False):
             except json.JSONDecodeError:
                 continue
             content = (record.get("message") or {}).get("content")
+            # Compaction summaries and harness meta messages (a tool-call
+            # retry notice) are user records, but no one submitted them;
+            # replaying them reported refusals that never happen live.
             if (
                 record.get("type") != "user"
                 or not record.get("promptId")
                 or record.get("isSidechain")
+                or record.get("isCompactSummary")
+                or record.get("isVisibleInTranscriptOnly")
+                or record.get("isMeta")
                 or not isinstance(content, str)
             ):
                 continue
