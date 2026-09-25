@@ -4203,6 +4203,7 @@ fn config_report(config: &ResolvedConfig) -> Value {
             ContextProfile => json!(effective.context_profile().as_str()),
             ContextNoTools => json!(effective.no_tools()),
             HookMode => json!(effective.hook_mode().as_str()),
+            HookNotificationTurns => json!(effective.notification_turns().as_str()),
             TypesafeApiKey => json!({"present":config.credential().is_some()}),
             TypesafeEndpoint => json!({"override_present":effective.endpoint().is_some()}),
             ProviderModel => json!(

@@ -1068,6 +1068,25 @@ async fn rank_once(
                     format!("Invalid hook input: {e}"),
                 )
             })?;
+            // A turn a background task's notification started, while the agent
+            // was idle, is a harness event rather than a user request. Under the
+            // default policy it is counted apart as a non-turn and never sent,
+            // like a notification inside a running turn (sr-sif6). Only Claude's
+            // exact envelope matches, so a prompt that merely quotes it still ranks.
+            if effective.notification_turns() == crate::config::NotificationTurns::Skip
+                && is_task_notification_envelope(hook_input.prompt.as_str())
+            {
+                if matches!(gate.ledger(), StoreAccess::Enabled) {
+                    crate::storage::hook_entries::record_hook_invocation(
+                        args.ledger_dir.as_deref(),
+                        crate::storage::hook_entries::HookCounter::NonTurns,
+                    );
+                }
+                return Err(failure(
+                    ErrorKind::UnsupportedInput,
+                    "A task notification is not a user turn (hook.notification_turns = skip)",
+                ));
+            }
             // From here on a failure is a hook turn the availability cohort must
             // count. Arm the failure row now rather than after context capture, or
             // an overlay, roster or retrieval failure leaves no trace at all. The
@@ -3298,6 +3317,17 @@ fn raw_skill_probabilities(
             _ => None,
         })
         .collect()
+}
+
+/// Claude's exact wrapper for a background task's completion message, as
+/// every live delivery measured it: `<task-notification>` then a `<task-id>`
+/// element, closing with `</task-notification>`.
+fn is_task_notification_envelope(prompt: &str) -> bool {
+    let prompt = prompt.trim();
+    prompt
+        .strip_prefix("<task-notification>")
+        .is_some_and(|rest| rest.trim_start().starts_with("<task-id>"))
+        && prompt.ends_with("</task-notification>")
 }
 
 /// The run's response-cache store. A store operation consumes the store, and a

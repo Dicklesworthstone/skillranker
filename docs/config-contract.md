@@ -33,6 +33,7 @@ their text cannot appear in Display, Debug, or the public issue list.
 | `typesafe.endpoint` | `TYPESAFE_ENDPOINT` | — | forbidden | forbidden | allowed | — |
 | `provider.model` | `SR_MODEL` | — | allowed | forbidden | allowed | — |
 | `hook.mode` | — | `--shadow` | allowed | forbidden | — | restrict-only |
+| `hook.notification_turns` (`skip`\|`rank`) | — | — | allowed | restrict-only | — | — |
 | `context.profile` | — | `--context-profile` | allowed | restrict-only | — | allowed |
 | `context.no_tools` | — | `--no-tools` | allowed | restrict-only | — | restrict-only |
 | `context.messages` (1–12) | `SR_MESSAGES` | `--messages` | allowed | restrict-only | allowed | allowed |
@@ -51,6 +52,10 @@ are accepted for float keys; NaN and infinity are rejected everywhere. After
 merging, `ranking.top` must not exceed `ranking.shortlist`. Disclosure-volume keys
 are ordered for restriction: `minimal < standard`, `no_tools = true` is narrower,
 and fewer messages or characters are narrower. `shadow < advisory` for hook mode.
+`skip < rank` for `hook.notification_turns`. The default `skip` counts a turn
+that a background task's `<task-notification>` started while the agent was idle
+as a non-turn: it is harness output, not a user request, and is never sent.
+`rank` evaluates it like a submitted prompt (sr-sif6).
 
 The environment layer is strict inside `SR_`: an unrecognized `SR_*` variable or a
 non-UTF-8 `SR_` name is an error, so a misspelled privacy setting is never ignored.
