@@ -1326,6 +1326,7 @@ Asupersync is the active runtime/transport. There is no requirement to install
 FrankenNumPy/SciPy/Pandas. Their narrow evaluation qualification remains `.6.18`.
 `src/transport.rs` is still outside the crate module graph; the active Jev client
 uses `src/jev/endpoint.rs`. An uncompiled alternate file is not a capability.
+(The file was removed on 2026-09-24, `sr-x43d`.)
 
 ### Concrete gaps that the prior closure picture missed
 
@@ -1517,6 +1518,8 @@ Neither crate root includes it. Its presence is not HTTP transport or compiled
 test evidence; the active origin implementation is `src/jev/endpoint.rs`.
 The transport owner should reconcile this unused duplicate before wiring the
 HTTP boundary rather than accidentally adopting its older contract.
+(Reconciled on 2026-09-24 by removing the duplicate, `sr-x43d`; the HTTP
+boundary uses `src/jev/endpoint.rs` and `src/jev/client.rs`.)
 
 ### Concrete runtime finding
 
