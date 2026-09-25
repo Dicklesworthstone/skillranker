@@ -316,3 +316,33 @@ reached by different adjudicators. The strata now discriminate: 11 positive, 2
 near-miss, 5 no-match. Each adjudicator took about 30 s for 18 cases. v2 keeps the
 three case kinds, so README's promotion table, the evaluation policy and
 `scripts/validate_corpus.py` stand unchanged.
+
+### 10.2 Diagnostic live scoring of the pilot (2026-09-25)
+
+The deployed `sr` (`~/.local/bin/sr`, built 2026-09-24 19:20 local, model alias
+`jev-latest`) ranked each of the 18 constructed pilot requests live with
+`sr rank --context FILE --allow-network --no-persist --json`. The runs had no
+history, no ledger and no cache. Each decision became one case record, and the
+v1 majority acceptable sets became judged labels. `sr eval --labels --explain`
+scored the frame with the frozen `evaluation_policy.v1` loss.
+
+| Measure | Result (95% Wilson interval) |
+|---|---|
+| Run | complete, 18/18 judged, 0 operational failures |
+| Top-1 precision (emitted suggestions) | 11/14 = 0.79 (0.52–0.92) |
+| Positive cases with an acceptable top suggestion | 11/13 = 0.85 (0.58–0.96) |
+| False abstentions | 0/13 |
+| Needless suggestions on no-match cases | 1/5 (0.04–0.62) |
+| Mean loss (0/1/2) | 6/18 = 0.33; normalized 0.17 |
+| Cost | 32 HTTP attempts; 282k input and 44k output tokens (≈16k/2.4k per case) |
+
+The three losses: a README translation request received `readme-writing` (a no-match
+case). A stalled-agent-panes request ranked `system-performance-remediation` first and
+both acceptable NTM skills second and third. A tax question received the
+profile-specific tax skill that the adjudicators judged a near miss, not its
+`-generic` variant.
+
+Non-claims: constructed requests, AI adjudicators and 18 cases support no promotion,
+calibration or population claim. The intervals show the uncertainty is wide. The gate
+stays `not-established`. This measures the deployed selector on single-turn requests
+only; history, tools and overflow retrieval were not exercised.
