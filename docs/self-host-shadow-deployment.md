@@ -480,3 +480,25 @@ the confirmation to look for.
   failures on a slow run (writer lock 576 ms, Retry-After 655 ms), both green
   on rerun (storage_contract 25/0, transport_failures 8/0); strict clippy on
   the change.
+
+## Redeployment — 2026-09-25 21:53Z (AzureJaguar, Rerank reuses the Wide connection)
+
+- Binary: `~/.local/bin/sr`, SHA256
+  `9c1c026a80eef8e32c3c14e14b1d9db501b13d880f77f033423f6334222699c3`, built
+  `--release --locked` through RCH from `075f928` (freshness proven by the
+  `send_stage_accounted` symbol, absent from the previous build). The previous
+  binary (SHA256 `40092605…`) is kept as
+  `~/.local/bin/sr.backup.20260925T212500Z-2c77b46`.
+- Live turns split into about 0.9-1.2 s of provider exchanges plus the local
+  work. Each exchange opened its own TLS connection: 323 ms fresh against
+  94 ms reused over HTTP/1.1, measured with curl without credentials. The
+  Wide attempt now keeps its connection for the Rerank, and the Rerank closes
+  it. Before this deploy, live Rerank sent-to-completed times were 485-640 ms.
+- Also carries the peers' `l1i.6.20` evaluation work up to `075f928`, which
+  the hook does not use.
+- Sweep, previous binary against this one: all 76 submitted prompts end at
+  the provider stage with both, and no outcome differs.
+- Gates on `075f928`: remote full suite 1391 passed, 0 failed; strict clippy
+  and ubs on the change.
+- Pending: no live turn had run on this binary by 21:55Z. The expected effect
+  is a shorter Rerank sent-to-completed time in `provider_attempts`.
