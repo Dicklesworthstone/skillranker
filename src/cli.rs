@@ -3183,6 +3183,7 @@ fn eval_live_command(
         max_requests: max_requests as usize,
         max_runtime_ms,
         attempts_per_case: crate::limits::DEFAULT_HTTP_ATTEMPTS as usize,
+        fit_threshold: config.effective().fits(),
     };
     // The preview runs the same pipeline as a stateless dry run: no network.
     let preview_gate = crate::effects::EffectGate::new(
@@ -3245,6 +3246,7 @@ fn run_case_pipeline(
     per_case_ms: u64,
     args: crate::pipeline::RankArgs,
     case: &crate::evaluation::batch::LiveEvaluationCase,
+    evidence: &mut crate::pipeline::StageEvidence,
 ) -> Result<OutputDocument, &'static str> {
     let remaining = batch.remaining_until_expiry().as_millis();
     let total = per_case_ms.min(remaining);
@@ -3274,6 +3276,7 @@ fn run_case_pipeline(
                     args,
                     None,
                     context,
+                    evidence,
                 ),
             )
         });
@@ -3288,7 +3291,8 @@ fn preview_live_case(
     args: crate::pipeline::RankArgs,
     case: &crate::evaluation::batch::LiveEvaluationCase,
 ) -> Result<Option<Value>, String> {
-    let document = run_case_pipeline(batch, per_case_ms, args, case)?;
+    let mut unused = crate::pipeline::StageEvidence::default();
+    let document = run_case_pipeline(batch, per_case_ms, args, case, &mut unused)?;
     let value = document.as_value();
     if let Some(receipt) = value.get("disclosure") {
         return Ok(Some(receipt.clone()));
@@ -3313,7 +3317,8 @@ fn rank_live_case(
     use crate::evaluation::batch::LiveRankOutcome;
     let started = std::time::Instant::now();
     let elapsed = || u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-    let document = match run_case_pipeline(batch, per_case_ms, args, case) {
+    let mut evidence = crate::pipeline::StageEvidence::default();
+    let document = match run_case_pipeline(batch, per_case_ms, args, case, &mut evidence) {
         Ok(document) => document,
         Err(kind) => {
             return LiveRankOutcome {
@@ -3345,6 +3350,7 @@ fn rank_live_case(
         output_tokens: usage("output_tokens"),
         error_kind: value["error"]["kind"].as_str().map(str::to_owned),
         elapsed_ms: elapsed(),
+        evidence: Some(evidence),
     }
 }
 

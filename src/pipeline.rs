@@ -213,6 +213,8 @@ struct Progress {
     failed_recording: Option<FailureRecording>,
     /// Normalized context bytes supplied in memory instead of the named file.
     supplied_context: Option<Vec<u8>>,
+    /// Per-stage answers captured for an evaluation run; `None` otherwise.
+    stage_evidence: Option<StageEvidence>,
 }
 
 /// Identity and cost carried out of a failing run, so an unavailable event can
@@ -385,7 +387,7 @@ pub async fn execute_pipeline(
     args: RankArgs,
     transport: Option<&dyn JevTransport>,
 ) -> Result<OutputDocument, PipelineFailure> {
-    execute_pipeline_supplied(invocation, cx, args, transport, None).await
+    execute_pipeline_supplied(invocation, cx, args, transport, None, None).await
 }
 
 /// Rank one normalized context already held in memory, such as a case of an
@@ -398,8 +400,47 @@ pub async fn execute_pipeline_with_context(
     args: RankArgs,
     transport: Option<&dyn JevTransport>,
     context: Vec<u8>,
+    evidence: &mut StageEvidence,
 ) -> Result<OutputDocument, PipelineFailure> {
-    execute_pipeline_supplied(invocation, cx, args, transport, Some(context)).await
+    execute_pipeline_supplied(
+        invocation,
+        cx,
+        args,
+        transport,
+        Some(context),
+        Some(evidence),
+    )
+    .await
+}
+
+/// What each ranking stage produced for one evaluated case: the input to
+/// baseline comparisons, which reuse these answers and make no extra request.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct StageEvidence {
+    /// Advisory candidates admitted to the wide stage, in admission order.
+    pub admitted: Vec<String>,
+    /// Whether Quill ranked the admitted set (roster overflow) rather than
+    /// the whole advisory roster being admitted.
+    pub quill_ranked: bool,
+    pub wide: Option<WideEvidence>,
+    pub rerank: Option<RerankEvidence>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct WideEvidence {
+    pub needs_skill: f64,
+    pub none_probability: f64,
+    /// True when the gate stopped the run before a rerank.
+    pub low_need: bool,
+    /// Shortlisted skills with their raw wide probability, highest first.
+    pub shortlist: Vec<(String, f64)>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct RerankEvidence {
+    pub none_probability: f64,
+    /// Each shortlisted skill's raw rerank probability and fit.
+    pub candidates: Vec<(String, f64, f64)>,
 }
 
 async fn execute_pipeline_supplied(
@@ -408,6 +449,7 @@ async fn execute_pipeline_supplied(
     mut args: RankArgs,
     transport: Option<&dyn JevTransport>,
     supplied_context: Option<Vec<u8>>,
+    evidence: Option<&mut StageEvidence>,
 ) -> Result<OutputDocument, PipelineFailure> {
     let clock = &invocation.clock();
     // Every effect restriction comes from the gate; `args.dry_run` can only add
@@ -440,9 +482,13 @@ async fn execute_pipeline_supplied(
     let effects = args.gate.receipt();
     let mut progress = Progress {
         supplied_context,
+        stage_evidence: evidence.is_some().then(StageEvidence::default),
         ..Progress::default()
     };
     let result = rank_once(invocation, clock, cx, args, transport, &mut progress).await;
+    if let (Some(sink), Some(captured)) = (evidence, progress.stage_evidence.take()) {
+        *sink = captured;
+    }
     // Finalize every armed failure, including refusals before attempt admission:
     // those runs have finished and must not retain their generated/in-flight row.
     // Recording is optional and best effort; failure to write does not change
@@ -1855,6 +1901,13 @@ async fn rank_once(
             (admission.admitted, false, None)
         };
 
+    if let Some(evidence) = progress.stage_evidence.as_mut() {
+        evidence.admitted = candidate_skills
+            .iter()
+            .map(|s| s.binding.id.as_str().to_owned())
+            .collect();
+        evidence.quill_ranked = ran_quill;
+    }
     let admitted_ids: BTreeSet<&SkillId> = candidate_skills.iter().map(|s| &s.binding.id).collect();
     let retrieval_view = if ran_quill {
         RetrievalView::Admitted {
@@ -2562,6 +2615,20 @@ async fn rank_once(
                 format!("Wide evaluation failed: {e:?}"),
             )
         })?;
+    if let Some(evidence) = progress.stage_evidence.as_mut() {
+        evidence.wide = Some(WideEvidence {
+            needs_skill: wide_outcome.needs_skill,
+            none_probability: wide_outcome.none_probability,
+            low_need: matches!(wide_outcome.decision, WideDecision::LowNeed),
+            shortlist: match &wide_outcome.decision {
+                WideDecision::Shortlist(list) => list
+                    .iter()
+                    .map(|s| (s.skill.binding.id.as_str().to_owned(), s.wide_probability))
+                    .collect(),
+                WideDecision::LowNeed => Vec::new(),
+            },
+        });
+    }
     // A fresh wide answer is held and published together with the rerank it
     // leads to, or alone when it needs none (sr-ron8). A rerank failure then
     // caches no wide answer, which is the price of never mixing evaluations.
@@ -2786,6 +2853,22 @@ async fn rank_once(
             format!("Rerank evaluation failed: {e:?}"),
         )
     })?;
+    if let Some(evidence) = progress.stage_evidence.as_mut() {
+        evidence.rerank = Some(RerankEvidence {
+            none_probability: rerank_outcome.none_probability,
+            candidates: rerank_outcome
+                .candidates
+                .iter()
+                .map(|(skill, estimate)| {
+                    (
+                        skill.binding.id.as_str().to_owned(),
+                        estimate.rerank,
+                        estimate.fit,
+                    )
+                })
+                .collect(),
+        });
+    }
 
     if let Some(rerank_fp) = rerank_fp {
         let rerank_entry = cache_entry(

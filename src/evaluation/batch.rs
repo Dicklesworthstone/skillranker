@@ -190,6 +190,9 @@ pub struct EvaluationBatchReport {
     /// A live batch's disclosure, previewed for every case before any send.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub disclosure_preflight: Option<DisclosurePreflight>,
+    /// Intrinsic stage coverage and baseline policies over the same live answers.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub baselines: Option<BaselineComparison>,
     /// Requested by `--explain`; derived only from this report's own values.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub explanation: Option<ReportExplanation>,
@@ -450,6 +453,7 @@ pub fn execute_evaluation_batch<R: BufRead>(
         sample_manifest: None,
         design_weighted_loss: None,
         disclosure_preflight: None,
+        baselines: None,
         explanation: None,
         cases: reports,
         error,
@@ -535,6 +539,7 @@ struct FrameRun {
     error: Option<ReportError>,
     elapsed_ms: BTreeMap<CaseKey, u64>,
     preflight: Option<DisclosurePreflight>,
+    baselines: Option<BaselineComparison>,
 }
 
 impl FrameRun {
@@ -546,6 +551,7 @@ impl FrameRun {
             error: None,
             elapsed_ms: BTreeMap::new(),
             preflight: None,
+            baselines: None,
         }
     }
 }
@@ -674,6 +680,7 @@ fn score_frame(
         sample_manifest: manifest,
         design_weighted_loss,
         disclosure_preflight: run.preflight,
+        baselines: run.baselines,
         explanation: None,
         cases: reports,
         error: if complete { None } else { run.error },
@@ -754,10 +761,12 @@ pub struct LiveRankOutcome {
     /// The error kind of an unavailable decision.
     pub error_kind: Option<String>,
     pub elapsed_ms: u64,
+    /// What each stage answered, for baseline comparisons.
+    pub evidence: Option<crate::pipeline::StageEvidence>,
 }
 
 /// Batch-wide caps of a live run.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LiveBatchLimits {
     /// HTTP attempts across the whole batch, retries included.
     pub max_requests: usize,
@@ -765,6 +774,8 @@ pub struct LiveBatchLimits {
     /// The most attempts one ranking can make; a case is admitted only while
     /// its worst case still fits under `max_requests`.
     pub attempts_per_case: usize,
+    /// The minimum fit the fit-only baseline requires, as production uses.
+    pub fit_threshold: f64,
 }
 
 /// What a live batch will disclose, frozen before its first request: every
@@ -919,6 +930,7 @@ pub fn execute_live_frame_evaluation<L: BufRead>(
     run.preflight = Some(frozen);
 
     let mut executed = Vec::with_capacity(admitted.len());
+    let mut evidence_by_case = BTreeMap::new();
     let mut stopped: Option<(String, ReportError)> = None;
     for mut record in admitted {
         let case = by_key[&record.key];
@@ -981,6 +993,9 @@ pub fn execute_live_frame_evaluation<L: BufRead>(
                 },
             ));
         }
+        if let Some(evidence) = outcome.evidence.clone() {
+            evidence_by_case.insert(record.key.clone(), evidence);
+        }
         record.decision = outcome.decision.clone();
         record.relevance_abstention = outcome.decision == "abstain";
         record.operational_failure = outcome.decision == "unavailable";
@@ -988,7 +1003,214 @@ pub fn execute_live_frame_evaluation<L: BufRead>(
         executed.push(record);
     }
     run.error = stopped.map(|(_, error)| error);
+    run.baselines = Some(compare_baselines(
+        &executed,
+        &judgments,
+        &evidence_by_case,
+        limits.fit_threshold,
+    ));
     score_frame(executed, &labels, manifest, run)
+}
+
+/// A rate with its exact denominator and a 95% Wilson interval.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Ratio {
+    pub successes: usize,
+    pub denominator: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rate: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wilson_95: Option<(f64, f64)>,
+}
+
+impl Ratio {
+    fn of(successes: usize, denominator: usize) -> Self {
+        Self {
+            successes,
+            denominator,
+            rate: (denominator > 0).then(|| successes as f64 / denominator as f64),
+            wilson_95: crate::evaluation::numerics::wilson_ci(successes, denominator, 0.95).ok(),
+        }
+    }
+}
+
+/// Whether the stages kept an acceptable skill in play, before any decision.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct StageCoverage {
+    /// Judged positive cases whose admitted wide candidates include an
+    /// acceptable skill.
+    pub admitted: Ratio,
+    /// Judged positive cases that passed the gate and whose shortlist includes
+    /// an acceptable skill.
+    pub shortlist: Ratio,
+    /// Judged positive cases the gate stopped before a shortlist.
+    pub shortlist_gated_out: usize,
+    /// Whether Quill ranked any case's admitted set (roster overflow).
+    pub quill_ranked_cases: usize,
+}
+
+/// One selection policy scored on the judged advisory cases.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct PolicyScore {
+    pub policy: String,
+    pub definition: String,
+    pub evaluated_cases: usize,
+    /// Precision of emitted top-one suggestions.
+    pub top1_precision: Ratio,
+    /// Positive cases whose emitted top-one suggestion is acceptable.
+    pub positive_suggestion_rate: Ratio,
+    /// No-match cases that received any suggestion.
+    pub needless_suggestion_rate: Ratio,
+    /// Positive cases the policy abstained on.
+    pub false_abstention_rate: Ratio,
+    /// Mean `evaluation_policy.v1` loss over the evaluated cases.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mean_loss: Option<f64>,
+}
+
+/// Baselines computed from one run's stage answers: no extra request, and the
+/// same judged cohort for every policy.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct BaselineComparison {
+    pub coverage: StageCoverage,
+    pub policies: Vec<PolicyScore>,
+    /// Judged advisory cases without stage evidence (for example an
+    /// unavailable ranking); excluded from every policy alike.
+    pub cases_without_evidence: usize,
+    /// Judged explicit requests, checked separately from advisory quality.
+    pub explicit_cases_excluded: usize,
+    /// Baselines this run's answers cannot support, and why.
+    pub not_computed: Vec<String>,
+}
+
+type Policy = fn(&crate::pipeline::StageEvidence, &EvaluationCaseRecord, f64) -> Option<String>;
+
+const BASELINE_POLICIES: [(&str, &str, Policy); 3] = [
+    (
+        "choice-only",
+        "The wide gate, then the shortlist's highest raw wide probability; no rerank.",
+        |evidence, _, _| {
+            let wide = evidence.wide.as_ref()?;
+            if wide.low_need {
+                return None;
+            }
+            wide.shortlist.first().map(|(id, _)| id.clone())
+        },
+    ),
+    (
+        "fit-only",
+        "The wide gate, then the reranked skill with the highest fit at or above the \
+         fit threshold; the rerank choice distribution is ignored.",
+        |evidence, _, threshold| {
+            let rerank = evidence.rerank.as_ref()?;
+            rerank
+                .candidates
+                .iter()
+                .filter(|(_, _, fit)| *fit >= threshold)
+                .max_by(|a, b| a.2.total_cmp(&b.2).then_with(|| b.0.cmp(&a.0)))
+                .map(|(id, _, _)| id.clone())
+        },
+    ),
+    (
+        "blend",
+        "The production decision: gate, rerank choice, per-candidate none check, fit \
+         eligibility and blended score.",
+        |_, record, _| record.suggested_skills.first().cloned(),
+    ),
+];
+
+fn compare_baselines(
+    executed: &[EvaluationCaseRecord],
+    judgments: &BTreeMap<String, crate::evaluation::JudgedLabel>,
+    evidence: &BTreeMap<CaseKey, crate::pipeline::StageEvidence>,
+    fit_threshold: f64,
+) -> BaselineComparison {
+    let mut comparison = BaselineComparison {
+        not_computed: vec![
+            "quill-only: needs a lexical ranking of the whole roster; production admits \
+             every advisory skill without one unless the roster overflows"
+                .into(),
+            "context ablation: needs a second, latest-request-only run of every case".into(),
+        ],
+        ..BaselineComparison::default()
+    };
+    let mut cohort = Vec::new();
+    for record in executed {
+        let Some(label) = judgments.get(&record.key.case_id) else {
+            continue;
+        };
+        if label.explicit_directive.is_some() {
+            comparison.explicit_cases_excluded += 1;
+            continue;
+        }
+        match evidence.get(&record.key) {
+            Some(stages) if !record.operational_failure => cohort.push((record, label, stages)),
+            _ => comparison.cases_without_evidence += 1,
+        }
+    }
+    let acceptable = |label: &crate::evaluation::JudgedLabel, id: &str| {
+        !label.no_skill_needed && label.acceptable_skills.contains(id)
+    };
+    let positive = |label: &crate::evaluation::JudgedLabel| {
+        !label.no_skill_needed && !label.acceptable_skills.is_empty()
+    };
+
+    let (mut admitted_hits, mut shortlist_hits, mut shortlist_cases, mut positives) = (0, 0, 0, 0);
+    for (_, label, stages) in &cohort {
+        comparison.coverage.quill_ranked_cases += usize::from(stages.quill_ranked);
+        if !positive(label) {
+            continue;
+        }
+        positives += 1;
+        admitted_hits += usize::from(stages.admitted.iter().any(|id| acceptable(label, id)));
+        match &stages.wide {
+            Some(wide) if !wide.low_need => {
+                shortlist_cases += 1;
+                shortlist_hits +=
+                    usize::from(wide.shortlist.iter().any(|(id, _)| acceptable(label, id)));
+            }
+            _ => comparison.coverage.shortlist_gated_out += 1,
+        }
+    }
+    comparison.coverage.admitted = Ratio::of(admitted_hits, positives);
+    comparison.coverage.shortlist = Ratio::of(shortlist_hits, shortlist_cases);
+
+    for (name, definition, policy) in BASELINE_POLICIES {
+        let (mut emitted, mut precise, mut positive_hits, mut positive_cases) = (0, 0, 0, 0);
+        let (mut needless, mut no_match_cases, mut abstentions, mut total_loss) = (0, 0, 0, 0u32);
+        for (record, label, stages) in &cohort {
+            let top = policy(stages, record, fit_threshold);
+            let hit = top.as_deref().is_some_and(|id| acceptable(label, id));
+            emitted += usize::from(top.is_some());
+            precise += usize::from(hit);
+            if positive(label) {
+                positive_cases += 1;
+                positive_hits += usize::from(hit);
+                abstentions += usize::from(top.is_none());
+                total_loss += match (&top, hit) {
+                    (_, true) => 0,
+                    (None, _) => 1,
+                    _ => 2,
+                };
+            } else {
+                no_match_cases += 1;
+                needless += usize::from(top.is_some());
+                total_loss += if top.is_some() { 2 } else { 0 };
+            }
+        }
+        let evaluated = cohort.len();
+        comparison.policies.push(PolicyScore {
+            policy: name.into(),
+            definition: definition.into(),
+            evaluated_cases: evaluated,
+            top1_precision: Ratio::of(precise, emitted),
+            positive_suggestion_rate: Ratio::of(positive_hits, positive_cases),
+            needless_suggestion_rate: Ratio::of(needless, no_match_cases),
+            false_abstention_rate: Ratio::of(abstentions, positive_cases),
+            mean_loss: (evaluated > 0).then(|| f64::from(total_loss) / evaluated as f64),
+        });
+    }
+    comparison
 }
 
 /// Draw and verify the manifest before any label is read into the result.

@@ -248,6 +248,7 @@ fn the_runtime_cap_stops_scheduling_halfway_and_reports_unfinished_cases() {
             max_requests: 100,
             max_runtime_ms: 40,
             attempts_per_case: 4,
+            fit_threshold: 0.3,
         },
         &EntryClock::capture().unwrap(),
         0,
@@ -294,6 +295,7 @@ fn the_runtime_cap_stops_scheduling_halfway_and_reports_unfinished_cases() {
             max_requests: 100,
             max_runtime_ms: 60_000,
             attempts_per_case: 4,
+            fit_threshold: 0.3,
         },
         &EntryClock::capture().unwrap(),
         0,
@@ -329,6 +331,7 @@ fn a_refused_disclosure_preview_is_never_sent_and_the_preflight_is_frozen_first(
                 max_requests: 100,
                 max_runtime_ms: 60_000,
                 attempts_per_case: 4,
+                fit_threshold: 0.3,
             },
             &EntryClock::capture().unwrap(),
             0,
@@ -380,4 +383,219 @@ fn a_refused_disclosure_preview_is_never_sent_and_the_preflight_is_frozen_first(
         run().0.disclosure_preflight.unwrap().receipts_digest,
         frozen.receipts_digest
     );
+}
+
+#[test]
+fn baselines_score_every_policy_on_the_same_judged_cohort_from_one_runs_answers() {
+    use skillranker::evaluation::batch::{
+        LiveBatchLimits, LiveRankOutcome, execute_live_frame_evaluation,
+    };
+    use skillranker::pipeline::{RerankEvidence, StageEvidence, WideEvidence};
+    // Two positive cases (Y = {s_alpha}) and one no-match case (Y empty).
+    let cases = ["pos-1", "pos-2", "none"];
+    let labels: String = cases
+        .iter()
+        .map(|id| {
+            let acceptable: Vec<&str> = if *id == "none" {
+                vec![]
+            } else {
+                vec!["s_alpha"]
+            };
+            json!({"schema_version": 1, "case_id": id, "revision": 1,
+                   "acceptable_skills": acceptable, "no_skill_needed": acceptable.is_empty(),
+                   "adjudicator": "judge", "created_at_unix_ms": 1u64})
+            .to_string()
+                + "\n"
+        })
+        .collect();
+    let roster = std::collections::BTreeSet::from(["s_alpha".to_owned(), "s_beta".to_owned()]);
+    let stages = |shortlist: &[(&str, f64)], fits: &[(&str, f64)]| StageEvidence {
+        admitted: vec!["s_alpha".into(), "s_beta".into()],
+        quill_ranked: false,
+        wide: Some(WideEvidence {
+            needs_skill: 0.9,
+            none_probability: 0.1,
+            low_need: shortlist.is_empty(),
+            shortlist: shortlist.iter().map(|(id, p)| ((*id).into(), *p)).collect(),
+        }),
+        rerank: (!fits.is_empty()).then(|| RerankEvidence {
+            none_probability: 0.1,
+            candidates: fits
+                .iter()
+                .map(|(id, fit)| ((*id).into(), 0.5, *fit))
+                .collect(),
+        }),
+    };
+    let report = execute_live_frame_evaluation(
+        cases.iter().map(|id| live_case(id)).collect(),
+        Cursor::new(labels.into_bytes()),
+        None,
+        &roster,
+        LiveBatchLimits {
+            max_requests: 100,
+            max_runtime_ms: 60_000,
+            attempts_per_case: 4,
+            fit_threshold: 0.3,
+        },
+        &EntryClock::capture().unwrap(),
+        0,
+        |_| Ok(None),
+        |case| {
+            // pos-1: wide prefers beta, fit prefers alpha, production emits alpha.
+            // pos-2: the gate stops the run; everyone abstains.
+            // none:  wide prefers beta, fit prefers beta, production abstains.
+            let (evidence, suggested) = match case.key.case_id.as_str() {
+                "pos-1" => (
+                    stages(
+                        &[("s_beta", 0.6), ("s_alpha", 0.3)],
+                        &[("s_alpha", 0.9), ("s_beta", 0.2)],
+                    ),
+                    vec!["s_alpha".to_owned()],
+                ),
+                "pos-2" => (stages(&[], &[]), vec![]),
+                _ => (stages(&[("s_beta", 0.7)], &[("s_beta", 0.8)]), vec![]),
+            };
+            LiveRankOutcome {
+                decision: if suggested.is_empty() {
+                    "abstain"
+                } else {
+                    "ranked"
+                }
+                .into(),
+                suggested_skills: suggested,
+                http_attempts: 2,
+                evidence: Some(evidence),
+                ..LiveRankOutcome::default()
+            }
+        },
+    )
+    .unwrap();
+    let baselines = report.baselines.unwrap();
+    assert_eq!(baselines.cases_without_evidence, 0);
+    // Both positive cases admitted alpha; only pos-1 passed the gate, and its
+    // shortlist holds alpha.
+    assert_eq!(
+        (
+            baselines.coverage.admitted.successes,
+            baselines.coverage.admitted.denominator
+        ),
+        (2, 2)
+    );
+    assert_eq!(
+        (
+            baselines.coverage.shortlist.successes,
+            baselines.coverage.shortlist.denominator
+        ),
+        (1, 1)
+    );
+    assert_eq!(baselines.coverage.shortlist_gated_out, 1);
+    let policy = |name: &str| {
+        baselines
+            .policies
+            .iter()
+            .find(|p| p.policy == name)
+            .unwrap()
+            .clone()
+    };
+    // choice-only: pos-1 -> beta (wrong, 2), pos-2 abstain (1), none -> beta (needless, 2).
+    let choice = policy("choice-only");
+    assert_eq!(choice.evaluated_cases, 3);
+    assert_eq!(
+        (
+            choice.top1_precision.successes,
+            choice.top1_precision.denominator
+        ),
+        (0, 2)
+    );
+    assert_eq!(choice.needless_suggestion_rate.successes, 1);
+    assert_eq!(choice.false_abstention_rate.successes, 1);
+    assert_eq!(choice.mean_loss, Some(5.0 / 3.0));
+    // fit-only: pos-1 -> alpha (0), pos-2 abstain (1), none -> beta (2).
+    let fit = policy("fit-only");
+    assert_eq!(
+        (
+            fit.positive_suggestion_rate.successes,
+            fit.positive_suggestion_rate.denominator
+        ),
+        (1, 2)
+    );
+    assert_eq!(fit.mean_loss, Some(1.0));
+    // blend: pos-1 -> alpha (0), pos-2 abstain (1), none abstains (0).
+    let blend = policy("blend");
+    assert_eq!(
+        (
+            blend.top1_precision.successes,
+            blend.top1_precision.denominator
+        ),
+        (1, 1)
+    );
+    assert_eq!(blend.needless_suggestion_rate.successes, 0);
+    assert_eq!(blend.mean_loss, Some(1.0 / 3.0));
+    assert!(blend.top1_precision.wilson_95.is_some());
+    assert!(
+        baselines
+            .not_computed
+            .iter()
+            .any(|note| note.starts_with("quill-only"))
+    );
+}
+
+#[test]
+fn timeouts_cannot_shrink_the_loss_and_always_abstaining_is_not_a_good_score() {
+    use skillranker::evaluation::batch::execute_labeled_frame_evaluation;
+    let frame = |outcome: &dyn Fn(usize) -> (&'static str, Vec<&'static str>, bool)| {
+        let mut records = String::new();
+        let mut labels = String::new();
+        for i in 0..100 {
+            let (decision, suggested, failed) = outcome(i);
+            records.push_str(
+                &(json!({"schema_version": 1,
+                    "key": {"frame_id": "f", "family_id": format!("fam-{i}"),
+                            "case_id": format!("c{i}"), "replicate": 0, "policy_id": "p"},
+                    "split": "holdout", "prompt_summary": "request", "decision": decision,
+                    "suggested_skills": suggested, "relevance_abstention": decision == "abstain",
+                    "operational_failure": failed})
+                .to_string()
+                    + "\n"),
+            );
+            labels.push_str(
+                &(json!({"schema_version": 1, "case_id": format!("c{i}"), "revision": 1,
+                        "acceptable_skills": ["s_right"], "adjudicator": "judge",
+                        "created_at_unix_ms": 1u64})
+                .to_string()
+                    + "\n"),
+            );
+        }
+        execute_labeled_frame_evaluation(
+            Cursor::new(records.into_bytes()),
+            Cursor::new(labels.into_bytes()),
+            None,
+            0,
+        )
+        .unwrap()
+    };
+    // 90 correct and 10 incorrect: mean loss (10 x 2) / 100 = 0.2.
+    let wrong = frame(&|i| {
+        if i < 90 {
+            ("ranked", vec!["s_right"], false)
+        } else {
+            ("ranked", vec!["s_wrong"], false)
+        }
+    });
+    assert_eq!(wrong.loss_summary.mean_loss, Some(0.2));
+    // The same ten as timeouts keep their loss and stay in the denominator.
+    let timed_out = frame(&|i| {
+        if i < 90 {
+            ("ranked", vec!["s_right"], false)
+        } else {
+            ("unavailable", vec![], true)
+        }
+    });
+    assert_eq!(timed_out.loss_summary.mean_loss, Some(0.2));
+    assert_eq!(timed_out.loss_summary.attempted_cases, 100);
+    assert_eq!(timed_out.loss_summary.operational_failures, 10);
+    // Always abstaining on positive cases is charged for every miss.
+    let silent = frame(&|_| ("abstain", vec![], false));
+    assert_eq!(silent.loss_summary.mean_loss, Some(1.0));
+    assert!(silent.loss_summary.mean_loss > wrong.loss_summary.mean_loss);
 }

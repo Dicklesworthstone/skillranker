@@ -5,7 +5,8 @@
 //! - Capabilities registry reflects `eval` as `implemented`.
 //! - Missing `--dataset` fails with exit code 2.
 //! - Offline batch execution over recorded replay cases outputs a valid report artifact with exit code 0.
-//! - `--online` and `--max-requests` are planned flags: refused with exit code 2 naming the phase.
+//! - `--online` ranks labeled cases live under `--max-requests` and runtime caps, after a
+//!   network-free disclosure preflight, and scores baselines from the same answers.
 //! - `--labels` scores a labeled case frame; `--sample-size`/`--seed` freeze a sample first.
 
 use serde_json::Value;
@@ -927,6 +928,21 @@ fn a_live_batch_ranks_each_case_fresh_and_accounts_every_attempt() {
     assert_eq!(frozen["cases_refused"], 0);
     assert!(frozen["disclosed_bytes"].as_u64().unwrap() > 0);
     assert_eq!(frozen["receipts_digest"].as_str().unwrap().len(), 64);
+    // The same answers score the baselines; no extra request was made.
+    let baselines = &report["baselines"];
+    let names: Vec<&str> = baselines["policies"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["policy"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["choice-only", "fit-only", "blend"], "{baselines}");
+    assert_eq!(
+        baselines["coverage"]["admitted"]["denominator"], 2,
+        "{baselines}"
+    );
+    assert_eq!(baselines["coverage"]["admitted"]["successes"], 2);
+    assert_eq!(baselines["cases_without_evidence"], 0);
 }
 
 #[test]
