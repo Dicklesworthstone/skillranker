@@ -899,6 +899,66 @@ fn hook_invocations_are_counted_at_entry_even_when_no_row_is_recorded() {
 
 /// Claude re-runs the hook when a background task finishes inside a running
 /// turn, repeating the turn's prompt id with the notification as the prompt.
+/// A turn that a background task's notification started while the agent was
+/// idle is harness output, not a request. Under the default
+/// `hook.notification_turns = "skip"` it is counted as a non-turn and never
+/// evaluated (sr-sif6). A trusted user can opt in to ranking it, and a prompt
+/// that merely quotes the envelope is still a user turn.
+#[test]
+fn an_idle_notification_turn_is_skipped_unless_trusted_config_ranks_it() {
+    const ENVELOPE: &str = "<task-notification>\n<task-id>b1</task-id>\n<status>completed</status>\n</task-notification>";
+    let rows_after = |prompt: &str, prompt_id: &str, config: Option<&str>| {
+        let fixture = HookFixture::new();
+        let dir = fixture.ledger_dir();
+        let init = fixture.run_cli(&["ledger", "init", "--dir", dir.to_str().unwrap()]);
+        assert_eq!(init.status.code(), Some(0), "ledger init must succeed");
+        if let Some(config) = config {
+            let path = fixture.home().join(".config/sr");
+            fs::create_dir_all(&path).unwrap();
+            fs::write(path.join("config.toml"), config).unwrap();
+        }
+        let mut earlier = user_event("turn-1", None, &fixture.session_id, "fix the failing test");
+        earlier["promptId"] = json!("prompt-earlier");
+        fixture.write_transcript(&[earlier]);
+        let payload = serde_json::to_vec(&json!({
+            "hook_event_name": "UserPromptSubmit",
+            "prompt": prompt,
+            "prompt_id": prompt_id,
+            "session_id": fixture.session_id,
+            "transcript_path": fixture.transcript_path(),
+            "cwd": fixture.workspace(),
+        }))
+        .unwrap();
+        let out = fixture.run_hook(&payload, &["--shadow"]);
+        assert_eq!((out.status.code(), out.stdout.len()), (Some(0), 0));
+        let conn = rusqlite::Connection::open(dir.join(skillranker::storage::LEDGER_FILE)).unwrap();
+        let rows: i64 = conn
+            .query_row("SELECT count(*) FROM ranking_events", [], |r| r.get(0))
+            .unwrap();
+        use skillranker::storage::hook_entries::HOOK_NON_TURNS_FILE;
+        let non_turns = fs::read(dir.join(HOOK_NON_TURNS_FILE)).map_or(0, |b| b.len() / 54);
+        (rows, non_turns)
+    };
+    // Default: skipped, counted apart, nothing evaluated or recorded.
+    assert_eq!(rows_after(ENVELOPE, "prompt-idle", None), (0, 1));
+    // Honest counterparts: both are evaluated turns with a recorded row.
+    assert_eq!(
+        rows_after(
+            ENVELOPE,
+            "prompt-idle",
+            Some("[hook]\nnotification_turns = \"rank\"\n")
+        ),
+        (1, 0),
+        "a trusted opt-in ranks the notification turn"
+    );
+    let quoted = format!("why did this arrive? {ENVELOPE}");
+    assert_eq!(
+        rows_after(&quoted, "prompt-question", None),
+        (1, 0),
+        "a prompt that quotes the envelope is a user turn"
+    );
+}
+
 /// That is not a turn: nothing is ranked or recorded, and `sr stats` reports
 /// it apart instead of as a turn that left no row (sr-jdji).
 #[test]

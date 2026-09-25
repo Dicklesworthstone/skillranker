@@ -126,6 +126,7 @@ fn defaults_match_the_documented_contract_and_grant_nothing() {
     assert_eq!((e.messages(), e.budget_chars()), (12, 12_000));
     assert_eq!(e.model().as_str(), "jev-latest");
     assert_eq!(e.hook_mode(), HookMode::Shadow);
+    assert_eq!(e.notification_turns(), NotificationTurns::Skip);
     assert_eq!(e.context_profile(), ContextProfile::Standard);
     assert!(!e.no_tools());
     assert!(!e.trusted_user_network_enabled());
@@ -168,6 +169,7 @@ fn security_sensitive_keys_follow_an_independent_layer_matrix() {
         ("typesafe.endpoint",        "TYPESAFE_ENDPOINT",   s("https://api.example"),    "https://api.example", [F, F, A, F]),
         ("provider.model",           "SR_MODEL",            s("jev-other"),              "jev-other",           [A, F, A, F]),
         ("hook.mode",                "SR_HOOK_MODE",        s("shadow"),                 "advisory",            [A, F, U, A]),
+        ("hook.notification_turns",  "SR_NOTIFICATION_TURNS", s("skip"),                 "skip",                [A, A, U, F]),
         ("context.profile",          "SR_CONTEXT_PROFILE",  s("minimal"),                "minimal",             [A, A, U, A]),
         ("context.no_tools",         "SR_NO_TOOLS",         RawValue::Bool(true),        "true",                [A, A, U, A]),
         ("context.messages",         "SR_MESSAGES",         RawValue::Integer(6),        "6",                   [A, A, A, A]),
@@ -293,6 +295,25 @@ fn project_cannot_widen_trusted_disclosure_or_advice_authority() {
         },
         ConfigLayer::Project,
         SettingKey::ContextBudgetChars,
+    );
+    // A project cannot opt the user into spending on notification turns
+    // (sr-sif6); the trusted user can.
+    widened(
+        ConfigSources {
+            project: vec![entry("hook.notification_turns", s("rank"))],
+            ..ConfigSources::default()
+        },
+        ConfigLayer::Project,
+        SettingKey::HookNotificationTurns,
+    );
+    let opted_in = resolve(ConfigSources {
+        trusted_user: vec![entry("hook.notification_turns", s("rank"))],
+        ..ConfigSources::default()
+    })
+    .unwrap();
+    assert_eq!(
+        opted_in.effective().notification_turns(),
+        NotificationTurns::Rank
     );
     widened(
         ConfigSources {

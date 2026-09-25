@@ -1068,6 +1068,25 @@ async fn rank_once(
                     format!("Invalid hook input: {e}"),
                 )
             })?;
+            // A turn a background task's notification started, while the agent
+            // was idle, is a harness event rather than a user request. Under the
+            // default policy it is counted apart as a non-turn and never sent,
+            // like a notification inside a running turn (sr-sif6). Only Claude's
+            // exact envelope matches, so a prompt that merely quotes it still ranks.
+            if effective.notification_turns() == crate::config::NotificationTurns::Skip
+                && is_task_notification_envelope(hook_input.prompt.as_str())
+            {
+                if matches!(gate.ledger(), StoreAccess::Enabled) {
+                    crate::storage::hook_entries::record_hook_invocation(
+                        args.ledger_dir.as_deref(),
+                        crate::storage::hook_entries::HookCounter::NonTurns,
+                    );
+                }
+                return Err(failure(
+                    ErrorKind::UnsupportedInput,
+                    "A task notification is not a user turn (hook.notification_turns = skip)",
+                ));
+            }
             // From here on a failure is a hook turn the availability cohort must
             // count. Arm the failure row now rather than after context capture, or
             // an overlay, roster or retrieval failure leaves no trace at all. The
@@ -2505,23 +2524,17 @@ async fn rank_once(
                 format!("Wide evaluation failed: {e:?}"),
             )
         })?;
-    if wide_fresh
-        && !persistent::record(
-            &mut store,
-            invocation,
-            cx,
-            namespace,
-            cache_entry(
-                RequestStage::Wide,
-                wide_req_fp,
-                &wide_response,
-                active_model,
-            ),
-            progress.lease.as_ref(),
-        )?
-    {
-        progress.cache_recording_failures += 1;
-    }
+    // A fresh wide answer is held and published together with the rerank it
+    // leads to, or alone when it needs none (sr-ron8). A rerank failure then
+    // caches no wide answer, which is the price of never mixing evaluations.
+    let mut pending_wide = wide_fresh.then(|| {
+        cache_entry(
+            RequestStage::Wide,
+            wide_req_fp,
+            &wide_response,
+            active_model,
+        )
+    });
     progress.evaluated.wide_returned = Some(wide_response.returned_model.clone());
     progress.evaluated.needs_skill = Some(wide_outcome.needs_skill);
     progress.evaluated.phase = dominant_phase(&wide_outcome.phase).map(str::to_owned);
@@ -2570,6 +2583,9 @@ async fn rank_once(
 
     let shortlisted = match &wide_outcome.decision {
         WideDecision::LowNeed => {
+            if let Some(wide) = pending_wide.take() {
+                publish_evaluation(&mut store, invocation, cx, namespace, wide, None, progress)?;
+            }
             let recorded = try_record_ledger(
                 invocation,
                 cx,
@@ -2686,6 +2702,17 @@ async fn rank_once(
                     "Trace continuation requires exact cached evaluation evidence",
                 ));
             }
+            // The wide answer is held for one atomic publication (sr-ron8), so
+            // no fenced write has proven this leader current yet. A superseded
+            // leader must not pay for a rerank it can no longer publish.
+            if let Some((leases, leader)) = progress.lease.as_ref()
+                && !persistent::still_leads(invocation, cx, leases, leader)
+            {
+                return Err(failure(
+                    ErrorKind::Timeout,
+                    "Leader was superseded before its rerank; no result can be published",
+                ));
+            }
             let Some(active) = session.as_mut() else {
                 return Err(failure(
                     ErrorKind::CacheMiss,
@@ -2722,22 +2749,38 @@ async fn rank_once(
         )
     })?;
 
-    if let Some(rerank_fp) = rerank_fp
-        && !persistent::record(
-            &mut store,
-            invocation,
-            cx,
-            namespace,
-            cache_entry(
-                RequestStage::Rerank,
-                rerank_fp,
-                &rerank_response,
-                active_model,
-            ),
-            progress.lease.as_ref(),
-        )?
-    {
-        progress.cache_recording_failures += 1;
+    if let Some(rerank_fp) = rerank_fp {
+        let rerank_entry = cache_entry(
+            RequestStage::Rerank,
+            rerank_fp,
+            &rerank_response,
+            active_model,
+        );
+        match pending_wide.take() {
+            Some(wide) => publish_evaluation(
+                &mut store,
+                invocation,
+                cx,
+                namespace,
+                wide,
+                Some(rerank_entry),
+                progress,
+            )?,
+            // Not reached while the cache serves only complete pairs; kept so
+            // a fresh rerank is never silently dropped.
+            None => {
+                if !persistent::record(
+                    &mut store,
+                    invocation,
+                    cx,
+                    namespace,
+                    rerank_entry,
+                    progress.lease.as_ref(),
+                )? {
+                    progress.cache_recording_failures += 1;
+                }
+            }
+        }
     }
     progress.evaluated.rerank_returned = Some(rerank_response.returned_model.clone());
     progress.evaluated.choice_confidence = Some(rerank_outcome.choice_confidence);
@@ -3276,9 +3319,51 @@ fn raw_skill_probabilities(
         .collect()
 }
 
+/// Claude's exact wrapper for a background task's completion message, as
+/// every live delivery measured it: `<task-notification>` then a `<task-id>`
+/// element, closing with `</task-notification>`.
+fn is_task_notification_envelope(prompt: &str) -> bool {
+    let prompt = prompt.trim();
+    prompt
+        .strip_prefix("<task-notification>")
+        .is_some_and(|rest| rest.trim_start().starts_with("<task-id>"))
+        && prompt.ends_with("</task-notification>")
+}
+
 /// The run's response-cache store. A store operation consumes the store, and a
 /// failed one does not return it, so the slot remembers the loss. Later
 /// recordings are then reported as skipped rather than as written.
+/// Publish a complete evaluation through the run's cache slot. A skipped
+/// publication is counted, and a lease completed inside the publishing
+/// transaction is dropped from `progress`, so the final release does not
+/// complete it again.
+fn publish_evaluation(
+    store: &mut CacheSlot,
+    invocation: &ProcessInvocation,
+    cx: &Cx,
+    namespace: [u8; 32],
+    wide: crate::cache::CachedResponseEntry,
+    rerank: Option<crate::cache::CachedResponseEntry>,
+    progress: &mut Progress,
+) -> Result<(), PipelineFailure> {
+    let (recorded, lease_completed) = persistent::publish(
+        store,
+        invocation,
+        cx,
+        namespace,
+        wide,
+        rerank,
+        progress.lease.as_ref(),
+    )?;
+    if !recorded {
+        progress.cache_recording_failures += 1;
+    }
+    if lease_completed {
+        progress.lease = None;
+    }
+    Ok(())
+}
+
 struct CacheSlot {
     store: Option<persistent::Store>,
     lost: bool,
@@ -3426,6 +3511,31 @@ mod persistent {
             .map(|(_, result)| result)
     }
 
+    /// Whether this run still holds its lease: same owner and fencing
+    /// generation, not completed, not expired. A read without a writer lock.
+    /// When the store cannot answer, `true`: the fenced publication still
+    /// refuses a superseded owner, so this check only saves spend.
+    pub(super) fn still_leads(
+        invocation: &ProcessInvocation,
+        cx: &Cx,
+        path: &Path,
+        leader: &LeaderContext,
+    ) -> bool {
+        let Some(store) = coordinator(invocation, cx, path) else {
+            return true;
+        };
+        match store.lease(invocation, cx, leader.key) {
+            Ok((_, Some(record))) => {
+                record.owner_token == leader.owner_token
+                    && record.fencing_generation == leader.fencing_generation
+                    && !record.is_completed
+                    && wall_clock_ms() < record.expires_at_unix_ms
+            }
+            Ok((_, None)) => false,
+            Err(_) => true,
+        }
+    }
+
     pub(super) struct Store(CacheStore);
 
     impl Store {
@@ -3543,6 +3653,44 @@ mod persistent {
         }
         Ok(true)
     }
+
+    /// Publish one complete evaluation (the wide answer and, when the wide
+    /// decision needed one, its rerank) in a single transaction that also
+    /// completes a led lease (sr-ron8). The rerank key names only the wide
+    /// request, so publishing the stages separately let a crash or an
+    /// interleaved writer pair a newer wide answer with an older rerank.
+    /// Returns (written or nothing required, lease completed here); `false`
+    /// in the first place when a store this run opened failed now or earlier.
+    pub(super) fn publish(
+        slot: &mut super::CacheSlot,
+        invocation: &ProcessInvocation,
+        cx: &Cx,
+        namespace: [u8; 32],
+        wide: CachedResponseEntry,
+        rerank: Option<CachedResponseEntry>,
+        fence: Option<&(std::path::PathBuf, LeaderContext)>,
+    ) -> Result<(bool, bool), super::PipelineFailure> {
+        let Some(Store(store)) = slot.store.take() else {
+            return Ok((!slot.lost, false));
+        };
+        match store.publish_evaluation(invocation, cx, namespace, wide, rerank, fence.cloned()) {
+            Ok(store) => {
+                slot.store = Some(Store(store));
+                Ok((true, fence.is_some()))
+            }
+            Err(StoreError::LeaseSuperseded) => {
+                slot.lost = true;
+                Err(super::failure(
+                    super::ErrorKind::Timeout,
+                    "Leader cache publication could not verify and retain lease ownership",
+                ))
+            }
+            Err(_) => {
+                slot.lost = true;
+                Ok((false, false))
+            }
+        }
+    }
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
@@ -3596,6 +3744,10 @@ mod persistent {
         None
     }
 
+    pub(super) fn still_leads(_: &ProcessInvocation, _: &Cx, _: &Path, _: &LeaderContext) -> bool {
+        true
+    }
+
     pub(super) enum Store {}
 
     impl Store {
@@ -3641,6 +3793,18 @@ mod persistent {
         _: Option<&(std::path::PathBuf, LeaderContext)>,
     ) -> Result<bool, super::PipelineFailure> {
         Ok(true)
+    }
+
+    pub(super) fn publish(
+        _: &mut super::CacheSlot,
+        _: &ProcessInvocation,
+        _: &Cx,
+        _: [u8; 32],
+        _: CachedResponseEntry,
+        _: Option<CachedResponseEntry>,
+        _: Option<&(std::path::PathBuf, LeaderContext)>,
+    ) -> Result<(bool, bool), super::PipelineFailure> {
+        Ok((true, false))
     }
 }
 

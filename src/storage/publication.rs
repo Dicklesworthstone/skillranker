@@ -163,10 +163,24 @@ pub(super) fn write_response(
     generation: i64,
     namespace: [u8; 32],
     entry: &CachedResponseEntry,
+    now_unix_ms: u64,
 ) -> Result<(), StoreError> {
+    // The receipt on this boot's clock, back-dated by the wall-clock time
+    // since receipt, so the delay before this write does not extend the
+    // entry's life (sr-4t02). Absent where the platform has no boot clock.
+    let (boot_id, boot_ms) = match super::boot_clock() {
+        Some((id, now_ms)) => {
+            let since_receipt = now_unix_ms.saturating_sub(entry.received_at_unix_ms);
+            (
+                Some(id),
+                Some(sql_integer(now_ms.saturating_sub(since_receipt))?),
+            )
+        }
+        None => (None, None),
+    };
     tx.execute(
         "INSERT OR REPLACE INTO sr_cache_response VALUES \
-         (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+         (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
         params![
             generation,
             &namespace[..],
@@ -179,6 +193,8 @@ pub(super) fn write_response(
             entry.model_revision,
             sql_integer(entry.original_usage.input_tokens)?,
             sql_integer(entry.original_usage.output_tokens)?,
+            boot_id,
+            boot_ms,
         ],
     )?;
     Ok(())
@@ -203,7 +219,13 @@ fn replace_responses(
     )?;
     for entry in std::iter::once(wide).chain(rerank) {
         checkpoint()?;
-        write_response(tx, generation, namespace, entry)?;
+        write_response(
+            tx,
+            generation,
+            namespace,
+            entry,
+            u64::try_from(now).unwrap_or(0),
+        )?;
     }
     checkpoint()?;
     Ok(())

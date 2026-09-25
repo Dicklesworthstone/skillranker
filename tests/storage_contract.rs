@@ -150,7 +150,7 @@ fn repeated_initialization_preserves_identity_generation_and_private_wal_files()
             .unwrap(),
         "wal"
     );
-    // Schema v3 holds exactly metadata, key, responses and ownership leases.
+    // Schema v4 holds exactly metadata, key, responses and ownership leases.
     let mut tables = observer
         .prepare("SELECT name FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY name")
         .unwrap()
@@ -868,4 +868,98 @@ PRAGMA user_version=2;
         .query_row("SELECT response FROM sr_cache_response", [], |r| r.get(0))
         .unwrap();
     assert_eq!((version, tables, body), (2, 3, vec![1, 2, 3]));
+}
+
+/// A version 3 store predates the boot-clock receipt (sr-4t02). Like earlier
+/// versions it is refused without migration or repair, and the rank caller
+/// then continues uncached.
+#[test]
+fn a_version_three_store_is_refused_without_repair() {
+    let path = private_tree("version-three");
+    let namespace = [7; 32];
+    drop(
+        record(
+            ready(&path),
+            namespace,
+            entry(RequestStage::Wide, 1, NOW, 600),
+            NOW,
+        )
+        .unwrap(),
+    );
+    let db = Connection::open(path.join(CACHE_FILE)).unwrap();
+    db.execute_batch(
+        "ALTER TABLE sr_cache_response DROP COLUMN received_boot_id;
+         ALTER TABLE sr_cache_response DROP COLUMN received_boot_ms;
+         UPDATE sr_cache_meta SET schema_id='sr-cache-responses-v3';
+         PRAGMA user_version=3;",
+    )
+    .unwrap();
+    for access in [CacheAccess::ExistingOnly, CacheAccess::Initialize] {
+        assert_eq!(
+            open(&path, access).unwrap_err(),
+            StoreError::IncompatibleSchema
+        );
+    }
+    let version: i64 = db
+        .pragma_query_value(None, "user_version", |r| r.get(0))
+        .unwrap();
+    let rows: i64 = db
+        .query_row("SELECT count(*) FROM sr_cache_response", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!((version, rows), (3, 1), "nothing was added or rewritten");
+}
+
+/// A wall clock stepped back cannot extend a cached response: its age on this
+/// boot's monotonic clock expires it (sr-4t02). The wall-clock age is fresh.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_response_expires_by_its_boot_clock_age_whatever_the_wall_clock_says() {
+    let path = private_tree("boot-age");
+    let namespace = [7; 32];
+    let store = record(
+        ready(&path),
+        namespace,
+        entry(RequestStage::Wide, 1, NOW, 600),
+        NOW,
+    )
+    .unwrap();
+    let (store, found) = read(store, namespace, RequestStage::Wide, 1).unwrap();
+    assert!(found.is_some(), "a fresh response is served");
+    let db = Connection::open(path.join(CACHE_FILE)).unwrap();
+    let (boot_id, boot_ms): (String, i64) = db
+        .query_row(
+            "SELECT received_boot_id, received_boot_ms FROM sr_cache_response",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    let current = fs::read_to_string("/proc/sys/kernel/random/boot_id").unwrap();
+    assert_eq!(boot_id, current.trim(), "the receipt names this boot");
+    // Receipt on another boot: the boot clock says nothing, so it is served.
+    db.execute(
+        "UPDATE sr_cache_response SET received_boot_id='another-boot'",
+        [],
+    )
+    .unwrap();
+    let (store, found) = read(store, namespace, RequestStage::Wide, 1).unwrap();
+    assert!(found.is_some());
+    // This boot, but ten minutes earlier on its clock: expired. Where the
+    // machine has been up for less than that, the receipt is at boot itself.
+    db.execute(
+        "UPDATE sr_cache_response SET received_boot_id=?1, received_boot_ms=max(0, ?2 - 600000)",
+        rusqlite::params![current.trim(), boot_ms],
+    )
+    .unwrap();
+    let uptime_ms: f64 = fs::read_to_string("/proc/uptime")
+        .unwrap()
+        .split_whitespace()
+        .next()
+        .unwrap()
+        .parse::<f64>()
+        .unwrap()
+        * 1_000.0;
+    let (_, found) = read(store, namespace, RequestStage::Wide, 1).unwrap();
+    if uptime_ms >= 600_000.0 {
+        assert!(found.is_none(), "ten minutes of boot-clock age expire it");
+    }
 }

@@ -89,6 +89,7 @@ pub enum ValueKind {
     Unit { min: f64, max: f64 },
     ContextProfile,
     HookMode,
+    NotificationTurns,
     ModelName,
     Endpoint,
     Credential,
@@ -122,6 +123,7 @@ setting_keys! {
     TypesafeEndpoint,
     ProviderModel,
     HookMode,
+    HookNotificationTurns,
     ContextProfile,
     ContextNoTools,
     ContextMessages,
@@ -238,7 +240,7 @@ const fn unit(min: f64, max: f64) -> ValueKind {
 
 /// Rules are `[trusted user, project, environment, cli]`, in `SettingKey` order.
 #[rustfmt::skip]
-pub static KEY_SPECS: [KeySpec; 23] = {
+pub static KEY_SPECS: [KeySpec; 24] = {
     use Sensitivity as S;
     use SettingKey as K;
     use ValueKind as V;
@@ -254,6 +256,7 @@ pub static KEY_SPECS: [KeySpec; 23] = {
         env(spec(K::TypesafeEndpoint, "typesafe.endpoint", V::Endpoint, S::Routing,                          [Forbidden,    Forbidden,    Allowed,      Forbidden]), "TYPESAFE_ENDPOINT"),
         env(spec(K::ProviderModel, "provider.model", V::ModelName, S::Routing,                               [Allowed,      Forbidden,    Allowed,      Forbidden]), "SR_MODEL"),
         flag(spec(K::HookMode, "hook.mode", V::HookMode, S::AdviceInjection,                                 [Allowed,      Forbidden,    Forbidden,    RestrictOnly]), "--shadow"),
+        spec(K::HookNotificationTurns, "hook.notification_turns", V::NotificationTurns, S::DisclosureVolume, [Allowed,      RestrictOnly, Forbidden,    Forbidden]),
         flag(spec(K::ContextProfile, "context.profile", V::ContextProfile, S::DisclosureVolume,              [Allowed,      RestrictOnly, Forbidden,    Allowed]), "--context-profile"),
         flag(spec(K::ContextNoTools, "context.no_tools", V::Bool, S::DisclosureVolume,                       [Allowed,      RestrictOnly, Forbidden,    RestrictOnly]), "--no-tools"),
         flag(env(spec(K::ContextMessages, "context.messages", messages, S::DisclosureVolume,                 [Allowed,      RestrictOnly, Allowed,      Allowed]), "SR_MESSAGES"), "--messages"),
@@ -273,6 +276,34 @@ pub static KEY_SPECS: [KeySpec; 23] = {
         spec(K::PrivacyRawRetention, "privacy.raw_retention", V::Reserved, S::Reserved,                      RESERVED),
     ]
 };
+
+/// Whether the hook ranks a turn that a `<task-notification>` started while
+/// the agent was idle (sr-sif6). Such a turn is a harness event, not a request
+/// the user submitted, and measured live it was the majority of provider
+/// spend. `Skip` counts it as a non-turn, like a notification inside a running
+/// turn. Ordered by disclosure and spend: `Skip < Rank`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub enum NotificationTurns {
+    Skip,
+    Rank,
+}
+
+impl NotificationTurns {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Skip => "skip",
+            Self::Rank => "rank",
+        }
+    }
+
+    pub fn parse(text: &str) -> Option<Self> {
+        match text {
+            "skip" => Some(Self::Skip),
+            "rank" => Some(Self::Rank),
+            _ => None,
+        }
+    }
+}
 
 /// Ordered by advice authority: `Shadow < Advisory`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
@@ -548,6 +579,7 @@ enum TypedValue {
     Unit(f64),
     Profile(ContextProfile),
     Hook(HookMode),
+    Notification(NotificationTurns),
     Model(ModelName),
     Endpoint(EndpointOverride),
     References(Vec<SkillReference>),
@@ -622,6 +654,9 @@ fn typed_value(
             .ok_or(InvalidValue),
         (ValueKind::HookMode, RawValue::String(text)) => HookMode::parse(&text)
             .map(TypedValue::Hook)
+            .ok_or(InvalidValue),
+        (ValueKind::NotificationTurns, RawValue::String(text)) => NotificationTurns::parse(&text)
+            .map(TypedValue::Notification)
             .ok_or(InvalidValue),
         (ValueKind::ModelName, RawValue::String(text)) => {
             bounded_text(text, MAX_MODEL_BYTES).map(|t| TypedValue::Model(ModelName(t)))
@@ -846,6 +881,7 @@ pub struct EffectiveConfig {
     endpoint: Option<EndpointOverride>,
     model: ModelName,
     hook_mode: HookMode,
+    notification_turns: NotificationTurns,
     context_profile: ContextProfile,
     no_tools: bool,
     messages: u32,
@@ -870,6 +906,7 @@ impl EffectiveConfig {
             endpoint: None,
             model: ModelName(DEFAULT_MODEL.to_owned()),
             hook_mode: HookMode::Shadow,
+            notification_turns: NotificationTurns::Skip,
             context_profile: ContextProfile::Standard,
             no_tools: false,
             messages: RECENT_NORMALIZED_MESSAGES.max() as u32,
@@ -900,6 +937,9 @@ impl EffectiveConfig {
     }
     pub const fn hook_mode(&self) -> HookMode {
         self.hook_mode
+    }
+    pub const fn notification_turns(&self) -> NotificationTurns {
+        self.notification_turns
     }
     pub const fn context_profile(&self) -> ContextProfile {
         self.context_profile
@@ -969,6 +1009,10 @@ impl EffectiveConfig {
         }
         field("provider.model", self.model.as_str().as_bytes());
         field("hook.mode", self.hook_mode.as_str().as_bytes());
+        field(
+            "hook.notification_turns",
+            self.notification_turns.as_str().as_bytes(),
+        );
         field("context.profile", self.context_profile.as_str().as_bytes());
         field("context.no_tools", &[u8::from(self.no_tools)]);
         field("context.messages", &self.messages.to_le_bytes());
@@ -1024,6 +1068,9 @@ impl EffectiveConfig {
     fn widens(&self, key: SettingKey, value: &TypedValue) -> bool {
         match (key, value) {
             (SettingKey::HookMode, TypedValue::Hook(mode)) => *mode > self.hook_mode,
+            (SettingKey::HookNotificationTurns, TypedValue::Notification(turns)) => {
+                *turns > self.notification_turns
+            }
             (SettingKey::ContextProfile, TypedValue::Profile(p)) => *p > self.context_profile,
             (SettingKey::ContextNoTools, TypedValue::Bool(no_tools)) => self.no_tools && !no_tools,
             (SettingKey::ContextMessages, TypedValue::Count(n)) => *n > self.messages,
@@ -1041,6 +1088,7 @@ impl EffectiveConfig {
             (K::TypesafeEndpoint, T::Endpoint(v)) => self.endpoint = Some(v),
             (K::ProviderModel, T::Model(v)) => self.model = v,
             (K::HookMode, T::Hook(v)) => self.hook_mode = v,
+            (K::HookNotificationTurns, T::Notification(v)) => self.notification_turns = v,
             (K::ContextProfile, T::Profile(v)) => self.context_profile = v,
             (K::ContextNoTools, T::Bool(v)) => self.no_tools = v,
             (K::ContextMessages, T::Count(v)) => self.messages = v,

@@ -57,7 +57,7 @@ use rusqlite::{
 use std::{fmt, fs::File, path::PathBuf, time::Duration};
 
 pub const CACHE_FILE: &str = "cache.sqlite3";
-pub const CACHE_SCHEMA_VERSION: u32 = 3;
+pub const CACHE_SCHEMA_VERSION: u32 = 4;
 pub const CACHE_QUOTA_BYTES: u64 = 64 * 1024 * 1024;
 pub const MAINTENANCE_RESERVE_BYTES: u64 = 4 * 1024 * 1024;
 // Metadata and key writes are single rows. A response row is bounded by the
@@ -79,7 +79,7 @@ pub struct CacheCapacityReport {
 }
 pub const MAX_BUSY_WAIT_MS: u64 = 25;
 const APPLICATION_ID: i64 = 0x53524348; // SRCH: cache, never ledger/accounting.
-const SCHEMA_ID: &str = "sr-cache-responses-v3";
+const SCHEMA_ID: &str = "sr-cache-responses-v4";
 /// Maximum age of a stored response; the ten-minute TTL is a ceiling.
 pub const MAX_RESPONSE_TTL_SECONDS: u32 = 600;
 const METADATA_DDL: &str = "CREATE TABLE sr_cache_meta (
@@ -106,6 +106,8 @@ const RESPONSE_DDL: &str = "CREATE TABLE sr_cache_response (
         model_revision TEXT CHECK(model_revision IS NULL OR length(model_revision)<=256),
         input_tokens INTEGER NOT NULL CHECK(input_tokens>=0),
         output_tokens INTEGER NOT NULL CHECK(output_tokens>=0),
+        received_boot_id TEXT CHECK(received_boot_id IS NULL OR length(received_boot_id) BETWEEN 1 AND 64),
+        received_boot_ms INTEGER CHECK(received_boot_ms IS NULL OR received_boot_ms>=0),
         PRIMARY KEY (generation, namespace, stage, fingerprint)
     ) STRICT";
 const LEASE_DDL: &str = "CREATE TABLE sr_coordination_leases (
@@ -661,7 +663,8 @@ impl CacheStore {
                 let row = tx
                     .query_row(
                         "SELECT response, received_at_unix_ms, ttl_seconds, model, \
-                         model_revision, input_tokens, output_tokens FROM sr_cache_response \
+                         model_revision, input_tokens, output_tokens, received_boot_id, \
+                         received_boot_ms FROM sr_cache_response \
                          WHERE generation=?1 AND namespace=?2 AND stage=?3 AND fingerprint=?4",
                         params![
                             generation,
@@ -678,15 +681,31 @@ impl CacheStore {
                                 row.get::<_, Option<String>>(4)?,
                                 row.get::<_, i64>(5)?,
                                 row.get::<_, i64>(6)?,
+                                row.get::<_, Option<String>>(7)?,
+                                row.get::<_, Option<i64>>(8)?,
                             ))
                         },
                     )
                     .optional()?;
                 tx.finish()?;
                 check_work(clock, &child)?;
+                // A row whose age on this boot's clock has reached its TTL is
+                // expired whatever the wall clock says, so a clock stepped back
+                // cannot extend it (sr-4t02). Callers still apply wall-clock
+                // freshness; a row is served only while both ages are fresh.
+                let row = row.filter(|(_, _, ttl, _, _, _, _, boot_id, boot_ms)| {
+                    let (Some(boot_id), Some(boot_ms), Some((now_id, now_ms))) =
+                        (boot_id, boot_ms, boot_clock())
+                    else {
+                        return true;
+                    };
+                    let ttl_ms = u64::try_from(*ttl).unwrap_or(0).saturating_mul(1_000);
+                    *boot_id != now_id
+                        || now_ms.saturating_sub(u64::try_from(*boot_ms).unwrap_or(0)) < ttl_ms
+                });
                 let entry = row
                     .map(
-                        |(response, received, ttl, model, revision, input, output)| {
+                        |(response, received, ttl, model, revision, input, output, _, _)| {
                             let unsigned =
                                 |v: i64| u64::try_from(v).map_err(|_| StoreError::Corrupt);
                             Ok::<_, StoreError>(CachedResponseEntry {
@@ -800,7 +819,7 @@ impl CacheStore {
                  OR received_at_unix_ms>?2 OR received_at_unix_ms+ttl_seconds*1000<=?2",
                     params![generation, now],
                 )?;
-                publication::write_response(&tx, generation, namespace, &entry)?;
+                publication::write_response(&tx, generation, namespace, &entry, now_unix_ms)?;
                 refresh_busy_limit(&tx, clock, &child)?;
                 if expires.is_some_and(|expires| cache_wall_clock_ms() >= expires) {
                     return Err(StoreError::LeaseSuperseded);
@@ -1007,6 +1026,22 @@ fn cache_wall_clock_ms() -> u64 {
         .ok()
         .and_then(|elapsed| u64::try_from(elapsed.as_millis()).ok())
         .unwrap_or(u64::MAX)
+}
+
+/// This boot's identity and milliseconds since it began, from the kernel's
+/// boot id and `/proc/uptime` (CLOCK_BOOTTIME), which no wall-clock step can
+/// move (sr-4t02). `None` where the platform does not expose them.
+pub(crate) fn boot_clock() -> Option<(String, u64)> {
+    let boot_id = std::fs::read_to_string("/proc/sys/kernel/random/boot_id").ok()?;
+    let boot_id = boot_id.trim();
+    let uptime = std::fs::read_to_string("/proc/uptime").ok()?;
+    let seconds: f64 = uptime.split_whitespace().next()?.parse().ok()?;
+    if boot_id.is_empty() || boot_id.len() > 64 || !seconds.is_finite() || seconds < 0.0 {
+        return None;
+    }
+    // Hundredths of a second, far below the TTL scale; rounding is harmless.
+    let millis = (seconds * 1_000.0).round();
+    Some((boot_id.to_owned(), millis as u64))
 }
 
 #[cfg(test)]

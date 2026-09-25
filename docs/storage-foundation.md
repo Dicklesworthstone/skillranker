@@ -49,16 +49,21 @@ fails closed until its source and tests are reviewed; a Cargo version string
 alone is not engine evidence. `linked_engine()` exposes only this public engine
 identity for future doctor integration. See [SQLite's WAL documentation](https://www.sqlite.org/wal.html).
 
-Schema version 3 uses application ID `SRCH` and exactly four strict tables:
+Schema version 4 uses application ID `SRCH` and exactly four strict tables:
 metadata (an opaque 16-byte random incarnation, nonnegative generation and a
 fixed schema identity), the fingerprint key (32 bytes from the operating
 system CSPRNG, drawn once at initialization), validated responses, and single-flight
-leases. Every
+leases. On Linux each response also records its receipt on the boot clock: the
+kernel boot ID and the `/proc/uptime` milliseconds, back-dated by the wall-clock
+delay before the write. A read on the same boot treats a row whose boot-clock
+age has reached its TTL as absent, whatever the wall clock says, so a clock
+stepped back cannot extend a response's life. Elsewhere, or after a reboot, the
+wall-clock age alone applies. Every
 table's stored DDL and the singleton cardinalities are checked, so a matching
 `user_version` alone cannot authorize mutation. A newer schema is inspected with
 a read-only SQLite connection and rejected. This is not a promise of zero WAL
 shared-memory bookkeeping. Corrupt, foreign, or incompatible stores, including
-version 1 foundation stores and version 2 response caches, are refused without replacement, downgrade,
+version 1 foundation stores and version 2 and 3 response caches, are refused without replacement, downgrade,
 permission repair, or automatic migration. The rank caller then continues
 uncached. No migration, backup or repair command is implemented here.
 
@@ -164,7 +169,8 @@ directory replacement and abrupt process death across committed/uncommitted
 generations. Response-cache cases cover a random, stable, never-printed key; exact
 response identity and generation fencing for reads and writes; pruning of
 expired, future and earlier-generation rows; refusal of unbounded entries; and
-refusal of a version 1 store without repair. Unit tests separately cover engine qualification and the
+refusal of version 1 and version 3 stores without repair; and expiry by boot-clock
+age. Unit tests separately cover engine qualification and the
 filesystem/free-space admission predicates. Synthetic policy inputs are not
 evidence of a real mounted network filesystem or an actual disk-full crash.
 

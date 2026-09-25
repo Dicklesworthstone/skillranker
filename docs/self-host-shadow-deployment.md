@@ -371,3 +371,87 @@ the confirmation to look for.
   `context_contract::branch_and_worktree` failure under load was rerun green
   four times and filed as `sr-bytg`.
 - Not changed: hook scope, consent, and the managed settings entry.
+
+## Redeployment — 2026-09-25 05:16Z (AzureJaguar, signals and atomic cache)
+
+- Binary: `~/.local/bin/sr`, SHA256
+  `5e0a98687b1f5ffc9a2b105470b13d38d3d6e9e70a2681b9c573d0c1426823b2`, built
+  `--release --locked` through RCH from a clean export of the pushed revision
+  `ca172d6`. Freshness was proven by a string only that revision contains,
+  not by mtime. The previous binary (SHA256 `53d7e1d2…`) is kept as
+  `~/.local/bin/sr.backup.20260925T051604Z-7054402`.
+- Adds over `7054402`:
+  - `sr-c4v6` (`01d437c`): SIGTERM and SIGINT cancel the running rank or
+    hook, which drains and records the turn as an unavailable timeout.
+    Before, the process died with its row in flight, the common outcome when
+    Claude's hook timeout fires under load.
+  - `sr-ron8` (`ca172d6`): a wide answer and its rerank are published in one
+    transaction that also completes the lease, so the cache never pairs
+    answers from two evaluations. A superseded leader stops before paying
+    for a rerank.
+- Pre-deploy check, now a repository tool:
+  `python3 scripts/sweep_prompt_moments.py --compare <new sr>` replays
+  every real prompt moment of this workspace's transcripts through both
+  binaries. It runs in an owner-only sandbox with a placeholder key and a
+  refusing loopback endpoint, and prints session:line and outcomes only.
+  Result: 83 moments, identical outcomes. 71 reach the provider stage, 10
+  are honest `insufficient-context` refusals after partial compactions that
+  keep no summary, and 2 are `no-row` redeliveries sharing a prompt id with
+  an earlier record of the same turn.
+- Gates: `01d437c` remote full suite 1376/0/10; `ca172d6` remote full suite
+  1375/0/10. Both fmt and strict clippy, and ubs 0 critical.
+- Not changed: hook scope, consent, and the managed settings entry.
+
+## Redeployment — 2026-09-25 05:58Z (AzureJaguar, idle notification turns skipped)
+
+- Binary: `~/.local/bin/sr`, SHA256
+  `b945c644ce24e0318bddff9f4158ae7e7366ae2cf77fbf2953abc773a670f699`, built
+  `--release --locked` through RCH from the pushed revision `455037c`
+  (freshness proven by a string only that revision contains). The previous
+  binary (SHA256 `5e0a9868…`) is kept as
+  `~/.local/bin/sr.backup.20260925T055814Z-ca172d6`.
+- Adds `sr-sif6`: the trusted setting `hook.notification_turns`, default
+  `skip`. A turn that a background task's `<task-notification>` started while
+  the agent was idle is counted as a non-turn and never sent. Measured live,
+  such turns were 36 of 63 credentialed evaluations and most of the provider
+  spend. This deployment runs the default (`sr doctor --config`: `skip`, from
+  `built-in`).
+- Sweep with `--notifications` (the sweep tool gained the flag), previous
+  binary against this one, over 226 real moments:
+  - 141 notification turns moved from evaluated (`request-budget`) to
+    skipped (`no-row`), and 2 load-overrun ones likewise;
+  - one later notification record became its turn's first evaluation (a
+    replay-order artifact);
+  - the 83 submitted user prompts had identical outcomes.
+- Cohort impact: the shadow ledger stops recording evaluations for idle
+  notification turns. They appear as non-turn hook entries in `sr stats`.
+  Relevance-corpus work that wanted them must opt in with `rank` in trusted
+  configuration.
+- Gates on `455037c`: fmt, strict clippy, remote full suite 1377/0/10; the
+  public-contract and contract-matrix validators pass.
+
+## Redeployment — 2026-09-25 06:36Z (AzureJaguar, cache schema v4)
+
+- Binary: `~/.local/bin/sr`, SHA256
+  `ee76564d4e4a8df12dfbb44b9a32ea18c8954258052f5c63a6b05964da7a8a83`, built
+  `--release --locked` through RCH from `2c3dc46` (freshness proven by the new
+  `received_boot_id` column name in the binary). The previous binary (SHA256
+  `b945c644…`) is kept as `~/.local/bin/sr.backup.20260925T064500Z-455037c`.
+- Adds `sr-4t02`: each cached response records its receipt on the boot clock,
+  so a wall clock stepped back can no longer extend its life past the TTL.
+  The response cache is now schema version 4.
+- Planned cache reset: as the storage policy requires, the new binary refuses
+  the old v3 store without migrating it. Rank would then run uncached until the
+  store is replaced. The three v3 files were therefore renamed in place, not
+  deleted, to `~/.cache/sr/cache.sqlite3{,-wal,-shm}` with the suffix
+  `.retired-v3-20260925` (4 response rows, at most ten minutes of answers).
+  The next hook invocation creates a fresh v4 store.
+- Sweep of every submitted user prompt of the workspace's transcripts, the
+  previous binary against this one: no moment's outcome differed. The same 13 moments right after
+  compaction are refused locally by both (11 `insufficient-context`,
+  2 `no-row`). A 5-moment sandbox smoke of the installed binary reached the
+  provider stage on all 5.
+- Pending: no live hook had fired by 06:57Z (all panes idle), so the live v4
+  store's creation has not yet been observed.
+- Gates on `2c3dc46`: fmt, strict clippy and the remote full suite (1379
+  passed, 0 failed).

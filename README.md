@@ -656,6 +656,12 @@ mode = "advisory"
 Without those choices, remote transmission is disabled and the hook runs in
 shadow mode. `--allow-network` can authorize a single CLI evaluation.
 
+A turn that a background task's `<task-notification>` starts while the agent is
+idle is harness output, not a request you submitted. By default the hook counts
+it as a non-turn and sends nothing. Set `notification_turns = "rank"` under
+`[hook]` in trusted user configuration to evaluate those turns too. Workspace
+configuration can only keep them skipped.
+
 | Variable | Purpose |
 |---|---|
 | `TYPESAFE_API_KEY` | TypeSafe bearer credential; never serialized or stored in project config |
