@@ -713,9 +713,9 @@ fn cache_generation_change_during_provider_work_keeps_valid_answer() {
         .iter()
         .find(|w| w["kind"] == "cache-recording-unavailable")
         .unwrap_or_else(|| panic!("{doc}"));
-    // The failed wide recording drops the store. The rerank recording that
-    // follows was skipped too, and must not be reported as written.
-    assert_eq!(skipped["count"], 2, "{doc}");
+    // Both stages are published together (sr-ron8), so the stale generation
+    // refuses exactly one publication, and neither stage is reported written.
+    assert_eq!(skipped["count"], 1, "{doc}");
     let rows: i64 = cache
         .query_row("SELECT count(*) FROM sr_cache_response", [], |r| r.get(0))
         .unwrap();
