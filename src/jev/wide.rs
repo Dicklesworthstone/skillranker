@@ -344,6 +344,9 @@ pub struct WideOutcome<'a> {
     pub phase: BTreeMap<String, f64>,
     pub top: usize,
     pub decision: WideDecision<'a>,
+    /// The best `M_effective` candidates by raw probability whatever the gate
+    /// decided: intrinsic shortlist evidence for evaluation, never a decision.
+    pub intrinsic_shortlist: Vec<Shortlisted<'a>>,
 }
 
 fn noul_answer(response: &Response, key: &str) -> Result<f64, WideError> {
@@ -384,27 +387,27 @@ pub fn evaluate<'a>(
         .copied()
         .ok_or(WideError::MissingAnswer)?;
     let (shortlist_size, top) = sizes.effective(wide.options.entries().len());
+    let mut ranked = Vec::with_capacity(wide.options.entries().len());
+    for (option, skill) in wide.options.entries() {
+        let probability = normalized
+            .get(option.as_str())
+            .copied()
+            .ok_or(WideError::MissingAnswer)?;
+        ranked.push(Shortlisted {
+            skill: *skill,
+            wide_probability: probability,
+        });
+    }
+    ranked.sort_by(|a, b| {
+        b.wide_probability
+            .total_cmp(&a.wide_probability)
+            .then_with(|| a.skill.binding.id.cmp(&b.skill.binding.id))
+    });
+    ranked.truncate(shortlist_size);
     let decision = if needs < gate {
         WideDecision::LowNeed
     } else {
-        let mut ranked = Vec::with_capacity(wide.options.entries().len());
-        for (option, skill) in wide.options.entries() {
-            let probability = normalized
-                .get(option.as_str())
-                .copied()
-                .ok_or(WideError::MissingAnswer)?;
-            ranked.push(Shortlisted {
-                skill: *skill,
-                wide_probability: probability,
-            });
-        }
-        ranked.sort_by(|a, b| {
-            b.wide_probability
-                .total_cmp(&a.wide_probability)
-                .then_with(|| a.skill.binding.id.cmp(&b.skill.binding.id))
-        });
-        ranked.truncate(shortlist_size);
-        WideDecision::Shortlist(ranked)
+        WideDecision::Shortlist(ranked.clone())
     };
     Ok(WideOutcome {
         needs_skill: needs,
@@ -413,5 +416,6 @@ pub fn evaluate<'a>(
         phase: phase.normalized_probabilities(),
         top,
         decision,
+        intrinsic_shortlist: ranked,
     })
 }

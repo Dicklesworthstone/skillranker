@@ -296,6 +296,8 @@ fn a_low_gate_mean_skips_the_rerank() {
     )
     .unwrap();
     assert!(matches!(outcome.decision, WideDecision::LowNeed));
+    // The gate decides; evaluation still sees the intrinsic top candidates.
+    assert_eq!(outcome.intrinsic_shortlist.len(), 3);
     assert!((outcome.needs_skill - needs_skill(0.1, 0.2, 0.9)).abs() < 1e-12);
     assert!(outcome.needs_skill < DEFAULT_GATE);
     // The same answer passes a lower configured gate.

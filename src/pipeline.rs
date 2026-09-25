@@ -486,6 +486,8 @@ pub struct WideEvidence {
     pub low_need: bool,
     /// Shortlisted skills with their raw wide probability, highest first.
     pub shortlist: Vec<(String, f64)>,
+    /// The same top candidates whatever the gate decided.
+    pub intrinsic_shortlist: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -2706,6 +2708,11 @@ async fn rank_once(
                     .collect(),
                 WideDecision::LowNeed => Vec::new(),
             },
+            intrinsic_shortlist: wide_outcome
+                .intrinsic_shortlist
+                .iter()
+                .map(|s| s.skill.binding.id.as_str().to_owned())
+                .collect(),
         });
     }
     // A fresh wide answer is held and published together with the rerank it

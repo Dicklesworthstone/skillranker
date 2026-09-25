@@ -418,6 +418,8 @@ fn baselines_score_every_policy_on_the_same_judged_cohort_from_one_runs_answers(
             none_probability: 0.1,
             low_need: shortlist.is_empty(),
             shortlist: shortlist.iter().map(|(id, p)| ((*id).into(), *p)).collect(),
+            // Whatever the gate said, both skills are the top candidates.
+            intrinsic_shortlist: vec!["s_beta".into(), "s_alpha".into()],
         }),
         rerank: (!fits.is_empty()).then(|| RerankEvidence {
             none_probability: 0.1,
@@ -502,6 +504,9 @@ fn baselines_score_every_policy_on_the_same_judged_cohort_from_one_runs_answers(
         (1, 1)
     );
     assert_eq!(baselines.coverage.shortlist_gated_out, 1);
+    // Irrespective of the gate, both positive cases kept alpha in contention.
+    let intrinsic = &baselines.coverage.intrinsic_shortlist;
+    assert_eq!((intrinsic.successes, intrinsic.denominator), (2, 2));
     let policy = |name: &str| {
         baselines
             .policies

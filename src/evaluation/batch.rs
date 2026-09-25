@@ -1047,6 +1047,9 @@ pub struct StageCoverage {
     pub shortlist: Ratio,
     /// Judged positive cases the gate stopped before a shortlist.
     pub shortlist_gated_out: usize,
+    /// Judged positive cases with a wide answer whose top candidates by raw
+    /// probability include an acceptable skill, irrespective of the gate.
+    pub intrinsic_shortlist: Ratio,
     /// Whether Quill ranked any case's admitted set (roster overflow).
     pub quill_ranked_cases: usize,
 }
@@ -1273,6 +1276,7 @@ fn compare_baselines(
     };
 
     let (mut admitted_hits, mut shortlist_hits, mut shortlist_cases, mut positives) = (0, 0, 0, 0);
+    let (mut intrinsic_hits, mut intrinsic_cases) = (0, 0);
     for (_, label, stages) in &cohort {
         comparison.coverage.quill_ranked_cases += usize::from(stages.quill_ranked);
         if !positive(label) {
@@ -1280,6 +1284,14 @@ fn compare_baselines(
         }
         positives += 1;
         admitted_hits += usize::from(stages.admitted.iter().any(|id| acceptable(label, id)));
+        if let Some(wide) = &stages.wide {
+            intrinsic_cases += 1;
+            intrinsic_hits += usize::from(
+                wide.intrinsic_shortlist
+                    .iter()
+                    .any(|id| acceptable(label, id)),
+            );
+        }
         match &stages.wide {
             Some(wide) if !wide.low_need => {
                 shortlist_cases += 1;
@@ -1303,6 +1315,7 @@ fn compare_baselines(
     comparison.fit_calibration = fit_calibration(&calibration_pairs);
     comparison.coverage.admitted = Ratio::of(admitted_hits, positives);
     comparison.coverage.shortlist = Ratio::of(shortlist_hits, shortlist_cases);
+    comparison.coverage.intrinsic_shortlist = Ratio::of(intrinsic_hits, intrinsic_cases);
 
     for (name, definition, policy) in BASELINE_POLICIES {
         let (mut emitted, mut precise, mut positive_hits, mut positive_cases) = (0, 0, 0, 0);
