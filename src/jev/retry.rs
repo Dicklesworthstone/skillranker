@@ -204,6 +204,11 @@ pub struct RetrySession<'a> {
 }
 
 impl<'a> RetrySession<'a> {
+    /// The canonical origin every attempt of this session is sent to.
+    pub fn origin(&self) -> &CanonicalOrigin {
+        &self.origin
+    }
+
     pub fn new(
         client: &'a dyn JevTransport,
         credential: Option<&'a OriginScopedCredential>,

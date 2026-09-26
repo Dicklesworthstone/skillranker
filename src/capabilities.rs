@@ -17,6 +17,7 @@ use serde_json::{Value, json};
 pub const CAPABILITIES_SCHEMA: &str = "sr.capabilities.v1";
 
 pub const IMPLEMENTED_COMMANDS: &[&str] = &[
+    "budget",
     "capabilities",
     "demo",
     "doctor",

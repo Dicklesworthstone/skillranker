@@ -13,12 +13,13 @@ use std::ffi::OsString;
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
-const HELP: &str = "SkillRanker — powered by TypeSafe.ai Jev\n\nUsage: sr [rank] [--context FILE | --transcript FILE --harness NAME | --session PATH | --latest]\n                 [--roster FILE] [--require-skill ID] [--dry-run [--shortlist-ids ID,...]]\n                 [--offline | --allow-network] [--json | --table]\n                 [--top N] [--shortlist M] [--gate FLOAT] [--fits FLOAT]\n                 [--explain] [--why-not ID] [--cursor TOKEN] [--no-tools] [--no-cache]\n                 [--save-case FILE]\n       sr doctor [--json | --table] [--offline | --allow-network]\n       sr doctor --config [--json | --table] [--top N] [--shortlist N]\n       sr roster [--json] [--limit N] [--cursor TOKEN]\n       sr roster --snapshot FILE | --diff FILE\n       sr capabilities [--json]\n       sr demo --case <useful|none|explicit|unavailable> [--json | --table]\n       sr replay FILE [--policy FILE] [--compare-policy FILE] [--json | --table]\n       sr eval --dataset FILE [--allow-network] [--max-runtime-ms MS] [--timeout-ms MS] [--policy FILE] [--compare-policy FILE] [--explain] [--json | --table]\n       sr eval --dataset FRAME --labels FILE [--sample-size N [--seed S]] [--online --allow-network --max-requests N [--max-runtime-ms MS] [--robustness]] [--explain] [--json | --table]\n       sr feedback <EVENT_ID> --skill ID [--instead ID] [--verdict <useful|not-useful|unknown>] [--reason CODE] [--provenance TEXT] [--expected-version GEN] [--dir DIR] [--json]\n       sr snooze <EVENT_ID> (--skill ID --for DURATION | --all --for DURATION | --clear) [--apply] [--dir DIR] [--json]\n       sr ledger <init|migrate|status|prune|clear> [--before TIME] [--apply] [--json]\n       sr observe [--context FILE | --transcript FILE --harness NAME | --session PATH] [--branch NAME] [--roster FILE] [--dir DIR] [--json]\n       sr stats [--since DURATION] [--by-skill] [--dir DIR] [--json | --table]\n       sr hook <claude> [--shadow] [--offline | --allow-network] [--dir DIR]\n       sr install-hook <claude> [--settings FILE] [--target-dir DIR] [--apply] [--json]\n       sr uninstall-hook <claude> [--settings FILE] [--target-dir DIR] [--apply] [--json]\n       sr --help | --version\n\nRank the next step of an agent session using TypeSafe Jev.\nRequires your own TypeSafe API key (TYPESAFE_API_KEY) and network consent (--allow-network).\n";
+const HELP: &str = "SkillRanker — powered by TypeSafe.ai Jev\n\nUsage: sr [rank] [--context FILE | --transcript FILE --harness NAME | --session PATH | --latest]\n                 [--roster FILE] [--require-skill ID] [--dry-run [--shortlist-ids ID,...]]\n                 [--offline | --allow-network] [--json | --table]\n                 [--top N] [--shortlist M] [--gate FLOAT] [--fits FLOAT]\n                 [--explain] [--why-not ID] [--cursor TOKEN] [--no-tools] [--no-cache]\n                 [--save-case FILE]\n       sr doctor [--json | --table] [--offline | --allow-network]\n       sr doctor --config [--json | --table] [--top N] [--shortlist N]\n       sr roster [--json] [--limit N] [--cursor TOKEN]\n       sr roster --snapshot FILE | --diff FILE\n       sr capabilities [--json]\n       sr demo --case <useful|none|explicit|unavailable> [--json | --table]\n       sr replay FILE [--policy FILE] [--compare-policy FILE] [--json | --table]\n       sr eval --dataset FILE [--allow-network] [--max-runtime-ms MS] [--timeout-ms MS] [--policy FILE] [--compare-policy FILE] [--explain] [--json | --table]\n       sr eval --dataset FRAME --labels FILE [--sample-size N [--seed S]] [--online --allow-network --max-requests N [--max-runtime-ms MS] [--robustness]] [--explain] [--json | --table]\n       sr feedback <EVENT_ID> --skill ID [--instead ID] [--verdict <useful|not-useful|unknown>] [--reason CODE] [--provenance TEXT] [--expected-version GEN] [--dir DIR] [--json]\n       sr budget [--max-attempts N --window 1h [--apply]] [--json]\n       sr snooze <EVENT_ID> (--skill ID --for DURATION | --all --for DURATION | --clear) [--apply] [--dir DIR] [--json]\n       sr ledger <init|migrate|status|prune|clear> [--before TIME] [--apply] [--json]\n       sr observe [--context FILE | --transcript FILE --harness NAME | --session PATH] [--branch NAME] [--roster FILE] [--dir DIR] [--json]\n       sr stats [--since DURATION] [--by-skill] [--dir DIR] [--json | --table]\n       sr hook <claude> [--shadow] [--offline | --allow-network] [--dir DIR]\n       sr install-hook <claude> [--settings FILE] [--target-dir DIR] [--apply] [--json]\n       sr uninstall-hook <claude> [--settings FILE] [--target-dir DIR] [--apply] [--json]\n       sr --help | --version\n\nRank the next step of an agent session using TypeSafe Jev.\nRequires your own TypeSafe API key (TYPESAFE_API_KEY) and network consent (--allow-network).\n";
 
 const EVAL_HELP: &str = "sr eval --dataset FILE [--allow-network] [--max-runtime-ms MS] [--timeout-ms MS] [--policy FILE] [--compare-policy FILE] [--explain] [--json | --table]\n       sr eval --dataset FRAME --labels FILE [--sample-size N [--seed S]] [--online --allow-network --max-requests N [--max-runtime-ms MS] [--robustness]] [--explain] [--json | --table]\n\nEvaluate recorded or synthetic replay batches against local or comparison policies with bounded runtime and explicit accounting.\nWith --labels, score a labeled case frame against independent judgments, optionally over a stratified sample frozen before labels are joined.\n";
 
 const STATS_HELP: &str = "sr stats [--since DURATION] [--by-skill] [--dir DIR] [--json | --table]\n\nReport observation and operational metrics across honest cohorts (evaluations, suggestions, abstentions, latency, loads, judgments, tokens, and cost).\n";
 
+const BUDGET_HELP: &str = "sr budget [--max-attempts N --window 1h [--apply]] [--json]\n\nInspect the optional shared HTTP-attempt allowance and its accounting health, or preview and, with --apply, configure it: 1 to 10,000 admissions per fixed one-hour UTC window for each endpoint origin, across this user's local sr processes. No network request is made.\n";
 const SNOOZE_HELP: &str = "sr snooze <EVENT_ID> (--skill ID --for DURATION | --all --for DURATION | --clear) [--apply] [--dir DIR] [--json]\n\nPreview, then with --apply write, a temporary advisory snooze in the recorded event's workspace, session and agent branch. DURATION is 1m to 24h (e.g. 30m, 2h). Explicit skill requests still resolve; a snooze is not a usefulness label.\n";
 const FEEDBACK_HELP: &str = "sr feedback <EVENT_ID> --skill ID [--instead ID] [--verdict <useful|not-useful|unknown>] [--reason CODE] [--provenance TEXT] [--expected-version GEN] [--dir DIR] [--json]\n\nRecord explicit feedback or paired corrective labels for a historical ranking event.\n";
 
@@ -540,6 +541,35 @@ fn command() -> Command {
                                 .action(ArgAction::Set),
                         ),
                 ),
+        )
+        .subcommand(
+            Command::new("budget")
+                .disable_help_flag(true)
+                .arg(
+                    Arg::new("help")
+                        .long("help")
+                        .short('h')
+                        .action(ArgAction::SetTrue),
+                )
+                .arg(
+                    Arg::new("max-attempts")
+                        .long("max-attempts")
+                        .help("Admissions per window, 1 to 10,000")
+                        .action(ArgAction::Set),
+                )
+                .arg(
+                    Arg::new("window")
+                        .long("window")
+                        .help("Window length; only fixed one-hour UTC windows (1h)")
+                        .action(ArgAction::Set),
+                )
+                .arg(
+                    Arg::new("apply")
+                        .long("apply")
+                        .help("Configure the previewed allowance")
+                        .action(ArgAction::SetTrue),
+                )
+                .arg(Arg::new("json").long("json").action(ArgAction::SetTrue)),
         )
         .subcommand(
             Command::new("snooze")
@@ -1282,6 +1312,12 @@ fn execute(clock: &EntryClock, mut args: Vec<OsString>) -> Result<String, Failur
         }
         return ledger_command(clock, ledger_matches);
     }
+    if let Some(("budget", budget_matches)) = matches.subcommand() {
+        if budget_matches.get_flag("help") {
+            return Ok(BUDGET_HELP.into());
+        }
+        return budget_command(clock, budget_matches);
+    }
     if let Some(("snooze", snooze_matches)) = matches.subcommand() {
         if snooze_matches.get_flag("help") {
             return Ok(SNOOZE_HELP.into());
@@ -1332,6 +1368,152 @@ fn execute(clock: &EntryClock, mut args: Vec<OsString>) -> Result<String, Failur
     }
     // Bare `sr` ranks once, as documented.
     rank_command(clock, None)
+}
+
+/// `sr budget`: inspect, preview or configure the trusted shared allowance.
+/// Local only: no provider request, and nothing is written without `--apply`.
+fn budget_command(clock: &EntryClock, matches: &clap::ArgMatches) -> Result<String, Failure> {
+    use crate::allowance::{AllowanceError, AllowancePaths};
+    timely(clock)?;
+    let usage = |message: String| (2u8, "invalid-usage", message);
+    let limit = match (
+        matches.get_one::<String>("max-attempts"),
+        matches.get_one::<String>("window"),
+    ) {
+        (Some(n), Some(window)) => {
+            crate::allowance::parse_window(window).map_err(|e| usage(e.to_string()))?;
+            Some(crate::allowance::parse_max_attempts(n).map_err(|e| usage(e.to_string()))?)
+        }
+        (None, None) => None,
+        _ => {
+            return Err(usage(
+                "--max-attempts and --window are given together, e.g. --max-attempts 100 --window 1h"
+                    .into(),
+            ));
+        }
+    };
+    let apply = matches.get_flag("apply");
+    if apply && limit.is_none() {
+        return Err(usage("--apply needs --max-attempts N --window 1h".into()));
+    }
+    let user_root = user_config_root()?.ok_or_else(|| {
+        (
+            2u8,
+            "invalid-configuration",
+            "No trusted user configuration directory: set XDG_CONFIG_HOME or HOME".to_owned(),
+        )
+    })?;
+    // Endpoint overrides are environment-only; charges key on the canonical origin.
+    let origin = match std::env::var("TYPESAFE_ENDPOINT") {
+        Ok(text) if !text.is_empty() => crate::jev::CanonicalOrigin::parse(&text)
+            .map_err(|_| invalid("TYPESAFE_ENDPOINT is not a valid origin"))?,
+        _ => crate::jev::CanonicalOrigin::production(),
+    };
+    let now = crate::allowance::wall_clock_ms().ok_or_else(|| {
+        (
+            4u8,
+            "budget-state",
+            "The wall clock reads before 1970; no window can be computed".to_owned(),
+        )
+    })?;
+    let paths = AllowancePaths::for_user(&user_root);
+    let storage = |error: AllowanceError| (9u8, "storage-failure", error.to_string());
+    let plan = match limit {
+        Some(max_attempts) if apply => {
+            let budget = std::time::Duration::from_millis(
+                clock.remaining_before_cleanup().as_millis().min(1_000),
+            );
+            Some(
+                crate::allowance::apply_setup(&paths, max_attempts, budget, None)
+                    .map_err(storage)?,
+            )
+        }
+        Some(max_attempts) => {
+            Some(crate::allowance::preview_setup(&paths, max_attempts).map_err(storage)?)
+        }
+        None => None,
+    };
+    let report = crate::allowance::inspect(&paths, &origin, now);
+    timely(clock)?;
+    let guard = report.guard.map(|guard| {
+        json!({
+            "state": guard.phase.as_str(),
+            "generation": guard.generation,
+            "max_attempts": guard.max_attempts,
+        })
+    });
+    let value = json!({
+        "schema_version": 1,
+        "kind": "budget",
+        "mode": match (&plan, apply) {
+            (None, _) => "inspect",
+            (Some(_), false) => "preview",
+            (Some(_), true) => "applied",
+        },
+        "scope": {"user": "local sr processes of this user", "origin": origin.as_str()},
+        "window": {
+            "length": crate::allowance::WINDOW_TEXT,
+            "kind": "fixed-utc",
+            "start_unix_ms": report.window_start_unix_ms,
+            "end_unix_ms": report.window_end_unix_ms,
+        },
+        "guard": guard,
+        "health": report.health,
+        "detail": report.detail,
+        "accounting_generation": report.accounting_generation,
+        "charged_attempts": report.charged_attempts,
+        "remaining_attempts": report.remaining(),
+        "plan": plan.as_ref().map(|plan| json!({
+            "max_attempts": plan.target.max_attempts,
+            "generation": plan.target.generation,
+            "unchanged": plan.unchanged,
+            "resumes_intent": plan.resumes_intent,
+        })),
+        "notes": [
+            "Fixed UTC windows, not a rolling hour: adjacent windows can each be spent near their boundary.",
+            "Each admission is charged durably before its request is sent and never refunded; this is not a monetary or billing cap.",
+            "Changing the limit keeps charges already made; a request admitted before a change cannot be recalled.",
+        ],
+    });
+    if matches.get_flag("json") {
+        return Ok(format!("{value:#}\n"));
+    }
+    let mut out = format!(
+        "Allowance: {}\n  origin: {}\n  window: {} to {} (fixed UTC hour)\n",
+        report.health,
+        origin.as_str(),
+        crate::storage::format_unix_ms(report.window_start_unix_ms as i64),
+        crate::storage::format_unix_ms(report.window_end_unix_ms as i64),
+    );
+    if let Some(guard) = report.guard {
+        out.push_str(&format!(
+            "  limit: {} attempts per window (generation {}, {})\n",
+            guard.max_attempts,
+            guard.generation,
+            guard.phase.as_str()
+        ));
+    }
+    if let (Some(charged), Some(remaining)) = (report.charged_attempts, report.remaining()) {
+        out.push_str(&format!("  charged: {charged}, remaining: {remaining}\n"));
+    }
+    if let Some(plan) = &plan {
+        let verb = match (apply, plan.unchanged) {
+            (_, true) => "Unchanged",
+            (true, false) => "Configured",
+            (false, false) => "Would configure",
+        };
+        out.push_str(&format!(
+            "{verb}: {} attempts per window at generation {}\n",
+            plan.target.max_attempts, plan.target.generation
+        ));
+        if !apply && !plan.unchanged {
+            out.push_str("Preview only: add --apply to configure it.\n");
+        }
+    }
+    if let Some(detail) = &report.detail {
+        out.push_str(&format!("  detail: {detail}\n"));
+    }
+    Ok(crate::output::table::sanitize_terminal_text(&out))
 }
 
 /// `sr snooze`: resolve the event's recorded scope, preview the change and,
@@ -5240,14 +5422,9 @@ mod documented_flag_tests {
             }
         }
         collect(&app, &mut known);
-        // These belong to whole commands whose absence is already published.
-        for (owner, flags) in [
-            ("calibrate", &["evaluation", "rollback"][..]),
-            ("budget", &["max-attempts", "window"][..]),
-        ] {
-            if crate::capabilities::planned_command_phase(owner).is_some() {
-                known.extend(flags.iter().map(|flag| (*flag).to_owned()));
-            }
+        // These belong to a whole command whose absence is already published.
+        if crate::capabilities::planned_command_phase("calibrate").is_some() {
+            known.extend(["evaluation", "rollback"].map(str::to_owned));
         }
         // Cargo and install.sh options in installation prose are not sr flags.
         let external = [

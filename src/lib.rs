@@ -2,6 +2,7 @@
 #![forbid(unsafe_code)]
 
 pub mod adapter;
+pub mod allowance;
 pub mod authorized_read;
 pub mod blocking;
 pub mod cache;

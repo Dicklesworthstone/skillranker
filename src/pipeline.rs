@@ -957,6 +957,12 @@ async fn rank_once(
 
     // 1. Initial configuration loading and policy receipt capture
     let config_files = ConfigFiles::new(args.workspace.clone(), args.user_config_root.clone());
+    // The trusted request allowance lives under the user configuration root;
+    // `--no-cache` never relocates its enforcement state.
+    let allowance_paths = args
+        .user_config_root
+        .as_deref()
+        .map(crate::allowance::AllowancePaths::for_user);
     let resolved_config = config_files.load(clock, args.sources.clone())?;
     let mut current_receipt = resolved_config.receipt(gate.policy());
 
@@ -2781,6 +2787,7 @@ async fn rank_once(
                 &resolved_config,
                 &mut current_receipt,
                 &gate,
+                allowance_paths.as_ref(),
                 &mut progress.metrics,
                 cx,
                 clock,
@@ -3024,6 +3031,7 @@ async fn rank_once(
                 &resolved_config,
                 &mut current_receipt,
                 &gate,
+                allowance_paths.as_ref(),
                 &mut progress.metrics,
                 cx,
                 clock,
@@ -4194,6 +4202,32 @@ fn authorize_send(
     Ok(consent)
 }
 
+/// Charges one attempt to the trusted shared allowance, when one is
+/// configured, after policy re-authorization and before the send. The debit
+/// is durable and never refunded; a spent window is `request-budget`, and
+/// unusable or incomplete enforcement state is `budget-state`, both exit 4.
+fn debit_allowance(
+    allowance: Option<&crate::allowance::AllowancePaths>,
+    origin: &crate::jev::CanonicalOrigin,
+    stage: RankingStage,
+    gate: &EffectGate,
+    clock: &EntryClock,
+) -> Result<(), PipelineFailure> {
+    let Some(paths) = allowance else {
+        return Ok(());
+    };
+    let persistent = matches!(gate.runtime_state(), StoreAccess::Enabled);
+    let lock_budget =
+        std::time::Duration::from_millis(clock.remaining_before_cleanup().as_millis().min(250));
+    match crate::allowance::admit(paths, origin, stage, persistent, lock_budget) {
+        Ok(_) => Ok(()),
+        Err(error @ crate::allowance::AllowanceError::Exhausted { .. }) => {
+            Err(failure(ErrorKind::RequestBudget, error.to_string()))
+        }
+        Err(error) => Err(failure(ErrorKind::BudgetState, error.to_string())),
+    }
+}
+
 /// Run one logical stage through the invocation's retry session. Policy is
 /// re-authorized before every attempt, retries included. Usage comes from the
 /// allowance's receipt, so unknown usage from attempts that returned nothing
@@ -4207,15 +4241,20 @@ async fn provider_stage(
     resolved_config: &ResolvedConfig,
     receipt: &mut PolicyReceipt,
     gate: &EffectGate,
+    allowance: Option<&crate::allowance::AllowancePaths>,
     metrics: &mut ExecutionMetrics,
     cx: &Cx,
     clock: &EntryClock,
 ) -> Result<Response, PipelineFailure> {
     let sent_before = session.receipt().sent_attempts;
+    let origin = session.origin().clone();
     let mut refusal = None;
     let result = session
         .send_stage(stage, request, cx, || {
             authorize_send(clock, config_files, resolved_config, receipt, gate, stage)
+                .and_then(|consent| {
+                    debit_allowance(allowance, &origin, stage, gate, clock).map(|()| consent)
+                })
                 .map_err(|failure| refusal = Some(failure))
         })
         .await;

@@ -1500,6 +1500,11 @@ before it is visible, the old policy remains in force. Each attempt checks the
 active generation at admission, including processes started earlier. Already
 admitted requests cannot be recalled. Inspection itself makes no network requests.
 
+The guard lives in `sr/allowance.toml` under your configuration directory, and
+its accounting in `allowance.sqlite3` in the private `sr` cache directory, which
+`--no-cache` does not relocate. Each endpoint origin, port included, has its own
+count.
+
 Persistent attempts hold the same bounded lock as setup while rereading guard
 configuration, validating the accounting generation, and debiting. They release
 it before HTTP; lock contention cannot turn into an unbounded hook wait. With
