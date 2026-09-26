@@ -3184,6 +3184,7 @@ fn eval_live_command(
         max_runtime_ms,
         attempts_per_case: crate::limits::DEFAULT_HTTP_ATTEMPTS as usize,
         fit_threshold: config.effective().fits(),
+        gate_threshold: config.effective().gate(),
     };
     // The preview runs the same pipeline as a stateless dry run: no network.
     let preview_gate = crate::effects::EffectGate::new(

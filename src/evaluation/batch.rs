@@ -190,6 +190,9 @@ pub struct EvaluationBatchReport {
     /// A live batch's disclosure, previewed for every case before any send.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub disclosure_preflight: Option<DisclosurePreflight>,
+    /// Cases worth a closer look; outcome-selected, never a sample.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub review_queue: Option<crate::evaluation::review::ReviewQueue>,
     /// Intrinsic stage coverage and baseline policies over the same live answers.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub baselines: Option<BaselineComparison>,
@@ -453,6 +456,7 @@ pub fn execute_evaluation_batch<R: BufRead>(
         sample_manifest: None,
         design_weighted_loss: None,
         disclosure_preflight: None,
+        review_queue: None,
         baselines: None,
         explanation: None,
         cases: reports,
@@ -540,6 +544,7 @@ struct FrameRun {
     elapsed_ms: BTreeMap<CaseKey, u64>,
     preflight: Option<DisclosurePreflight>,
     baselines: Option<BaselineComparison>,
+    review_queue: Option<crate::evaluation::review::ReviewQueue>,
 }
 
 impl FrameRun {
@@ -552,6 +557,7 @@ impl FrameRun {
             elapsed_ms: BTreeMap::new(),
             preflight: None,
             baselines: None,
+            review_queue: None,
         }
     }
 }
@@ -680,6 +686,7 @@ fn score_frame(
         sample_manifest: manifest,
         design_weighted_loss,
         disclosure_preflight: run.preflight,
+        review_queue: run.review_queue,
         baselines: run.baselines,
         explanation: None,
         cases: reports,
@@ -794,6 +801,8 @@ pub struct LiveBatchLimits {
     pub attempts_per_case: usize,
     /// The minimum fit the fit-only baseline requires, as production uses.
     pub fit_threshold: f64,
+    /// The production gate, for near-threshold review selection.
+    pub gate_threshold: f64,
 }
 
 /// What a live batch will disclose, frozen before its first request: every
@@ -949,6 +958,7 @@ pub fn execute_live_frame_evaluation<L: BufRead>(
 
     let mut executed = Vec::with_capacity(admitted.len());
     let mut evidence_by_case = BTreeMap::new();
+    let mut production_elapsed = Vec::new();
     // `None`: the second arm failed operationally.
     let mut ablations: BTreeMap<CaseKey, Option<Vec<String>>> = BTreeMap::new();
     let mut ablation_queue = Vec::new();
@@ -1001,6 +1011,14 @@ pub fn execute_live_frame_evaluation<L: BufRead>(
         accounting.output_tokens += outcome.output_tokens;
         run.elapsed_ms
             .insert(record.key.clone(), outcome.elapsed_ms);
+        production_elapsed.push(
+            outcome.elapsed_ms.saturating_sub(
+                outcome
+                    .evidence
+                    .as_ref()
+                    .map_or(0, |evidence| evidence.lexical_elapsed_ms),
+            ),
+        );
         if let Some((kind, code)) = FATAL_LIVE_KINDS
             .iter()
             .find(|(kind, _)| outcome.error_kind.as_deref() == Some(*kind))
@@ -1077,13 +1095,32 @@ pub fn execute_live_frame_evaluation<L: BufRead>(
         }
     }
     run.error = stopped.map(|(_, error)| error);
+    let review_inputs: Vec<crate::evaluation::review::ReviewInput<'_>> = executed
+        .iter()
+        .map(|record| crate::evaluation::review::ReviewInput {
+            key: &record.key,
+            split: record.split,
+            stratum: None,
+            evidence: evidence_by_case.get(&record.key),
+            judgment: judgments.get(&record.key.case_id),
+        })
+        .collect();
+    run.review_queue = Some(crate::evaluation::review::review_queue(
+        &review_inputs,
+        crate::evaluation::review::ReviewPolicy {
+            gate: limits.gate_threshold,
+            ..crate::evaluation::review::ReviewPolicy::default()
+        },
+    ));
     let mut comparison = compare_baselines(
         &executed,
         &judgments,
         &evidence_by_case,
         limits.fit_threshold,
     );
-    comparison.latency_ms = latency_summary(run.elapsed_ms.values().copied().collect());
+    // Production latency: each ranking's time without the evaluation-only
+    // lexical pass (which still shares the case deadline).
+    comparison.latency_ms = latency_summary(production_elapsed);
     comparison.context_ablation = Some(context_ablation(
         &executed,
         &judgments,
@@ -1188,10 +1225,20 @@ pub struct BaselineComparison {
     pub explicit_cases_excluded: usize,
     /// Baselines this run's answers cannot support, and why.
     pub not_computed: Vec<String>,
+    /// Judged advisory cases every policy scored, operational failures included.
+    #[serde(default)]
+    pub shared_cohort_cases: usize,
+    /// Cases left out of every policy because at least one could not score them.
+    #[serde(default)]
+    pub excluded_unscorable: usize,
+    /// True when no case had to be left out of the shared cohort.
+    #[serde(default)]
+    pub complete: bool,
     /// Fit calibration on judged reranked pairs.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fit_calibration: Option<FitCalibration>,
-    /// Wall time of each live ranking, including local work and retries.
+    /// Wall time of each live ranking, including local work and retries but
+    /// not the evaluation-only lexical pass.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub latency_ms: Option<LatencySummary>,
     /// The production blend with recent context against the latest request
@@ -1548,12 +1595,31 @@ fn compare_baselines(
     comparison.coverage.shortlist = Ratio::of(shortlist_hits, shortlist_cases);
     comparison.coverage.intrinsic_shortlist = Ratio::of(intrinsic_hits, intrinsic_cases);
 
+    // Every policy is scored on the same cases: one that any policy cannot
+    // score (for example a Quill pass that hit its deadline) leaves all of
+    // them, so no mean loss is taken over a different denominator.
+    let shared: Vec<bool> = cohort
+        .iter()
+        .map(|(record, _, stages)| {
+            BASELINE_POLICIES
+                .iter()
+                .all(|(_, _, policy)| policy(stages, record, fit_threshold).is_ok())
+        })
+        .collect();
+    comparison.excluded_unscorable = shared.iter().filter(|scorable| !**scorable).count();
+    comparison.shared_cohort_cases = cohort.len() - comparison.excluded_unscorable + failed.len();
+    comparison.complete = comparison.excluded_unscorable == 0;
     for (name, definition, policy) in BASELINE_POLICIES {
         let picks: Vec<Pick<'_>> = cohort
             .iter()
-            .map(|(record, label, stages)| Pick {
+            .zip(&shared)
+            .map(|((record, label, stages), scorable)| Pick {
                 label,
-                top: policy(stages, record, fit_threshold),
+                top: if *scorable {
+                    policy(stages, record, fit_threshold)
+                } else {
+                    Err(())
+                },
                 published: if name == "blend" {
                     Some(record.suggested_skills.as_slice())
                 } else {
@@ -1725,6 +1791,9 @@ pub struct ExplainedQuantity {
     pub substituted: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub value: Option<f64>,
+    /// What new evidence would move this quantity, computed from the report.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub would_change: Option<String>,
 }
 
 /// Equations, assumptions, and interpretation behind an evaluation report.
@@ -1755,6 +1824,14 @@ fn explain_report(report: &EvaluationBatchReport) -> ReportExplanation {
             equation: "mean_loss = total_loss / attempted_cases".into(),
             substituted: format!("{} / {}", loss.total_loss, loss.attempted_cases),
             value: loss.mean_loss,
+            would_change: (loss.attempted_cases > 0).then(|| {
+                format!(
+                    "Each attempted case changes this by at most 2 / {} = {} per unit of loss; \
+                     only new judged cases or corrected outcomes move it.",
+                    loss.attempted_cases,
+                    2.0 / loss.attempted_cases as f64
+                )
+            }),
         });
         quantities.push(ExplainedQuantity {
             name: "mean_normalized_loss".into(),
@@ -1763,7 +1840,11 @@ fn explain_report(report: &EvaluationBatchReport) -> ReportExplanation {
                 .mean_loss
                 .map_or_else(|| "no attempted case".into(), |mean| format!("{mean} / 2")),
             value: loss.mean_normalized_loss,
+            would_change: None,
         });
+        if let Some(card) = harmful_outcome_card(report) {
+            quantities.push(card);
+        }
         assumptions.push(
             "Labels are independent judgments joined by case_id at their highest revision.".into(),
         );
@@ -1879,6 +1960,12 @@ fn push_design_quantities(
             .collect::<Vec<_>>()
             .join(" + "),
         value: design.r_hat_observed,
+        would_change: (design.total_missing_labels > 0).then(|| {
+            format!(
+                "{} sampled cases have no loss; judging them narrows [{}, {}] to a point.",
+                design.total_missing_labels, design.r_hat_lower, design.r_hat_upper
+            )
+        }),
     });
     quantities.push(ExplainedQuantity {
         name: "design_weighted_upper_bound".into(),
@@ -1892,5 +1979,60 @@ fn push_design_quantities(
             terms(|stratum| stratum.upper_bound_uh)
         ),
         value: Some(design.conservative_upper_bound),
+        would_change: Some(
+            "Each sampled stratum's margin sqrt(ln(H / alpha) / (2 n_h)) halves when its \
+             sample quadruples; a census stratum has none."
+                .into(),
+        ),
     });
+}
+
+/// Why a count of harmful outcomes (loss 2: a wrong or needless suggestion,
+/// or an operational failure) still leaves room for a harmful rate, at 95%.
+fn harmful_outcome_card(report: &EvaluationBatchReport) -> Option<ExplainedQuantity> {
+    let n = report.loss_summary.attempted_cases;
+    if n == 0 {
+        return None;
+    }
+    let harmful = report
+        .cases
+        .iter()
+        .filter(|case| {
+            matches!(
+                case.status,
+                CaseExecutionStatus::Completed { loss: Some(2), .. }
+                    | CaseExecutionStatus::OperationalFailure { .. }
+            )
+        })
+        .count();
+    let upper =
+        crate::evaluation::numerics::clopper_pearson_one_sided_upper(harmful, n, 0.95).ok()?;
+    let (equation, substituted, would_change) = if harmful == 0 {
+        // The smallest n whose zero-event bound is below 5%.
+        let needed = ((0.05f64).ln() / (0.95f64).ln()).ceil() as usize;
+        (
+            "U = 1 - (1 - 0.95)^(1 / n) for zero harmful outcomes in n cases".to_owned(),
+            format!("1 - 0.05^(1 / {n})"),
+            format!(
+                "Zero of {n} still allows a harmful rate up to {upper:.4}; about {needed} \
+                 harm-free judged cases are needed before U falls below 0.05."
+            ),
+        )
+    } else {
+        (
+            "U = Beta(k + 1, n - k).ppf(0.95), the exact Clopper-Pearson upper bound".to_owned(),
+            format!("k = {harmful}, n = {n}"),
+            format!(
+                "U cannot fall below the observed rate {harmful} / {n}; it falls only as more \
+                 harm-free judged cases are added."
+            ),
+        )
+    };
+    Some(ExplainedQuantity {
+        name: "harmful_outcome_rate_upper_95".into(),
+        equation,
+        substituted,
+        value: Some(upper),
+        would_change: Some(would_change),
+    })
 }

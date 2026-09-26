@@ -476,6 +476,10 @@ pub struct StageEvidence {
     /// evaluation even when production admits the whole roster. `None` when
     /// it could not run; an empty list is a lexical miss.
     pub lexical: Option<Vec<String>>,
+    /// Time the evaluation-only lexical pass took inside this ranking; zero
+    /// when production ran Quill itself or no pass ran.
+    #[serde(default)]
+    pub lexical_elapsed_ms: u64,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -1963,6 +1967,7 @@ async fn rank_once(
             (selection.candidates, true, selection.diagnostics.method)
         } else {
             if progress.stage_evidence.is_some() {
+                let started = std::time::Instant::now();
                 let lexical = lexical_baseline(
                     &roster,
                     &admission.admitted,
@@ -1977,6 +1982,8 @@ async fn rank_once(
                 .await;
                 if let Some(evidence) = progress.stage_evidence.as_mut() {
                     evidence.lexical = lexical;
+                    evidence.lexical_elapsed_ms =
+                        u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
                 }
             }
             (admission.admitted, false, None)

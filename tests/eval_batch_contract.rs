@@ -249,6 +249,7 @@ fn the_runtime_cap_stops_scheduling_halfway_and_reports_unfinished_cases() {
             max_runtime_ms: 40,
             attempts_per_case: 4,
             fit_threshold: 0.3,
+            gate_threshold: 0.3,
         },
         &EntryClock::capture().unwrap(),
         0,
@@ -296,6 +297,7 @@ fn the_runtime_cap_stops_scheduling_halfway_and_reports_unfinished_cases() {
             max_runtime_ms: 60_000,
             attempts_per_case: 4,
             fit_threshold: 0.3,
+            gate_threshold: 0.3,
         },
         &EntryClock::capture().unwrap(),
         0,
@@ -332,6 +334,7 @@ fn a_refused_disclosure_preview_is_never_sent_and_the_preflight_is_frozen_first(
                 max_runtime_ms: 60_000,
                 attempts_per_case: 4,
                 fit_threshold: 0.3,
+                gate_threshold: 0.3,
             },
             &EntryClock::capture().unwrap(),
             0,
@@ -413,6 +416,7 @@ fn baselines_score_every_policy_on_the_same_judged_cohort_from_one_runs_answers(
         admitted: vec!["s_alpha".into(), "s_beta".into()],
         quill_ranked: false,
         lexical: None,
+        lexical_elapsed_ms: 0,
         wide: Some(WideEvidence {
             needs_skill: 0.9,
             none_probability: 0.1,
@@ -439,6 +443,7 @@ fn baselines_score_every_policy_on_the_same_judged_cohort_from_one_runs_answers(
             max_runtime_ms: 60_000,
             attempts_per_case: 4,
             fit_threshold: 0.3,
+            gate_threshold: 0.3,
         },
         &EntryClock::capture().unwrap(),
         0,
@@ -458,13 +463,17 @@ fn baselines_score_every_policy_on_the_same_judged_cohort_from_one_runs_answers(
                 "pos-2" => (stages(&[], &[]), vec![]),
                 _ => (stages(&[("s_beta", 0.7)], &[("s_beta", 0.8)]), vec![]),
             };
-            // Quill ranks alpha first for pos-1, finds nothing for the no-match
-            // case, and could not run for pos-2.
+            // Quill ranks alpha first for pos-1 and finds nothing for the
+            // other two.
             evidence.lexical = match case.key.case_id.as_str() {
                 "pos-1" => Some(vec!["s_alpha".to_owned(), "s_beta".to_owned()]),
-                "pos-2" => None,
                 _ => Some(Vec::new()),
             };
+            // The no-match case spent 50 ms of its 300 in the evaluation-only
+            // lexical pass, which production latency excludes.
+            if case.key.case_id == "none" {
+                evidence.lexical_elapsed_ms = 50;
+            }
             LiveRankOutcome {
                 decision: if suggested.is_empty() {
                     "abstain"
@@ -556,9 +565,9 @@ fn baselines_score_every_policy_on_the_same_judged_cohort_from_one_runs_answers(
             .iter()
             .any(|note| note.starts_with("quill-only"))
     );
-    // quill-only: pos-1 -> alpha (0), none -> abstain (0); pos-2 not evaluated.
+    // quill-only: pos-1 -> alpha (0), pos-2 lexical miss (1), none -> abstain (0).
     let quill = policy("quill-only");
-    assert_eq!((quill.evaluated_cases, quill.not_evaluated_cases), (2, 1));
+    assert_eq!((quill.evaluated_cases, quill.not_evaluated_cases), (3, 0));
     assert_eq!(
         (
             quill.top1_precision.successes,
@@ -567,7 +576,13 @@ fn baselines_score_every_policy_on_the_same_judged_cohort_from_one_runs_answers(
         (1, 1)
     );
     assert_eq!(quill.needless_suggestion_rate.successes, 0);
-    assert_eq!(quill.mean_loss, Some(0.0));
+    assert_eq!(quill.mean_loss, Some(1.0 / 3.0));
+    // Every policy scored every case: one shared, complete cohort.
+    assert!(baselines.complete);
+    assert_eq!(
+        (baselines.shared_cohort_cases, baselines.excluded_unscorable),
+        (3, 0)
+    );
     assert_eq!(policy("blend").not_evaluated_cases, 0);
     // cookbook-approx: pos-1's top three hold alpha (fit 0.9) and beta; their
     // rerank probabilities tie, broken by ID to alpha (0). pos-2 is gated (1);
@@ -592,6 +607,22 @@ fn baselines_score_every_policy_on_the_same_judged_cohort_from_one_runs_answers(
         .map(|bin| (bin.pairs, bin.acceptable.successes))
         .collect();
     assert_eq!(counts, [(0, 0), (1, 0), (0, 0), (0, 0), (2, 1)]);
+    // pos-1's wide stage prefers beta while its rerank tie breaks to alpha: a
+    // stage disagreement, queued for review outside every denominator.
+    let queue = report.review_queue.as_ref().unwrap();
+    assert_eq!(queue.denominator_effect, "none");
+    let pos1 = queue
+        .entries
+        .iter()
+        .find(|entry| entry.key.case_id == "pos-1")
+        .expect("pos-1 queued");
+    assert!(
+        serde_json::to_string(&pos1.reasons)
+            .unwrap()
+            .contains("stage-disagreement"),
+        "{:?}",
+        pos1.reasons
+    );
     // Only the blend publishes a list: pos-1's covers alpha, pos-2's is empty.
     let top_k = policy("blend").top_k_coverage.unwrap();
     assert_eq!((top_k.successes, top_k.denominator), (1, 2));
@@ -606,7 +637,7 @@ fn baselines_score_every_policy_on_the_same_judged_cohort_from_one_runs_answers(
             latency.p99,
             latency.max
         ),
-        (3, 200, 300, 300, 300)
+        (3, 200, 250, 250, 250)
     );
 }
 
@@ -708,6 +739,7 @@ fn context_ablation_ranks_history_cases_twice_within_the_caps() {
                 max_runtime_ms: 60_000,
                 attempts_per_case: 4,
                 fit_threshold: 0.3,
+                gate_threshold: 0.3,
             },
             &EntryClock::capture().unwrap(),
             0,
@@ -811,6 +843,7 @@ fn live_run(
             max_runtime_ms: 60_000,
             attempts_per_case: 4,
             fit_threshold: 0.3,
+            gate_threshold: 0.3,
         },
         &EntryClock::capture().unwrap(),
         0,
@@ -823,13 +856,32 @@ fn live_run(
 #[test]
 fn baselines_keep_an_operational_failure_in_the_cohort_at_loss_two() {
     use skillranker::evaluation::batch::LiveRankOutcome;
+    use skillranker::pipeline::{RerankEvidence, StageEvidence, WideEvidence};
+    // A completed ranking carries every stage's answer, so every policy can
+    // score it; each picks alpha.
+    let answered = StageEvidence {
+        admitted: vec!["s_alpha".into()],
+        lexical: Some(vec!["s_alpha".into()]),
+        wide: Some(WideEvidence {
+            needs_skill: 0.9,
+            none_probability: 0.1,
+            low_need: false,
+            shortlist: vec![("s_alpha".into(), 0.8)],
+            intrinsic_shortlist: vec!["s_alpha".into()],
+        }),
+        rerank: Some(RerankEvidence {
+            none_probability: 0.1,
+            candidates: vec![("s_alpha".into(), 0.8, 0.9)],
+        }),
+        ..StageEvidence::default()
+    };
     let report = live_run(vec![live_case("a"), live_case("b")], 100, |case| {
         if case.key.case_id == "a" {
             LiveRankOutcome {
                 decision: "ranked".into(),
                 suggested_skills: vec!["s_alpha".into()],
                 http_attempts: 2,
-                evidence: Some(skillranker::pipeline::StageEvidence::default()),
+                evidence: Some(answered.clone()),
                 ..LiveRankOutcome::default()
             }
         } else {
@@ -1023,4 +1075,135 @@ fn a_fatal_error_in_a_second_arm_stops_the_remaining_arms() {
     assert_eq!(report.run_status, RunStatus::Complete);
     let ablation = report.baselines.unwrap().context_ablation.unwrap();
     assert_eq!((ablation.arm_failures, ablation.skipped_for_budget), (1, 1));
+}
+
+#[test]
+fn the_harm_card_explains_why_zero_harmful_outcomes_is_not_enough() {
+    use skillranker::evaluation::batch::execute_labeled_frame_evaluation;
+    let explain = |n: usize, harmful: usize| {
+        let mut records = String::new();
+        let mut labels = String::new();
+        for i in 0..n {
+            let suggested = if i < harmful { "s_wrong" } else { "s_right" };
+            records.push_str(
+                &(json!({"schema_version": 1,
+                    "key": {"frame_id": "f", "family_id": format!("fam-{i}"),
+                            "case_id": format!("c{i}"), "replicate": 0, "policy_id": "p"},
+                    "split": "holdout", "prompt_summary": "request", "decision": "ranked",
+                    "suggested_skills": [suggested]})
+                .to_string()
+                    + "\n"),
+            );
+            labels.push_str(
+                &(json!({"schema_version": 1, "case_id": format!("c{i}"), "revision": 1,
+                        "acceptable_skills": ["s_right"], "adjudicator": "judge",
+                        "created_at_unix_ms": 1u64})
+                .to_string()
+                    + "\n"),
+            );
+        }
+        let mut report = execute_labeled_frame_evaluation(
+            Cursor::new(records.into_bytes()),
+            Cursor::new(labels.into_bytes()),
+            None,
+            0,
+        )
+        .unwrap();
+        report.explain();
+        report
+            .explanation
+            .unwrap()
+            .quantities
+            .into_iter()
+            .find(|q| q.name == "harmful_outcome_rate_upper_95")
+            .unwrap()
+    };
+    // Zero of 18: the bound is recomputed, not copied, and says what would change it.
+    let card = explain(18, 0);
+    let expected = 1.0 - 0.05f64.powf(1.0 / 18.0);
+    assert!(
+        (card.value.unwrap() - expected).abs() < 1e-9,
+        "{:?}",
+        card.value
+    );
+    let change = card.would_change.unwrap();
+    assert!(
+        change.contains("Zero of 18") && change.contains("59"),
+        "{change}"
+    );
+    // With harmful outcomes the exact bound can never fall below k / n.
+    let card = explain(100, 1);
+    assert!(card.equation.contains("Clopper-Pearson"));
+    assert!(
+        card.value.unwrap() > 0.01 && card.value.unwrap() < 0.05,
+        "{:?}",
+        card.value
+    );
+}
+
+#[test]
+fn a_case_any_policy_cannot_score_leaves_every_policy() {
+    use skillranker::evaluation::batch::{
+        LiveBatchLimits, LiveRankOutcome, execute_live_frame_evaluation,
+    };
+    use skillranker::pipeline::{RerankEvidence, StageEvidence, WideEvidence};
+    let ids = ["scored", "unscorable"];
+    let roster = std::collections::BTreeSet::from(["s_alpha".to_owned()]);
+    let report = execute_live_frame_evaluation(
+        ids.iter().map(|id| live_case(id)).collect(),
+        live_labels(&ids),
+        None,
+        &roster,
+        LiveBatchLimits {
+            max_requests: 100,
+            max_runtime_ms: 60_000,
+            attempts_per_case: 4,
+            fit_threshold: 0.3,
+            gate_threshold: 0.3,
+        },
+        &EntryClock::capture().unwrap(),
+        0,
+        |_| Ok(None),
+        |case| LiveRankOutcome {
+            decision: "ranked".into(),
+            suggested_skills: vec!["s_alpha".into()],
+            http_attempts: 2,
+            evidence: Some(StageEvidence {
+                admitted: vec!["s_alpha".into()],
+                quill_ranked: false,
+                // The Quill pass could not run for the second case.
+                lexical: (case.key.case_id == "scored").then(|| vec!["s_alpha".to_owned()]),
+                lexical_elapsed_ms: 0,
+                wide: Some(WideEvidence {
+                    needs_skill: 0.9,
+                    none_probability: 0.1,
+                    low_need: false,
+                    shortlist: vec![("s_alpha".into(), 0.8)],
+                    intrinsic_shortlist: vec!["s_alpha".into()],
+                }),
+                rerank: Some(RerankEvidence {
+                    none_probability: 0.1,
+                    candidates: vec![("s_alpha".into(), 0.8, 0.9)],
+                }),
+            }),
+            ..LiveRankOutcome::default()
+        },
+    )
+    .unwrap();
+    let baselines = report.baselines.unwrap();
+    assert!(!baselines.complete);
+    assert_eq!(
+        (baselines.shared_cohort_cases, baselines.excluded_unscorable),
+        (1, 1)
+    );
+    // Every policy, not only quill-only, is scored on the one shared case.
+    for policy in &baselines.policies {
+        assert_eq!(
+            (policy.evaluated_cases, policy.not_evaluated_cases),
+            (1, 1),
+            "{}",
+            policy.policy
+        );
+        assert_eq!(policy.mean_loss, Some(0.0), "{}", policy.policy);
+    }
 }

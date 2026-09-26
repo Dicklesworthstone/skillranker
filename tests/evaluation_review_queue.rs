@@ -45,6 +45,7 @@ fn stages(
         admitted: admitted.iter().map(|s| (*s).to_owned()).collect(),
         quill_ranked,
         lexical: None,
+        lexical_elapsed_ms: 0,
         wide: Some(WideEvidence {
             needs_skill,
             none_probability: 0.1,
