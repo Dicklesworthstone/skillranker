@@ -518,3 +518,14 @@ the confirmation to look for.
   previous binary behaves the same under that load; this change shortens the
   turn.
 - Redeployed `9c1c026a…` at 22:05Z.
+- Live turns afterwards, all finished (no `in-flight` rows):
+
+  | Time (UTC) | Outcome | Elapsed | Wide | Rerank |
+  | --- | --- | --- | --- | --- |
+  | 22:37 | ranked | 2,533 ms | 850 ms | 410 ms |
+  | 02:00 | abstain | 846 ms | 372 ms | 193 ms |
+  | 02:01 | ranked | 983 ms | 296 ms | 259 ms |
+
+  Before the change, live Reranks took 374-640 ms. Host load at 02:00Z was
+  about 30, against about 100 at 21:58Z, so part of the lower total is load.
+  The Rerank times match the synthetic measurement.
