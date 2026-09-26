@@ -931,6 +931,9 @@ pub fn execute_live_frame_evaluation<L: BufRead>(
 
     let mut executed = Vec::with_capacity(admitted.len());
     let mut evidence_by_case = BTreeMap::new();
+    let mut ablations: BTreeMap<CaseKey, Vec<String>> = BTreeMap::new();
+    let mut ablation_queue = Vec::new();
+    let (mut ablation_failures, mut ablation_skipped) = (0, 0);
     let mut stopped: Option<(String, ReportError)> = None;
     for mut record in admitted {
         let case = by_key[&record.key];
@@ -1000,7 +1003,39 @@ pub fn execute_live_frame_evaluation<L: BufRead>(
         record.relevance_abstention = outcome.decision == "abstain";
         record.operational_failure = outcome.decision == "unavailable";
         record.suggested_skills = outcome.suggested_skills;
+        // The latest-request-only arm runs after every main ranking, on what
+        // budget remains: the primary evaluation always has priority.
+        let advisory = judgments
+            .get(&record.key.case_id)
+            .is_some_and(|label| label.explicit_directive.is_none());
+        if advisory
+            && !record.operational_failure
+            && let Some(ablated) = latest_request_only(case)
+        {
+            ablation_queue.push((record.key.clone(), ablated));
+        }
         executed.push(record);
+    }
+    for (key, ablated) in ablation_queue {
+        let fits = stopped.is_none()
+            && run.accounting.http_attempts + limits.attempts_per_case <= limits.max_requests
+            && clock.now().as_millis() < expires;
+        if !fits {
+            ablation_skipped += 1;
+            continue;
+        }
+        let arm = rank(&ablated);
+        let accounting = &mut run.accounting;
+        accounting.requests += arm.requests;
+        accounting.http_attempts += arm.http_attempts;
+        accounting.unknown_usage_attempts += arm.unknown_usage_attempts;
+        accounting.input_tokens += arm.input_tokens;
+        accounting.output_tokens += arm.output_tokens;
+        if arm.decision == "unavailable" {
+            ablation_failures += 1;
+        } else {
+            ablations.insert(key, arm.suggested_skills);
+        }
     }
     run.error = stopped.map(|(_, error)| error);
     let mut comparison = compare_baselines(
@@ -1010,6 +1045,16 @@ pub fn execute_live_frame_evaluation<L: BufRead>(
         limits.fit_threshold,
     );
     comparison.latency_ms = latency_summary(run.elapsed_ms.values().copied().collect());
+    comparison.context_ablation = Some(context_ablation(
+        &executed,
+        &judgments,
+        &ablations,
+        ablation_failures,
+        ablation_skipped,
+    ));
+    comparison
+        .not_computed
+        .retain(|note| !note.starts_with("context ablation"));
     run.baselines = Some(comparison);
     score_frame(executed, &labels, manifest, run)
 }
@@ -1098,6 +1143,86 @@ pub struct BaselineComparison {
     /// Wall time of each live ranking, including local work and retries.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub latency_ms: Option<LatencySummary>,
+    /// The production blend with recent context against the latest request
+    /// alone, on the same cases.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_ablation: Option<ContextAblation>,
+}
+
+/// Recent context against the latest request alone. Only judged advisory
+/// cases whose context carries history run the second arm; single-turn cases
+/// would send the same request twice.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ContextAblation {
+    /// Cases with both arms answered.
+    pub cases: usize,
+    pub recent_context: PolicyScore,
+    pub latest_request_only: PolicyScore,
+    /// Cases whose second arm was unavailable.
+    pub arm_failures: usize,
+    /// Cases whose second arm did not fit the request or runtime cap.
+    pub skipped_for_budget: usize,
+}
+
+/// The same case with its history removed: the latest request alone.
+/// `None` when there is no history to remove.
+fn latest_request_only(case: &LiveEvaluationCase) -> Option<LiveEvaluationCase> {
+    let events = case.context.get("events")?.as_array()?;
+    if events.is_empty() {
+        return None;
+    }
+    let mut ablated = case.clone();
+    ablated.context["events"] = Value::Array(Vec::new());
+    Some(ablated)
+}
+
+fn context_ablation(
+    executed: &[EvaluationCaseRecord],
+    judgments: &BTreeMap<String, crate::evaluation::JudgedLabel>,
+    ablations: &BTreeMap<CaseKey, Vec<String>>,
+    arm_failures: usize,
+    skipped_for_budget: usize,
+) -> ContextAblation {
+    let pairs: Vec<(&crate::evaluation::JudgedLabel, &[String], &[String])> = executed
+        .iter()
+        .filter_map(|record| {
+            let label = judgments.get(&record.key.case_id)?;
+            let ablated = ablations.get(&record.key)?;
+            (label.explicit_directive.is_none()).then_some((
+                label,
+                record.suggested_skills.as_slice(),
+                ablated.as_slice(),
+            ))
+        })
+        .collect();
+    let arm = |second: bool| {
+        pairs
+            .iter()
+            .map(|&(label, recent, latest)| {
+                let list = if second { latest } else { recent };
+                Pick {
+                    label,
+                    top: Ok(list.first().cloned()),
+                    published: Some(list),
+                }
+            })
+            .collect::<Vec<_>>()
+    };
+    ContextAblation {
+        cases: pairs.len(),
+        recent_context: score_picks(
+            "blend (recent context)",
+            "The production decision on the full supplied context.",
+            &arm(false),
+        ),
+        latest_request_only: score_picks(
+            "blend (latest request only)",
+            "The production decision with every history event removed.",
+            &arm(true),
+        ),
+        arm_failures,
+        skipped_for_budget,
+    }
 }
 
 /// Nearest-rank percentiles of per-case ranking time; every executed case
@@ -1300,12 +1425,8 @@ fn compare_baselines(
             _ => comparison.cases_without_evidence += 1,
         }
     }
-    let acceptable = |label: &crate::evaluation::JudgedLabel, id: &str| {
-        !label.no_skill_needed && label.acceptable_skills.contains(id)
-    };
-    let positive = |label: &crate::evaluation::JudgedLabel| {
-        !label.no_skill_needed && !label.acceptable_skills.is_empty()
-    };
+    let acceptable = acceptable_for;
+    let positive = positive_case;
 
     let (mut admitted_hits, mut shortlist_hits, mut shortlist_cases, mut positives) = (0, 0, 0, 0);
     let (mut intrinsic_hits, mut intrinsic_cases) = (0, 0);
@@ -1350,60 +1471,90 @@ fn compare_baselines(
     comparison.coverage.intrinsic_shortlist = Ratio::of(intrinsic_hits, intrinsic_cases);
 
     for (name, definition, policy) in BASELINE_POLICIES {
-        let (mut emitted, mut precise, mut positive_hits, mut positive_cases) = (0, 0, 0, 0);
-        let (mut needless, mut no_match_cases, mut abstentions, mut total_loss) = (0, 0, 0, 0u32);
-        let mut evaluated = 0;
-        let mut not_evaluated = 0;
-        for (record, label, stages) in &cohort {
-            let Ok(top) = policy(stages, record, fit_threshold) else {
-                not_evaluated += 1;
-                continue;
-            };
-            evaluated += 1;
-            let hit = top.as_deref().is_some_and(|id| acceptable(label, id));
-            emitted += usize::from(top.is_some());
-            precise += usize::from(hit);
-            if positive(label) {
-                positive_cases += 1;
-                positive_hits += usize::from(hit);
-                abstentions += usize::from(top.is_none());
-                total_loss += match (&top, hit) {
-                    (_, true) => 0,
-                    (None, _) => 1,
-                    _ => 2,
-                };
-            } else {
-                no_match_cases += 1;
-                needless += usize::from(top.is_some());
-                total_loss += if top.is_some() { 2 } else { 0 };
-            }
-        }
-        comparison.policies.push(PolicyScore {
-            policy: name.into(),
-            definition: definition.into(),
-            evaluated_cases: evaluated,
-            not_evaluated_cases: not_evaluated,
-            top1_precision: Ratio::of(precise, emitted),
-            positive_suggestion_rate: Ratio::of(positive_hits, positive_cases),
-            needless_suggestion_rate: Ratio::of(needless, no_match_cases),
-            false_abstention_rate: Ratio::of(abstentions, positive_cases),
-            top_k_coverage: (name == "blend").then(|| {
-                let covered = cohort
-                    .iter()
-                    .filter(|(record, label, _)| {
-                        positive(label)
-                            && record
-                                .suggested_skills
-                                .iter()
-                                .any(|id| acceptable(label, id))
-                    })
-                    .count();
-                Ratio::of(covered, positive_cases)
-            }),
-            mean_loss: (evaluated > 0).then(|| f64::from(total_loss) / evaluated as f64),
-        });
+        let picks: Vec<Pick<'_>> = cohort
+            .iter()
+            .map(|(record, label, stages)| Pick {
+                label,
+                top: policy(stages, record, fit_threshold),
+                published: if name == "blend" {
+                    Some(record.suggested_skills.as_slice())
+                } else {
+                    None
+                },
+            })
+            .collect();
+        comparison
+            .policies
+            .push(score_picks(name, definition, &picks));
     }
     comparison
+}
+
+/// One case's pick under a policy, against its judgment.
+struct Pick<'a> {
+    label: &'a crate::evaluation::JudgedLabel,
+    /// The top-one pick (`None` abstains), or `Err` when not scorable.
+    top: Result<Option<String>, ()>,
+    /// The whole published list, for top-K coverage, when the policy has one.
+    published: Option<&'a [String]>,
+}
+
+fn acceptable_for(label: &crate::evaluation::JudgedLabel, id: &str) -> bool {
+    !label.no_skill_needed && label.acceptable_skills.contains(id)
+}
+
+fn positive_case(label: &crate::evaluation::JudgedLabel) -> bool {
+    !label.no_skill_needed && !label.acceptable_skills.is_empty()
+}
+
+/// Score picks with the exact denominators and the 0/1/2 loss.
+fn score_picks(name: &str, definition: &str, picks: &[Pick<'_>]) -> PolicyScore {
+    let (mut emitted, mut precise, mut positive_hits, mut positive_cases) = (0, 0, 0, 0);
+    let (mut needless, mut no_match_cases, mut abstentions, mut total_loss) = (0, 0, 0, 0u32);
+    let (mut evaluated, mut not_evaluated, mut covered) = (0, 0, 0);
+    let mut has_list = false;
+    for pick in picks {
+        let Ok(top) = &pick.top else {
+            not_evaluated += 1;
+            continue;
+        };
+        evaluated += 1;
+        let hit = top
+            .as_deref()
+            .is_some_and(|id| acceptable_for(pick.label, id));
+        emitted += usize::from(top.is_some());
+        precise += usize::from(hit);
+        if positive_case(pick.label) {
+            positive_cases += 1;
+            positive_hits += usize::from(hit);
+            abstentions += usize::from(top.is_none());
+            if let Some(list) = pick.published {
+                has_list = true;
+                covered += usize::from(list.iter().any(|id| acceptable_for(pick.label, id)));
+            }
+            total_loss += match (top, hit) {
+                (_, true) => 0,
+                (None, _) => 1,
+                _ => 2,
+            };
+        } else {
+            no_match_cases += 1;
+            needless += usize::from(top.is_some());
+            total_loss += if top.is_some() { 2 } else { 0 };
+        }
+    }
+    PolicyScore {
+        policy: name.into(),
+        definition: definition.into(),
+        evaluated_cases: evaluated,
+        not_evaluated_cases: not_evaluated,
+        top1_precision: Ratio::of(precise, emitted),
+        positive_suggestion_rate: Ratio::of(positive_hits, positive_cases),
+        needless_suggestion_rate: Ratio::of(needless, no_match_cases),
+        false_abstention_rate: Ratio::of(abstentions, positive_cases),
+        top_k_coverage: has_list.then(|| Ratio::of(covered, positive_cases)),
+        mean_loss: (evaluated > 0).then(|| f64::from(total_loss) / evaluated as f64),
+    }
 }
 
 /// Draw and verify the manifest before any label is read into the result.

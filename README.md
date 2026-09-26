@@ -425,8 +425,11 @@ batch's disclosure totals and receipt digest. An authentication or consent failu
 stops scheduling. Live runs write nothing to the ledger or response cache.
 From the same answers, with no extra request, the report also scores intrinsic
 coverage (an acceptable skill admitted, and shortlisted when the gate passes) and
-three policies on one judged cohort: choice-only, fit-only, and the production
-blend, each with exact denominators and Wilson intervals.
+the policies on one judged cohort: Quill-only, choice-only, fit-only, a
+cookbook-style selector, and the production blend, each with exact denominators
+and Wilson intervals. Cases whose context carries history are ranked a second time
+with the latest request alone, using only the budget left after every main ranking,
+and the two arms are compared on the same cases.
 
 Sampling does not grant network access or enlarge the request budget. Missing
 stage responses remain unevaluated in replay; they are never replaced with

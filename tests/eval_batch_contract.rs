@@ -669,3 +669,124 @@ fn timeouts_cannot_shrink_the_loss_and_always_abstaining_is_not_a_good_score() {
     assert_eq!(silent.loss_summary.mean_loss, Some(1.0));
     assert!(silent.loss_summary.mean_loss > wrong.loss_summary.mean_loss);
 }
+
+#[test]
+fn context_ablation_ranks_history_cases_twice_within_the_caps() {
+    use skillranker::evaluation::batch::{
+        LiveBatchLimits, LiveRankOutcome, execute_live_frame_evaluation,
+    };
+    // "hist-a" and "hist-b" carry history; "single" does not.
+    let case = |id: &str, history: bool| -> skillranker::evaluation::batch::LiveEvaluationCase {
+        let events = if history {
+            json!([{"text": "earlier turn"}])
+        } else {
+            json!([])
+        };
+        serde_json::from_value(json!({
+            "schema_version": 1,
+            "key": {"frame_id": "f", "family_id": format!("fam-{id}"), "case_id": id,
+                    "replicate": 0, "policy_id": "p"},
+            "split": "holdout",
+            "context": {"events": events}
+        }))
+        .unwrap()
+    };
+    let ids = ["hist-a", "hist-b", "single"];
+    let run = |max_requests: usize| {
+        let calls = std::cell::RefCell::new(Vec::new());
+        let report = execute_live_frame_evaluation(
+            vec![
+                case("hist-a", true),
+                case("hist-b", true),
+                case("single", false),
+            ],
+            live_labels(&ids),
+            None,
+            &std::collections::BTreeSet::from(["s_alpha".to_owned()]),
+            LiveBatchLimits {
+                max_requests,
+                max_runtime_ms: 60_000,
+                attempts_per_case: 4,
+                fit_threshold: 0.3,
+            },
+            &EntryClock::capture().unwrap(),
+            0,
+            |_| Ok(None),
+            |case| {
+                let history = !case.context["events"].as_array().unwrap().is_empty();
+                calls.borrow_mut().push(format!(
+                    "{} {}",
+                    case.key.case_id,
+                    if history { "full" } else { "latest" }
+                ));
+                // With history the selector finds alpha; without it, it abstains.
+                LiveRankOutcome {
+                    decision: if history { "ranked" } else { "abstain" }.into(),
+                    suggested_skills: if history {
+                        vec!["s_alpha".into()]
+                    } else {
+                        vec![]
+                    },
+                    http_attempts: 2,
+                    ..LiveRankOutcome::default()
+                }
+            },
+        )
+        .unwrap();
+        (report, calls.into_inner())
+    };
+    let (report, calls) = run(100);
+    assert_eq!(
+        calls,
+        [
+            "hist-a full",
+            "hist-b full",
+            "single latest",
+            "hist-a latest",
+            "hist-b latest"
+        ]
+    );
+    // Both arms count toward the batch's attempts.
+    assert_eq!(report.accounting.http_attempts, 10);
+    let ablation = report
+        .baselines
+        .as_ref()
+        .unwrap()
+        .context_ablation
+        .clone()
+        .unwrap();
+    assert_eq!(ablation.cases, 2);
+    assert_eq!(
+        ablation.recent_context.positive_suggestion_rate.successes,
+        2
+    );
+    assert_eq!(
+        ablation.latest_request_only.false_abstention_rate.successes,
+        2
+    );
+    assert_eq!(ablation.recent_context.mean_loss, Some(0.0));
+    assert_eq!(ablation.latest_request_only.mean_loss, Some(1.0));
+    assert!(
+        !report
+            .baselines
+            .unwrap()
+            .not_computed
+            .iter()
+            .any(|note| note.starts_with("context"))
+    );
+    // Main rankings come first; the second arms share what budget remains.
+    let (report, calls) = run(11);
+    assert_eq!(
+        calls,
+        [
+            "hist-a full",
+            "hist-b full",
+            "single latest",
+            "hist-a latest"
+        ]
+    );
+    // Every main ranking ran; only a second arm was skipped.
+    assert_eq!(report.run_status, skillranker::output::RunStatus::Complete);
+    let ablation = report.baselines.unwrap().context_ablation.unwrap();
+    assert_eq!((ablation.cases, ablation.skipped_for_budget), (1, 1));
+}
