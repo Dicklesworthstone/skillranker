@@ -421,3 +421,56 @@ fn empty_and_oversized_shortlists_build_nothing() {
         Some(WideError::TooManyCandidates)
     );
 }
+
+#[test]
+fn shortlist_order_and_handle_assignment_cannot_change_rerank_estimates() {
+    let root = tree();
+    let roster = roster_with(&root, &simple(4));
+    let forward = ids(&roster);
+    let mut reversed = forward.clone();
+    reversed.reverse();
+    // A provider answering by skill: each skill's probability and fit follow
+    // it to whatever option handle the request assigned.
+    let by_skill = |name: &str| match name {
+        n if n.ends_with('0') => (0.1, 0.2),
+        n if n.ends_with('1') => (0.4, 0.9),
+        n if n.ends_with('2') => (0.2, 0.6),
+        _ => (0.1, 0.4),
+    };
+    let estimates = |order: &[SkillId]| {
+        let rerank = build(&roster, order, &plain_state(), "jev-latest").unwrap();
+        let entries: Vec<(String, String)> = rerank
+            .options()
+            .entries()
+            .iter()
+            .map(|(option, skill)| {
+                (
+                    option.as_str().to_owned(),
+                    skill.binding.invocation.as_str().to_owned(),
+                )
+            })
+            .collect();
+        let mut which: Vec<(&str, f64)> = entries
+            .iter()
+            .map(|(option, name)| (option.as_str(), by_skill(name).0))
+            .collect();
+        which.push((NONE_OPTION, 0.2));
+        let fits: Vec<f64> = entries.iter().map(|(_, name)| by_skill(name).1).collect();
+        let body = response_body(&rerank, &which, &fits);
+        let outcome = evaluate(&rerank, &rerank.request().decode_response(&body).unwrap()).unwrap();
+        let mut by_name: Vec<(String, u64, u64)> = outcome
+            .candidates
+            .iter()
+            .map(|(skill, estimate)| {
+                (
+                    skill.binding.invocation.as_str().to_owned(),
+                    (estimate.rerank * 1e9).round() as u64,
+                    (estimate.fit * 1e9).round() as u64,
+                )
+            })
+            .collect();
+        by_name.sort();
+        (by_name, (outcome.none_probability * 1e9).round() as u64)
+    };
+    assert_eq!(estimates(&forward), estimates(&reversed));
+}

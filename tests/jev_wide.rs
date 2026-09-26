@@ -536,3 +536,114 @@ fn descriptions_are_redacted_before_truncation_and_the_payload_is_inspected() {
         Some(WideError::Privacy)
     );
 }
+
+/// A provider that answers by skill, not by option handle: whatever handle a
+/// skill receives, it gets the same probability.
+fn respond_by_skill(
+    wide: &WideRequest<'_>,
+    by_skill: &BTreeMap<String, f64>,
+    none: f64,
+) -> skillranker::jev::codec::Response {
+    let mut which: BTreeMap<String, f64> = wide
+        .options()
+        .entries()
+        .iter()
+        .map(|(option, skill)| {
+            (
+                option.as_str().to_owned(),
+                by_skill[skill.binding.invocation.as_str()],
+            )
+        })
+        .collect();
+    which.insert(NONE_OPTION.to_owned(), none);
+    respond(wide, &which, (0.9, 0.9, 0.1))
+}
+
+#[test]
+fn candidate_order_and_handle_assignment_cannot_change_the_decision() {
+    let root = tree();
+    let roster = roster_with(&root, &plain(6));
+    let forward = ids(&roster);
+    let mut reversed = forward.clone();
+    reversed.reverse();
+    let build_with =
+        |order: &[SkillId]| build(&roster, order, &default_state(), "jev-latest", false).unwrap();
+    let (a, b) = (build_with(&forward), build_with(&reversed));
+    // Distinct probabilities, plus a tie between skill001 and skill004 that
+    // only the stable skill ID may break.
+    let by_skill: BTreeMap<String, f64> = [
+        ("skill000", 0.05),
+        ("skill001", 0.2),
+        ("skill002", 0.3),
+        ("skill003", 0.05),
+        ("skill004", 0.2),
+        ("skill005", 0.1),
+    ]
+    .into_iter()
+    .map(|(name, p)| (name.to_owned(), p))
+    .collect();
+    let decide = |wide: &WideRequest<'_>| {
+        let outcome = evaluate(
+            wide,
+            &respond_by_skill(wide, &by_skill, 0.1),
+            DEFAULT_GATE,
+            Sizes::default(),
+        )
+        .unwrap();
+        shortlist_names(&outcome.decision)
+    };
+    let (from_a, from_b) = (decide(&a), decide(&b));
+    assert_eq!(from_a, from_b, "input order changed the shortlist");
+    assert_eq!(from_a[0], "skill002");
+    // The tie resolves the same way from either order, by stable skill ID.
+    let tie_ids: Vec<SkillId> = ["skill001", "skill004"]
+        .iter()
+        .map(|name| {
+            roster
+                .advisory()
+                .find(|s| s.binding.invocation.as_str() == *name)
+                .unwrap()
+                .binding
+                .id
+                .clone()
+        })
+        .collect();
+    let expected_first = if tie_ids[0] < tie_ids[1] {
+        "skill001"
+    } else {
+        "skill004"
+    };
+    assert_eq!(from_a[1], expected_first, "{from_a:?}");
+    // Both requests offer the same skills under a bijection of handles.
+    let skills = |wide: &WideRequest<'_>| {
+        let mut names: Vec<String> = wide
+            .options()
+            .entries()
+            .values()
+            .map(|s| s.binding.invocation.as_str().to_owned())
+            .collect();
+        names.sort();
+        names
+    };
+    assert_eq!(skills(&a), skills(&b));
+    assert_eq!(a.options().entries().len(), b.options().entries().len());
+}
+
+#[test]
+fn a_real_skill_identity_change_changes_the_request() {
+    let root = tree();
+    let original = roster_with(&root, &plain(3));
+    let request = |roster: &ResolvedRoster| {
+        build(roster, &ids(roster), &default_state(), "jev-latest", false)
+            .unwrap()
+            .bytes()
+            .to_vec()
+    };
+    let before = request(&original);
+    // The same files, rebuilt unchanged, give identical bytes.
+    assert_eq!(before, request(&roster_with(&root, &plain(3))));
+    // A changed description is new provider input, never a cached equivalent.
+    let mut changed = plain(3);
+    changed[1] = "Now drafts release notes instead.".into();
+    assert_ne!(before, request(&roster_with(&root, &changed)));
+}
