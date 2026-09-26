@@ -423,7 +423,9 @@ judgment names a skill missing from the current roster, are reported not estimab
 and are never sent. Before the first request, every remaining case is previewed
 with no network; a refused preview is never sent, and the report freezes the
 batch's disclosure totals and receipt digest. An authentication or consent failure
-stops scheduling. Live runs write nothing to the ledger or response cache.
+stops scheduling. Live runs write nothing to the ledger or response cache;
+a configured [shared attempt allowance](#share-an-http-attempt-allowance-across-sessions)
+still charges each of their sends.
 From the same answers, with no extra request, the report also scores intrinsic
 coverage (an acceptable skill admitted, and shortlisted when the gate passes) and
 the policies on one judged cohort: Quill-only, choice-only, fit-only, a

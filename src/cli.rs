@@ -3572,9 +3572,13 @@ fn eval_live_command(
     let home = std::env::var_os("HOME")
         .filter(|path| !path.is_empty())
         .map(PathBuf::from);
+    // A live batch records no cache or ledger history, but it is not
+    // stateless: its sends stay subject to a configured shared attempt
+    // allowance, which persistent runtime state enforces.
     let flags = crate::privacy::EffectFlags {
         allow_network: eval_matches.get_flag("allow-network"),
-        no_persist: true,
+        no_cache: true,
+        no_ledger: true,
         ..Default::default()
     };
     let gate = crate::effects::EffectGate::new(flags, crate::effects::Scope::Rank)

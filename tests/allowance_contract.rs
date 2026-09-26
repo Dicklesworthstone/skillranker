@@ -145,6 +145,11 @@ struct Provider {
 
 impl Provider {
     fn start(home: &Home) -> Self {
+        Self::scenario(home, "useful", &[])
+    }
+
+    /// A scenario with optional mutation target and text, as the fixture takes.
+    fn scenario(home: &Home, scenario: &str, args: &[&str]) -> Self {
         let dir = home
             .root
             .join(format!("provider-{}", NEXT.fetch_add(1, Ordering::Relaxed)));
@@ -167,7 +172,8 @@ impl Provider {
         }
         let mut child = Command::new("/usr/bin/python3")
             .arg(dir.join("provider_server.py"))
-            .arg("useful")
+            .arg(scenario)
+            .args(args)
             .env_clear()
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -391,4 +397,203 @@ fn concurrent_processes_never_exceed_the_window() {
         let code = out.status.code();
         assert!(matches!(code, Some(0) | Some(4)), "{}", describe(out));
     }
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64
+}
+
+#[test]
+fn every_retry_is_charged() {
+    let home = Home::new();
+    home.budget(1, &["--max-attempts", "10", "--window", "1h", "--apply"]);
+    let context = home.context("retry");
+    // The first wide attempt fails transiently; its retry and the rerank follow.
+    let provider = Provider::scenario(&home, "retry-wide", &[]);
+    let port = provider.port;
+    let out = home.run(port, &Home::rank_args(&context, &[]));
+    assert_eq!(provider.finish(), 3);
+    assert!(out.status.success(), "{}", describe(&out));
+    assert_eq!(home.budget(port, &[])["charged_attempts"], 3);
+}
+
+#[test]
+fn an_activation_during_an_older_process_blocks_its_next_attempt() {
+    // Setup's intent lands while a ranking started without any guard waits on
+    // its wide answer. Its next admission re-reads the guard, with or without
+    // persistence, and refuses.
+    let intent = "schema_version = 1\nstate = \"intent\"\ngeneration = 1\n\
+                  max_attempts = 5\nwindow = \"1h\"\n";
+    for extra in [&[][..], &["--no-persist"][..]] {
+        let home = Home::new();
+        std::fs::create_dir_all(home.guard().parent().unwrap()).unwrap();
+        let target = home.guard();
+        let provider = Provider::scenario(
+            &home,
+            "useful+write-on-wide",
+            &[target.to_str().unwrap(), intent],
+        );
+        let context = home.context("older");
+        let out = home.run(provider.port, &Home::rank_args(&context, extra));
+        assert_eq!(provider.finish(), 1, "{extra:?}: rerank was sent");
+        assert_eq!(
+            kind(&out),
+            (Some(4), "budget-state".to_owned()),
+            "{extra:?}"
+        );
+    }
+}
+
+#[test]
+fn a_clock_behind_recorded_charges_refuses_while_keeping_them() {
+    let home = Home::new();
+    home.budget(1, &["--max-attempts", "10", "--window", "1h", "--apply"]);
+    let provider = Provider::start(&home);
+    let port = provider.port;
+    let first = home.context("before");
+    assert!(
+        home.run(port, &Home::rank_args(&first, &[]))
+            .status
+            .success()
+    );
+    // The wall clock moved back an hour since the last charge.
+    let db = rusqlite::Connection::open(home.accounting()).unwrap();
+    db.execute(
+        "UPDATE allowance_meta SET last_charge_unix_ms = ?1 WHERE id = 1",
+        [(now_ms() + 3_600_000) as i64],
+    )
+    .unwrap();
+    drop(db);
+    let second = home.context("after");
+    let out = home.run(port, &Home::rank_args(&second, &[]));
+    assert_eq!(provider.finish(), 2, "a send followed a clock anomaly");
+    assert_eq!(kind(&out), (Some(4), "budget-state".to_owned()));
+    let report = home.budget(port, &[]);
+    assert_eq!(report["health"], "clock-behind-charges", "{report}");
+    assert_eq!(report["charged_attempts"], 2, "charges are kept");
+}
+
+#[test]
+fn full_protected_storage_withholds_sends_but_explicit_requests_resolve() {
+    let home = Home::new();
+    home.budget(1, &["--max-attempts", "10000", "--window", "1h", "--apply"]);
+    // Current-window charges are protected: nothing may evict them to make
+    // room, so a full store refuses the next debit instead.
+    let now = now_ms();
+    let window_start = now - now % 3_600_000;
+    let db = rusqlite::Connection::open(home.accounting()).unwrap();
+    let filler = "x".repeat(4000);
+    for i in 0..1200 {
+        db.execute(
+            "INSERT INTO allowance_attempts VALUES (?1, 'https://filler', ?2, 1, 'wide', ?2)",
+            rusqlite::params![format!("{i}-{filler}"), window_start as i64],
+        )
+        .unwrap();
+    }
+    drop(db);
+    let context = home.context("full");
+    let provider = Provider::start(&home);
+    let port = provider.port;
+    let out = home.run(port, &Home::rank_args(&context, &[]));
+    let explicit = home.run(
+        port,
+        &Home::rank_args(&context, &["--require-skill", "beta"]),
+    );
+    assert_eq!(
+        provider.finish(),
+        0,
+        "a send was admitted without a durable debit"
+    );
+    assert_eq!(kind(&out), (Some(4), "budget-state".to_owned()));
+    let refusal: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(
+        refusal["error"]["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("storage may be full")),
+        "{refusal}"
+    );
+    assert!(explicit.status.success(), "{}", describe(&explicit));
+    let doc: Value = serde_json::from_slice(&explicit.stdout).unwrap();
+    assert_eq!(doc["decision"], "explicit");
+}
+
+#[test]
+fn an_exact_cache_hit_needs_no_admission_when_the_window_is_spent() {
+    let home = Home::new();
+    home.budget(1, &["--max-attempts", "2", "--window", "1h", "--apply"]);
+    let provider = Provider::start(&home);
+    let port = provider.port;
+    let context = home.context("cached");
+    let cached_args: Vec<&str> = Home::rank_args(&context, &[])
+        .into_iter()
+        .filter(|arg| *arg != "--no-cache")
+        .collect();
+    let first = home.run(port, &cached_args);
+    assert!(first.status.success(), "{}", describe(&first));
+    let second = home.run(port, &cached_args);
+    assert_eq!(provider.finish(), 2, "the repeat was not served from cache");
+    assert!(second.status.success(), "{}", describe(&second));
+    let doc: Value = serde_json::from_slice(&second.stdout).unwrap();
+    assert_eq!(doc["cache"]["hit"], true, "{doc}");
+    assert_eq!(home.budget(port, &[])["charged_attempts"], 2);
+}
+
+#[test]
+fn live_evaluation_sends_are_charged_like_rankings() {
+    let home = Home::new();
+    home.budget(1, &["--max-attempts", "50", "--window", "1h", "--apply"]);
+    let context: Value =
+        serde_json::from_str(&std::fs::read_to_string(home.context("eval")).unwrap()).unwrap();
+    let dataset = home.root.join("workspace/live.jsonl");
+    std::fs::write(
+        &dataset,
+        format!(
+            "{}\n",
+            json!({"schema_version": 1, "split": "holdout", "context": context,
+                   "key": {"frame_id": "allowance", "family_id": "fam-a", "case_id": "a",
+                           "replicate": 0, "policy_id": "gate"}})
+        ),
+    )
+    .unwrap();
+    let labels = home.root.join("workspace/labels.jsonl");
+    std::fs::write(
+        &labels,
+        format!(
+            "{}\n",
+            json!({"schema_version": 1, "case_id": "a", "revision": 1,
+                   "acceptable_skills": [], "no_skill_needed": true,
+                   "adjudicator": "judge", "created_at_unix_ms": 1_726_700_000_000u64})
+        ),
+    )
+    .unwrap();
+    let provider = Provider::start(&home);
+    let port = provider.port;
+    let out = home.run(
+        port,
+        &[
+            "eval",
+            "--dataset",
+            dataset.to_str().unwrap(),
+            "--labels",
+            labels.to_str().unwrap(),
+            "--online",
+            "--allow-network",
+            "--max-requests",
+            "4",
+            "--json",
+        ],
+    );
+    let served = provider.finish();
+    assert!(out.status.success(), "{}", describe(&out));
+    let batch: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(served > 0, "no evaluation send was made: {batch}");
+    assert_eq!(batch["accounting"]["http_attempts"], served as u64);
+    assert_eq!(
+        home.budget(port, &[])["charged_attempts"],
+        served as u64,
+        "{batch}"
+    );
 }
