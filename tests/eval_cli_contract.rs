@@ -546,6 +546,12 @@ fn a_fresh_os_seed_is_recorded_and_supports_design_weighted_loss() {
         ],
     ));
     assert_eq!(census["sample_manifest"]["design_status"], "full-census");
+    // Nothing is drawn, so no seed is read or recorded.
+    assert_eq!(
+        census["sample_manifest"]["randomization_provenance"]["source"],
+        "census"
+    );
+    assert!(census["sample_manifest"]["randomization_provenance"]["seed"].is_null());
     assert_eq!(selected_ids(&census).len(), 12);
     assert_eq!(census["design_weighted_loss"]["total_sampled_cases"], 12);
 }
@@ -958,6 +964,52 @@ fn a_live_batch_ranks_each_case_fresh_and_accounts_every_attempt() {
     );
     assert_eq!(baselines["coverage"]["admitted"]["successes"], 2);
     assert_eq!(baselines["cases_without_evidence"], 0);
+}
+
+#[test]
+fn a_preview_that_ends_locally_is_counted_as_sending_nothing() {
+    let root = live_workspace();
+    let ids = roster_ids(&root);
+    let (cases, labels) = live_inputs(&root, &[("local", &ids[..1]), ("sent", &ids[..1])]);
+    // "local" names its skill explicitly, so its run ends before any request.
+    let rows: Vec<Value> = fs::read_to_string(&cases)
+        .unwrap()
+        .lines()
+        .map(|line| {
+            let mut row: Value = serde_json::from_str(line).unwrap();
+            if row["key"]["case_id"] == "local" {
+                row["context"]["explicit_skill_references"] = serde_json::json!([ids[0]]);
+            }
+            row
+        })
+        .collect();
+    let cases = write_jsonl(&root, "live-cases.jsonl", &rows);
+    let provider = LiveProvider::start(&root, "useful");
+    let out = run_live(
+        &root,
+        provider.port,
+        &[
+            "eval",
+            "--dataset",
+            &cases,
+            "--labels",
+            &labels,
+            "--online",
+            "--allow-network",
+            "--max-requests",
+            "8",
+            "--json",
+        ],
+    );
+    let served = provider.finish();
+    let report = json_report(&out);
+    // Only the advisory case reached the provider.
+    assert_eq!(served.len(), 2, "{served:?}");
+    let frozen = &report["disclosure_preflight"];
+    assert_eq!(frozen["cases_checked"], 2, "{frozen}");
+    assert_eq!(frozen["cases_refused"], 0, "{frozen}");
+    // Its preview's null disclosure is not a receipt.
+    assert_eq!(frozen["cases_without_request"], 1, "{frozen}");
 }
 
 #[test]

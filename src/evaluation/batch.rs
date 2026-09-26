@@ -1692,15 +1692,18 @@ fn freeze_frame_sample(
             "sampling needs a non-empty frame with exactly one split and one policy".into(),
         ));
     };
+    let rule = FamilyRepresentativeRule::default();
+    let representatives = select_family_representatives(records, split, rule)?;
+    // A sample covering every family is a census: nothing is drawn, so no
+    // seed is read or recorded as if it had selected anything.
     let provenance = match request.seed {
         Some(seed) => RandomizationProvenance::SuppliedManual { seed },
+        None if request.sample_size >= representatives.len() => RandomizationProvenance::Census,
         None => RandomizationProvenance::OsRandom {
             entropy_source: "/dev/urandom".into(),
             seed: draw_os_seed()?,
         },
     };
-    let rule = FamilyRepresentativeRule::default();
-    let representatives = select_family_representatives(records, split, rule)?;
     let manifest = draw_stratified_sample(
         &representatives,
         split,

@@ -3294,7 +3294,10 @@ fn preview_live_case(
     let mut unused = crate::pipeline::StageEvidence::default();
     let document = run_case_pipeline(batch, per_case_ms, args, case, &mut unused)?;
     let value = document.as_value();
-    if let Some(receipt) = value.get("disclosure") {
+    // Every preview carries a `disclosure` key; it is null when the run ends
+    // locally, which must fall through to the local decision below rather
+    // than count as a receipt (or admit a local `unavailable`).
+    if let Some(receipt) = value.get("disclosure").filter(|receipt| !receipt.is_null()) {
         return Ok(Some(receipt.clone()));
     }
     let local = value.get("local_decision").unwrap_or(value);
