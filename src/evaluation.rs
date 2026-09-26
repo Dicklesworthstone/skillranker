@@ -11,6 +11,7 @@
 pub mod batch;
 pub mod design_weighted;
 pub mod numerics;
+pub mod review;
 pub mod sampling;
 pub mod stratified;
 
