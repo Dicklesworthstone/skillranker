@@ -60,6 +60,8 @@ pub enum Reason {
     ManualOnly,
     Forbidden,
     Excluded,
+    /// A trusted, expiring advisory snooze in this session's scope.
+    Snoozed,
     AlreadyLoaded,
     NotRetrieved,
 }
@@ -74,6 +76,7 @@ pub enum Hint {
     RequestExplicitly,
     CheckInvocationRestrictions,
     ReviewExclusions,
+    ReviewSnoozes,
     RefineRequest,
 }
 
@@ -86,6 +89,7 @@ impl Hint {
             Self::RequestExplicitly => "request-explicitly",
             Self::CheckInvocationRestrictions => "check-invocation-restrictions",
             Self::ReviewExclusions => "review-exclusions",
+            Self::ReviewSnoozes => "review-snoozes",
             Self::RefineRequest => "refine-request",
         }
     }
@@ -97,7 +101,7 @@ impl Reason {
             Self::NotInSnapshot => Stage::Discovery,
             Self::Shadowed | Self::Ambiguous | Self::Unverified => Stage::Visibility,
             Self::ManualOnly | Self::Forbidden => Stage::Restrictions,
-            Self::Excluded | Self::AlreadyLoaded => Stage::LocalPolicy,
+            Self::Excluded | Self::Snoozed | Self::AlreadyLoaded => Stage::LocalPolicy,
             Self::NotRetrieved => Stage::Retrieval,
         }
     }
@@ -110,6 +114,7 @@ impl Reason {
             Self::ManualOnly => "manual-only",
             Self::Forbidden => "forbidden",
             Self::Excluded => "excluded",
+            Self::Snoozed => "snoozed",
             Self::AlreadyLoaded => "already-loaded",
             Self::NotRetrieved => "not-retrieved",
         }
@@ -123,6 +128,7 @@ impl Reason {
             Self::ManualOnly => Some(Hint::RequestExplicitly),
             Self::Forbidden => Some(Hint::CheckInvocationRestrictions),
             Self::Excluded => Some(Hint::ReviewExclusions),
+            Self::Snoozed => Some(Hint::ReviewSnoozes),
             Self::AlreadyLoaded => None,
             Self::NotRetrieved => Some(Hint::RefineRequest),
         }
@@ -150,6 +156,8 @@ impl StageOutcome {
 #[derive(Clone, Copy, Debug)]
 pub struct PolicyView<'a> {
     pub excluded: &'a BTreeSet<&'a SkillId>,
+    /// Muted by an active or uncertain-expiry snooze; advisory only.
+    pub snoozed: &'a BTreeSet<&'a SkillId>,
     pub already_loaded: &'a BTreeSet<&'a SkillId>,
 }
 
@@ -279,16 +287,19 @@ pub fn trace(
     };
     let any = |set: &BTreeSet<&SkillId>| siblings.iter().any(|id| set.contains(id));
     let explicitly_excluded = policy.is_some_and(|p| any(p.excluded));
+    let snoozed = policy.is_some_and(|p| any(p.snoozed));
     if let Some(policy) = policy {
         stages[3].1 = if explicitly_excluded {
             Excluded(Reason::Excluded)
+        } else if snoozed {
+            Excluded(Reason::Snoozed)
         } else if any(policy.already_loaded) {
             Excluded(Reason::AlreadyLoaded)
         } else {
             Passed
         };
     }
-    if !explicitly_excluded {
+    if !explicitly_excluded && !snoozed {
         stages[4].1 = match retrieval {
             RetrievalView::Admitted { ids, .. } if any(ids) => Passed,
             RetrievalView::Admitted { .. } | RetrievalView::Empty => Excluded(Reason::NotRetrieved),
@@ -312,6 +323,7 @@ pub struct Counts {
     pub advisory: usize,
     /// `None` when local policy or retrieval was not evaluated.
     pub policy_excluded: Option<usize>,
+    pub snoozed: Option<usize>,
     pub already_loaded: Option<usize>,
     pub retrieved: Option<usize>,
 }
@@ -449,6 +461,7 @@ pub fn summarize(
     if policy.is_some() {
         let removed = |reason| exclusions.iter().filter(|(_, r)| *r == reason).count();
         counts.policy_excluded = Some(removed(Reason::Excluded));
+        counts.snoozed = Some(removed(Reason::Snoozed));
         counts.already_loaded = Some(removed(Reason::AlreadyLoaded));
     }
     counts.retrieved = match retrieval {

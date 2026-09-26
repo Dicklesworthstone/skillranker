@@ -218,6 +218,8 @@ struct Progress {
     /// For an evaluation send bound to its preview: what its wide request
     /// must still be when it is about to be sent. `None`: not bound.
     expected_wide_digest: Option<WidePreview>,
+    /// The advisory snoozes this decision applied, for its provenance.
+    snooze_provenance: Option<Value>,
 }
 
 /// Identity and cost carried out of a failing run, so an unavailable event can
@@ -565,6 +567,15 @@ async fn execute_pipeline_supplied(
         ..Progress::default()
     };
     let result = rank_once(invocation, clock, cx, args, transport, &mut progress).await;
+    let result = match (result, progress.snooze_provenance.take()) {
+        (Ok(doc), Some(snoozes)) => doc.with_snoozes(snoozes).map_err(|e| {
+            failure(
+                ErrorKind::OutputLimit,
+                format!("Snooze provenance contract error: {e:?}"),
+            )
+        }),
+        (result, _) => result,
+    };
     if let (Some(sink), Some(captured)) = (evidence, progress.stage_evidence.take()) {
         *sink = captured;
     }
@@ -1799,8 +1810,45 @@ async fn rank_once(
     }
     let excluded_refs: BTreeSet<&SkillId> = excluded_skills.iter().collect();
     let loaded_refs: BTreeSet<&SkillId> = loaded_records.iter().map(|r| &r.skill_id).collect();
+
+    // Trusted advisory snoozes for this session's scope (I04). They are read
+    // like configuration, also with the ledger or persistence disabled, never
+    // cleaned up here, and applied before retrieval. Explicit requests were
+    // resolved above and ignore them.
+    let snooze_scope = current_snooze_scope(&normalized_context);
+    let snooze_controls = match &snooze_scope {
+        Some(scope) => config_files
+            .snoozes(clock)?
+            .controls(scope, crate::snooze::wall_clock_ms()),
+        None => crate::snooze::ScopeControls::default(),
+    };
+    let mut snoozed_skills: BTreeSet<SkillId> = BTreeSet::new();
+    if !snooze_controls.is_empty() {
+        for skill in roster.skills() {
+            let muted = snooze_controls.mutes(skill.record().id.as_str())
+                || skill
+                    .bindings()
+                    .iter()
+                    .any(|b| snooze_controls.mutes(b.id.as_str()));
+            if muted {
+                snoozed_skills.insert(skill.record().id.clone());
+                snoozed_skills.extend(skill.bindings().iter().map(|b| b.id.clone()));
+            }
+        }
+        progress.snooze_provenance = Some(json!({
+            "all": snooze_controls.all,
+            "skill_ids": snooze_controls.skills,
+            "uncertain_expiry": snooze_controls.uncertain_expiry,
+        }));
+    }
+    let snoozed_refs: BTreeSet<&SkillId> = snoozed_skills.iter().collect();
+    let snooze_check = SnoozeCheck {
+        scope: snooze_scope.as_ref(),
+        used: &snooze_controls,
+    };
     let policy_view = PolicyView {
         excluded: &excluded_refs,
+        snoozed: &snoozed_refs,
         already_loaded: &loaded_refs,
     };
 
@@ -1858,8 +1906,22 @@ async fn rank_once(
         return Ok(doc);
     }
 
-    // Initial admission before Wide
-    let admission = admit(&initial_advisory, &excluded_refs, loaded_state);
+    // Initial admission before Wide. Snoozed skills leave first; when they
+    // were every advisory candidate, the decision abstains without Jev.
+    let unsnoozed: Vec<AdvisorySkill> = initial_advisory
+        .iter()
+        .filter(|s| !snoozed_refs.contains(&s.binding.id) && !snoozed_refs.contains(&s.record.id))
+        .copied()
+        .collect();
+    let admission = if unsnoozed.is_empty() {
+        crate::eligibility::Admission {
+            admitted: Vec::new(),
+            removed: Vec::new(),
+            verdict: Some(Verdict::Abstain(crate::eligibility::AbstainReason::Snoozed)),
+        }
+    } else {
+        admit(&unsnoozed, &excluded_refs, loaded_state)
+    };
     if let Some(verdict) = admission.verdict {
         match verdict {
             Verdict::Abstain(reason) => {
@@ -1919,6 +1981,7 @@ async fn rank_once(
                     &config_files,
                     &resolved_config,
                     &current_receipt,
+                    &snooze_check,
                     cx,
                     clock,
                 )?;
@@ -2088,6 +2151,7 @@ async fn rank_once(
             &config_files,
             &resolved_config,
             &current_receipt,
+            &snooze_check,
             cx,
             clock,
         )?;
@@ -2300,7 +2364,10 @@ async fn rank_once(
         });
         capture.local_evidence = Some(CapturedLocalEvidence {
             as_of_unix_ms: clock.now().as_millis(),
-            active_snoozes: Vec::new(),
+            active_snoozes: snoozed_skills
+                .iter()
+                .map(|id| id.as_str().to_owned())
+                .collect(),
             loaded_references: loaded_records
                 .iter()
                 .map(|r| CapturedLoadedReference {
@@ -2869,6 +2936,7 @@ async fn rank_once(
                 &config_files,
                 &resolved_config,
                 &current_receipt,
+                &snooze_check,
                 cx,
                 clock,
             )?;
@@ -3160,6 +3228,7 @@ async fn rank_once(
                     &config_files,
                     &resolved_config,
                     &current_receipt,
+                    &snooze_check,
                     cx,
                     clock,
                 )?;
@@ -3357,6 +3426,7 @@ async fn rank_once(
         &config_files,
         &resolved_config,
         &current_receipt,
+        &snooze_check,
         cx,
         clock,
     )?;
@@ -3366,16 +3436,51 @@ async fn rank_once(
 /// Revalidate every advisory outcome, including a negative recommendation.
 /// Cache reuse never bypasses this boundary: its responses still feed the same
 /// evaluation paths. Run after rendering so trace work shares the deadline too.
+/// The snooze controls a decision used, rechecked at publication.
+struct SnoozeCheck<'a> {
+    scope: Option<&'a crate::snooze::SnoozeScope>,
+    used: &'a crate::snooze::ScopeControls,
+}
+
+/// This context's snooze scope, as the ledger records its events. A context
+/// without a session identity has none, so no snooze can apply to it.
+fn current_snooze_scope(context: &NormalizedContext) -> Option<crate::snooze::SnoozeScope> {
+    let session = context.session_id.as_ref()?;
+    crate::snooze::SnoozeScope::from_event(
+        "current",
+        context.workspace_root.as_str(),
+        session.as_str(),
+        context.branch_id.as_ref().map_or("main", |b| b.as_str()),
+    )
+    .ok()
+}
+
+#[allow(clippy::too_many_arguments)]
 fn validate_advisory_publication(
     source: &roster::Source<'_>,
     dependencies: &crate::roster::revalidation::Dependencies,
     config_files: &ConfigFiles,
     config: &ResolvedConfig,
     receipt: &PolicyReceipt,
+    snoozes: &SnoozeCheck<'_>,
     cx: &Cx,
     clock: &EntryClock,
 ) -> Result<(), PipelineFailure> {
     source.validate(dependencies, cx, clock)?;
+    // A snooze applied while this ranking ran withholds it: advice computed
+    // without that mute is stale. An expiry only relaxes the controls, and a
+    // decision made under the stricter ones stays publishable.
+    if let Some(scope) = snoozes.scope {
+        let current = config_files
+            .snoozes(clock)?
+            .controls(scope, crate::snooze::wall_clock_ms());
+        if (current.all && !snoozes.used.all) || !current.skills.is_subset(&snoozes.used.skills) {
+            return Err(failure(
+                ErrorKind::Superseded,
+                "An advisory snooze was applied before publication",
+            ));
+        }
+    }
     let (_, revalidation) = config_files.refresh(
         clock,
         config,
@@ -5443,16 +5548,23 @@ fn compute_stage_trace(
     if let Some(pv) = policy {
         let is_excluded =
             siblings.iter().any(|id| pv.excluded.contains(id)) || pv.excluded.contains(target);
+        let is_snoozed =
+            siblings.iter().any(|id| pv.snoozed.contains(id)) || pv.snoozed.contains(target);
         let is_loaded = siblings.iter().any(|id| pv.already_loaded.contains(id))
             || pv.already_loaded.contains(target);
-        if is_excluded {
+        if is_excluded || is_snoozed {
+            let (reason, hint) = if is_excluded {
+                ("excluded", "review-exclusions")
+            } else {
+                ("snoozed", "review-snoozes")
+            };
             entries.push(TraceEntry::excluded(
                 target.clone(),
                 TraceStage::LocalPolicy,
-                "excluded",
+                reason,
                 None,
                 None,
-                Some("review-exclusions".into()),
+                Some(hint.into()),
             ));
             for stage in &TraceStage::ALL[3..] {
                 entries.push(TraceEntry::not_evaluated(target.clone(), *stage));

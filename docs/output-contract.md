@@ -67,7 +67,10 @@ schema does not authorize them or turn a partial result into a global negative.
 Roster counts are bounded by 10,000 discovered, 254 wide candidates and 32
 shortlist entries, with subset count checks. `retrieval` is `full`, `quill-bm25`,
 or `not-evaluated`. Required `provenance` contains a snapshot digest,
-`policy_version`, and nullable `wide_set_id`/`rerank_set_id` digests. Candidate-set
+`policy_version`, and nullable `wide_set_id`/`rerank_set_id` digests. When
+trusted advisory snoozes applied, it also carries `snoozes`: `all`, the muted
+`skill_ids` (at most 128) and the `uncertain_expiry` count. An absent field
+means no snooze applied to the decision's session scope. Candidate-set
 IDs are present when the corresponding set is populated; they identify the
 comparison scope, not successful provider execution. Snapshot and set digests
 use `ContentHash`'s encoding; the roster builder supplies their canonical bytes.

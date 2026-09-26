@@ -1587,6 +1587,12 @@ ambiguous event attribution cannot create a broadly scoped mute. Doctor shows
 active entries and expiry anomalies; uncertain expiry remains muted until
 resolved or explicitly cleared.
 
+They live in `sr/snoozes.toml` under your configuration directory, and the
+event's recorded workspace, session and agent branch bound each one. A snooze
+applied while a ranking is in flight withholds that ranking's advice at
+publication; a request already sent may still incur cost, and advice already
+published cannot be recalled.
+
 Snoozed skills remain visible in explanations but leave advisory eligibility
 before retrieval. Muting every advisory candidate skips Jev. Explicit skill
 requests still resolve normally. Ranking reads these controls with `--no-ledger`

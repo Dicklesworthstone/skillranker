@@ -13,12 +13,13 @@ use std::ffi::OsString;
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
-const HELP: &str = "SkillRanker — powered by TypeSafe.ai Jev\n\nUsage: sr [rank] [--context FILE | --transcript FILE --harness NAME | --session PATH | --latest]\n                 [--roster FILE] [--require-skill ID] [--dry-run [--shortlist-ids ID,...]]\n                 [--offline | --allow-network] [--json | --table]\n                 [--top N] [--shortlist M] [--gate FLOAT] [--fits FLOAT]\n                 [--explain] [--why-not ID] [--cursor TOKEN] [--no-tools] [--no-cache]\n                 [--save-case FILE]\n       sr doctor [--json | --table] [--offline | --allow-network]\n       sr doctor --config [--json | --table] [--top N] [--shortlist N]\n       sr roster [--json] [--limit N] [--cursor TOKEN]\n       sr roster --snapshot FILE | --diff FILE\n       sr capabilities [--json]\n       sr demo --case <useful|none|explicit|unavailable> [--json | --table]\n       sr replay FILE [--policy FILE] [--compare-policy FILE] [--json | --table]\n       sr eval --dataset FILE [--allow-network] [--max-runtime-ms MS] [--timeout-ms MS] [--policy FILE] [--compare-policy FILE] [--explain] [--json | --table]\n       sr eval --dataset FRAME --labels FILE [--sample-size N [--seed S]] [--online --allow-network --max-requests N [--max-runtime-ms MS] [--robustness]] [--explain] [--json | --table]\n       sr feedback <EVENT_ID> --skill ID [--instead ID] [--verdict <useful|not-useful|unknown>] [--reason CODE] [--provenance TEXT] [--expected-version GEN] [--dir DIR] [--json]\n       sr ledger <init|migrate|status|prune|clear> [--before TIME] [--apply] [--json]\n       sr observe [--context FILE | --transcript FILE --harness NAME | --session PATH] [--branch NAME] [--roster FILE] [--dir DIR] [--json]\n       sr stats [--since DURATION] [--by-skill] [--dir DIR] [--json | --table]\n       sr hook <claude> [--shadow] [--offline | --allow-network] [--dir DIR]\n       sr install-hook <claude> [--settings FILE] [--target-dir DIR] [--apply] [--json]\n       sr uninstall-hook <claude> [--settings FILE] [--target-dir DIR] [--apply] [--json]\n       sr --help | --version\n\nRank the next step of an agent session using TypeSafe Jev.\nRequires your own TypeSafe API key (TYPESAFE_API_KEY) and network consent (--allow-network).\n";
+const HELP: &str = "SkillRanker — powered by TypeSafe.ai Jev\n\nUsage: sr [rank] [--context FILE | --transcript FILE --harness NAME | --session PATH | --latest]\n                 [--roster FILE] [--require-skill ID] [--dry-run [--shortlist-ids ID,...]]\n                 [--offline | --allow-network] [--json | --table]\n                 [--top N] [--shortlist M] [--gate FLOAT] [--fits FLOAT]\n                 [--explain] [--why-not ID] [--cursor TOKEN] [--no-tools] [--no-cache]\n                 [--save-case FILE]\n       sr doctor [--json | --table] [--offline | --allow-network]\n       sr doctor --config [--json | --table] [--top N] [--shortlist N]\n       sr roster [--json] [--limit N] [--cursor TOKEN]\n       sr roster --snapshot FILE | --diff FILE\n       sr capabilities [--json]\n       sr demo --case <useful|none|explicit|unavailable> [--json | --table]\n       sr replay FILE [--policy FILE] [--compare-policy FILE] [--json | --table]\n       sr eval --dataset FILE [--allow-network] [--max-runtime-ms MS] [--timeout-ms MS] [--policy FILE] [--compare-policy FILE] [--explain] [--json | --table]\n       sr eval --dataset FRAME --labels FILE [--sample-size N [--seed S]] [--online --allow-network --max-requests N [--max-runtime-ms MS] [--robustness]] [--explain] [--json | --table]\n       sr feedback <EVENT_ID> --skill ID [--instead ID] [--verdict <useful|not-useful|unknown>] [--reason CODE] [--provenance TEXT] [--expected-version GEN] [--dir DIR] [--json]\n       sr snooze <EVENT_ID> (--skill ID --for DURATION | --all --for DURATION | --clear) [--apply] [--dir DIR] [--json]\n       sr ledger <init|migrate|status|prune|clear> [--before TIME] [--apply] [--json]\n       sr observe [--context FILE | --transcript FILE --harness NAME | --session PATH] [--branch NAME] [--roster FILE] [--dir DIR] [--json]\n       sr stats [--since DURATION] [--by-skill] [--dir DIR] [--json | --table]\n       sr hook <claude> [--shadow] [--offline | --allow-network] [--dir DIR]\n       sr install-hook <claude> [--settings FILE] [--target-dir DIR] [--apply] [--json]\n       sr uninstall-hook <claude> [--settings FILE] [--target-dir DIR] [--apply] [--json]\n       sr --help | --version\n\nRank the next step of an agent session using TypeSafe Jev.\nRequires your own TypeSafe API key (TYPESAFE_API_KEY) and network consent (--allow-network).\n";
 
 const EVAL_HELP: &str = "sr eval --dataset FILE [--allow-network] [--max-runtime-ms MS] [--timeout-ms MS] [--policy FILE] [--compare-policy FILE] [--explain] [--json | --table]\n       sr eval --dataset FRAME --labels FILE [--sample-size N [--seed S]] [--online --allow-network --max-requests N [--max-runtime-ms MS] [--robustness]] [--explain] [--json | --table]\n\nEvaluate recorded or synthetic replay batches against local or comparison policies with bounded runtime and explicit accounting.\nWith --labels, score a labeled case frame against independent judgments, optionally over a stratified sample frozen before labels are joined.\n";
 
 const STATS_HELP: &str = "sr stats [--since DURATION] [--by-skill] [--dir DIR] [--json | --table]\n\nReport observation and operational metrics across honest cohorts (evaluations, suggestions, abstentions, latency, loads, judgments, tokens, and cost).\n";
 
+const SNOOZE_HELP: &str = "sr snooze <EVENT_ID> (--skill ID --for DURATION | --all --for DURATION | --clear) [--apply] [--dir DIR] [--json]\n\nPreview, then with --apply write, a temporary advisory snooze in the recorded event's workspace, session and agent branch. DURATION is 1m to 24h (e.g. 30m, 2h). Explicit skill requests still resolve; a snooze is not a usefulness label.\n";
 const FEEDBACK_HELP: &str = "sr feedback <EVENT_ID> --skill ID [--instead ID] [--verdict <useful|not-useful|unknown>] [--reason CODE] [--provenance TEXT] [--expected-version GEN] [--dir DIR] [--json]\n\nRecord explicit feedback or paired corrective labels for a historical ranking event.\n";
 
 const OBSERVE_HELP: &str = "sr observe [--context FILE | --transcript FILE --harness NAME | --session PATH] [--branch NAME] [--roster FILE] [--dir DIR] [--json]\n\nIngest session tool events, record loaded skill observations, attribute to recent emissions, and advance observation watermark.\n";
@@ -538,6 +539,59 @@ fn command() -> Command {
                                 .help("Custom ledger directory")
                                 .action(ArgAction::Set),
                         ),
+                ),
+        )
+        .subcommand(
+            Command::new("snooze")
+                .disable_help_flag(true)
+                .arg(
+                    Arg::new("help")
+                        .long("help")
+                        .short('h')
+                        .action(ArgAction::SetTrue),
+                )
+                .arg(
+                    Arg::new("event_id")
+                        .help("Recorded ranking event whose scope to snooze")
+                        .index(1)
+                        .action(ArgAction::Set),
+                )
+                .arg(
+                    Arg::new("skill")
+                        .long("skill")
+                        .help("Snooze one skill (stable ID or the event's invocation name)")
+                        .action(ArgAction::Set),
+                )
+                .arg(
+                    Arg::new("all")
+                        .long("all")
+                        .help("Snooze every advisory candidate")
+                        .action(ArgAction::SetTrue),
+                )
+                .arg(
+                    Arg::new("clear")
+                        .long("clear")
+                        .help("Clear this scope's snoozes")
+                        .action(ArgAction::SetTrue),
+                )
+                .arg(
+                    Arg::new("for")
+                        .long("for")
+                        .help("Duration from 1m to 24h, e.g. 30m or 2h")
+                        .action(ArgAction::Set),
+                )
+                .arg(
+                    Arg::new("apply")
+                        .long("apply")
+                        .help("Write the previewed change")
+                        .action(ArgAction::SetTrue),
+                )
+                .arg(Arg::new("json").long("json").action(ArgAction::SetTrue))
+                .arg(
+                    Arg::new("dir")
+                        .long("dir")
+                        .help("Custom ledger directory")
+                        .action(ArgAction::Set),
                 ),
         )
         .subcommand(
@@ -1228,6 +1282,12 @@ fn execute(clock: &EntryClock, mut args: Vec<OsString>) -> Result<String, Failur
         }
         return ledger_command(clock, ledger_matches);
     }
+    if let Some(("snooze", snooze_matches)) = matches.subcommand() {
+        if snooze_matches.get_flag("help") {
+            return Ok(SNOOZE_HELP.into());
+        }
+        return snooze_command(clock, snooze_matches);
+    }
     if let Some(("feedback", feedback_matches)) = matches.subcommand() {
         if feedback_matches.get_flag("help") {
             return Ok(FEEDBACK_HELP.into());
@@ -1272,6 +1332,208 @@ fn execute(clock: &EntryClock, mut args: Vec<OsString>) -> Result<String, Failur
     }
     // Bare `sr` ranks once, as documented.
     rank_command(clock, None)
+}
+
+/// `sr snooze`: resolve the event's recorded scope, preview the change and,
+/// with `--apply`, write it to trusted user configuration. No provider call,
+/// ledger write or usefulness label is involved.
+fn snooze_command(clock: &EntryClock, matches: &clap::ArgMatches) -> Result<String, Failure> {
+    use crate::snooze::{SnoozeChange, SnoozeError, SnoozeScope};
+    timely(clock)?;
+    let usage = |message: &str| (2u8, "invalid-usage", message.to_owned());
+    let event_id = matches
+        .get_one::<String>("event_id")
+        .ok_or_else(|| usage("Missing event ID for snooze"))?;
+    let skill = matches.get_one::<String>("skill");
+    let (all, clear) = (matches.get_flag("all"), matches.get_flag("clear"));
+    if usize::from(skill.is_some()) + usize::from(all) + usize::from(clear) != 1 {
+        return Err(usage("Choose exactly one of --skill, --all or --clear"));
+    }
+    let duration_ms = match (matches.get_one::<String>("for"), clear) {
+        (Some(_), true) => return Err(usage("--clear does not accept --for")),
+        (None, false) => {
+            return Err(usage(
+                "--skill and --all require --for DURATION, from 1m to 24h",
+            ));
+        }
+        (Some(text), false) => {
+            Some(crate::snooze::parse_duration(text).map_err(|error| usage(&error.to_string()))?)
+        }
+        (None, true) => None,
+    };
+    let user_root = user_config_root()?.ok_or_else(|| {
+        (
+            2u8,
+            "invalid-configuration",
+            "No trusted user configuration directory: set XDG_CONFIG_HOME or HOME".to_owned(),
+        )
+    })?;
+    let now = crate::snooze::wall_clock_ms().ok_or_else(|| {
+        (
+            3u8,
+            "missing-session",
+            "The wall clock reads before 1970; a snooze expiry cannot be computed".to_owned(),
+        )
+    })?;
+
+    let invocation = crate::runtime::ProcessInvocation::from_clock(*clock)
+        .map_err(|_| (6u8, "timeout", "Local runtime unavailable".into()))?;
+    let cx = invocation
+        .request_cx()
+        .map_err(|_| (6u8, "timeout", "Runtime context unavailable".into()))?;
+    let location = match matches.get_one::<String>("dir") {
+        Some(dir) => crate::storage::LedgerLocation::Directory(PathBuf::from(dir)),
+        None => crate::storage::LedgerLocation::Platform,
+    };
+    let recorded = crate::storage::read_event_snooze_scope(
+        &invocation,
+        &cx,
+        location,
+        event_id,
+        skill.map(String::as_str),
+    )
+    .map_err(|error| match error {
+        crate::storage::FeedbackError::EventNotFound(id) => (
+            2u8,
+            "event-not-found",
+            format!("Ranking event '{id}' not found in ledger"),
+        ),
+        crate::storage::FeedbackError::MissingSnapshot => (
+            crate::output::ErrorKind::IncompleteRoster.exit_code() as u8,
+            crate::output::ErrorKind::IncompleteRoster.as_str(),
+            "The event's roster snapshot cannot resolve that name; supply the stable skill ID"
+                .into(),
+        ),
+        crate::storage::FeedbackError::InvalidSkillId(message) => (
+            2u8,
+            "invalid-arguments",
+            format!("Invalid skill: {message}"),
+        ),
+        crate::storage::FeedbackError::Store(crate::storage::StoreError::Missing) => (
+            9u8,
+            "storage-failure",
+            "No ledger to resolve the event in; snoozes are scoped to recorded events".into(),
+        ),
+        other => (
+            9u8,
+            "storage-failure",
+            format!("Ledger read failed: {other}"),
+        ),
+    })?;
+    let scope = SnoozeScope::from_event(
+        event_id,
+        &recorded.workspace_root,
+        &recorded.session_id,
+        &recorded.agent_branch,
+    )
+    .map_err(|error| (3u8, "missing-session", error.to_string()))?;
+    let (action, change) = match duration_ms {
+        Some(duration_ms) => (
+            if all { "all" } else { "skill" },
+            SnoozeChange::Snooze {
+                event_id: event_id.clone(),
+                scope: scope.clone(),
+                skill_id: recorded.skill_id.clone(),
+                duration_ms,
+            },
+        ),
+        None => (
+            "clear",
+            SnoozeChange::Clear {
+                scope: scope.clone(),
+            },
+        ),
+    };
+    timely(clock)?;
+
+    let snooze_failure = |error: SnoozeError| match error {
+        SnoozeError::Malformed(_) => (2u8, "invalid-configuration", error.to_string()),
+        SnoozeError::Unattributed => (3u8, "missing-session", error.to_string()),
+        SnoozeError::InvalidDuration(_) | SnoozeError::TooMany => {
+            (2u8, "invalid-usage", error.to_string())
+        }
+        SnoozeError::LockBusy | SnoozeError::ExternalModification => (
+            crate::output::ErrorKind::RevisionConflict.exit_code() as u8,
+            crate::output::ErrorKind::RevisionConflict.as_str(),
+            error.to_string(),
+        ),
+        SnoozeError::Io(_) => (9u8, "storage-failure", error.to_string()),
+    };
+    let apply = matches.get_flag("apply");
+    let (planned, backup_written) = if apply {
+        let applied = crate::snooze::apply(&user_root, &change, now).map_err(snooze_failure)?;
+        (applied.planned, applied.backup.is_some())
+    } else {
+        let current = crate::snooze::load(&user_root).map_err(snooze_failure)?;
+        (
+            crate::snooze::plan(&current, &change, now).map_err(snooze_failure)?,
+            false,
+        )
+    };
+    let limits = "A ranking already past provider admission may still incur cost, and advice \
+                  already published cannot be recalled.";
+    let mut effect = match (action, &recorded.skill_id) {
+        ("skill", Some(skill)) => format!(
+            "Withholds advisory suggestions of '{skill}' in this workspace, session and agent \
+             branch until expiry. Explicit requests for it still resolve, and no usefulness \
+             label or prior changes. {limits}"
+        ),
+        ("all", _) => format!(
+            "Withholds every advisory suggestion in this workspace, session and agent branch \
+             until expiry; rankings there abstain without a provider request. Explicit \
+             requests still resolve, and no usefulness label or prior changes. {limits}"
+        ),
+        _ => "Removes this scope's snoozes; advisory suggestions resume from the next ranking."
+            .to_owned(),
+    };
+    if !apply {
+        effect.push_str(" Preview only: add --apply to write it.");
+    }
+    let report = json!({
+        "schema_version": 1,
+        "kind": "snooze",
+        "applied": apply,
+        "action": action,
+        "event_id": event_id,
+        "scope": {
+            "workspace_root": scope.workspace_root,
+            "session_id": scope.session_id,
+            "agent_branch": scope.agent_branch,
+        },
+        "skill_id": recorded.skill_id,
+        "duration_ms": duration_ms,
+        "expires_at_unix_ms": planned.expires_at_unix_ms,
+        "renews_existing": planned.renewed,
+        "clears": planned.cleared,
+        "expired_pruned": planned.expired_pruned,
+        "entries_after": planned.next.entries().len(),
+        "backup_written": backup_written,
+        "effect": effect,
+    });
+    if matches.get_flag("json") {
+        return Ok(format!("{report:#}\n"));
+    }
+    let target = recorded
+        .skill_id
+        .as_deref()
+        .unwrap_or("every advisory candidate");
+    let headline = match (action, apply) {
+        ("clear", true) => format!("Cleared {} snooze(s)", planned.cleared),
+        ("clear", false) => format!("Would clear {} snooze(s)", planned.cleared),
+        (_, true) => format!("Snoozed {target}"),
+        (_, false) => format!("Would snooze {target}"),
+    };
+    let expiry = planned
+        .expires_at_unix_ms
+        .map(|at| {
+            let at = i64::try_from(at).unwrap_or(i64::MAX);
+            format!("\n  expires: {}", crate::storage::format_unix_ms(at))
+        })
+        .unwrap_or_default();
+    Ok(crate::output::table::sanitize_terminal_text(&format!(
+        "{headline}\n  session: {}\n  agent branch: {}{expiry}\n{effect}\n",
+        scope.session_id, scope.agent_branch
+    )))
 }
 
 fn feedback_command(
@@ -4369,6 +4631,37 @@ impl ConfigFiles {
         Ok((current, comparison))
     }
 
+    /// Trusted advisory snoozes, read under the same bounded, authorized and
+    /// strict rules as the configuration beside them, and read even when the
+    /// ledger or persistence is disabled. Reading never cleans them up.
+    pub fn snoozes(&self, clock: &EntryClock) -> Result<crate::snooze::SnoozeSet, Failure> {
+        let Some(root) = &self.user_root else {
+            return Ok(crate::snooze::SnoozeSet::default());
+        };
+        timely(clock)?;
+        let authorized = match AuthorizedRoot::open_absolute(root) {
+            Ok(root) => root,
+            Err(ReadError::NotFound) => return Ok(crate::snooze::SnoozeSet::default()),
+            Err(_) => return Err(invalid("trusted-user: configuration root unavailable")),
+        };
+        let bytes = match AuthorizedRoots::single(authorized).read_bounded(
+            0,
+            Path::new(crate::snooze::SNOOZE_FILE),
+            CONFIG_FILE_BYTES,
+        ) {
+            Ok(bytes) => bytes,
+            Err(ReadError::NotFound) => return Ok(crate::snooze::SnoozeSet::default()),
+            Err(_) => {
+                return Err(invalid(
+                    "trusted-user: snoozes must be a bounded authorized regular file",
+                ));
+            }
+        };
+        timely(clock)?;
+        crate::snooze::decode_bytes(bytes.bytes())
+            .map_err(|error| invalid(format!("trusted-user: {error}")))
+    }
+
     fn read_user(&self, clock: &EntryClock) -> Result<Vec<(String, RawValue)>, Failure> {
         match &self.user_root {
             Some(root) => read_config(clock, root, Path::new("sr/config.toml"), "trusted-user"),
@@ -4563,6 +4856,16 @@ fn readiness(
             .map(|(name, _)| name)
             .collect(),
         ledger,
+        snoozes: match user_config_root() {
+            Ok(Some(root)) => match crate::snooze::load(&root) {
+                Ok(set) => crate::readiness::SnoozeCheck::Loaded {
+                    set,
+                    now_unix_ms: crate::snooze::wall_clock_ms(),
+                },
+                Err(error) => crate::readiness::SnoozeCheck::Invalid(error.to_string()),
+            },
+            _ => crate::readiness::SnoozeCheck::NoUserRoot,
+        },
     });
     timely(clock)?;
     if json_output {
@@ -4941,7 +5244,6 @@ mod documented_flag_tests {
         for (owner, flags) in [
             ("calibrate", &["evaluation", "rollback"][..]),
             ("budget", &["max-attempts", "window"][..]),
-            ("snooze", &["all", "clear", "for"][..]),
         ] {
             if crate::capabilities::planned_command_phase(owner).is_some() {
                 known.extend(flags.iter().map(|flag| (*flag).to_owned()));

@@ -5167,6 +5167,60 @@ impl LedgerStore {
         Ok(event)
     }
 
+    /// A recorded event's workspace, session and agent branch, and a skill
+    /// reference resolved against that event's own candidates and snapshot,
+    /// as feedback resolves one. Read-only: a snooze is configuration, and
+    /// nothing about it is written here.
+    pub fn event_snooze_scope(
+        &mut self,
+        clock: EntryClock,
+        cx: &Cx,
+        event_id: &str,
+        skill: Option<&str>,
+    ) -> Result<EventSnoozeScope, FeedbackError> {
+        check_work(clock, cx).map_err(FeedbackError::Store)?;
+        self.directory
+            .verify_database_file(&self.file, clock, cx)
+            .map_err(FeedbackError::Store)?;
+        refresh_busy_limit(&self.connection, clock, cx).map_err(FeedbackError::Store)?;
+        if skill.is_some_and(|supplied| !bounded_metadata(supplied, 256)) {
+            return Err(FeedbackError::InvalidSkillId(
+                skill.unwrap_or_default().to_owned(),
+            ));
+        }
+        let tx = self
+            .connection
+            .transaction()
+            .map_err(|e| FeedbackError::Store(StoreError::from(e)))?;
+        let row: Option<(String, String, String, Option<String>)> = tx
+            .query_row(
+                "SELECT workspace_root, session_id, agent_branch, snapshot_id
+                 FROM ranking_events WHERE event_id = ?1",
+                [event_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .optional()
+            .map_err(|e| FeedbackError::Store(StoreError::from(e)))?;
+        let (workspace_root, session_id, agent_branch, snapshot_id) =
+            row.ok_or_else(|| FeedbackError::EventNotFound(event_id.to_owned()))?;
+        let skill_id = skill
+            .map(|supplied| {
+                Self::resolve_event_skill_reference(&tx, event_id, snapshot_id.as_deref(), supplied)
+            })
+            .transpose()?;
+        drop(tx);
+        self.directory
+            .verify_database_file(&self.file, clock, cx)
+            .map_err(FeedbackError::Store)?;
+        check_work(clock, cx).map_err(FeedbackError::Store)?;
+        Ok(EventSnoozeScope {
+            workspace_root,
+            session_id,
+            agent_branch,
+            skill_id,
+        })
+    }
+
     pub fn get_roster_snapshot(
         &self,
         clock: EntryClock,
@@ -6004,6 +6058,50 @@ pub fn submit_feedback(
     )
     .map_err(|e| FeedbackError::Store(StoreError::Runtime(e)))?;
     res.value
+}
+
+/// Where a recorded event happened, for scoping a snooze.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EventSnoozeScope {
+    pub workspace_root: String,
+    pub session_id: String,
+    pub agent_branch: String,
+    /// The stable ID the supplied skill reference resolved to.
+    pub skill_id: Option<String>,
+}
+
+/// Reads an event's snooze scope from an existing ledger, writable or not.
+pub fn read_event_snooze_scope(
+    invocation: &ProcessInvocation,
+    cx: &Cx,
+    location: LedgerLocation,
+    event_id: &str,
+    skill: Option<&str>,
+) -> Result<EventSnoozeScope, FeedbackError> {
+    let clock = invocation.clock();
+    let child = cx.clone();
+    let event_id = event_id.to_owned();
+    let skill = skill.map(str::to_owned);
+    run_blocking_leaf(
+        invocation,
+        cx,
+        BlockingLeafKind::Database,
+        false,
+        move || {
+            let mut store = match open_blocking(clock, &child, LedgerAccess::ExistingOnly, location)
+                .map_err(FeedbackError::Store)?
+            {
+                LedgerOpen::Ready(store) | LedgerOpen::ReadOnly(store) => store,
+                LedgerOpen::Missing => return Err(FeedbackError::Store(StoreError::Missing)),
+                LedgerOpen::Disabled => {
+                    return Err(FeedbackError::Store(StoreError::Uninitialized));
+                }
+            };
+            store.event_snooze_scope(clock, &child, &event_id, skill.as_deref())
+        },
+    )
+    .map_err(|e| FeedbackError::Store(StoreError::Runtime(e)))?
+    .value
 }
 
 pub fn record_ranking(

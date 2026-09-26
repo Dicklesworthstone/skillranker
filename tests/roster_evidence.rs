@@ -187,6 +187,7 @@ fn each_reason_is_traced_with_a_success_counterpart() {
     let loaded = BTreeSet::from([&loaded_id]);
     let policy = PolicyView {
         excluded: &excluded,
+        snoozed: &BTreeSet::new(),
         already_loaded: &loaded,
     };
     let selection = runtime
@@ -382,6 +383,7 @@ fn multiple_causes_and_identical_decisions_keep_their_own_reasons() {
     let loaded = BTreeSet::new();
     let policy = PolicyView {
         excluded: &excluded,
+        snoozed: &BTreeSet::new(),
         already_loaded: &loaded,
     };
     let (clock, runtime, cx) = runtime();
@@ -428,6 +430,7 @@ fn summaries_count_bind_to_a_snapshot_and_bound_details() {
     let loaded = BTreeSet::from([&loaded_id]);
     let policy = PolicyView {
         excluded: &excluded,
+        snoozed: &BTreeSet::new(),
         already_loaded: &loaded,
     };
     let (clock, runtime, cx) = runtime();
@@ -735,6 +738,7 @@ fn aliases_of_one_file_share_policy_and_retrieval_outcomes() {
     let loaded = BTreeSet::new();
     let policy = PolicyView {
         excluded: &excluded,
+        snoozed: &BTreeSet::new(),
         already_loaded: &loaded,
     };
     for key in ["alias-a", "alias-b"] {

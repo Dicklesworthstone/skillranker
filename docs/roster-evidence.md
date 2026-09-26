@@ -21,6 +21,7 @@ cannot alter a retrieval result or a ranking.
 | Restrictions | `restrictions` | `manual-only` | `request-explicitly` |
 | | | `forbidden` | `check-invocation-restrictions` |
 | Local policy | `local-policy` | `excluded` | `review-exclusions` |
+| | | `snoozed` | `review-snoozes` |
 | | | `already-loaded` | none |
 | Retrieval | `retrieval` | `not-retrieved` | `refine-request` |
 

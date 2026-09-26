@@ -66,5 +66,6 @@ consume the gate in their own tasks. No shipped command reads the gate yet.
 - trusted configuration is read and an explicit request resolves in every
   mode, with no state created.
 
-Each prohibited effect has an observed positive twin. Snoozes are not
-implemented yet, so snooze reads are not covered.
+Each prohibited effect has an observed positive twin. Trusted snoozes are
+read like configuration under every effect policy, including `--no-persist`,
+and ranking never rewrites them (`tests/snooze_contract.rs`).
