@@ -790,3 +790,237 @@ fn context_ablation_ranks_history_cases_twice_within_the_caps() {
     let ablation = report.baselines.unwrap().context_ablation.unwrap();
     assert_eq!((ablation.cases, ablation.skipped_for_budget), (1, 1));
 }
+
+/// Run a live batch over `cases` with every case judged `s_alpha`-positive.
+fn live_run(
+    cases: Vec<skillranker::evaluation::batch::LiveEvaluationCase>,
+    max_requests: usize,
+    rank: impl FnMut(
+        &skillranker::evaluation::batch::LiveEvaluationCase,
+    ) -> skillranker::evaluation::batch::LiveRankOutcome,
+) -> skillranker::evaluation::batch::EvaluationBatchReport {
+    let ids: Vec<String> = cases.iter().map(|case| case.key.case_id.clone()).collect();
+    let ids: Vec<&str> = ids.iter().map(String::as_str).collect();
+    skillranker::evaluation::batch::execute_live_frame_evaluation(
+        cases,
+        live_labels(&ids),
+        None,
+        &std::collections::BTreeSet::from(["s_alpha".to_owned()]),
+        skillranker::evaluation::batch::LiveBatchLimits {
+            max_requests,
+            max_runtime_ms: 60_000,
+            attempts_per_case: 4,
+            fit_threshold: 0.3,
+        },
+        &EntryClock::capture().unwrap(),
+        0,
+        |_| Ok(None),
+        rank,
+    )
+    .unwrap()
+}
+
+#[test]
+fn baselines_keep_an_operational_failure_in_the_cohort_at_loss_two() {
+    use skillranker::evaluation::batch::LiveRankOutcome;
+    let report = live_run(vec![live_case("a"), live_case("b")], 100, |case| {
+        if case.key.case_id == "a" {
+            LiveRankOutcome {
+                decision: "ranked".into(),
+                suggested_skills: vec!["s_alpha".into()],
+                http_attempts: 2,
+                evidence: Some(skillranker::pipeline::StageEvidence::default()),
+                ..LiveRankOutcome::default()
+            }
+        } else {
+            LiveRankOutcome {
+                decision: "unavailable".into(),
+                error_kind: Some("network-failure".into()),
+                http_attempts: 2,
+                evidence: Some(skillranker::pipeline::StageEvidence::default()),
+                ..LiveRankOutcome::default()
+            }
+        }
+    });
+    // The main report: one hit (0) and one failure (2).
+    assert_eq!(report.loss_summary.operational_failures, 1);
+    let baselines = report.baselines.unwrap();
+    assert_eq!(baselines.operational_failures, 1);
+    assert_eq!(baselines.cases_without_evidence, 0);
+    let blend = baselines
+        .policies
+        .iter()
+        .find(|policy| policy.policy == "blend")
+        .unwrap();
+    // The same cohort: the failure is not dropped, so blend is not perfect.
+    assert_eq!(blend.evaluated_cases, 2);
+    assert_eq!(blend.operational_failures, 1);
+    assert_eq!(blend.mean_loss, Some(1.0));
+    assert_eq!(blend.positive_suggestion_rate.successes, 1);
+    assert_eq!(blend.positive_suggestion_rate.denominator, 2);
+    // A failure is not a relevance abstention.
+    assert_eq!(blend.false_abstention_rate.successes, 0);
+    for policy in &baselines.policies {
+        assert_eq!(policy.operational_failures, 1, "{}", policy.policy);
+    }
+}
+
+#[test]
+fn a_ranking_with_unknown_attempts_is_charged_its_worst_case_against_the_cap() {
+    use skillranker::evaluation::batch::LiveRankOutcome;
+    // Case "a" ends without a decision document after it may have sent
+    // requests. With 8 requests and 4 per case, "b" still fits; "c" must not.
+    let mut ranked = Vec::new();
+    let report = live_run(
+        vec![live_case("a"), live_case("b"), live_case("c")],
+        8,
+        |case| {
+            ranked.push(case.key.case_id.clone());
+            if case.key.case_id == "a" {
+                LiveRankOutcome {
+                    decision: "unavailable".into(),
+                    error_kind: Some("timeout".into()),
+                    attempts_unknown: true,
+                    ..LiveRankOutcome::default()
+                }
+            } else {
+                LiveRankOutcome {
+                    decision: "ranked".into(),
+                    suggested_skills: vec!["s_alpha".into()],
+                    http_attempts: 2,
+                    ..LiveRankOutcome::default()
+                }
+            }
+        },
+    );
+    assert_eq!(ranked, ["a", "b"]);
+    assert_eq!(report.accounting.http_attempts, 6);
+    assert_eq!(report.accounting.unknown_usage_attempts, 4);
+    assert_eq!(report.error.as_ref().unwrap().kind, "request-budget");
+    // Honest counterpart: a failure known to have sent nothing costs nothing.
+    let mut ranked = Vec::new();
+    let report = live_run(
+        vec![live_case("a"), live_case("b"), live_case("c")],
+        8,
+        |case| {
+            ranked.push(case.key.case_id.clone());
+            LiveRankOutcome {
+                decision: if case.key.case_id == "a" {
+                    "unavailable"
+                } else {
+                    "ranked"
+                }
+                .into(),
+                suggested_skills: vec!["s_alpha".into()],
+                http_attempts: if case.key.case_id == "a" { 0 } else { 2 },
+                ..LiveRankOutcome::default()
+            }
+        },
+    );
+    assert_eq!(ranked, ["a", "b", "c"]);
+    assert_eq!(report.accounting.http_attempts, 4);
+}
+
+fn history_case(
+    id: &str,
+    events: Value,
+    current: Value,
+) -> skillranker::evaluation::batch::LiveEvaluationCase {
+    serde_json::from_value(json!({
+        "schema_version": 1,
+        "key": {"frame_id": "f", "family_id": format!("fam-{id}"), "case_id": id,
+                "replicate": 0, "policy_id": "p"},
+        "split": "holdout",
+        "context": {"events": events, "current_request": current}
+    }))
+    .unwrap()
+}
+
+#[test]
+fn a_failed_second_arm_scores_loss_two_and_an_event_repeating_the_request_is_not_history() {
+    use skillranker::evaluation::batch::LiveRankOutcome;
+    let cases = vec![
+        history_case(
+            "hist",
+            json!([{"event_id": "e0", "text": "earlier"}]),
+            json!({"event_id": "e1"}),
+        ),
+        // Its only event is the current request itself: single-turn.
+        history_case(
+            "single",
+            json!([{"event_id": "e1", "text": "now"}]),
+            json!({"event_id": "e1"}),
+        ),
+    ];
+    let calls = std::cell::RefCell::new(Vec::new());
+    let report = live_run(cases, 100, |case| {
+        let history = !case.context["events"].as_array().unwrap().is_empty();
+        calls
+            .borrow_mut()
+            .push(format!("{} {}", case.key.case_id, history));
+        if history || case.key.case_id == "single" {
+            LiveRankOutcome {
+                decision: "ranked".into(),
+                suggested_skills: vec!["s_alpha".into()],
+                http_attempts: 2,
+                ..LiveRankOutcome::default()
+            }
+        } else {
+            // The latest-request-only arm of "hist" fails.
+            LiveRankOutcome {
+                decision: "unavailable".into(),
+                error_kind: Some("network-failure".into()),
+                http_attempts: 2,
+                ..LiveRankOutcome::default()
+            }
+        }
+    });
+    // "single" is never sent twice.
+    assert_eq!(
+        calls.into_inner(),
+        ["hist true", "single true", "hist false"]
+    );
+    let ablation = report.baselines.unwrap().context_ablation.unwrap();
+    assert_eq!((ablation.cases, ablation.arm_failures), (1, 1));
+    assert_eq!(ablation.recent_context.mean_loss, Some(0.0));
+    // The failed arm is not dropped from both arms: it scores loss 2.
+    assert_eq!(ablation.latest_request_only.mean_loss, Some(2.0));
+    assert_eq!(ablation.latest_request_only.operational_failures, 1);
+}
+
+#[test]
+fn a_fatal_error_in_a_second_arm_stops_the_remaining_arms() {
+    use skillranker::evaluation::batch::LiveRankOutcome;
+    let cases = vec![
+        history_case("h1", json!([{"event_id": "e0"}]), json!({"event_id": "e1"})),
+        history_case("h2", json!([{"event_id": "e0"}]), json!({"event_id": "e1"})),
+    ];
+    let calls = std::cell::RefCell::new(Vec::new());
+    let report = live_run(cases, 100, |case| {
+        let history = !case.context["events"].as_array().unwrap().is_empty();
+        calls
+            .borrow_mut()
+            .push(format!("{} {}", case.key.case_id, history));
+        if history {
+            LiveRankOutcome {
+                decision: "ranked".into(),
+                suggested_skills: vec!["s_alpha".into()],
+                http_attempts: 2,
+                ..LiveRankOutcome::default()
+            }
+        } else {
+            LiveRankOutcome {
+                decision: "unavailable".into(),
+                error_kind: Some("authentication".into()),
+                http_attempts: 1,
+                ..LiveRankOutcome::default()
+            }
+        }
+    });
+    // The first second arm fails authentication; h2's is never sent. Every
+    // main ranking completed, so the run itself is complete.
+    assert_eq!(calls.into_inner(), ["h1 true", "h2 true", "h1 false"]);
+    assert_eq!(report.run_status, RunStatus::Complete);
+    let ablation = report.baselines.unwrap().context_ablation.unwrap();
+    assert_eq!((ablation.arm_failures, ablation.skipped_for_budget), (1, 1));
+}

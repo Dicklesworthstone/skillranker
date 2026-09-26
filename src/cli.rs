@@ -3325,6 +3325,10 @@ fn rank_live_case(
                 decision: "unavailable".into(),
                 error_kind: Some(kind.to_owned()),
                 elapsed_ms: elapsed(),
+                // Candidates are admitted just before the first request, so a
+                // run that got that far may have sent some without reporting
+                // them: its attempts are unknown, never zero.
+                attempts_unknown: !evidence.admitted.is_empty(),
                 ..LiveRankOutcome::default()
             };
         }
@@ -3351,6 +3355,8 @@ fn rank_live_case(
         error_kind: value["error"]["kind"].as_str().map(str::to_owned),
         elapsed_ms: elapsed(),
         evidence: Some(evidence),
+        // The decision document reports its own usage.
+        attempts_unknown: false,
     }
 }
 

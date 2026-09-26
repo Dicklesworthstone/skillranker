@@ -763,6 +763,24 @@ pub struct LiveRankOutcome {
     pub elapsed_ms: u64,
     /// What each stage answered, for baseline comparisons.
     pub evidence: Option<crate::pipeline::StageEvidence>,
+    /// The ranking ended without a decision document after it may already
+    /// have sent requests (its cleanup overran, say), so its attempts are
+    /// unknown. The batch charges its worst case, never zero.
+    pub attempts_unknown: bool,
+}
+
+/// The attempts and unknown-usage attempts one ranking is charged: as
+/// reported, or, when its attempts are unknown, at least the per-case worst
+/// case. An unknown count must never let later cases past `--max-requests`.
+fn charged_attempts(outcome: &LiveRankOutcome, attempts_per_case: usize) -> (usize, usize) {
+    if outcome.attempts_unknown {
+        (
+            outcome.http_attempts.max(attempts_per_case),
+            outcome.unknown_usage_attempts.max(attempts_per_case),
+        )
+    } else {
+        (outcome.http_attempts, outcome.unknown_usage_attempts)
+    }
 }
 
 /// Batch-wide caps of a live run.
@@ -931,7 +949,8 @@ pub fn execute_live_frame_evaluation<L: BufRead>(
 
     let mut executed = Vec::with_capacity(admitted.len());
     let mut evidence_by_case = BTreeMap::new();
-    let mut ablations: BTreeMap<CaseKey, Vec<String>> = BTreeMap::new();
+    // `None`: the second arm failed operationally.
+    let mut ablations: BTreeMap<CaseKey, Option<Vec<String>>> = BTreeMap::new();
     let mut ablation_queue = Vec::new();
     let (mut ablation_failures, mut ablation_skipped) = (0, 0);
     let mut stopped: Option<(String, ReportError)> = None;
@@ -973,10 +992,11 @@ pub fn execute_live_frame_evaluation<L: BufRead>(
             continue;
         }
         let outcome = rank(case);
+        let (attempts, unknown_usage) = charged_attempts(&outcome, limits.attempts_per_case);
         let accounting = &mut run.accounting;
         accounting.requests += outcome.requests;
-        accounting.http_attempts += outcome.http_attempts;
-        accounting.unknown_usage_attempts += outcome.unknown_usage_attempts;
+        accounting.http_attempts += attempts;
+        accounting.unknown_usage_attempts += unknown_usage;
         accounting.input_tokens += outcome.input_tokens;
         accounting.output_tokens += outcome.output_tokens;
         run.elapsed_ms
@@ -1025,16 +1045,35 @@ pub fn execute_live_frame_evaluation<L: BufRead>(
             continue;
         }
         let arm = rank(&ablated);
+        let (attempts, unknown_usage) = charged_attempts(&arm, limits.attempts_per_case);
         let accounting = &mut run.accounting;
         accounting.requests += arm.requests;
-        accounting.http_attempts += arm.http_attempts;
-        accounting.unknown_usage_attempts += arm.unknown_usage_attempts;
+        accounting.http_attempts += attempts;
+        accounting.unknown_usage_attempts += unknown_usage;
         accounting.input_tokens += arm.input_tokens;
         accounting.output_tokens += arm.output_tokens;
+        if let Some((kind, code)) = FATAL_LIVE_KINDS
+            .iter()
+            .find(|(kind, _)| arm.error_kind.as_deref() == Some(*kind))
+        {
+            // Like the main loop: no later arm can succeed, so none is sent.
+            stopped = Some((
+                format!("stopped after a fatal {kind} error"),
+                ReportError {
+                    code: *code,
+                    kind: (*kind).into(),
+                    message: "A fatal provider error stopped the live batch".into(),
+                    hint: "Fix the credential or network authorization, then rerun".into(),
+                    retryable: false,
+                },
+            ));
+        }
         if arm.decision == "unavailable" {
+            // A failed second arm keeps its case in the ablation at loss 2.
             ablation_failures += 1;
+            ablations.insert(key, None);
         } else {
-            ablations.insert(key, arm.suggested_skills);
+            ablations.insert(key, Some(arm.suggested_skills));
         }
     }
     run.error = stopped.map(|(_, error)| error);
@@ -1092,6 +1131,10 @@ pub struct StageCoverage {
     pub shortlist: Ratio,
     /// Judged positive cases the gate stopped before a shortlist.
     pub shortlist_gated_out: usize,
+    /// Judged positive cases that ended before any wide answer (a local
+    /// decision, or nothing admitted); neither gated out nor shortlisted.
+    #[serde(default)]
+    pub no_wide_answer: usize,
     /// Judged positive cases with a wide answer whose top candidates by raw
     /// probability include an acceptable skill, irrespective of the gate.
     pub intrinsic_shortlist: Ratio,
@@ -1107,6 +1150,9 @@ pub struct PolicyScore {
     pub evaluated_cases: usize,
     /// Judged cases this policy's stage evidence could not score.
     pub not_evaluated_cases: usize,
+    /// Evaluated cases whose ranking failed operationally, each at loss 2.
+    #[serde(default)]
+    pub operational_failures: usize,
     /// Precision of emitted top-one suggestions.
     pub top1_precision: Ratio,
     /// Positive cases whose emitted top-one suggestion is acceptable.
@@ -1130,9 +1176,14 @@ pub struct PolicyScore {
 pub struct BaselineComparison {
     pub coverage: StageCoverage,
     pub policies: Vec<PolicyScore>,
-    /// Judged advisory cases without stage evidence (for example an
-    /// unavailable ranking); excluded from every policy alike.
+    /// Judged advisory cases that ranked without stage evidence; excluded
+    /// from every policy alike.
     pub cases_without_evidence: usize,
+    /// Judged advisory cases whose ranking failed operationally. They stay in
+    /// every policy's cohort at loss 2 (the main report's rule), and are left
+    /// out of stage coverage, which needs stage answers.
+    #[serde(default)]
+    pub operational_failures: usize,
     /// Judged explicit requests, checked separately from advisory quality.
     pub explicit_cases_excluded: usize,
     /// Baselines this run's answers cannot support, and why.
@@ -1154,13 +1205,15 @@ pub struct BaselineComparison {
 /// would send the same request twice.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ContextAblation {
-    /// Cases with both arms answered.
+    /// Cases whose second arm ran, answered or failed: the shared cohort.
     pub cases: usize,
     pub recent_context: PolicyScore,
+    /// A failed second arm scores loss 2 here, like any operational failure.
     pub latest_request_only: PolicyScore,
     /// Cases whose second arm was unavailable.
     pub arm_failures: usize,
-    /// Cases whose second arm did not fit the request or runtime cap.
+    /// Cases whose second arm was not sent: it did not fit the request or
+    /// runtime cap, or a fatal provider error had stopped the batch.
     pub skipped_for_budget: usize,
 }
 
@@ -1168,7 +1221,15 @@ pub struct ContextAblation {
 /// `None` when there is no history to remove.
 fn latest_request_only(case: &LiveEvaluationCase) -> Option<LiveEvaluationCase> {
     let events = case.context.get("events")?.as_array()?;
-    if events.is_empty() {
+    // The pipeline's own test for history: an event that is the current
+    // request itself is not history, so a single-turn case whose only event
+    // repeats it would send the same request twice.
+    let current = case.context["current_request"]["event_id"].as_str();
+    let has_history = events.iter().any(|event| {
+        let id = event["event_id"].as_str();
+        id.is_none() || id != current
+    });
+    if !has_history {
         return None;
     }
     let mut ablated = case.clone();
@@ -1179,11 +1240,16 @@ fn latest_request_only(case: &LiveEvaluationCase) -> Option<LiveEvaluationCase> 
 fn context_ablation(
     executed: &[EvaluationCaseRecord],
     judgments: &BTreeMap<String, crate::evaluation::JudgedLabel>,
-    ablations: &BTreeMap<CaseKey, Vec<String>>,
+    ablations: &BTreeMap<CaseKey, Option<Vec<String>>>,
     arm_failures: usize,
     skipped_for_budget: usize,
 ) -> ContextAblation {
-    let pairs: Vec<(&crate::evaluation::JudgedLabel, &[String], &[String])> = executed
+    type Pair<'a> = (
+        &'a crate::evaluation::JudgedLabel,
+        &'a [String],
+        Option<&'a [String]>,
+    );
+    let pairs: Vec<Pair<'_>> = executed
         .iter()
         .filter_map(|record| {
             let label = judgments.get(&record.key.case_id)?;
@@ -1191,7 +1257,7 @@ fn context_ablation(
             (label.explicit_directive.is_none()).then_some((
                 label,
                 record.suggested_skills.as_slice(),
-                ablated.as_slice(),
+                ablated.as_deref(),
             ))
         })
         .collect();
@@ -1199,11 +1265,12 @@ fn context_ablation(
         pairs
             .iter()
             .map(|&(label, recent, latest)| {
-                let list = if second { latest } else { recent };
+                let list = if second { latest } else { Some(recent) };
                 Pick {
                     label,
-                    top: Ok(list.first().cloned()),
-                    published: Some(list),
+                    top: Ok(list.and_then(|list| list.first().cloned())),
+                    published: list,
+                    failed: list.is_none(),
                 }
             })
             .collect::<Vec<_>>()
@@ -1412,6 +1479,9 @@ fn compare_baselines(
         ..BaselineComparison::default()
     };
     let mut cohort = Vec::new();
+    // Operational failures stay in every policy's cohort at loss 2, as in the
+    // main report; stage coverage below still needs stage answers.
+    let mut failed = Vec::new();
     for record in executed {
         let Some(label) = judgments.get(&record.key.case_id) else {
             continue;
@@ -1420,9 +1490,14 @@ fn compare_baselines(
             comparison.explicit_cases_excluded += 1;
             continue;
         }
+        if record.operational_failure {
+            comparison.operational_failures += 1;
+            failed.push(label);
+            continue;
+        }
         match evidence.get(&record.key) {
-            Some(stages) if !record.operational_failure => cohort.push((record, label, stages)),
-            _ => comparison.cases_without_evidence += 1,
+            Some(stages) => cohort.push((record, label, stages)),
+            None => comparison.cases_without_evidence += 1,
         }
     }
     let acceptable = acceptable_for;
@@ -1451,7 +1526,10 @@ fn compare_baselines(
                 shortlist_hits +=
                     usize::from(wide.shortlist.iter().any(|(id, _)| acceptable(label, id)));
             }
-            _ => comparison.coverage.shortlist_gated_out += 1,
+            Some(_) => comparison.coverage.shortlist_gated_out += 1,
+            // Ended before the wide stage (a local decision, or nothing to
+            // admit): not a gate outcome.
+            None => comparison.coverage.no_wide_answer += 1,
         }
     }
     let calibration_pairs: Vec<(f64, bool)> = cohort
@@ -1481,7 +1559,14 @@ fn compare_baselines(
                 } else {
                     None
                 },
+                failed: false,
             })
+            .chain(failed.iter().map(|label| Pick {
+                label,
+                top: Ok(None),
+                published: None,
+                failed: true,
+            }))
             .collect();
         comparison
             .policies
@@ -1497,6 +1582,9 @@ struct Pick<'a> {
     top: Result<Option<String>, ()>,
     /// The whole published list, for top-K coverage, when the policy has one.
     published: Option<&'a [String]>,
+    /// The ranking failed operationally: no policy has an answer, and the
+    /// case stays in the cohort at loss 2 rather than leaving it.
+    failed: bool,
 }
 
 fn acceptable_for(label: &crate::evaluation::JudgedLabel, id: &str) -> bool {
@@ -1511,9 +1599,23 @@ fn positive_case(label: &crate::evaluation::JudgedLabel) -> bool {
 fn score_picks(name: &str, definition: &str, picks: &[Pick<'_>]) -> PolicyScore {
     let (mut emitted, mut precise, mut positive_hits, mut positive_cases) = (0, 0, 0, 0);
     let (mut needless, mut no_match_cases, mut abstentions, mut total_loss) = (0, 0, 0, 0u32);
-    let (mut evaluated, mut not_evaluated, mut covered) = (0, 0, 0);
+    let (mut evaluated, mut not_evaluated, mut covered, mut failures) = (0, 0, 0, 0);
     let mut has_list = false;
     for pick in picks {
+        if pick.failed {
+            // Same judged cohort as the main report: an attempted operational
+            // failure keeps its place at loss 2. It is neither a suggestion
+            // nor a relevance abstention, but it does miss a positive case.
+            evaluated += 1;
+            failures += 1;
+            total_loss += 2;
+            if positive_case(pick.label) {
+                positive_cases += 1;
+            } else {
+                no_match_cases += 1;
+            }
+            continue;
+        }
         let Ok(top) = &pick.top else {
             not_evaluated += 1;
             continue;
@@ -1548,6 +1650,7 @@ fn score_picks(name: &str, definition: &str, picks: &[Pick<'_>]) -> PolicyScore 
         definition: definition.into(),
         evaluated_cases: evaluated,
         not_evaluated_cases: not_evaluated,
+        operational_failures: failures,
         top1_precision: Ratio::of(precise, emitted),
         positive_suggestion_rate: Ratio::of(positive_hits, positive_cases),
         needless_suggestion_rate: Ratio::of(needless, no_match_cases),
