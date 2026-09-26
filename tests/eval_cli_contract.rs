@@ -706,6 +706,8 @@ fn explain_derives_equations_from_the_report_without_changing_it() {
         text.contains("Every family in the frame was evaluated"),
         "{text}"
     );
+    // A weighted design never presents ratio estimators as unbiased means.
+    assert!(text.contains("non-linear ratio estimators"), "{text}");
     assert!(text.contains("not a passed quality gate"), "{text}");
 }
 

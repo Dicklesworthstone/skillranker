@@ -1888,6 +1888,12 @@ fn explain_report(report: &EvaluationBatchReport) -> ReportExplanation {
             }
             if let Some(design) = design {
                 push_design_quantities(&mut quantities, design);
+                interpretation.push(
+                    "Only the design-weighted mean loss is estimated. Weighted precision and \
+                     other ratios are non-linear ratio estimators, not unbiased means, so this \
+                     report gives none, and its unweighted rates describe the sample, not the frame."
+                        .into(),
+                );
                 if !design.point_estimate_guaranteed {
                     interpretation.push(format!(
                         "{} sampled cases lack a loss; read the design-weighted mean as the \
