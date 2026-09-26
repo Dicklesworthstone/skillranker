@@ -2105,7 +2105,7 @@ fn format_stats_report(report: &crate::storage::StatsValueReport) -> String {
         };
         let _ = writeln!(
             out,
-            "  counted: {}, recorded: {}, notifications inside a turn: {}, left no row: {} (upper bound on sr failures){bound}",
+            "  counted: {}, recorded: {}, task notifications (not user turns): {}, left no row: {} (upper bound on sr failures){bound}",
             entries.counted_at_entry,
             entries.recorded,
             entries.non_turn_deliveries,
