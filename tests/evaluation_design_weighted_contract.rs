@@ -494,3 +494,43 @@ fn test_adversarial_inputs_fail_closed() {
         Err(DesignWeightedError::InconsistentSampleCount { .. })
     ));
 }
+
+#[test]
+fn weights_that_sum_to_one_but_are_not_population_shares_are_refused() {
+    // The 900/100 frame weighted 0.5/0.5 would report the unweighted 11%
+    // instead of the frame's 3.8%, although the weights still sum to one.
+    let strata_with = |routine: f64, overflow: f64| {
+        let mut strata = BTreeMap::new();
+        for (key, population, weight) in [
+            ("routine:complete", 900, routine),
+            ("overflow:complete", 100, overflow),
+        ] {
+            strata.insert(
+                key.to_string(),
+                StratumAllocation {
+                    stratum_key: key.to_string(),
+                    population_size: population,
+                    sample_size: 50,
+                    weight,
+                    inclusion_probability: Some(50.0 / population as f64),
+                },
+            );
+        }
+        strata
+    };
+    let mut cases = Vec::new();
+    for (key, errors) in [("routine:complete", 1), ("overflow:complete", 10)] {
+        for i in 0..50 {
+            let loss = if i < errors { 1.0 } else { 0.0 };
+            cases.push(StratumCaseLoss::new(key, SampledCaseLoss::Observed(loss)));
+        }
+    }
+    let err = compute_design_weighted_loss(&strata_with(0.5, 0.5), &cases, 0.05).unwrap_err();
+    assert!(
+        matches!(&err, DesignWeightedError::WeightMismatch { stratum, .. } if stratum == "overflow:complete"),
+        "{err}"
+    );
+    // Honest counterpart: the population shares are accepted and give 3.8%.
+    let report = compute_design_weighted_loss(&strata_with(0.9, 0.1), &cases, 0.05).unwrap();
+    assert!((report.r_hat_observed.unwrap() - 0.038).abs() < 1e-9);
+}

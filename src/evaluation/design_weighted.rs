@@ -60,6 +60,12 @@ pub enum DesignWeightedError {
     InconsistentWeights {
         sum: f64,
     },
+    /// A stratum weight differs from its population share `N_h / N`.
+    WeightMismatch {
+        stratum: String,
+        weight: f64,
+        expected: f64,
+    },
     UnknownStratum {
         stratum: String,
     },
@@ -121,6 +127,14 @@ impl fmt::Display for DesignWeightedError {
             Self::NonFiniteWeight { stratum, weight } => {
                 write!(f, "stratum '{stratum}' weight must be finite, got {weight}")
             }
+            Self::WeightMismatch {
+                stratum,
+                weight,
+                expected,
+            } => write!(
+                f,
+                "stratum '{stratum}' weight {weight} is not its population share {expected}"
+            ),
             Self::InconsistentWeights { sum } => {
                 write!(
                     f,
@@ -532,6 +546,18 @@ pub fn compute_design_weighted_loss(
 
     if (weight_sum - 1.0).abs() > 1e-4 {
         return Err(DesignWeightedError::InconsistentWeights { sum: weight_sum });
+    }
+    // Each weight must be its stratum's population share: weights that merely
+    // sum to one could still reweight strata and bias the frame estimate.
+    for (key, alloc) in strata_allocations {
+        let expected = alloc.population_size as f64 / total_frame_cases as f64;
+        if (alloc.weight - expected).abs() > 1e-9 {
+            return Err(DesignWeightedError::WeightMismatch {
+                stratum: key.clone(),
+                weight: alloc.weight,
+                expected,
+            });
+        }
     }
 
     // Group case losses by stratum
