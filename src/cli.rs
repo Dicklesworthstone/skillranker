@@ -3264,7 +3264,7 @@ fn eval_live_command(
                 .borrow()
                 .get(&case.key.case_id)
                 .filter(|(previewed, _)| *previewed == context)
-                .map(|(_, digest)| *digest);
+                .map(|(_, preview)| *preview);
             rank_live_case(clock, per_case_ms, case_args(case, gate), case, expected)
         },
     )
@@ -3280,7 +3280,7 @@ fn run_case_pipeline(
     args: crate::pipeline::RankArgs,
     case: &crate::evaluation::batch::LiveEvaluationCase,
     evidence: &mut crate::pipeline::StageEvidence,
-    expected_wide_digest: Option<[u8; 32]>,
+    expected_wide_digest: Option<crate::pipeline::WidePreview>,
 ) -> Result<OutputDocument, &'static str> {
     let remaining = batch.remaining_until_expiry().as_millis();
     let total = per_case_ms.min(remaining);
@@ -3335,11 +3335,18 @@ fn preview_live_case(
         .as_array()
         .and_then(|stages| stages.iter().find(|stage| stage["stage"] == "wide"))
         .and_then(|stage| stage["request"].as_str());
-    if let (Some(request), Ok(context)) = (wide, serde_json::to_vec(&case.context)) {
-        previews.borrow_mut().insert(
-            case.key.case_id.clone(),
-            (context, *blake3::hash(request.as_bytes()).as_bytes()),
-        );
+    // A preview that sends no wide request binds too: the live run may then
+    // send none either, or it would disclose something nobody previewed.
+    if let Ok(context) = serde_json::to_vec(&case.context) {
+        let preview = match wide {
+            Some(request) => {
+                crate::pipeline::WidePreview::Digest(*blake3::hash(request.as_bytes()).as_bytes())
+            }
+            None => crate::pipeline::WidePreview::NoRequest,
+        };
+        previews
+            .borrow_mut()
+            .insert(case.key.case_id.clone(), (context, preview));
     }
     // Every preview carries a `disclosure` key; it is null when the run ends
     // locally, which must fall through to the local decision below rather
@@ -3367,7 +3374,7 @@ fn rank_live_case(
     per_case_ms: u64,
     args: crate::pipeline::RankArgs,
     case: &crate::evaluation::batch::LiveEvaluationCase,
-    expected_wide_digest: Option<[u8; 32]>,
+    expected_wide_digest: Option<crate::pipeline::WidePreview>,
 ) -> crate::evaluation::batch::LiveRankOutcome {
     use crate::evaluation::batch::LiveRankOutcome;
     let started = std::time::Instant::now();
@@ -3389,8 +3396,10 @@ fn rank_live_case(
                 elapsed_ms: elapsed(),
                 // Candidates are admitted just before the first request, so a
                 // run that got that far may have sent some without reporting
-                // them: its attempts are unknown, never zero.
-                attempts_unknown: !evidence.admitted.is_empty(),
+                // them: its attempts are unknown, never zero. A preview
+                // refusal stops before any attempt, so it cost nothing.
+                attempts_unknown: !evidence.admitted.is_empty() && !evidence.preview_refused,
+                preview_refused: evidence.preview_refused,
                 ..LiveRankOutcome::default()
             };
         }
@@ -3416,15 +3425,17 @@ fn rank_live_case(
         output_tokens: usage("output_tokens"),
         error_kind: value["error"]["kind"].as_str().map(str::to_owned),
         elapsed_ms: elapsed(),
+        preview_refused: evidence.preview_refused,
         evidence: Some(evidence),
         // The decision document reports its own usage.
         attempts_unknown: false,
     }
 }
 
-/// Each previewed case's context bytes and the BLAKE3 digest of the exact wide
-/// request its preview would send.
-type PreviewedRequests = std::collections::BTreeMap<String, (Vec<u8>, [u8; 32])>;
+/// Each previewed case's context bytes and what its preview bound: the BLAKE3
+/// digest of the exact wide request it would send, or that it sends none.
+type PreviewedRequests =
+    std::collections::BTreeMap<String, (Vec<u8>, crate::pipeline::WidePreview)>;
 
 /// The longest live or replay batch deadline accepted: one day.
 const MAX_EVAL_RUNTIME_MS: u64 = 86_400_000;

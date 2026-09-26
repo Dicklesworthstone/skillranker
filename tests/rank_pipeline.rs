@@ -996,6 +996,18 @@ fn test_none_winner_abstention() {
 
 #[test]
 fn an_evaluation_send_whose_request_changed_since_its_preview_is_withheld() {
+    // Not the digest of this request's wide stage.
+    assert_withheld_for(skillranker::pipeline::WidePreview::Digest([0u8; 32]));
+}
+
+#[test]
+fn an_evaluation_send_whose_preview_sent_nothing_is_withheld() {
+    // The preview ended locally; a live run that now reaches the provider
+    // would disclose a request nobody previewed.
+    assert_withheld_for(skillranker::pipeline::WidePreview::NoRequest);
+}
+
+fn assert_withheld_for(preview: skillranker::pipeline::WidePreview) {
     let (_root, workspace) = create_test_env();
     let skills_dir = workspace.join(".claude/skills");
     create_skill(
@@ -1064,8 +1076,7 @@ fn an_evaluation_send_whose_request_changed_since_its_preview_is_withheld() {
                 Some(&transport),
                 context,
                 &mut evidence,
-                // Not the digest of this request's wide stage.
-                Some([0u8; 32]),
+                Some(preview),
             ));
     let kind = match &outcome {
         Err((_, kind, _)) => (*kind).to_owned(),
@@ -1080,5 +1091,11 @@ fn an_evaluation_send_whose_request_changed_since_its_preview_is_withheld() {
     };
     assert_eq!(kind, "superseded", "{detail}");
     assert!(transport.recorded_requests.lock().unwrap().is_empty());
+    // Marked as a preview refusal, so the batch neither charges attempts nor
+    // counts an operational failure.
+    assert!(evidence.preview_refused, "{detail}");
+    if let Ok(doc) = &outcome {
+        assert_eq!(doc.as_value()["usage"]["http_attempts"], 0, "{detail}");
+    }
     assert!(invocation.shutdown());
 }

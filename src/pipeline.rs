@@ -215,9 +215,9 @@ struct Progress {
     supplied_context: Option<Vec<u8>>,
     /// Per-stage answers captured for an evaluation run; `None` otherwise.
     stage_evidence: Option<StageEvidence>,
-    /// For an evaluation send bound to its preview: the BLAKE3 digest its
-    /// wide request must still have when it is about to be sent.
-    expected_wide_digest: Option<[u8; 32]>,
+    /// For an evaluation send bound to its preview: what its wide request
+    /// must still be when it is about to be sent. `None`: not bound.
+    expected_wide_digest: Option<WidePreview>,
 }
 
 /// Identity and cost carried out of a failing run, so an unavailable event can
@@ -404,7 +404,7 @@ pub async fn execute_pipeline_with_context(
     transport: Option<&dyn JevTransport>,
     context: Vec<u8>,
     evidence: &mut StageEvidence,
-    expected_wide_digest: Option<[u8; 32]>,
+    expected_wide_digest: Option<WidePreview>,
 ) -> Result<OutputDocument, PipelineFailure> {
     execute_pipeline_supplied(
         invocation,
@@ -485,6 +485,20 @@ pub struct StageEvidence {
     /// when production ran Quill itself or no pass ran.
     #[serde(default)]
     pub lexical_elapsed_ms: u64,
+    /// The run was bound to a disclosure preview and refused its wide request
+    /// before any attempt, because the request no longer matched the preview.
+    #[serde(default)]
+    pub preview_refused: bool,
+}
+
+/// What an evaluation send was bound to by its disclosure preview.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WidePreview {
+    /// The preview's exact wide request: the send must still hash to it.
+    Digest([u8; 32]),
+    /// The preview ended locally and sent nothing, so any wide request now
+    /// is one nobody previewed and is refused.
+    NoRequest,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -513,7 +527,7 @@ async fn execute_pipeline_supplied(
     transport: Option<&dyn JevTransport>,
     supplied_context: Option<Vec<u8>>,
     evidence: Option<&mut StageEvidence>,
-    expected_wide_digest: Option<[u8; 32]>,
+    expected_wide_digest: Option<WidePreview>,
 ) -> Result<OutputDocument, PipelineFailure> {
     let clock = &invocation.clock();
     // Every effect restriction comes from the gate; `args.dry_run` can only add
@@ -2674,9 +2688,19 @@ async fn rank_once(
             });
             // An evaluation send bound to its disclosure preview goes out only
             // if its final wide request is byte-identical to what was previewed.
-            if let Some(expected) = progress.expected_wide_digest
-                && *blake3::hash(wide_builder.bytes()).as_bytes() != expected
-            {
+            // A preview that sent nothing binds too: no wide request may go.
+            let unpreviewed = match progress.expected_wide_digest {
+                None => false,
+                Some(WidePreview::NoRequest) => true,
+                Some(WidePreview::Digest(expected)) => {
+                    *blake3::hash(wide_builder.bytes()).as_bytes() != expected
+                }
+            };
+            if unpreviewed {
+                // Refused before any attempt: nothing was sent or charged.
+                if let Some(evidence) = progress.stage_evidence.as_mut() {
+                    evidence.preview_refused = true;
+                }
                 return Err(failure(
                     ErrorKind::Superseded,
                     "The request changed since its disclosure preview; not sent",

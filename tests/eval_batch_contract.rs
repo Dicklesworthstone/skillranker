@@ -420,6 +420,7 @@ fn baselines_score_every_policy_on_the_same_judged_cohort_from_one_runs_answers(
         quill_ranked: false,
         lexical: None,
         lexical_elapsed_ms: 0,
+        preview_refused: false,
         wide: Some(WideEvidence {
             needs_skill: 0.9,
             none_probability: 0.1,
@@ -1181,6 +1182,7 @@ fn a_case_any_policy_cannot_score_leaves_every_policy() {
                 // The Quill pass could not run for the second case.
                 lexical: (case.key.case_id == "scored").then(|| vec!["s_alpha".to_owned()]),
                 lexical_elapsed_ms: 0,
+                preview_refused: false,
                 wide: Some(WideEvidence {
                     needs_skill: 0.9,
                     none_probability: 0.1,
@@ -1334,6 +1336,7 @@ fn a_request_that_changed_since_its_preview_is_not_estimable_not_a_failure() {
             LiveRankOutcome {
                 decision: "unavailable".into(),
                 error_kind: Some("superseded".into()),
+                preview_refused: true,
                 ..LiveRankOutcome::default()
             }
         }
@@ -1350,4 +1353,22 @@ fn a_request_that_changed_since_its_preview_is_not_estimable_not_a_failure() {
         &b.status,
         CaseExecutionStatus::NotEstimable { reason } if reason.contains("disclosure preview")
     ));
+    // Counterpart: a `superseded` failure after sending (policy revalidation
+    // at publication, say) is an operational failure, not a preview refusal.
+    let report = live_run(vec![live_case("a"), live_case("b")], 100, |case| {
+        LiveRankOutcome {
+            decision: if case.key.case_id == "a" {
+                "ranked"
+            } else {
+                "unavailable"
+            }
+            .into(),
+            suggested_skills: vec!["s_alpha".into()],
+            error_kind: (case.key.case_id == "b").then(|| "superseded".into()),
+            http_attempts: 2,
+            ..LiveRankOutcome::default()
+        }
+    });
+    assert_eq!(report.loss_summary.operational_failures, 1);
+    assert_eq!(report.loss_summary.not_estimable_cases, 0);
 }

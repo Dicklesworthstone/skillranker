@@ -774,6 +774,9 @@ pub struct LiveRankOutcome {
     /// have sent requests (its cleanup overran, say), so its attempts are
     /// unknown. The batch charges its worst case, never zero.
     pub attempts_unknown: bool,
+    /// The send was refused before any attempt because its wide request no
+    /// longer matched its disclosure preview (or the preview sent none).
+    pub preview_refused: bool,
 }
 
 /// The attempts and unknown-usage attempts one ranking is charged: as
@@ -1030,7 +1033,10 @@ pub fn execute_live_frame_evaluation<L: BufRead>(
         // The request changed after its preview (for example a newly dirtied
         // path), so it was withheld: the case was never evaluated, and the
         // selector is not charged for it.
-        if outcome.error_kind.as_deref() == Some("superseded") {
+        // Only a preview refusal was never sent. Other `superseded` failures
+        // (policy revalidation after sending, a policy change during retry)
+        // stay operational failures.
+        if outcome.preview_refused {
             run.skipped.push((
                 record.key,
                 CaseExecutionStatus::NotEstimable {
