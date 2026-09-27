@@ -141,6 +141,72 @@ pub struct BatchAccounting {
     pub output_tokens: u64,
 }
 
+/// Process memory and token use of a live batch, projected to a named
+/// workload. No price is attached: prices are separately versioned estimates.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ResourceUsage {
+    /// Peak resident set size of the whole `sr` process (Linux `VmHWM`);
+    /// `None` where the platform does not report it.
+    pub peak_rss_bytes: Option<u64>,
+    pub peak_rss_scope: String,
+    /// `None` when no main ranking was evaluated.
+    pub projection: Option<WorkloadProjection>,
+}
+
+/// Mean use per main ranking in this batch, scaled to a workload of
+/// `turns` ranked turns like these cases. Context-ablation arms and
+/// robustness variants are excluded; tokens of attempts that returned no
+/// usage are unknown and not included, so their rate is disclosed.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct WorkloadProjection {
+    pub workload: String,
+    pub turns: u64,
+    pub basis_cases: usize,
+    pub http_attempts: f64,
+    pub input_tokens: f64,
+    pub output_tokens: f64,
+    pub unknown_usage_attempts: f64,
+    pub caveat: String,
+}
+
+const PROJECTION_TURNS: u64 = 1_000;
+
+impl WorkloadProjection {
+    fn from_main(main: &BatchAccounting, cases: usize) -> Option<Self> {
+        if cases == 0 {
+            return None;
+        }
+        let scale = PROJECTION_TURNS as f64 / cases as f64;
+        Some(Self {
+            workload: format!("{PROJECTION_TURNS} ranked turns like this batch's cases"),
+            turns: PROJECTION_TURNS,
+            basis_cases: cases,
+            http_attempts: main.http_attempts as f64 * scale,
+            input_tokens: main.input_tokens as f64 * scale,
+            output_tokens: main.output_tokens as f64 * scale,
+            unknown_usage_attempts: main.unknown_usage_attempts as f64 * scale,
+            caveat: "Means of this batch's main rankings, not of real hook traffic: cache \
+                     hits, abstentions before the gate and roster size change real use. \
+                     Tokens of unknown-usage attempts are not included."
+                .to_owned(),
+        })
+    }
+}
+
+/// Peak resident set size of this process, from Linux `/proc/self/status`.
+fn peak_rss_bytes() -> Option<u64> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    let line = status.lines().find(|line| line.starts_with("VmHWM:"))?;
+    let kib: u64 = line
+        .trim_start_matches("VmHWM:")
+        .trim()
+        .trim_end_matches("kB")
+        .trim()
+        .parse()
+        .ok()?;
+    kib.checked_mul(1024)
+}
+
 /// Common 0/1/2 evaluation loss metrics matching `evaluation_policy.v1.json`.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct BatchLossSummary {
@@ -199,6 +265,9 @@ pub struct EvaluationBatchReport {
     /// Requested by `--explain`; derived only from this report's own values.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub explanation: Option<ReportExplanation>,
+    /// A live batch's process memory and projected token use.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resource_usage: Option<ResourceUsage>,
     pub cases: Vec<BatchCaseReport>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<ReportError>,
@@ -459,6 +528,7 @@ pub fn execute_evaluation_batch<R: BufRead>(
         review_queue: None,
         baselines: None,
         explanation: None,
+        resource_usage: None,
         cases: reports,
         error,
     };
@@ -545,6 +615,7 @@ struct FrameRun {
     preflight: Option<DisclosurePreflight>,
     baselines: Option<BaselineComparison>,
     review_queue: Option<crate::evaluation::review::ReviewQueue>,
+    resource_usage: Option<ResourceUsage>,
 }
 
 impl FrameRun {
@@ -558,6 +629,7 @@ impl FrameRun {
             preflight: None,
             baselines: None,
             review_queue: None,
+            resource_usage: None,
         }
     }
 }
@@ -725,6 +797,7 @@ fn score_frame(
         review_queue,
         baselines,
         explanation: None,
+        resource_usage: run.resource_usage,
         cases: reports,
         error: if complete { None } else { run.error },
     };
@@ -939,6 +1012,9 @@ pub fn execute_live_frame_evaluation<L: BufRead>(
         ..FrameRun::recorded()
     };
     let mut pending = Vec::with_capacity(selected.len());
+    // Main rankings only, for the workload projection.
+    let mut main = BatchAccounting::default();
+    let mut main_cases = 0;
     // Unjudged cases are never sent, yet they belong in the review queue.
     let mut unjudged: Vec<(CaseKey, EvaluationSplit)> = Vec::new();
     for record in selected {
@@ -1067,12 +1143,14 @@ pub fn execute_live_frame_evaluation<L: BufRead>(
         }
         let outcome = rank(case);
         let (attempts, unknown_usage) = charged_attempts(&outcome, limits.attempts_per_case);
-        let accounting = &mut run.accounting;
-        accounting.requests += outcome.requests;
-        accounting.http_attempts += attempts;
-        accounting.unknown_usage_attempts += unknown_usage;
-        accounting.input_tokens += outcome.input_tokens;
-        accounting.output_tokens += outcome.output_tokens;
+        for accounting in [&mut run.accounting, &mut main] {
+            accounting.requests += outcome.requests;
+            accounting.http_attempts += attempts;
+            accounting.unknown_usage_attempts += unknown_usage;
+            accounting.input_tokens += outcome.input_tokens;
+            accounting.output_tokens += outcome.output_tokens;
+        }
+        main_cases += usize::from(!outcome.preview_refused);
         // The request changed after its preview (for example a newly dirtied
         // path), so it was withheld: the case was never evaluated, and the
         // selector is not charged for it.
@@ -1283,6 +1361,11 @@ pub fn execute_live_frame_evaluation<L: BufRead>(
         .retain(|note| !note.starts_with("context ablation"));
     comparison.robustness = robustness;
     run.baselines = Some(comparison);
+    run.resource_usage = Some(ResourceUsage {
+        peak_rss_bytes: peak_rss_bytes(),
+        peak_rss_scope: "the whole sr process, including evaluation bookkeeping".to_owned(),
+        projection: WorkloadProjection::from_main(&main, main_cases),
+    });
     score_frame(executed, &labels, manifest, run)
 }
 

@@ -426,6 +426,9 @@ batch's disclosure totals and receipt digest. An authentication or consent failu
 stops scheduling. Live runs write nothing to the ledger or response cache;
 a configured [shared attempt allowance](#share-an-http-attempt-allowance-across-sessions)
 still charges each of their sends.
+The report also gives the process's peak resident memory and projects its main
+rankings' attempts and known tokens to 1,000 similar turns, disclosing
+unknown-usage attempts; it attaches no price.
 From the same answers, with no extra request, the report also scores intrinsic
 coverage (an acceptable skill admitted, and shortlisted when the gate passes) and
 the policies on one judged cohort: Quill-only, choice-only, fit-only, a

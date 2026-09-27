@@ -1467,3 +1467,35 @@ fn a_recorded_frame_queues_its_unjudged_cases_for_review() {
     assert_eq!(queued, ["unjudged"]);
     assert_eq!(queue.denominator_effect, "none");
 }
+
+#[test]
+fn a_live_batch_reports_memory_and_projects_main_ranking_use() {
+    use skillranker::evaluation::batch::LiveRankOutcome;
+    let report = live_run(vec![live_case("a"), live_case("b")], 100, |_| {
+        LiveRankOutcome {
+            decision: "ranked".into(),
+            suggested_skills: vec!["s_alpha".into()],
+            requests: 2,
+            http_attempts: 3,
+            unknown_usage_attempts: 1,
+            input_tokens: 200,
+            output_tokens: 50,
+            ..LiveRankOutcome::default()
+        }
+    });
+    let usage = report
+        .resource_usage
+        .expect("a live batch reports resource use");
+    if cfg!(target_os = "linux") {
+        assert!(usage.peak_rss_bytes.is_some_and(|bytes| bytes > 0));
+    }
+    let projection = usage.projection.unwrap();
+    assert_eq!(projection.basis_cases, 2);
+    assert_eq!(projection.turns, 1_000);
+    // Per case: 3 attempts, 200 in, 50 out, 1 unknown-usage attempt.
+    assert_eq!(projection.http_attempts, 3_000.0);
+    assert_eq!(projection.input_tokens, 200_000.0);
+    assert_eq!(projection.output_tokens, 50_000.0);
+    assert_eq!(projection.unknown_usage_attempts, 1_000.0);
+    assert!(projection.caveat.contains("not included"));
+}
