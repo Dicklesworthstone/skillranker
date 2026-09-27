@@ -1410,22 +1410,14 @@ fn budget_command(clock: &EntryClock, matches: &clap::ArgMatches) -> Result<Stri
             "No trusted user configuration directory: set XDG_CONFIG_HOME or HOME".to_owned(),
         )
     })?;
-    // Charges are scoped to the selected provider's canonical origin.
-    let origin = match std::env::var("SR_PROVIDER").ok().as_deref() {
-        Some("cloudflare") => {
-            let account = std::env::var("CLOUDFLARE_ACCOUNT_ID")
-                .map_err(|_| invalid("CLOUDFLARE_ACCOUNT_ID is required for Cloudflare"))?;
-            crate::jev::cloudflare::endpoint(&account)
-                .map_err(|_| invalid("CLOUDFLARE_ACCOUNT_ID is not valid"))?
-                .origin()
-                .clone()
-        }
-        _ => match std::env::var("TYPESAFE_ENDPOINT") {
-            Ok(text) if !text.is_empty() => crate::jev::CanonicalOrigin::parse(&text)
-                .map_err(|_| invalid("TYPESAFE_ENDPOINT is not a valid origin"))?,
-            _ => crate::jev::CanonicalOrigin::production(),
-        },
-    };
+    // Charges are scoped to the selected provider's effective canonical origin.
+    // Resolve the same trusted/project/environment layers used by ranking so a
+    // provider selected in trusted user configuration cannot be mis-scoped.
+    let workspace = std::env::current_dir().map_err(|_| invalid("Workspace is unavailable"))?;
+    let mut sources = ConfigSources::default();
+    environment_sources(&mut sources)?;
+    let config = ConfigFiles::new(workspace, Some(user_root.clone())).load(clock, sources)?;
+    let origin = provider_origin(&config)?;
     let now = crate::allowance::wall_clock_ms().ok_or_else(|| {
         (
             4u8,
@@ -5058,22 +5050,7 @@ fn readiness(
         _ => RosterCheck::Unusable,
     };
     timely(clock)?;
-    let origin = match config.effective().provider() {
-        crate::config::Provider::TypeSafe => match config.effective().endpoint() {
-            Some(endpoint) => crate::jev::CanonicalOrigin::from_override(endpoint)
-                .map_err(|_| invalid("The endpoint override is not a valid origin"))?,
-            None => crate::jev::CanonicalOrigin::production(),
-        },
-        crate::config::Provider::Cloudflare => {
-            let account_id = config.effective().cloudflare_account_id().ok_or_else(|| {
-                invalid("CLOUDFLARE_ACCOUNT_ID is required for the Cloudflare provider")
-            })?;
-            crate::jev::cloudflare::endpoint(account_id)
-                .map_err(|_| invalid("CLOUDFLARE_ACCOUNT_ID is not valid"))?
-                .origin()
-                .clone()
-        }
-    };
+    let origin = provider_origin(config)?;
     // No live check writes transport evidence in this build, so none is read.
     let transport = assess_transport(
         None,
@@ -5156,6 +5133,27 @@ fn readiness(
         output.push_str(&format!("{check}\t{state}\t{next}\n"));
     }
     Ok(output)
+}
+
+/// Resolve the canonical allowance/readiness origin from the same effective
+/// provider configuration used by ranking.
+fn provider_origin(config: &ResolvedConfig) -> Result<crate::jev::CanonicalOrigin, Failure> {
+    match config.effective().provider() {
+        crate::config::Provider::TypeSafe => match config.effective().endpoint() {
+            Some(endpoint) => crate::jev::CanonicalOrigin::from_override(endpoint)
+                .map_err(|_| invalid("The endpoint override is not a valid origin")),
+            None => Ok(crate::jev::CanonicalOrigin::production()),
+        },
+        crate::config::Provider::Cloudflare => {
+            let account_id = config.effective().cloudflare_account_id().ok_or_else(|| {
+                invalid("CLOUDFLARE_ACCOUNT_ID is required for the Cloudflare provider")
+            })?;
+            Ok(crate::jev::cloudflare::endpoint(account_id)
+                .map_err(|_| invalid("CLOUDFLARE_ACCOUNT_ID is not valid"))?
+                .origin()
+                .clone())
+        }
+    }
 }
 
 fn config_report(config: &ResolvedConfig) -> Value {

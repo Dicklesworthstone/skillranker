@@ -163,8 +163,10 @@ impl CloudflareClient {
         if !content_type_seen {
             return Err(failure(TransportErrorKind::InvalidContentType, true));
         }
-        decode_response(request, &response.body)
-            .map_err(|e| failure(TransportErrorKind::Response(e), true))
+        let decoded = decode_response(request, &response.body)
+            .map_err(|e| failure(TransportErrorKind::Response(e), true))?;
+        budget(cx, clock, true)?;
+        Ok(decoded)
     }
 }
 
@@ -223,14 +225,19 @@ fn decode_response(request: &Request, body: &[u8]) -> Result<Response, CodecErro
         .filter(|model| !model.is_empty())
         .unwrap_or(request.model());
     let answers = result.get("answers").ok_or(CodecError::InvalidAnswer)?;
-    let usage = result
-        .get("usage")
-        .cloned()
-        .unwrap_or_else(|| json!({"input_tokens": 0, "output_tokens": 0}));
+    let usage = result.get("usage").ok_or(CodecError::InvalidAnswer)?;
+    let input_tokens = usage
+        .get("input_tokens")
+        .and_then(Value::as_u64)
+        .ok_or(CodecError::InvalidAnswer)?;
+    let output_tokens = usage
+        .get("output_tokens")
+        .and_then(Value::as_u64)
+        .ok_or(CodecError::InvalidAnswer)?;
     let wire = json!({
         "model": model,
         "answers": answers,
-        "usage": usage,
+        "usage": {"input_tokens": input_tokens, "output_tokens": output_tokens},
     });
     let wire = serde_json::to_vec(&wire).map_err(|_| CodecError::InvalidJson)?;
     request.decode_response(&wire)
@@ -315,6 +322,35 @@ mod tests {
         assert_eq!(body["model"], "typesafe/jev");
         assert_eq!(body["input"]["state"], "synthetic state");
         assert_eq!(body["input"]["questions"]["fit"]["type"], "noul");
+    }
+
+    #[test]
+    fn missing_usage_is_rejected_instead_of_fabricating_zero_tokens() {
+        let request = Request::new(
+            "typesafe/jev".into(),
+            json!("synthetic state"),
+            [(
+                "fit".into(),
+                Question::Noul {
+                    instructions: json!("Return a bounded synthetic score."),
+                    criteria: None,
+                },
+            )],
+        )
+        .unwrap();
+        let body = serde_json::json!({
+            "success": true,
+            "result": {
+                "result": {
+                    "model": "jev-1.13.0",
+                    "answers": {"fit": {"type": "noul", "noul": 0.75}}
+                }
+            }
+        });
+        assert!(matches!(
+            decode_response(&request, body.to_string().as_bytes()),
+            Err(CodecError::InvalidAnswer)
+        ));
     }
 
     #[test]

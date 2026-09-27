@@ -28,11 +28,13 @@ Public source URLs and documentation use `main`.
 SkillRanker is a standalone Rust CLI, `sr`, that recommends the most useful skills
 for the **next step of a specific live agent session**:
 
-**TypeSafe.ai's Jev is the system's essential ranking engine. A TypeSafe API key
-is required for the product's ranking workflow.** Keep this dependency prominent
-in product descriptions, installation, and onboarding. Context capture, Quill retrieval,
-caching, local scoring, and feedback support Jev; they are not a replacement
-inference system. Do not imply that `sr` has a key-free ranking backend.
+**Jev is the system's essential ranking engine. A credential for the selected
+provider is required for the product's ranking workflow.** TypeSafe is the
+default provider; Cloudflare-hosted TypeSafe Jev is also supported. Keep this
+dependency prominent in product descriptions, installation, and onboarding.
+Context capture, Quill retrieval, caching, local scoring, and feedback support
+Jev; they are not a replacement inference system. Do not imply that `sr` has a
+key-free ranking backend.
 
 ```text
 exact session + visible roster + user constraints
@@ -106,9 +108,11 @@ Keep `.env.example` credential-free. When rotating the key, update the local
 `.env` and both Vault copies, preserving unrelated fields. A loaded credential
 does not authorize sending session content: network opt-in still applies.
 
-These are private maintainer stores. Outside users must sign up at the
-[TypeSafe console](https://console.typesafe.ai) and obtain **their own API key**;
-the README must direct them there.
+These are private maintainer stores. Outside users must obtain **their own
+credential for the selected provider**; TypeSafe users can sign up at the
+[TypeSafe console](https://console.typesafe.ai), and Cloudflare users must
+configure their account ID and API token. The README must direct users to the
+selected provider's setup.
 
 ## Architecture Doctrine
 

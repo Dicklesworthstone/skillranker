@@ -10,7 +10,7 @@
 
 ## 1. Purpose and Architecture
 
-Under the SkillRanker contract (I03, `sr-roadmap-l1i.2.8`), fresh calls to TypeSafe's Jev inference service are strictly bounded:
+Under the SkillRanker contract (I03, `sr-roadmap-l1i.2.8`), fresh calls to the selected Jev provider are strictly bounded:
 - A four-attempt cap per invocation is enforced across retries and stages.
 - Every HTTP attempt must pass through a **single admission seam** before bytes reach the network.
 - Single-use permits guarantee that no attempt is sent without authorization or deadline verification.

@@ -195,6 +195,28 @@ fn offline_flags_are_recognized_and_mutually_exclusive() {
     assert_eq!(alone.status.code(), Some(0));
 }
 
+#[test]
+fn budget_uses_the_effective_trusted_provider_origin() {
+    let f = Fixture::new();
+    std::fs::write(
+        f.root.join("user/sr/config.toml"),
+        "[provider]\nkind=\"cloudflare\"\n",
+    )
+    .unwrap();
+    let output = f.run(
+        &["budget", "--json"],
+        &[("CLOUDFLARE_ACCOUNT_ID", "0123456789abcdef0123456789abcdef")],
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["scope"]["origin"], "https://api.cloudflare.com");
+}
+
 /// Precedence and strict rejection through the installed command boundary.
 #[test]
 fn precedence_matrix_enforces_strict_rejection() {

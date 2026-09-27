@@ -2,11 +2,11 @@
 
 ## 1. Scope and Mission
 
-TypeSafe.ai's Jev is the essential ranking engine for SkillRanker (`sr`).
-All recommendations for live agent turns originate from Jev evaluations.
-This document defines the strict origin canonicalization, credential routing,
-redirect prohibition, and proxy safety contracts governing all network interactions
-with TypeSafe.ai endpoints.
+TypeSafe.ai's Jev is the default ranking provider for SkillRanker (`sr`), and
+all recommendations for live agent turns originate from Jev evaluations. The
+Cloudflare-hosted TypeSafe Jev adapter has its own native endpoint contract;
+this document defines the strict origin canonicalization, credential routing,
+redirect prohibition, and proxy safety contracts governing the TypeSafe adapter.
 
 ## 2. Base Origin Identity and Canonicalization
 
