@@ -337,3 +337,40 @@ fn a_successful_half_open_probe_closes_the_circuit_for_everyone() {
     assert!(probe.status.success(), "{}", describe(&probe));
     assert!(after.status.success(), "{}", describe(&after));
 }
+
+#[test]
+fn two_processes_race_for_one_half_open_probe() {
+    let home = Home::new();
+    let failing = Provider::scenario(&home, "always-503", &[]);
+    home.run(failing.port, &Home::rank_args(&home.context("open"), &[]));
+    assert_eq!(failing.finish(), 3);
+    // The origin recovers slowly: the probe's wide answer takes two seconds.
+    let slow = Provider::scenario(&home, "slow-wide", &["", "2"]);
+    let port = slow.port;
+    let db = rusqlite::Connection::open(breaker_db(&home)).unwrap();
+    db.execute(
+        "UPDATE breaker_state SET origin = ?1, open_until_ms = 0 WHERE open = 1",
+        [format!("https://localhost:{port}")],
+    )
+    .unwrap();
+    drop(db);
+    let spawn = |turn: &str| {
+        home.command(port, &Home::rank_args(&home.context(turn), &[]))
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap()
+    };
+    let owner = spawn("probe");
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let rival = spawn("rival");
+    let rival = rival.wait_with_output().unwrap();
+    let owner = owner.wait_with_output().unwrap();
+    assert_eq!(
+        slow.finish(),
+        2,
+        "only the probe owner's wide and rerank were sent"
+    );
+    assert!(owner.status.success(), "{}", describe(&owner));
+    assert_eq!(kind(&rival), (Some(4), "provider-cooldown".to_owned()));
+}

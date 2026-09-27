@@ -790,6 +790,19 @@ mod tests {
     const LOCK: Duration = Duration::from_millis(200);
 
     #[test]
+    fn the_accounting_writer_is_wal_with_synchronous_full() {
+        let (_root, paths) = temp_paths();
+        let connection = open_accounting(&paths.accounting, true).unwrap();
+        let mode: String = connection
+            .pragma_query_value(None, "journal_mode", |row| row.get(0))
+            .unwrap();
+        let synchronous: i64 = connection
+            .pragma_query_value(None, "synchronous", |row| row.get(0))
+            .unwrap();
+        assert_eq!((mode.as_str(), synchronous), ("wal", 2));
+    }
+
+    #[test]
     fn windows_are_fixed_utc_hours() {
         assert_eq!(window_bounds(3_600_000), (3_600_000, 7_200_000));
         assert_eq!(window_bounds(7_199_999), (3_600_000, 7_200_000));

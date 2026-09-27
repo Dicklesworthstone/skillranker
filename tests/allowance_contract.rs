@@ -597,3 +597,77 @@ fn live_evaluation_sends_are_charged_like_rankings() {
         "{batch}"
     );
 }
+
+#[test]
+fn a_killed_process_keeps_its_charge() {
+    // The wide request is admitted, charged and sent; the process is then
+    // killed while the provider sits on it. The charge is never refunded.
+    // This is a process-kill test, not power-loss proof.
+    let home = Home::new();
+    home.budget(1, &["--max-attempts", "10", "--window", "1h", "--apply"]);
+    let provider = Provider::scenario(&home, "slow-wide", &["", "3"]);
+    let port = provider.port;
+    let context = home.context("killed");
+    let mut child = home
+        .command(port, &Home::rank_args(&context, &[]))
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    // Kill only once the debit is durable, while the provider still holds the
+    // request (it answers after three seconds).
+    let charged = || home.budget(port, &[])["charged_attempts"].as_u64();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while charged() != Some(1) && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert_eq!(charged(), Some(1), "the wide request was never admitted");
+    assert!(
+        child.try_wait().unwrap().is_none(),
+        "the ranking already ended"
+    );
+    child.kill().unwrap();
+    let _ = child.wait();
+    let report = home.budget(port, &[]);
+    assert_eq!(report["charged_attempts"], 1, "{report}");
+    assert_eq!(report["health"], "ready");
+    provider.finish();
+}
+
+#[test]
+fn a_guard_lock_held_elsewhere_withholds_sends_within_a_bounded_wait() {
+    let home = Home::new();
+    home.budget(1, &["--max-attempts", "10", "--window", "1h", "--apply"]);
+    let lock = home.root.join("config/sr/allowance.toml.sr-lock");
+    let mut holder = Command::new("/usr/bin/python3")
+        .arg("-c")
+        .arg(
+            "import fcntl, sys, time\n\
+             f = open(sys.argv[1], 'w')\n\
+             fcntl.flock(f, fcntl.LOCK_EX)\n\
+             print('locked', flush=True)\n\
+             time.sleep(30)\n",
+        )
+        .arg(&lock)
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut ready = String::new();
+    BufReader::new(holder.stdout.as_mut().unwrap())
+        .read_line(&mut ready)
+        .unwrap();
+    assert_eq!(ready.trim(), "locked");
+    let provider = Provider::start(&home);
+    let context = home.context("contended");
+    let started = std::time::Instant::now();
+    let out = home.run(provider.port, &Home::rank_args(&context, &[]));
+    let elapsed = started.elapsed();
+    let _ = holder.kill();
+    let _ = holder.wait();
+    assert_eq!(provider.finish(), 0);
+    assert_eq!(kind(&out), (Some(4), "budget-state".to_owned()));
+    assert!(
+        elapsed < std::time::Duration::from_secs(5),
+        "lock contention was not bounded: {elapsed:?}"
+    );
+}
