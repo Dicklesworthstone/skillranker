@@ -3763,19 +3763,30 @@ mod persistent {
     pub(super) const LEASES_FILE: &str = crate::storage::CACHE_FILE;
 
     fn coordinator(invocation: &ProcessInvocation, cx: &Cx, path: &Path) -> Option<CacheStore> {
-        if path.file_name()? != crate::storage::CACHE_FILE {
-            return None;
+        open_coordinator(invocation, cx, path).ok().flatten()
+    }
+
+    /// The lease store, `Ok(None)` when there is none to use, or the error
+    /// that opening it met, so callers can tell busy from permanent.
+    fn open_coordinator(
+        invocation: &ProcessInvocation,
+        cx: &Cx,
+        path: &Path,
+    ) -> Result<Option<CacheStore>, crate::storage::StoreError> {
+        let (Some(name), Some(parent)) = (path.file_name(), path.parent()) else {
+            return Ok(None);
+        };
+        if name != crate::storage::CACHE_FILE {
+            return Ok(None);
         }
         match crate::storage::open_cache(
             invocation,
             cx,
             CacheAccess::ExistingOnly,
-            CacheLocation::Directory(path.parent()?.to_owned()),
-        )
-        .ok()?
-        {
-            CacheOpen::Ready(store) => Some(*store),
-            CacheOpen::Disabled | CacheOpen::Missing => None,
+            CacheLocation::Directory(parent.to_owned()),
+        )? {
+            CacheOpen::Ready(store) => Ok(Some(*store)),
+            CacheOpen::Disabled | CacheOpen::Missing => Ok(None),
         }
     }
 
@@ -3794,8 +3805,12 @@ mod persistent {
     ) -> Option<LeaseAcquisition> {
         let started = clock.now().as_millis();
         loop {
-            if let Some(acquisition) = try_acquire(invocation, cx, path, key) {
-                return Some(acquisition);
+            match try_acquire(invocation, cx, path, key) {
+                Ok(acquisition) => return Some(acquisition),
+                // A missing, full, corrupt or unsupported store will not heal
+                // within this run: send uncoordinated at once.
+                Err(error) if error != crate::storage::StoreError::Busy => return None,
+                Err(_) => {}
             }
             if cx.is_cancel_requested()
                 || clock.remaining_before_cleanup().as_millis() < 1_000
@@ -3810,15 +3825,16 @@ mod persistent {
     /// How long a run keeps trying to open and take a contended lease.
     const LEASE_ACQUIRE_BUDGET_MS: u64 = 400;
 
+    /// One attempt. `Err(Busy)` is worth retrying; every other error is not.
     fn try_acquire(
         invocation: &ProcessInvocation,
         cx: &Cx,
         path: &Path,
         key: CoordinationKey,
-    ) -> Option<LeaseAcquisition> {
-        coordinator(invocation, cx, path)?
+    ) -> Result<LeaseAcquisition, crate::storage::StoreError> {
+        open_coordinator(invocation, cx, path)?
+            .ok_or(crate::storage::StoreError::Missing)?
             .acquire_lease(invocation, cx, key, false)
-            .ok()
             .map(|(_, result)| result)
     }
 
@@ -4276,7 +4292,10 @@ async fn provider_stage(
     let shared_dir = allowance
         .filter(|_| matches!(gate.runtime_state(), StoreAccess::Enabled))
         .and_then(|paths| paths.accounting.parent());
-    let breaker = crate::breaker::Breaker::for_cache_dir(shared_dir, origin.as_str());
+    let breaker = crate::breaker::Breaker::for_cache_dir(shared_dir, origin.as_str())
+        .with_busy_wait(std::time::Duration::from_millis(
+            clock.remaining_before_cleanup().as_millis(),
+        ));
     let ticket = std::cell::RefCell::new(None);
     let now = || crate::allowance::wall_clock_ms().unwrap_or(0);
     let mut refusal = None;
@@ -4804,10 +4823,13 @@ fn record_inflight_ranking(
 /// so nothing free-form reaches the ledger.
 /// An overrun run may still record its own failure row within this window
 /// from the moment it fails, ending at most `LATE_FAILURE_RECORD_LIMIT_MS`
-/// past its total deadline. The installed hook's outer timeout exceeds the
-/// internal deadline by at least a second, so both stay inside it.
+/// past its total deadline. Its work must also finish before that window's
+/// half-reserve, so at the default 3 s deadline every late write is bounded by
+/// about 3.5 s, inside the installed hook's 4 s outer timeout (and the
+/// harness's measured SIGTERM-to-SIGKILL grace beyond it). A tighter limit
+/// left too little time for the write itself on a loaded host.
 const LATE_FAILURE_RECORD_GRACE_MS: u64 = 300;
-const LATE_FAILURE_RECORD_LIMIT_MS: u64 = 900;
+const LATE_FAILURE_RECORD_LIMIT_MS: u64 = 600;
 
 fn record_failed_attempts(
     invocation: &ProcessInvocation,

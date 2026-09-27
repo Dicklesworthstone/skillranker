@@ -6,7 +6,12 @@
 //! probe; one fenced lease holder owns it, and no background or extra health
 //! call is ever made. A failed probe doubles the cooldown up to five minutes;
 //! a valid response closes the circuit. A valid longer `Retry-After` refuses
-//! attempts until it passes, without making anyone wait for it.
+//! attempts until it passes, without making anyone wait for it; the stored
+//! value is capped at one hour (`MAX_RETRY_AFTER_MS`), and a valid response
+//! clears it.
+//!
+//! The shared store is created only when a transient failure must be
+//! recorded: an origin that has never failed costs one path check per send.
 //!
 //! Every admission carries the circuit generation it saw. Opening, reopening
 //! and closing advance the generation, so a late response admitted under an
@@ -151,11 +156,13 @@ impl Row {
                 self.generation += 1;
                 *self = Row {
                     generation: self.generation,
-                    retry_after_until_ms: self.retry_after_until_ms,
                     ..Row::default()
                 };
             }
-            Outcome::Success if !self.open => self.failures = 0,
+            Outcome::Success if !self.open => {
+                self.failures = 0;
+                self.retry_after_until_ms = 0;
+            }
             Outcome::Success => {}
             Outcome::Transient { retry_after_ms } => {
                 if let Some(delay) = retry_after_ms {
@@ -187,6 +194,7 @@ impl Row {
 pub struct Breaker {
     path: Option<PathBuf>,
     origin: String,
+    busy: Duration,
     local: std::sync::Mutex<Row>,
     degraded: std::sync::atomic::AtomicBool,
 }
@@ -197,6 +205,7 @@ impl Breaker {
         Self {
             path,
             origin: origin.to_owned(),
+            busy: Duration::from_millis(25),
             local: std::sync::Mutex::new(Row::default()),
             degraded: std::sync::atomic::AtomicBool::new(false),
         }
@@ -204,6 +213,12 @@ impl Breaker {
 
     pub fn for_cache_dir(cache_dir: Option<&Path>, origin: &str) -> Self {
         Self::new(cache_dir.map(|dir| dir.join(BREAKER_FILE)), origin)
+    }
+
+    /// Bounds each SQLite busy wait, e.g. by the invocation's remaining time.
+    pub fn with_busy_wait(mut self, busy: Duration) -> Self {
+        self.busy = busy.min(Duration::from_millis(25));
+        self
     }
 
     pub fn protection(&self) -> Protection {
@@ -215,7 +230,7 @@ impl Breaker {
     }
 
     pub fn admit(&self, now: u64, lease_ms: u64) -> Result<Ticket, Refusal> {
-        if let Some(result) = self.shared(|row| row.admit(now, lease_ms)) {
+        if let Some(result) = self.shared(false, |row| row.admit(now, lease_ms)) {
             return result;
         }
         self.local.lock().map_or(
@@ -228,8 +243,10 @@ impl Breaker {
     }
 
     pub fn settle(&self, ticket: &Ticket, outcome: Outcome, now: u64) {
+        // Only a failure is worth creating the shared store for.
+        let create = matches!(outcome, Outcome::Transient { .. });
         if self
-            .shared(|row| row.settle(ticket, outcome, now))
+            .shared(create, |row| row.settle(ticket, outcome, now))
             .is_none()
             && let Ok(mut row) = self.local.lock()
         {
@@ -240,12 +257,17 @@ impl Breaker {
     /// Runs one transition in an immediate transaction on the shared store.
     /// `None` when the store is disabled or unusable: then the process-local
     /// row applies, and the breaker reports itself process-local.
-    fn shared<T>(&self, change: impl FnOnce(&mut Row) -> T) -> Option<T> {
+    fn shared<T>(&self, create: bool, change: impl FnOnce(&mut Row) -> T) -> Option<T> {
         let path = self.path.as_ref()?;
         if self.degraded.load(Ordering::Relaxed) {
             return None;
         }
-        let result = transact(path, &self.origin, change);
+        // No store yet means no failure was ever recorded: nothing to read,
+        // and no reason to create one for a success.
+        if !create && std::fs::symlink_metadata(path).is_err() {
+            return None;
+        }
+        let result = transact(path, &self.origin, self.busy, change);
         if result.is_none() {
             self.degraded.store(true, Ordering::Relaxed);
         }
@@ -253,8 +275,13 @@ impl Breaker {
     }
 }
 
-fn transact<T>(path: &Path, origin: &str, change: impl FnOnce(&mut Row) -> T) -> Option<T> {
-    let mut connection = open(path).ok()?;
+fn transact<T>(
+    path: &Path,
+    origin: &str,
+    busy: Duration,
+    change: impl FnOnce(&mut Row) -> T,
+) -> Option<T> {
+    let mut connection = open(path, busy).ok()?;
     let tx = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .ok()?;
@@ -310,7 +337,7 @@ fn transact<T>(path: &Path, origin: &str, change: impl FnOnce(&mut Row) -> T) ->
     Some(value)
 }
 
-fn open(path: &Path) -> rusqlite::Result<Connection> {
+fn open(path: &Path, busy: Duration) -> rusqlite::Result<Connection> {
     if let Some(parent) = path.parent() {
         let mut builder = std::fs::DirBuilder::new();
         builder.recursive(true);
@@ -336,7 +363,7 @@ fn open(path: &Path) -> rusqlite::Result<Connection> {
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
             .map_err(|_| rusqlite::Error::InvalidPath(path.to_path_buf()))?;
     }
-    connection.busy_timeout(Duration::from_millis(25))?;
+    connection.busy_timeout(busy)?;
     connection.set_db_config(rusqlite::config::DbConfig::SQLITE_DBCONFIG_DEFENSIVE, true)?;
     let _: String = connection.query_row("PRAGMA journal_mode=WAL", [], |row| row.get(0))?;
     connection.pragma_update(None, "synchronous", "NORMAL")?;
@@ -539,6 +566,44 @@ mod tests {
             );
             assert!(breaker.admit(MAX_RETRY_AFTER_MS, LEASE).is_ok());
         }
+    }
+
+    #[test]
+    fn a_valid_response_clears_a_stored_retry_after() {
+        let breaker = Breaker::new(Some(temp()), "o");
+        // Two attempts in flight; the first is told to retry after a minute,
+        // the second then gets a valid answer.
+        let first = breaker.admit(0, LEASE).unwrap();
+        let second = breaker.admit(0, LEASE).unwrap();
+        breaker.settle(
+            &first,
+            Outcome::Transient {
+                retry_after_ms: Some(60_000),
+            },
+            0,
+        );
+        assert!(
+            breaker.admit(1, LEASE).is_err(),
+            "the Retry-After is honored"
+        );
+        breaker.settle(&second, Outcome::Success, 2);
+        assert!(breaker.admit(3, LEASE).is_ok(), "a valid response lifts it");
+    }
+
+    #[test]
+    fn an_origin_that_never_failed_creates_no_store() {
+        let path = temp();
+        let breaker = Breaker::new(Some(path.clone()), "o");
+        for now in 0..3 {
+            let ticket = breaker.admit(now, LEASE).unwrap();
+            breaker.settle(&ticket, Outcome::Success, now);
+            let ticket = breaker.admit(now, LEASE).unwrap();
+            breaker.settle(&ticket, Outcome::Neutral, now);
+        }
+        assert!(!path.exists(), "a success created the shared store");
+        assert_eq!(breaker.protection(), Protection::Shared);
+        fail(&breaker, 3);
+        assert!(path.exists(), "a transient failure is recorded durably");
     }
 
     #[test]

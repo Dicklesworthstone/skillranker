@@ -1552,6 +1552,9 @@ when the shared store is expected but unusable, the result carries a
 `breaker-process-local` warning. This build has no safe shared credential
 identity, so authentication failures never open the circuit: each stays with
 its own invocation and is not retried automatically.
+A valid response clears a stored `Retry-After`. Live `sr eval` batches share
+the same per-origin circuit, so provider failures during an evaluation also
+cool down hook traffic to that endpoint.
 Responses carry their breaker generation: a late obsolete response cannot close
 a newer circuit or release its successor's probe lease. Authentication pauses
 are scoped to a verified credential profile/generation so a bad key cannot block

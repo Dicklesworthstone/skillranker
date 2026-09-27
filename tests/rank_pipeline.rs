@@ -1153,7 +1153,7 @@ fn a_run_that_overruns_its_deadline_records_its_failure_not_in_flight() {
         .environment
         .push(("TYPESAFE_API_KEY".into(), "test-api-key-xyz".into()));
     let stall: ResponseGenerator = Box::new(|_| {
-        std::thread::sleep(std::time::Duration::from_millis(1_650));
+        std::thread::sleep(std::time::Duration::from_millis(1_550));
         Err(TransportError {
             kind: skillranker::jev::client::TransportErrorKind::Deadline,
             http_attempt_started: true,
