@@ -28,6 +28,11 @@ pub const BREAKER_FILE: &str = "breaker.sqlite3";
 pub const OPEN_AFTER_FAILURES: u32 = 3;
 pub const BASE_COOLDOWN_MS: u64 = 30_000;
 pub const MAX_COOLDOWN_MS: u64 = 300_000;
+/// The longest provider `Retry-After` persisted for every process of this
+/// origin. A longer value is still honored within the invocation that saw
+/// it, but one malformed or hostile header must not cool the endpoint down
+/// for days, or in effect forever.
+pub const MAX_RETRY_AFTER_MS: u64 = 3_600_000;
 const MAX_BREAKER_BYTES: i64 = 1024 * 1024;
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -154,6 +159,7 @@ impl Row {
             Outcome::Success => {}
             Outcome::Transient { retry_after_ms } => {
                 if let Some(delay) = retry_after_ms {
+                    let delay = delay.min(MAX_RETRY_AFTER_MS);
                     self.retry_after_until_ms =
                         self.retry_after_until_ms.max(now.saturating_add(delay));
                 }
@@ -508,6 +514,31 @@ mod tests {
             })
         );
         assert!(breaker.admit(120_000, LEASE).is_ok());
+    }
+
+    #[test]
+    fn a_huge_retry_after_is_capped_at_an_hour() {
+        // A day, and `Retry-After: 99999999999` (10^14 ms, which still fits a
+        // u64): without a cap the origin would refuse for a day, or in effect
+        // forever, across every process.
+        for delay in [86_400_000, 100_000_000_000_000, u64::MAX] {
+            let breaker = Breaker::new(Some(temp()), "o");
+            let ticket = breaker.admit(0, LEASE).unwrap();
+            breaker.settle(
+                &ticket,
+                Outcome::Transient {
+                    retry_after_ms: Some(delay),
+                },
+                0,
+            );
+            assert_eq!(
+                breaker.admit(1, LEASE),
+                Err(Refusal::CoolingDown {
+                    until_unix_ms: MAX_RETRY_AFTER_MS
+                })
+            );
+            assert!(breaker.admit(MAX_RETRY_AFTER_MS, LEASE).is_ok());
+        }
     }
 
     #[test]
