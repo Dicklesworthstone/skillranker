@@ -60,8 +60,26 @@ Model `jev-latest` against the production TypeSafe endpoint, from this host.
 
 | Cohort | Turns | Network path p50 / p95 / p99 | Fallback (unavailable) |
 | --- | ---: | ---: | ---: |
-| All revisions, 2026-09-22 to 2026-09-27 | 148 | 1397 / 2279 / 2533 ms (n = 88) | 60 of 148 |
+| All revisions, 2026-09-22 to 2026-09-27 | 148 | 1397 / 2279 / 2598 ms (n = 88) | 60 of 148 |
 | `075f928` (2026-09-25 22:05Z to 2026-09-27 04:31Z) | 15 | 983 / 2533 / 2533 ms (n = 15) | 0 of 15 |
+
+The percentiles cover only turns that reached a decision (ranked or abstain),
+using nearest-rank. They leave out the 60 unavailable turns:
+- Most of those ended before any network work, so including them would lower
+  the percentiles and flatter the result.
+- The 3 `in-flight` turns went the other way: their attempts were sent and
+  never completed, so each took at least the 3,000 ms deadline. Counting them
+  at 3,000 ms puts the all-revision p99 at 3,000 ms or more. Since d516c1a
+  (sr-9fzp), such overruns record their failure rather than staying
+  `in-flight`; that does not make them faster.
+- The all-revision cohort also has 6 provider attempts with unknown usage, all
+  on failed turns.
+
+Every hook turn is a new process with a new TLS connection, so these are cold
+network measurements; the "warm" target has no separate measurement here. The
+exact-cache-hit rows above use `sr rank --context --offline` in a scratch
+directory that is not a Git repository, so they leave out the project-signal
+Git cost that the hook pays.
 
 The all-revision fallback count is mostly setup, not provider failure:
 - 31 `credential-absent`, before the key reached hook processes;

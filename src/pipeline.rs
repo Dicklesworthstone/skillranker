@@ -4359,8 +4359,11 @@ fn breaker_outcome(
         Ok(()) => Outcome::Success,
         Err(error) if crate::jev::retry::retryable(error.kind) => Outcome::Transient {
             retry_after_ms: match error.retry_after {
+                // Saturate rather than drop: a delay too large for u64
+                // milliseconds is the longest Retry-After, which the breaker
+                // caps at MAX_RETRY_AFTER_MS instead of ignoring.
                 crate::jev::retry::RetryAfter::Delay(delay) => {
-                    u64::try_from(delay.as_millis()).ok()
+                    Some(u64::try_from(delay.as_millis()).unwrap_or(u64::MAX))
                 }
                 _ => None,
             },
@@ -6009,4 +6012,39 @@ fn compute_stage_trace(
     }
 
     entries
+}
+
+#[cfg(test)]
+mod breaker_outcome_tests {
+    use super::breaker_outcome;
+    use crate::breaker::Outcome;
+    use crate::jev::client::{TransportError, TransportErrorKind};
+    use crate::jev::retry::RetryAfter;
+    use std::time::Duration;
+
+    fn throttled(delay: Duration) -> TransportError {
+        TransportError {
+            kind: TransportErrorKind::HttpStatus(429),
+            http_attempt_started: true,
+            retry_after: RetryAfter::Delay(delay),
+        }
+    }
+
+    #[test]
+    fn an_unrepresentable_retry_after_saturates_instead_of_vanishing() {
+        // Too large for u64 milliseconds: kept as the longest delay, so the
+        // breaker applies its one-hour cap rather than no cooldown at all.
+        assert_eq!(
+            breaker_outcome(Err(&throttled(Duration::MAX))),
+            Outcome::Transient {
+                retry_after_ms: Some(u64::MAX)
+            }
+        );
+        assert_eq!(
+            breaker_outcome(Err(&throttled(Duration::from_secs(120)))),
+            Outcome::Transient {
+                retry_after_ms: Some(120_000)
+            }
+        );
+    }
 }
