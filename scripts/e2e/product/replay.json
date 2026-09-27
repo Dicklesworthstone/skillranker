@@ -222,7 +222,7 @@
         "eval_batch_contract::baselines_score_every_policy_on_the_same_judged_cohort_from_one_runs_answers",
         "eval_batch_contract::a_case_any_policy_cannot_score_leaves_every_policy",
         "eval_batch_contract::robustness_variants_report_decision_changes_on_leftover_budget",
-        "eval_batch_contract::the_harm_card_explains_why_zero_harmful_outcomes_is_not_enough",
+        "eval_batch_contract::the_harm_card_bounds_only_a_justified_sample_and_explains_zero",
         "eval_cli_contract::labeled_frame_scores_the_frozen_loss_and_keeps_unjudged_cases_visible",
         "eval_cli_contract::a_supplied_seed_reproduces_a_diagnostic_selection_without_design_weights",
         "eval_cli_contract::a_fresh_os_seed_is_recorded_and_supports_design_weighted_loss",
