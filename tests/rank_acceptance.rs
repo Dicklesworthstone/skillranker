@@ -1839,10 +1839,22 @@ fn concurrent_identical_requests_share_one_provider_evaluation() {
         .map(|child| child.wait_with_output().unwrap())
         .collect();
     let served = provider.finish();
+    // On failure, say which path let the second process send: no store (a
+    // cache-unavailable warning), no lease, or a lost wait.
+    let paths: Vec<String> = outputs
+        .iter()
+        .map(|output| {
+            let value: Value = serde_json::from_slice(&output.stdout).unwrap_or(Value::Null);
+            format!(
+                "persistence={} cache={} warnings={}",
+                value["persistence"], value["cache"], value["warnings"]
+            )
+        })
+        .collect();
     assert_eq!(
         stages(&served),
         ["wide", "rerank"],
-        "one provider evaluation for both processes"
+        "one provider evaluation for both processes: {paths:?}"
     );
     let values: Vec<Value> = outputs
         .iter()

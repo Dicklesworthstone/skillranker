@@ -3933,6 +3933,9 @@ mod persistent {
         }
     }
 
+    /// How long a run keeps trying to open a store another run is initializing.
+    const STORE_OPEN_BUDGET_MS: u64 = 400;
+
     pub(super) struct Store(CacheStore);
 
     impl Store {
@@ -3950,8 +3953,14 @@ mod persistent {
             gate: &EffectGate,
             dir: &Path,
         ) -> Result<Option<Self>, StoreError> {
+            // Keep trying for a bounded time rather than a fixed count, like
+            // lease acquisition (a5bda88): the first of two concurrent runs can
+            // hold the store's initialization lock longer than a few quick
+            // tries on a loaded host, and the second then ranks with no cache
+            // and no single flight, sending the same evaluation again (sr-azlc).
+            let started = clock.now().as_millis();
             let mut last = StoreError::Busy;
-            for _ in 0..5 {
+            while clock.now().as_millis().saturating_sub(started) < STORE_OPEN_BUDGET_MS {
                 match gate.open_cache(
                     invocation,
                     cx,
