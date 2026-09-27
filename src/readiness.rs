@@ -38,7 +38,7 @@ impl TransportIdentity {
             sr_version: env!("CARGO_PKG_VERSION").to_owned(),
             runtime: "asupersync-0.5.0/native-roots".to_owned(),
             endpoint_origin: endpoint_origin.to_owned(),
-            model: config.effective().model().as_str().to_owned(),
+            model: config.effective().active_model().to_owned(),
             timeout_ms: config.effective().timeout_ms(),
         }
     }
@@ -276,12 +276,20 @@ pub fn report(inputs: &Inputs<'_>) -> Value {
     let credential = if config.credential().is_some() {
         json!({"state": "present", "verified": false, "next_step": null})
     } else {
+        let credential_hint = match config.effective().provider() {
+            crate::config::Provider::TypeSafe => {
+                "Create your own API key in the TypeSafe console (https://console.typesafe.ai) and export TYPESAFE_API_KEY."
+            }
+            crate::config::Provider::Cloudflare => {
+                "Create a Cloudflare API token and export CLOUDFLARE_API_TOKEN."
+            }
+        };
         json!({
             "state": "absent",
             "verified": false,
             "next_step": step(
                 "credential",
-                "Create your own API key in the TypeSafe console (https://console.typesafe.ai) and export TYPESAFE_API_KEY.",
+                credential_hint,
             ),
         })
     };

@@ -29,8 +29,11 @@ their text cannot appear in Display, Debug, or the public issue list.
 | --- | --- | --- | --- | --- | --- | --- |
 | `network.enabled` | — | — | allowed | forbidden | — | — |
 | `network.proxy` | — | — | reserved | reserved | — | — |
+| `provider.kind` | `SR_PROVIDER` | — | allowed | forbidden | allowed | — |
 | `typesafe.api_key` | `TYPESAFE_API_KEY` | — | forbidden | forbidden | allowed | — |
 | `typesafe.endpoint` | `TYPESAFE_ENDPOINT` | — | forbidden | forbidden | allowed | — |
+| `cloudflare.api_token` | `CLOUDFLARE_API_TOKEN` | — | forbidden | forbidden | allowed | — |
+| `cloudflare.account_id` | `CLOUDFLARE_ACCOUNT_ID` | — | forbidden | forbidden | allowed | — |
 | `provider.model` | `SR_MODEL` | — | allowed | forbidden | allowed | — |
 | `hook.mode` | — | `--shadow` | allowed | forbidden | — | restrict-only |
 | `hook.notification_turns` (`skip`\|`rank`) | — | — | allowed | restrict-only | — | — |
@@ -47,6 +50,11 @@ their text cannot appear in Display, Debug, or the public issue list.
 | `roster.roots` (≤32) | — | — | allowed | allowed (contained) | — | — |
 | `privacy.redaction`, `privacy.raw_retention` | — | — | reserved | reserved | — | — |
 
+`provider.kind` defaults to `typesafe`. When it is `cloudflare`, the account ID
+and token are required, the default `jev-latest` alias maps to
+`@cf/meta/llama-3.3-70b-instruct-fp8-fast`, and requests use Cloudflare's
+OpenAI-compatible Workers AI endpoint. `SR_MODEL` can select another model.
+
 Weights use the plan bounds `[0,4]`, `[0,0.5]` and `[0,1]`. Integer file values
 are accepted for float keys; NaN and infinity are rejected everywhere. After
 merging, `ranking.top` must not exceed `ranking.shortlist`. Disclosure-volume keys
@@ -59,9 +67,9 @@ as a non-turn: it is harness output, not a user request, and is never sent.
 
 The environment layer is strict inside `SR_`: an unrecognized `SR_*` variable or a
 non-UTF-8 `SR_` name is an error, so a misspelled privacy setting is never ignored.
-Other variables, including other `TYPESAFE_*` names, are outside the schema.
+Other variables, including other `TYPESAFE_*` and `CLOUDFLARE_*` names, are outside the schema.
 Environment values are parsed as `true`/`false`, unsigned decimal digits, or Rust
-floating-point text. An empty `TYPESAFE_API_KEY` is absent; a key with whitespace,
+floating-point text. An empty provider credential is absent; a key with whitespace,
 controls or more than 4 KiB is a configuration error.
 
 Project roots must be relative and lexically contained in the workspace. Only
@@ -105,7 +113,7 @@ for one boundary's dependency projection:
 
 | Boundary | Fields compared |
 | --- | --- |
-| Provider admission (every HTTP attempt) | consent, credential presence, endpoint, model, profile, no-tools, messages, budget, transcript roots, shortlist, exclusions, roster roots |
+| Provider admission (every HTTP attempt) | consent, credential presence, provider, endpoint, provider account, model, profile, no-tools, messages, budget, transcript roots, shortlist, exclusions, roster roots |
 | CLI advisory publication | top, shortlist, gate, fits, weights, exclusions, roster roots |
 | CLI explicit publication | roster roots |
 | Hook advisory publication | CLI advisory fields plus hook mode |

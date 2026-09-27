@@ -13,7 +13,7 @@ use std::ffi::OsString;
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
-const HELP: &str = "SkillRanker — powered by TypeSafe.ai Jev\n\nUsage: sr [rank] [--context FILE | --transcript FILE --harness NAME | --session PATH | --latest]\n                 [--roster FILE] [--require-skill ID] [--dry-run [--shortlist-ids ID,...]]\n                 [--offline | --allow-network] [--json | --table]\n                 [--top N] [--shortlist M] [--gate FLOAT] [--fits FLOAT]\n                 [--explain] [--why-not ID] [--cursor TOKEN] [--no-tools] [--no-cache]\n                 [--save-case FILE]\n       sr doctor [--json | --table] [--offline | --allow-network]\n       sr doctor --config [--json | --table] [--top N] [--shortlist N]\n       sr roster [--json] [--limit N] [--cursor TOKEN]\n       sr roster --snapshot FILE | --diff FILE\n       sr capabilities [--json]\n       sr demo --case <useful|none|explicit|unavailable> [--json | --table]\n       sr replay FILE [--policy FILE] [--compare-policy FILE] [--json | --table]\n       sr eval --dataset FILE [--allow-network] [--max-runtime-ms MS] [--timeout-ms MS] [--policy FILE] [--compare-policy FILE] [--explain] [--json | --table]\n       sr eval --dataset FRAME --labels FILE [--sample-size N [--seed S]] [--online --allow-network --max-requests N [--max-runtime-ms MS] [--robustness]] [--explain] [--json | --table]\n       sr feedback <EVENT_ID> --skill ID [--instead ID] [--verdict <useful|not-useful|unknown>] [--reason CODE] [--provenance TEXT] [--expected-version GEN] [--dir DIR] [--json]\n       sr budget [--max-attempts N --window 1h [--apply]] [--json]\n       sr snooze <EVENT_ID> (--skill ID --for DURATION | --all --for DURATION | --clear) [--apply] [--dir DIR] [--json]\n       sr ledger <init|migrate|status|prune|clear> [--before TIME] [--apply] [--json]\n       sr observe [--context FILE | --transcript FILE --harness NAME | --session PATH] [--branch NAME] [--roster FILE] [--dir DIR] [--json]\n       sr stats [--since DURATION] [--by-skill] [--dir DIR] [--json | --table]\n       sr hook <claude> [--shadow] [--offline | --allow-network] [--dir DIR]\n       sr install-hook <claude> [--settings-file FILE] [--binary-path PATH] [--timeout-secs N] [--apply]\n       sr uninstall-hook <claude> [--settings-file FILE] [--binary-path PATH] [--timeout-secs N] [--apply]\n       sr --help | --version\n\nRank the next step of an agent session using TypeSafe Jev.\nRequires your own TypeSafe API key (TYPESAFE_API_KEY) and network consent (--allow-network).\n";
+const HELP: &str = "SkillRanker — provider-backed skill ranking\n\nUsage: sr [rank] [--context FILE | --transcript FILE --harness NAME | --session PATH | --latest]\n                 [--roster FILE] [--require-skill ID] [--dry-run [--shortlist-ids ID,...]]\n                 [--offline | --allow-network] [--json | --table]\n                 [--top N] [--shortlist M] [--gate FLOAT] [--fits FLOAT]\n                 [--explain] [--why-not ID] [--cursor TOKEN] [--no-tools] [--no-cache]\n                 [--save-case FILE]\n       sr doctor [--json | --table] [--offline | --allow-network]\n       sr doctor --config [--json | --table] [--top N] [--shortlist N]\n       sr roster [--json] [--limit N] [--cursor TOKEN]\n       sr roster --snapshot FILE | --diff FILE\n       sr capabilities [--json]\n       sr demo --case <useful|none|explicit|unavailable> [--json | --table]\n       sr replay FILE [--policy FILE] [--compare-policy FILE] [--json | --table]\n       sr eval --dataset FILE [--allow-network] [--max-runtime-ms MS] [--timeout-ms MS] [--policy FILE] [--compare-policy FILE] [--explain] [--json | --table]\n       sr eval --dataset FRAME --labels FILE [--sample-size N [--seed S]] [--online --allow-network --max-requests N [--max-runtime-ms MS] [--robustness]] [--explain] [--json | --table]\n       sr feedback <EVENT_ID> --skill ID [--instead ID] [--verdict <useful|not-useful|unknown>] [--reason CODE] [--provenance TEXT] [--expected-version GEN] [--dir DIR] [--json]\n       sr budget [--max-attempts N --window 1h [--apply]] [--json]\n       sr snooze <EVENT_ID> (--skill ID --for DURATION | --all --for DURATION | --clear) [--apply] [--dir DIR] [--json]\n       sr ledger <init|migrate|status|prune|clear> [--before TIME] [--apply] [--json]\n       sr observe [--context FILE | --transcript FILE --harness NAME | --session PATH] [--branch NAME] [--roster FILE] [--dir DIR] [--json]\n       sr stats [--since DURATION] [--by-skill] [--dir DIR] [--json | --table]\n       sr hook <claude> [--shadow] [--offline | --allow-network] [--dir DIR]\n       sr install-hook <claude> [--settings-file FILE] [--binary-path PATH] [--timeout-secs N] [--apply]\n       sr uninstall-hook <claude> [--settings-file FILE] [--binary-path PATH] [--timeout-secs N] [--apply]\n       sr --help | --version\n\nRank the next step of an agent session using the configured provider.\nTypeSafe is the default; Cloudflare Workers AI can be selected with SR_PROVIDER=cloudflare, CLOUDFLARE_ACCOUNT_ID, and CLOUDFLARE_API_TOKEN. Network consent (--allow-network) is still required.\n";
 
 const EVAL_HELP: &str = "sr eval --dataset FILE [--allow-network] [--max-runtime-ms MS] [--timeout-ms MS] [--policy FILE] [--compare-policy FILE] [--explain] [--json | --table]\n       sr eval --dataset FRAME --labels FILE [--sample-size N [--seed S]] [--online --allow-network --max-requests N [--max-runtime-ms MS] [--robustness]] [--explain] [--json | --table]\n\nEvaluate recorded or synthetic replay batches against local or comparison policies with bounded runtime and explicit accounting.\nWith --labels, score a labeled case frame against independent judgments, optionally over a stratified sample frozen before labels are joined.\n";
 
@@ -1410,11 +1410,21 @@ fn budget_command(clock: &EntryClock, matches: &clap::ArgMatches) -> Result<Stri
             "No trusted user configuration directory: set XDG_CONFIG_HOME or HOME".to_owned(),
         )
     })?;
-    // Endpoint overrides are environment-only; charges key on the canonical origin.
-    let origin = match std::env::var("TYPESAFE_ENDPOINT") {
-        Ok(text) if !text.is_empty() => crate::jev::CanonicalOrigin::parse(&text)
-            .map_err(|_| invalid("TYPESAFE_ENDPOINT is not a valid origin"))?,
-        _ => crate::jev::CanonicalOrigin::production(),
+    // Charges are scoped to the selected provider's canonical origin.
+    let origin = match std::env::var("SR_PROVIDER").ok().as_deref() {
+        Some("cloudflare") => {
+            let account = std::env::var("CLOUDFLARE_ACCOUNT_ID")
+                .map_err(|_| invalid("CLOUDFLARE_ACCOUNT_ID is required for Cloudflare"))?;
+            crate::jev::cloudflare::endpoint(&account)
+                .map_err(|_| invalid("CLOUDFLARE_ACCOUNT_ID is not valid"))?
+                .origin()
+                .clone()
+        }
+        _ => match std::env::var("TYPESAFE_ENDPOINT") {
+            Ok(text) if !text.is_empty() => crate::jev::CanonicalOrigin::parse(&text)
+                .map_err(|_| invalid("TYPESAFE_ENDPOINT is not a valid origin"))?,
+            _ => crate::jev::CanonicalOrigin::production(),
+        },
     };
     let now = crate::allowance::wall_clock_ms().ok_or_else(|| {
         (
@@ -3613,7 +3623,7 @@ fn eval_live_command(
         return Err((
             4,
             "credential-absent",
-            "A live batch needs your own TypeSafe API key in TYPESAFE_API_KEY".into(),
+            "A live batch needs the selected provider credential".into(),
         ));
     }
     let eval_error = |err: crate::evaluation::EvaluationError| {
@@ -4029,13 +4039,23 @@ fn doctor_command(clock: &EntryClock, doctor: &clap::ArgMatches) -> Result<Strin
     }
 }
 
+fn is_configuration_environment(name: &std::ffi::OsStr) -> bool {
+    name.as_encoded_bytes().starts_with(b"SR_")
+        || matches!(
+            name.to_str(),
+            Some(
+                "TYPESAFE_API_KEY"
+                    | "TYPESAFE_ENDPOINT"
+                    | "CLOUDFLARE_API_TOKEN"
+                    | "CLOUDFLARE_ACCOUNT_ID"
+            )
+        )
+}
+
 /// Snapshot only recognized namespace candidates; the resolver rejects unknown SR_*.
 fn environment_sources(sources: &mut ConfigSources) -> Result<(), Failure> {
     for (name, value) in std::env::vars_os() {
-        if name.as_encoded_bytes().starts_with(b"SR_")
-            || name == "TYPESAFE_API_KEY"
-            || name == "TYPESAFE_ENDPOINT"
-        {
+        if is_configuration_environment(&name) {
             if sources.environment.len() == MAX_LAYER_ENTRIES {
                 return Err(invalid("Too many environment settings"));
             }
@@ -4388,10 +4408,7 @@ fn hook_claude_command(clock: &EntryClock, m: &clap::ArgMatches) -> Result<Strin
 
     let mut sources = ConfigSources::default();
     for (name, value) in std::env::vars_os() {
-        if name.as_encoded_bytes().starts_with(b"SR_")
-            || name == "TYPESAFE_API_KEY"
-            || name == "TYPESAFE_ENDPOINT"
-        {
+        if is_configuration_environment(&name) {
             if sources.environment.len() == MAX_LAYER_ENTRIES {
                 return Err(invalid("Too many environment settings"));
             }
@@ -4677,11 +4694,7 @@ fn install_hook_command(clock: &EntryClock, m: &clap::ArgMatches) -> Result<Stri
     let user_root = user_config_root().unwrap_or(None);
     let mut sources = ConfigSources::default();
     for (name, value) in std::env::vars_os() {
-        if (name.as_encoded_bytes().starts_with(b"SR_")
-            || name == "TYPESAFE_API_KEY"
-            || name == "TYPESAFE_ENDPOINT")
-            && sources.environment.len() < MAX_LAYER_ENTRIES
-        {
+        if is_configuration_environment(&name) && sources.environment.len() < MAX_LAYER_ENTRIES {
             sources.environment.push((name, value));
         }
     }
@@ -5045,10 +5058,21 @@ fn readiness(
         _ => RosterCheck::Unusable,
     };
     timely(clock)?;
-    let origin = match config.effective().endpoint() {
-        Some(endpoint) => crate::jev::CanonicalOrigin::from_override(endpoint)
-            .map_err(|_| invalid("The endpoint override is not a valid origin"))?,
-        None => crate::jev::CanonicalOrigin::production(),
+    let origin = match config.effective().provider() {
+        crate::config::Provider::TypeSafe => match config.effective().endpoint() {
+            Some(endpoint) => crate::jev::CanonicalOrigin::from_override(endpoint)
+                .map_err(|_| invalid("The endpoint override is not a valid origin"))?,
+            None => crate::jev::CanonicalOrigin::production(),
+        },
+        crate::config::Provider::Cloudflare => {
+            let account_id = config.effective().cloudflare_account_id().ok_or_else(|| {
+                invalid("CLOUDFLARE_ACCOUNT_ID is required for the Cloudflare provider")
+            })?;
+            crate::jev::cloudflare::endpoint(account_id)
+                .map_err(|_| invalid("CLOUDFLARE_ACCOUNT_ID is not valid"))?
+                .origin()
+                .clone()
+        }
     };
     // No live check writes transport evidence in this build, so none is read.
     let transport = assess_transport(
@@ -5154,11 +5178,13 @@ fn config_report(config: &ResolvedConfig) -> Value {
             ContextNoTools => json!(effective.no_tools()),
             HookMode => json!(effective.hook_mode().as_str()),
             HookNotificationTurns => json!(effective.notification_turns().as_str()),
-            TypesafeApiKey => json!({"present":config.credential().is_some()}),
+            TypesafeApiKey => {
+                json!({"present": config.effective().provider() == crate::config::Provider::TypeSafe && config.credential().is_some()})
+            }
             TypesafeEndpoint => json!({"override_present":effective.endpoint().is_some()}),
             ProviderModel => json!(
                 crate::privacy::redaction::Redactor::default()
-                    .redact_field(effective.model().as_str())
+                    .redact_field(effective.active_model())
                     .map(|v| v.as_str().to_owned())
                     .unwrap_or_else(|_| "[private]".into())
             ),
@@ -5166,6 +5192,11 @@ fn config_report(config: &ResolvedConfig) -> Value {
             RosterRoots => json!({"count":effective.roster_roots().len()}),
             RankingExcludeSkills => json!({"count":effective.exclude_skills().len()}),
             NetworkEnabled => json!(effective.trusted_user_network_enabled()),
+            Provider => json!(effective.provider().as_str()),
+            CloudflareApiToken => {
+                json!({"present": config.credential().is_some() && effective.provider() == crate::config::Provider::Cloudflare})
+            }
+            CloudflareAccountId => json!({"present": effective.cloudflare_account_id().is_some()}),
             NetworkProxy | PrivacyRedaction | PrivacyRawRetention => continue,
         };
         let sources: Vec<_> = match config.source(*key) {
@@ -5203,10 +5234,7 @@ fn roster_listing(clock: &EntryClock, matches: &clap::ArgMatches) -> Result<Stri
         .map(PathBuf::from);
     let mut sources = ConfigSources::default();
     for (name, value) in std::env::vars_os() {
-        if name.as_encoded_bytes().starts_with(b"SR_")
-            || name == "TYPESAFE_API_KEY"
-            || name == "TYPESAFE_ENDPOINT"
-        {
+        if is_configuration_environment(&name) {
             if sources.environment.len() == MAX_LAYER_ENTRIES {
                 return Err(invalid("Too many environment settings"));
             }

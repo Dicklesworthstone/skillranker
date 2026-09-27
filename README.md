@@ -2,15 +2,15 @@
 
 # SkillRanker
 
-**The right skill for the next step, powered by Jev from TypeSafe.ai.**
+**The right skill for the next step, powered by Jev-compatible providers.**
 
 A standalone Rust CLI that puts **[TypeSafe.ai's Jev](https://typesafe.ai)** at the
 center of skill selection: Jev evaluates your agent's live context, compares the
 available skills, and estimates which ones fit the next step. SkillRanker supplies
 the session integration, local safeguards, and inspectable feedback around it.
 
-**A TypeSafe API key is required to use SkillRanker's ranking system.
-Sign up at the [TypeSafe console](https://console.typesafe.ai) to get your own key.**
+**Fresh ranking requires your own credential for the selected provider.**
+TypeSafe.ai is the default; Cloudflare Workers AI is also supported.
 
 [![License](https://img.shields.io/badge/license-MIT%20%2B%20OpenAI%2FAnthropic%20rider-blue)](LICENSE)
 ![Rust](https://img.shields.io/badge/language-Rust%202024-dea584)
@@ -75,8 +75,8 @@ For libraries with more than 254 eligible skills, **Quill from FrankenSearch**
 narrows the candidates locally before Jev evaluates them. Smaller rosters reach
 Jev in full. Explicit skill requests resolve locally before either stage.
 
-SkillRanker does not include a local model or a substitute inference provider.
-The ranking workflow requires your own TypeSafe account and API key. Local
+SkillRanker does not include a local model. The ranking workflow requires your
+own account and credential for the selected provider. Local
 retrieval prepares the candidates; **Jev supplies the evaluations that make the
 recommendations possible**.
 
@@ -234,13 +234,14 @@ cargo build --locked --release --bin sr
 
 ### Runtime setup
 
-**Sign up for [TypeSafe.ai](https://console.typesafe.ai), then create your own API
-key in the console. A TypeSafe API key is required to use SkillRanker's ranking
-system.** Jev is the evaluation engine for the entire ranking workflow.
+**Choose a provider and create your own credential.** TypeSafe.ai is the default
+provider; Cloudflare Workers AI can be selected with `SR_PROVIDER=cloudflare`.
 Every user supplies their own credential; SkillRanker does not distribute a
 shared key.
 
-Set `TYPESAFE_API_KEY` through your shell or secret manager. The
+For the default TypeSafe provider, set `TYPESAFE_API_KEY`. For Cloudflare,
+set `SR_PROVIDER=cloudflare`, `CLOUDFLARE_ACCOUNT_ID`, and
+`CLOUDFLARE_API_TOKEN`. The
 [environment example](.env.example) lists the service settings. For a local
 checkout, create `.env` from the example only if it does not already exist and
 restrict access with `chmod 600 .env` **before** entering your own API key.
@@ -261,7 +262,7 @@ alone do not enable remote transmission.
 
 | Component | Role |
 |---|---|
-| TypeSafe API key | Authenticates fresh Jev evaluations |
+| Provider credential | Authenticates fresh Jev-compatible evaluations (`TYPESAFE_API_KEY`, or Cloudflare account/token) |
 | Network opt-in | `--allow-network` for a run, or `network.enabled` in trusted user configuration |
 | Visible skill inventory | Harness-resolved skills or an explicit roster file |
 | Session input | Claude hook, normalized context, supported native transcript, or optional cass export |
@@ -688,6 +689,9 @@ configuration can only keep them skipped.
 |---|---|
 | `TYPESAFE_API_KEY` | TypeSafe bearer credential; never serialized or stored in project config |
 | `TYPESAFE_ENDPOINT` | Trusted HTTPS base origin; `sr` appends `/v1/systemone` once |
+| `SR_PROVIDER` | Provider selector: `typesafe` (default) or `cloudflare` |
+| `CLOUDFLARE_ACCOUNT_ID` | Cloudflare account ID required by Workers AI |
+| `CLOUDFLARE_API_TOKEN` | Cloudflare bearer credential; never serialized or stored in project config |
 | `SR_MODEL` | Requested model; default `jev-latest` |
 | `SR_MESSAGES`, `SR_BUDGET_CHARS` | Context-volume limits: 1–12 messages and 1–12,000 Unicode scalar values |
 | `SR_TOP`, `SR_SHORTLIST` | Output and rerank sizes, satisfying `1 ≤ top ≤ shortlist ≤ 32` |
@@ -706,7 +710,7 @@ roots merge as unions. Project roots must remain relative to the workspace;
 only trusted user configuration can authorize absolute roots. Readers also check
 symlink containment when opening files.
 
-Credentials are environment-only and kept outside serializable configuration.
+Credentials and provider account identifiers are environment-only and kept outside serializable configuration.
 The v1 endpoint override is environment-only; model overrides use trusted user
 configuration or `SR_MODEL`. Proxy, redaction-disable, and raw-retention settings
 are reserved and rejected. The [configuration contract](docs/config-contract.md)
@@ -2000,17 +2004,17 @@ aliases remain part of the report when an immutable revision is unavailable.
 
 ## FAQ
 
-**Do I need a TypeSafe API key?**
-Yes. TypeSafe.ai's Jev powers SkillRanker's ranking system, and you must provide
-your own key as `TYPESAFE_API_KEY`. There is no bundled key, local replacement
-model, or alternative inference provider. Sign up at the
-[TypeSafe console](https://console.typesafe.ai) and create your own API key.
+**Which providers are supported?**
+TypeSafe.ai is the default and uses `TYPESAFE_API_KEY`. Cloudflare Workers AI
+uses `SR_PROVIDER=cloudflare`, `CLOUDFLARE_ACCOUNT_ID`, and
+`CLOUDFLARE_API_TOKEN`. Both adapters return the same validated Jev answer
+contract; there is no bundled local model.
 
 **Can I try an example before connecting a private session?**
 Yes. `sr demo --case useful` runs a labeled offline fixture without a key or user
 state. `none`, `explicit`, and `unavailable` show the other outcomes. Demo and
 saved-case replay return non-actionable results; fresh ranking still requires
-your own TypeSafe key and authorized Jev access.
+your own selected-provider credential and authorized network access.
 
 **Does SkillRanker execute a skill?**
 No. It recommends or returns a locally resolved target. The agent remains in

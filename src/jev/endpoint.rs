@@ -263,7 +263,11 @@ pub struct TargetUrl {
 
 impl TargetUrl {
     fn new(origin: CanonicalOrigin) -> Self {
-        let url = format!("{}{}", origin.as_str(), SYSTEMONE_PATH);
+        Self::new_with_path(origin, SYSTEMONE_PATH)
+    }
+
+    pub(crate) fn new_with_path(origin: CanonicalOrigin, path: &str) -> Self {
+        let url = format!("{}{}", origin.as_str(), path);
         Self { origin, url }
     }
 
@@ -299,6 +303,19 @@ impl EndpointConfig {
     pub fn from_base_origin_str(raw: &str) -> Result<Self, EndpointError> {
         let origin = CanonicalOrigin::parse(raw)?;
         let target = origin.join_systemone();
+        Ok(Self { origin, target })
+    }
+
+    pub(crate) fn from_origin_and_path_str(raw: &str, path: &str) -> Result<Self, EndpointError> {
+        if path.is_empty()
+            || !path.starts_with('/')
+            || path.contains(['?', '#'])
+            || path.len() > MAX_ENDPOINT_INPUT_BYTES
+        {
+            return Err(EndpointError::InvalidTargetPath);
+        }
+        let origin = CanonicalOrigin::parse(raw)?;
+        let target = TargetUrl::new_with_path(origin.clone(), path);
         Ok(Self { origin, target })
     }
 
@@ -637,6 +654,7 @@ pub enum EndpointError {
     NonAsciiHostForbidden,
     UnbracketedIpv6Forbidden,
     NumericIpv4AliasForbidden,
+    InvalidTargetPath,
 }
 
 impl EndpointError {
@@ -690,6 +708,9 @@ impl fmt::Display for EndpointError {
             }
             Self::NumericIpv4AliasForbidden => {
                 f.write_str("numeric IPv4 aliases and hex/octal IP formats are forbidden; only canonical dotted-decimal IPv4 is permitted")
+            }
+            Self::InvalidTargetPath => {
+                f.write_str("provider target path must be a bounded absolute path without query or fragment")
             }
         }
     }

@@ -79,7 +79,11 @@ fn registry_is_complete_ordered_and_internally_consistent() {
         if let Some(name) = spec.environment {
             assert!(env_names.insert(name), "duplicate env {name}");
             assert_eq!(SettingKey::from_environment_name(name), Some(key));
-            assert!(name.starts_with("SR_") || name.starts_with("TYPESAFE_"));
+            assert!(
+                name.starts_with("SR_")
+                    || name.starts_with("TYPESAFE_")
+                    || name.starts_with("CLOUDFLARE_")
+            );
         }
         if let Some(flag) = spec.cli_flag {
             assert!(flags.insert(flag), "duplicate flag {flag}");
@@ -167,6 +171,9 @@ fn security_sensitive_keys_follow_an_independent_layer_matrix() {
         ("network.proxy",            "SR_NETWORK_PROXY",    s("https://proxy.example"),  "x",                   [R, R, U, R]),
         ("typesafe.api_key",         "TYPESAFE_API_KEY",    s(CANARY),                   CANARY,                [F, F, A, F]),
         ("typesafe.endpoint",        "TYPESAFE_ENDPOINT",   s("https://api.example"),    "https://api.example", [F, F, A, F]),
+        ("provider.kind",            "SR_PROVIDER",         s("cloudflare"),             "cloudflare",           [A, F, A, F]),
+        ("cloudflare.api_token",     "CLOUDFLARE_API_TOKEN", s(CANARY),                   CANARY,                [F, F, A, F]),
+        ("cloudflare.account_id",    "CLOUDFLARE_ACCOUNT_ID", s("0123456789abcdef0123456789abcdef"), "0123456789abcdef0123456789abcdef", [F, F, A, F]),
         ("provider.model",           "SR_MODEL",            s("jev-other"),              "jev-other",           [A, F, A, F]),
         ("hook.mode",                "SR_HOOK_MODE",        s("shadow"),                 "advisory",            [A, F, U, A]),
         ("hook.notification_turns",  "SR_NOTIFICATION_TURNS", s("skip"),                 "skip",                [A, A, U, F]),
@@ -227,7 +234,7 @@ fn security_sensitive_keys_follow_an_independent_layer_matrix() {
                 Expect::Accepted => {
                     let config = result.expect(&case);
                     assert_private(&format!("{config:?}"), &[CANARY]);
-                    if *path != "typesafe.api_key" {
+                    if !matches!(*path, "typesafe.api_key" | "cloudflare.api_token") {
                         let source = config.source(key);
                         assert!(
                             matches!(&source, ValueSource::Single(l) if *l == layer)

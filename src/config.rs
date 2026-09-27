@@ -23,6 +23,7 @@ use std::fmt;
 
 pub const CONFIG_SCHEMA_VERSION: u32 = 1;
 pub const DEFAULT_MODEL: &str = "jev-latest";
+pub const DEFAULT_CLOUDFLARE_MODEL: &str = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
 pub const MIN_TIMEOUT_MS: u64 = DEFAULT_OUTPUT_CLEANUP_RESERVE_MS + 1;
 pub const MAX_TIMEOUT_MS: u64 = 60_000;
 pub const MAX_RANK_SIZE: u32 = 32;
@@ -36,6 +37,50 @@ pub const MAX_LIST_ITEMS: usize = 128;
 pub const MAX_ROOTS: usize = 32;
 /// Diagnostics beyond this bound are counted, not listed.
 pub const MAX_REPORTED_ISSUES: usize = 32;
+
+/// Provider adapters supported by the ranking pipeline. TypeSafe remains the
+/// default so existing configurations keep their exact behavior.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub enum Provider {
+    TypeSafe,
+    Cloudflare,
+}
+
+impl Provider {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::TypeSafe => "typesafe",
+            Self::Cloudflare => "cloudflare",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "typesafe" => Some(Self::TypeSafe),
+            "cloudflare" => Some(Self::Cloudflare),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Eq, PartialEq)]
+pub struct ConfigText(String);
+
+impl ConfigText {
+    fn new(value: String) -> Self {
+        Self(value)
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Debug for ConfigText {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("ConfigText(<private>)")
+    }
+}
 
 /// Ordered by precedence: later layers override earlier ones where permitted.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
@@ -92,6 +137,8 @@ pub enum ValueKind {
     NotificationTurns,
     ModelName,
     Endpoint,
+    Provider,
+    CloudflareAccountId,
     Credential,
     SkillReferences,
     TrustedAbsoluteRoots,
@@ -119,8 +166,11 @@ macro_rules! setting_keys {
 setting_keys! {
     NetworkEnabled,
     NetworkProxy,
+    Provider,
     TypesafeApiKey,
     TypesafeEndpoint,
+    CloudflareApiToken,
+    CloudflareAccountId,
     ProviderModel,
     HookMode,
     HookNotificationTurns,
@@ -240,7 +290,7 @@ const fn unit(min: f64, max: f64) -> ValueKind {
 
 /// Rules are `[trusted user, project, environment, cli]`, in `SettingKey` order.
 #[rustfmt::skip]
-pub static KEY_SPECS: [KeySpec; 24] = {
+pub static KEY_SPECS: [KeySpec; 27] = {
     use Sensitivity as S;
     use SettingKey as K;
     use ValueKind as V;
@@ -252,8 +302,11 @@ pub static KEY_SPECS: [KeySpec; 24] = {
     [
         spec(K::NetworkEnabled, "network.enabled", V::Bool, S::NetworkConsent,                               [Allowed,      Forbidden,    Forbidden,    Forbidden]),
         spec(K::NetworkProxy, "network.proxy", V::Reserved, S::Reserved,                                     RESERVED),
+        env(spec(K::Provider, "provider.kind", V::Provider, S::Routing,                                     [Allowed,      Forbidden,    Allowed,      Forbidden]), "SR_PROVIDER"),
         env(spec(K::TypesafeApiKey, "typesafe.api_key", V::Credential, S::Credential,                        [Forbidden,    Forbidden,    Allowed,      Forbidden]), "TYPESAFE_API_KEY"),
         env(spec(K::TypesafeEndpoint, "typesafe.endpoint", V::Endpoint, S::Routing,                          [Forbidden,    Forbidden,    Allowed,      Forbidden]), "TYPESAFE_ENDPOINT"),
+        env(spec(K::CloudflareApiToken, "cloudflare.api_token", V::Credential, S::Credential,                [Forbidden,    Forbidden,    Allowed,      Forbidden]), "CLOUDFLARE_API_TOKEN"),
+        env(spec(K::CloudflareAccountId, "cloudflare.account_id", V::CloudflareAccountId, S::Routing,        [Forbidden,    Forbidden,    Allowed,      Forbidden]), "CLOUDFLARE_ACCOUNT_ID"),
         env(spec(K::ProviderModel, "provider.model", V::ModelName, S::Routing,                               [Allowed,      Forbidden,    Allowed,      Forbidden]), "SR_MODEL"),
         flag(spec(K::HookMode, "hook.mode", V::HookMode, S::AdviceInjection,                                 [Allowed,      Forbidden,    Forbidden,    RestrictOnly]), "--shadow"),
         spec(K::HookNotificationTurns, "hook.notification_turns", V::NotificationTurns, S::DisclosureVolume, [Allowed,      RestrictOnly, Forbidden,    Forbidden]),
@@ -580,8 +633,10 @@ enum TypedValue {
     Profile(ContextProfile),
     Hook(HookMode),
     Notification(NotificationTurns),
+    Provider(Provider),
     Model(ModelName),
     Endpoint(EndpointOverride),
+    CloudflareAccountId(ConfigText),
     References(Vec<SkillReference>),
     AbsoluteRoots(Vec<TrustedAbsoluteRoot>),
     Roots(Vec<SkillRoot>),
@@ -658,11 +713,21 @@ fn typed_value(
         (ValueKind::NotificationTurns, RawValue::String(text)) => NotificationTurns::parse(&text)
             .map(TypedValue::Notification)
             .ok_or(InvalidValue),
+        (ValueKind::Provider, RawValue::String(text)) => Provider::parse(&text)
+            .map(TypedValue::Provider)
+            .ok_or(InvalidValue),
         (ValueKind::ModelName, RawValue::String(text)) => {
             bounded_text(text, MAX_MODEL_BYTES).map(|t| TypedValue::Model(ModelName(t)))
         }
         (ValueKind::Endpoint, RawValue::String(text)) => bounded_text(text, MAX_STRING_VALUE_BYTES)
             .map(|t| TypedValue::Endpoint(EndpointOverride(t))),
+        (ValueKind::CloudflareAccountId, RawValue::String(text)) => {
+            if text.len() != 32 || !text.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                Err(InvalidValue)
+            } else {
+                Ok(TypedValue::CloudflareAccountId(ConfigText::new(text)))
+            }
+        }
         (ValueKind::SkillReferences, RawValue::StringList(items)) => {
             let refs = bounded_list(items, MAX_LIST_ITEMS)?
                 .into_iter()
@@ -820,10 +885,11 @@ impl LayerBuilder {
 fn validate_environment(
     vars: Vec<(OsString, OsString)>,
     sink: &mut IssueSink,
-) -> (ValidatedLayer, Option<ApiCredential>) {
+) -> (ValidatedLayer, Option<ApiCredential>, Option<ApiCredential>) {
     let layer = ConfigLayer::Environment;
     let mut builder = LayerBuilder::new(layer);
-    let mut credential = None;
+    let mut typesafe_credential = None;
+    let mut cloudflare_credential = None;
     let mut recognized = 0usize;
     for (name, value) in vars {
         let strict_namespace = name.as_encoded_bytes().starts_with(b"SR_");
@@ -846,7 +912,10 @@ fn validate_environment(
         }
         let text = value.into_string().map_err(|_| ConfigProblem::NonUtf8);
         // The credential never enters a validated layer, receipt or merge.
-        if key == SettingKey::TypesafeApiKey {
+        if matches!(
+            key,
+            SettingKey::TypesafeApiKey | SettingKey::CloudflareApiToken
+        ) {
             if !builder.first_occurrence(key, sink) {
                 continue;
             }
@@ -856,7 +925,13 @@ fn validate_environment(
                     CredentialError::InvalidCharacter => ConfigProblem::InvalidValue,
                 })
             }) {
-                Ok(found) => credential = found,
+                Ok(found) => {
+                    if key == SettingKey::TypesafeApiKey {
+                        typesafe_credential = found;
+                    } else {
+                        cloudflare_credential = found;
+                    }
+                }
                 Err(problem) => sink.push(layer, IssueKey::Known(key), problem),
             }
             continue;
@@ -864,7 +939,11 @@ fn validate_environment(
         let kind = key.spec().kind;
         builder.insert(key, text.and_then(|t| environment_raw(kind, t)), sink);
     }
-    (builder.validated, credential)
+    (
+        builder.validated,
+        typesafe_credential,
+        cloudflare_credential,
+    )
 }
 
 /// Where an effective value came from. Union lists record every contributor.
@@ -878,7 +957,9 @@ pub enum ValueSource {
 #[derive(Clone, Debug, PartialEq)]
 pub struct EffectiveConfig {
     network_enabled: bool,
+    provider: Provider,
     endpoint: Option<EndpointOverride>,
+    cloudflare_account_id: Option<ConfigText>,
     model: ModelName,
     hook_mode: HookMode,
     notification_turns: NotificationTurns,
@@ -903,7 +984,9 @@ impl EffectiveConfig {
     pub fn defaults() -> Self {
         Self {
             network_enabled: false,
+            provider: Provider::TypeSafe,
             endpoint: None,
+            cloudflare_account_id: None,
             model: ModelName(DEFAULT_MODEL.to_owned()),
             hook_mode: HookMode::Shadow,
             notification_turns: NotificationTurns::Skip,
@@ -932,8 +1015,21 @@ impl EffectiveConfig {
     pub fn endpoint(&self) -> Option<&EndpointOverride> {
         self.endpoint.as_ref()
     }
+    pub const fn provider(&self) -> Provider {
+        self.provider
+    }
+    pub fn cloudflare_account_id(&self) -> Option<&str> {
+        self.cloudflare_account_id.as_ref().map(ConfigText::as_str)
+    }
     pub fn model(&self) -> &ModelName {
         &self.model
+    }
+    pub fn active_model(&self) -> &str {
+        if self.provider == Provider::Cloudflare && self.model.as_str() == DEFAULT_MODEL {
+            DEFAULT_CLOUDFLARE_MODEL
+        } else {
+            self.model.as_str()
+        }
     }
     pub const fn hook_mode(&self) -> HookMode {
         self.hook_mode
@@ -1003,9 +1099,15 @@ impl EffectiveConfig {
         let float = |value: f64| (if value == 0.0 { 0.0f64 } else { value }).to_le_bytes();
         field("schema", &CONFIG_SCHEMA_VERSION.to_le_bytes());
         field("network.enabled", &[u8::from(self.network_enabled)]);
+        field("provider.kind", self.provider.as_str().as_bytes());
         match &self.endpoint {
             Some(endpoint) => field("typesafe.endpoint", endpoint.as_str().as_bytes()),
             None => field("typesafe.endpoint.default", &[]),
+        }
+        if let Some(account_id) = &self.cloudflare_account_id {
+            field("cloudflare.account_id", account_id.as_str().as_bytes());
+        } else {
+            field("cloudflare.account_id.absent", &[]);
         }
         field("provider.model", self.model.as_str().as_bytes());
         field("hook.mode", self.hook_mode.as_str().as_bytes());
@@ -1085,7 +1187,11 @@ impl EffectiveConfig {
         use TypedValue as T;
         match (key, value) {
             (K::NetworkEnabled, T::Bool(v)) => self.network_enabled = v,
+            (K::Provider, T::Provider(v)) => self.provider = v,
             (K::TypesafeEndpoint, T::Endpoint(v)) => self.endpoint = Some(v),
+            (K::CloudflareAccountId, T::CloudflareAccountId(v)) => {
+                self.cloudflare_account_id = Some(v)
+            }
             (K::ProviderModel, T::Model(v)) => self.model = v,
             (K::HookMode, T::Hook(v)) => self.hook_mode = v,
             (K::HookNotificationTurns, T::Notification(v)) => self.notification_turns = v,
@@ -1120,7 +1226,8 @@ fn union_into<T: Ord + Clone>(existing: &mut Vec<T>, added: Vec<T>) {
 pub struct ResolvedConfig {
     effective: EffectiveConfig,
     sources: BTreeMap<SettingKey, ValueSource>,
-    credential: Option<ApiCredential>,
+    typesafe_credential: Option<ApiCredential>,
+    cloudflare_credential: Option<ApiCredential>,
     /// Process environment and arguments stay fixed for the whole invocation.
     environment: ValidatedLayer,
     cli: ValidatedLayer,
@@ -1133,13 +1240,15 @@ impl ResolvedConfig {
         let mut sink = IssueSink::default();
         let user = validate_entries(ConfigLayer::TrustedUser, sources.trusted_user, &mut sink);
         let project = validate_entries(ConfigLayer::Project, sources.project, &mut sink);
-        let (environment, credential) = validate_environment(sources.environment, &mut sink);
+        let (environment, typesafe_credential, cloudflare_credential) =
+            validate_environment(sources.environment, &mut sink);
         let cli = validate_entries(ConfigLayer::Cli, sources.cli, &mut sink);
         let merged = merge(&user, &project, &environment, &cli, &mut sink);
         sink.finish(merged).map(|(effective, sources)| Self {
             effective,
             sources,
-            credential,
+            typesafe_credential,
+            cloudflare_credential,
             environment,
             cli,
             generation,
@@ -1161,7 +1270,8 @@ impl ResolvedConfig {
         sink.finish(merged).map(|(effective, sources)| Self {
             effective,
             sources,
-            credential: self.credential.clone(),
+            typesafe_credential: self.typesafe_credential.clone(),
+            cloudflare_credential: self.cloudflare_credential.clone(),
             environment: self.environment.clone(),
             cli: self.cli.clone(),
             generation,
@@ -1180,11 +1290,14 @@ impl ResolvedConfig {
     }
 
     pub fn credential(&self) -> Option<&ApiCredential> {
-        self.credential.as_ref()
+        match self.effective.provider {
+            Provider::TypeSafe => self.typesafe_credential.as_ref(),
+            Provider::Cloudflare => self.cloudflare_credential.as_ref(),
+        }
     }
 
-    pub const fn credential_status(&self) -> CredentialStatus {
-        if self.credential.is_some() {
+    pub fn credential_status(&self) -> CredentialStatus {
+        if self.credential().is_some() {
             CredentialStatus::PresentFromEnvironment
         } else {
             CredentialStatus::Absent
@@ -1283,7 +1396,9 @@ fn merge(
 pub enum PolicyField {
     NetworkConsent,
     CredentialPresence,
+    Provider,
     Endpoint,
+    ProviderAccount,
     Model,
     ContextProfile,
     NoTools,
@@ -1324,7 +1439,9 @@ impl PolicyBoundary {
         const ADMISSION: &[PolicyField] = &[
             F::NetworkConsent,
             F::CredentialPresence,
+            F::Provider,
             F::Endpoint,
+            F::ProviderAccount,
             F::Model,
             F::ContextProfile,
             F::NoTools,
@@ -1424,7 +1541,9 @@ impl PolicyReceipt {
             .filter(|field| match field {
                 PolicyField::NetworkConsent => self.network_consent != current.network_consent,
                 PolicyField::CredentialPresence => self.credential != current.credential,
+                PolicyField::Provider => a.provider != b.provider,
                 PolicyField::Endpoint => a.endpoint != b.endpoint,
+                PolicyField::ProviderAccount => a.cloudflare_account_id != b.cloudflare_account_id,
                 PolicyField::Model => a.model != b.model,
                 PolicyField::ContextProfile => a.context_profile != b.context_profile,
                 PolicyField::NoTools => a.no_tools != b.no_tools,

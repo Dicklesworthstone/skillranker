@@ -169,7 +169,7 @@ impl fmt::Display for TransportError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // All fields are closed enums or a status integer, never library error
         // strings, response bodies, endpoint text, credentials or request state.
-        write!(f, "Jev HTTPS attempt failed: {:?}", self.kind)
+        write!(f, "provider HTTPS attempt failed: {:?}", self.kind)
     }
 }
 impl std::error::Error for TransportError {}
@@ -350,14 +350,14 @@ impl JevClient {
     }
 }
 
-fn failure(kind: TransportErrorKind, http_attempt_started: bool) -> TransportError {
+pub(crate) fn failure(kind: TransportErrorKind, http_attempt_started: bool) -> TransportError {
     TransportError {
         kind,
         http_attempt_started,
         retry_after: RetryAfter::Absent,
     }
 }
-fn budget(cx: &Cx, clock: &EntryClock, started: bool) -> Result<(), TransportError> {
+pub(crate) fn budget(cx: &Cx, clock: &EntryClock, started: bool) -> Result<(), TransportError> {
     if cx.is_cancel_requested() {
         return Err(failure(TransportErrorKind::Cancelled, started));
     }
@@ -366,7 +366,7 @@ fn budget(cx: &Cx, clock: &EntryClock, started: bool) -> Result<(), TransportErr
         .map_err(|_| failure(TransportErrorKind::Deadline, started))?;
     Ok(())
 }
-fn client_failure(error: ClientError) -> TransportError {
+pub(crate) fn client_failure(error: ClientError) -> TransportError {
     let kind = match error {
         ClientError::Cancelled => TransportErrorKind::Cancelled,
         ClientError::DeadlineExceeded => TransportErrorKind::Deadline,
@@ -399,7 +399,7 @@ fn client_failure(error: ClientError) -> TransportError {
 /// Keep one owned timer beside the same HTTP future so cancellation drops the
 /// exchange promptly even when the peer sends no more bytes. No task is spawned
 /// and no request is reconstructed or retried on a timer tick.
-async fn drive_exchange(
+pub(crate) async fn drive_exchange(
     future: impl Future<Output = Result<asupersync::http::h1::types::Response, ClientError>>,
     cx: &Cx,
     clock: &EntryClock,

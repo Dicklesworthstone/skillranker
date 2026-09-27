@@ -19,7 +19,8 @@ use crate::cache::{
 };
 use crate::cli::ConfigFiles;
 use crate::config::{
-    ConfigSources, PolicyBoundary, PolicyReceipt, PublicationKind, ResolvedConfig, Revalidation,
+    ConfigSources, PolicyBoundary, PolicyReceipt, Provider, PublicationKind, ResolvedConfig,
+    Revalidation,
 };
 use crate::context::anchor::resolve_task_anchor;
 use crate::context::branch::{SkillUsageKind, resolve_active_branch};
@@ -37,6 +38,7 @@ use crate::eligibility::{Eligible, Evaluation, LoadedState, Verdict, admit, afte
 use crate::identity::{ContentHash, HarnessId, SkillId, WorkspaceId};
 use crate::jev::admission::{AttemptBudget, RankingStage};
 use crate::jev::client::{JevClient, TransportErrorKind};
+use crate::jev::cloudflare::CloudflareClient;
 use crate::jev::codec::{Request, Response};
 use crate::jev::endpoint::EndpointConfig;
 use crate::jev::rerank::RerankOutcome;
@@ -1514,7 +1516,7 @@ async fn rank_once(
         require_skills: &args.require_skills,
         exclude_skills: &trace_exclude_skills,
         context_hash: Some(context_hash),
-        model: Some(effective.model().as_str()),
+        model: Some(effective.active_model()),
         endpoint: effective.endpoint().map(|e| e.as_str()),
         evaluation_hash: None,
     };
@@ -1706,7 +1708,7 @@ async fn rank_once(
                 capture.manifest = Some(ReplayManifest {
                     evidence_origin: "recorded".to_string(),
                     adapter: normalized_context.harness.as_str().to_string(),
-                    model: Some(effective.model().as_str().to_string()),
+                    model: Some(effective.active_model().to_string()),
                     stages_recorded: Vec::new(),
                     prompt_summary: Some(
                         normalized_context
@@ -2365,7 +2367,7 @@ async fn rank_once(
         capture.manifest = Some(ReplayManifest {
             evidence_origin: "recorded".to_string(),
             adapter: normalized_context.harness.as_str().to_string(),
-            model: Some(effective.model().as_str().to_string()),
+            model: Some(effective.active_model().to_string()),
             stages_recorded: Vec::new(),
             prompt_summary: Some(
                 rendered_context
@@ -2416,16 +2418,17 @@ async fn rank_once(
     // at most two logical requests and four HTTP attempts, with classified
     // retries inside the entry deadline. Opened only when a send is due, so
     // refused runs never construct a client.
-    let mut owned_client: Option<JevClient> = None;
+    let mut owned_client: Option<Box<dyn JevTransport>> = None;
     let mut bound_credential: Option<OriginScopedCredential> = None;
     let mut session: Option<RetrySession<'_>> = None;
+    let active_model = effective.active_model();
 
     // 11. Stage 1 (Wide) Call or Cache Hit
     let wide_builder = wide::build(
         &roster,
         &candidate_ids,
         &rendered_context,
-        effective.model().as_str(),
+        active_model,
         false, // include_stuck
     )
     .map_err(|e| failure(e.kind(), format!("Wide build failed: {e:?}")))?;
@@ -2457,7 +2460,7 @@ async fn rank_once(
                 &roster,
                 &args.shortlist_ids,
                 &rendered_context,
-                effective.model().as_str(),
+                active_model,
             )
             .map_err(|e| failure(e.kind(), format!("Rerank build failed: {e:?}")))?;
             stages.push(preview_stage(
@@ -2472,7 +2475,7 @@ async fn rank_once(
         })?;
         return preview_document(
             Some(json!({
-                "model": effective.model().as_str(),
+                "model": active_model,
                 "stages": stages,
                 "trimming": {
                     "dropped_messages": wide_builder.trimming().dropped_messages,
@@ -2494,23 +2497,38 @@ async fn rank_once(
         wide: candidate_skills.len(),
         quill: ran_quill,
         wide_set_id: Some(candidate_set_id("wide", candidate_skills.iter())),
-        requested_model: Some(effective.model().as_str().to_owned()),
+        requested_model: Some(active_model.to_owned()),
         ..progress.evaluated.clone()
     };
 
     // The request identity binds the exact serialized request (context,
     // questions and options) and the endpoint it would be sent to.
-    let endpoint = match effective.endpoint() {
-        Some(ep) => EndpointConfig::from_override(ep).map_err(|_| {
-            failure(
-                ErrorKind::InvalidConfiguration,
-                "The configured endpoint is invalid",
-            )
-        })?,
-        None => EndpointConfig::production(),
+    let endpoint = match effective.provider() {
+        Provider::TypeSafe => match effective.endpoint() {
+            Some(ep) => EndpointConfig::from_override(ep).map_err(|_| {
+                failure(
+                    ErrorKind::InvalidConfiguration,
+                    "The configured endpoint is invalid",
+                )
+            })?,
+            None => EndpointConfig::production(),
+        },
+        Provider::Cloudflare => {
+            let account_id = effective.cloudflare_account_id().ok_or_else(|| {
+                failure(
+                    ErrorKind::InvalidConfiguration,
+                    "CLOUDFLARE_ACCOUNT_ID is required for the Cloudflare provider",
+                )
+            })?;
+            crate::jev::cloudflare::endpoint(account_id).map_err(|_| {
+                failure(
+                    ErrorKind::InvalidConfiguration,
+                    "The Cloudflare account configuration is invalid",
+                )
+            })?
+        }
     };
     let canonical_state = rendered_context.to_json_bytes().unwrap_or_default();
-    let active_model = effective.model().as_str();
     let fingerprint = |stage: RequestStage,
                        candidates: &[CandidateDigest],
                        request: &[u8],
@@ -2740,12 +2758,35 @@ async fn rank_once(
             )?;
             let client: &dyn JevTransport = match transport {
                 Some(transport) => transport,
-                None => &*owned_client.insert(JevClient::new(endpoint.clone()).map_err(|e| {
-                    failure(
-                        ErrorKind::InvalidConfiguration,
-                        format!("Client init failed: {e}"),
-                    )
-                })?),
+                None => {
+                    let owned: Box<dyn JevTransport> = match effective.provider() {
+                        Provider::TypeSafe => Box::new(JevClient::new(endpoint.clone()).map_err(
+                            |e| {
+                                failure(
+                                    ErrorKind::InvalidConfiguration,
+                                    format!("Client init failed: {e}"),
+                                )
+                            },
+                        )?),
+                        Provider::Cloudflare => Box::new(
+                            CloudflareClient::new(
+                                effective.cloudflare_account_id().ok_or_else(|| {
+                                    failure(
+                                        ErrorKind::InvalidConfiguration,
+                                        "CLOUDFLARE_ACCOUNT_ID is required for the Cloudflare provider",
+                                    )
+                                })?,
+                            )
+                            .map_err(|_| {
+                                failure(
+                                    ErrorKind::InvalidConfiguration,
+                                    "Cloudflare client initialization failed",
+                                )
+                            })?,
+                        ),
+                    };
+                    &**owned_client.insert(owned)
+                }
             };
             let credential = match (resolved_config.credential(), client.origin()) {
                 (Some(credential), Some(origin)) => Some(&*bound_credential.insert(
@@ -2978,13 +3019,8 @@ async fn rank_once(
         "rerank",
         shortlisted.iter().map(|s| &s.skill),
     ));
-    let rerank_builder = rerank::build(
-        &roster,
-        &shortlist_ids,
-        &rendered_context,
-        effective.model().as_str(),
-    )
-    .map_err(|e| failure(e.kind(), format!("Rerank build failed: {e:?}")))?;
+    let rerank_builder = rerank::build(&roster, &shortlist_ids, &rendered_context, active_model)
+        .map_err(|e| failure(e.kind(), format!("Rerank build failed: {e:?}")))?;
 
     // A cached wide answer arrives with its cached rerank answer. Otherwise
     // rerank pairs with the wide answer this session produced; a wide answer
