@@ -130,44 +130,56 @@ impl CloudflareClient {
         on_start()?;
         let response = drive_exchange(exchange, cx, clock).await?;
         budget(cx, clock, true)?;
-        if (300..400).contains(&response.status) {
-            return Err(failure(TransportErrorKind::Redirect, true));
-        }
-        if !(200..300).contains(&response.status) {
-            let mut error = failure(TransportErrorKind::HttpStatus(response.status), true);
-            error.retry_after =
-                RetryAfter::from_headers(&response.headers, std::time::SystemTime::now());
-            return Err(error);
-        }
-        let mut encoding_seen = false;
-        let mut content_type_seen = false;
-        for (name, value) in &response.headers {
-            if name.eq_ignore_ascii_case("content-encoding") {
-                if encoding_seen || !value.trim().eq_ignore_ascii_case("identity") {
-                    return Err(failure(TransportErrorKind::UnsupportedEncoding, true));
-                }
-                encoding_seen = true;
-            }
-            if name.eq_ignore_ascii_case("content-type") {
-                if content_type_seen
-                    || !value
-                        .split(';')
-                        .next()
-                        .is_some_and(|v| v.trim().eq_ignore_ascii_case("application/json"))
-                {
-                    return Err(failure(TransportErrorKind::InvalidContentType, true));
-                }
-                content_type_seen = true;
-            }
-        }
-        if !content_type_seen {
-            return Err(failure(TransportErrorKind::InvalidContentType, true));
-        }
+        validate_response_status(response.status, &response.headers)?;
+        validate_response_headers(&response.headers)?;
         let decoded = decode_response(request, &response.body)
             .map_err(|e| failure(TransportErrorKind::Response(e), true))?;
         budget(cx, clock, true)?;
         Ok(decoded)
     }
+}
+
+fn validate_response_status(
+    status: u16,
+    headers: &[(String, String)],
+) -> Result<(), TransportError> {
+    if (300..400).contains(&status) {
+        return Err(failure(TransportErrorKind::Redirect, true));
+    }
+    if !(200..300).contains(&status) {
+        let mut error = failure(TransportErrorKind::HttpStatus(status), true);
+        error.retry_after = RetryAfter::from_headers(headers, std::time::SystemTime::now());
+        return Err(error);
+    }
+    Ok(())
+}
+
+fn validate_response_headers(headers: &[(String, String)]) -> Result<(), TransportError> {
+    let mut encoding_seen = false;
+    let mut content_type_seen = false;
+    for (name, value) in headers {
+        if name.eq_ignore_ascii_case("content-encoding") {
+            if encoding_seen || !value.trim().eq_ignore_ascii_case("identity") {
+                return Err(failure(TransportErrorKind::UnsupportedEncoding, true));
+            }
+            encoding_seen = true;
+        }
+        if name.eq_ignore_ascii_case("content-type") {
+            if content_type_seen
+                || !value
+                    .split(';')
+                    .next()
+                    .is_some_and(|v| v.trim().eq_ignore_ascii_case("application/json"))
+            {
+                return Err(failure(TransportErrorKind::InvalidContentType, true));
+            }
+            content_type_seen = true;
+        }
+    }
+    if !content_type_seen {
+        return Err(failure(TransportErrorKind::InvalidContentType, true));
+    }
+    Ok(())
 }
 
 impl super::client::JevTransport for CloudflareClient {
@@ -207,7 +219,7 @@ impl super::client::JevTransport for CloudflareClient {
 
 fn decode_response(request: &Request, body: &[u8]) -> Result<Response, CodecError> {
     let envelope: Value = serde_json::from_slice(body).map_err(|_| CodecError::InvalidJson)?;
-    if envelope.get("success").and_then(Value::as_bool) == Some(false) {
+    if envelope.get("success").and_then(Value::as_bool) != Some(true) {
         return Err(CodecError::InvalidAnswer);
     }
     let result = envelope
@@ -270,6 +282,34 @@ mod tests {
     use super::*;
     use crate::jev::codec::{Answer, Question};
 
+    fn test_request() -> Request {
+        Request::new(
+            "typesafe/jev".into(),
+            json!("synthetic state"),
+            [(
+                "fit".into(),
+                Question::Noul {
+                    instructions: json!("Return a bounded synthetic score."),
+                    criteria: None,
+                },
+            )],
+        )
+        .unwrap()
+    }
+
+    fn valid_envelope() -> Value {
+        json!({
+            "success": true,
+            "result": {
+                "result": {
+                    "model": "jev-1.13.0",
+                    "answers": {"fit": {"type": "noul", "noul": 0.75}},
+                    "usage": {"input_tokens": 12, "output_tokens": 7}
+                }
+            }
+        })
+    }
+
     #[test]
     fn cloudflare_content_is_translated_and_validated_as_jev() {
         let request = Request::new(
@@ -326,18 +366,7 @@ mod tests {
 
     #[test]
     fn missing_usage_is_rejected_instead_of_fabricating_zero_tokens() {
-        let request = Request::new(
-            "typesafe/jev".into(),
-            json!("synthetic state"),
-            [(
-                "fit".into(),
-                Question::Noul {
-                    instructions: json!("Return a bounded synthetic score."),
-                    criteria: None,
-                },
-            )],
-        )
-        .unwrap();
+        let request = test_request();
         let body = serde_json::json!({
             "success": true,
             "result": {
@@ -351,6 +380,77 @@ mod tests {
             decode_response(&request, body.to_string().as_bytes()),
             Err(CodecError::InvalidAnswer)
         ));
+    }
+
+    #[test]
+    fn cloudflare_requires_explicit_success_true() {
+        let request = test_request();
+        let mut missing = valid_envelope();
+        missing.as_object_mut().unwrap().remove("success");
+        assert!(matches!(
+            decode_response(&request, missing.to_string().as_bytes()),
+            Err(CodecError::InvalidAnswer)
+        ));
+
+        for value in [json!(false), json!("true"), Value::Null] {
+            let mut envelope = valid_envelope();
+            envelope["success"] = value;
+            assert!(matches!(
+                decode_response(&request, envelope.to_string().as_bytes()),
+                Err(CodecError::InvalidAnswer)
+            ));
+        }
+    }
+
+    #[test]
+    fn cloudflare_status_policy_rejects_redirects_and_preserves_retry_after() {
+        let redirect = validate_response_status(302, &[]).unwrap_err();
+        assert_eq!(redirect.kind, TransportErrorKind::Redirect);
+        assert!(redirect.http_attempt_started);
+
+        let retryable =
+            validate_response_status(503, &[("Retry-After".into(), "3".into())]).unwrap_err();
+        assert_eq!(retryable.kind, TransportErrorKind::HttpStatus(503));
+        assert_eq!(
+            retryable.retry_after,
+            RetryAfter::Delay(Duration::from_secs(3))
+        );
+    }
+
+    #[test]
+    fn cloudflare_response_headers_require_json_and_identity_encoding() {
+        assert!(
+            validate_response_headers(&[("Content-Type".into(), "application/json".into())])
+                .is_ok()
+        );
+        assert_eq!(
+            validate_response_headers(&[]).unwrap_err().kind,
+            TransportErrorKind::InvalidContentType
+        );
+        assert_eq!(
+            validate_response_headers(&[("Content-Type".into(), "text/plain".into())])
+                .unwrap_err()
+                .kind,
+            TransportErrorKind::InvalidContentType
+        );
+        assert_eq!(
+            validate_response_headers(&[
+                ("Content-Type".into(), "application/json".into()),
+                ("Content-Type".into(), "application/json".into()),
+            ])
+            .unwrap_err()
+            .kind,
+            TransportErrorKind::InvalidContentType
+        );
+        assert_eq!(
+            validate_response_headers(&[
+                ("Content-Type".into(), "application/json".into()),
+                ("Content-Encoding".into(), "gzip".into()),
+            ])
+            .unwrap_err()
+            .kind,
+            TransportErrorKind::UnsupportedEncoding
+        );
     }
 
     #[test]
