@@ -1080,17 +1080,27 @@ fn a_fatal_error_in_a_second_arm_stops_the_remaining_arms() {
     // main ranking completed, so the run itself is complete.
     assert_eq!(calls.into_inner(), ["h1 true", "h2 true", "h1 false"]);
     assert_eq!(report.run_status, RunStatus::Complete);
-    let ablation = report.baselines.unwrap().context_ablation.unwrap();
+    // The run stays complete, and the error that stopped the arms is still
+    // reported, with the comparison it cut short.
+    assert!(report.error.is_none());
+    let baselines = report.baselines.unwrap();
+    assert!(
+        baselines.supplementary_error.is_some(),
+        "the fatal arm error was dropped"
+    );
+    let ablation = baselines.context_ablation.unwrap();
     assert_eq!((ablation.arm_failures, ablation.skipped_for_budget), (1, 1));
 }
 
 #[test]
-fn the_harm_card_explains_why_zero_harmful_outcomes_is_not_enough() {
-    use skillranker::evaluation::batch::execute_labeled_frame_evaluation;
-    let explain = |n: usize, harmful: usize| {
+fn the_harm_card_bounds_only_a_justified_sample_and_explains_zero() {
+    use skillranker::evaluation::batch::{FrameSampling, execute_labeled_frame_evaluation};
+    // `families` one-case families, `harmful` of them wrong; `sample` draws a
+    // fresh OS-random probability sample of that many families.
+    let explain = |families: usize, harmful: usize, sample: Option<usize>| {
         let mut records = String::new();
         let mut labels = String::new();
-        for i in 0..n {
+        for i in 0..families {
             let suggested = if i < harmful { "s_wrong" } else { "s_right" };
             records.push_str(
                 &(json!({"schema_version": 1,
@@ -1112,7 +1122,10 @@ fn the_harm_card_explains_why_zero_harmful_outcomes_is_not_enough() {
         let mut report = execute_labeled_frame_evaluation(
             Cursor::new(records.into_bytes()),
             Cursor::new(labels.into_bytes()),
-            None,
+            sample.map(|sample_size| FrameSampling {
+                sample_size,
+                seed: None,
+            }),
             0,
         )
         .unwrap();
@@ -1122,11 +1135,19 @@ fn the_harm_card_explains_why_zero_harmful_outcomes_is_not_enough() {
             .unwrap()
             .quantities
             .into_iter()
-            .find(|q| q.name == "harmful_outcome_rate_upper_95")
+            .find(|q| q.name.starts_with("harmful_outcome_rate"))
             .unwrap()
     };
-    // Zero of 18: the bound is recomputed, not copied, and says what would change it.
-    let card = explain(18, 0);
+    // An unsampled frame: cases are not independent draws, so no bound.
+    let card = explain(18, 0, None);
+    assert_eq!(card.name, "harmful_outcome_rate_observed");
+    assert_eq!(card.value, Some(0.0));
+    assert!(card.would_change.unwrap().contains("No 95% upper bound"));
+
+    // A fresh probability sample of 18 families, one case each: zero of 18 is
+    // bounded, recomputed rather than copied, with what would change it.
+    let card = explain(19, 0, Some(18));
+    assert_eq!(card.name, "harmful_outcome_rate_upper_95");
     let expected = 1.0 - 0.05f64.powf(1.0 / 18.0);
     assert!(
         (card.value.unwrap() - expected).abs() < 1e-9,
@@ -1137,14 +1158,6 @@ fn the_harm_card_explains_why_zero_harmful_outcomes_is_not_enough() {
     assert!(
         change.contains("Zero of 18") && change.contains("59"),
         "{change}"
-    );
-    // With harmful outcomes the exact bound can never fall below k / n.
-    let card = explain(100, 1);
-    assert!(card.equation.contains("Clopper-Pearson"));
-    assert!(
-        card.value.unwrap() > 0.01 && card.value.unwrap() < 0.05,
-        "{:?}",
-        card.value
     );
 }
 
@@ -1371,4 +1384,86 @@ fn a_request_that_changed_since_its_preview_is_not_estimable_not_a_failure() {
     });
     assert_eq!(report.loss_summary.operational_failures, 1);
     assert_eq!(report.loss_summary.not_estimable_cases, 0);
+}
+
+#[test]
+fn unjudged_live_cases_enter_the_review_queue_and_missing_evidence_is_incomplete() {
+    use skillranker::evaluation::batch::{
+        LiveBatchLimits, LiveRankOutcome, execute_live_frame_evaluation,
+    };
+    use skillranker::evaluation::review::ReviewReason;
+    // "judged" has a label and is ranked without stage evidence; "unjudged"
+    // has none, so it is never sent.
+    let report = execute_live_frame_evaluation(
+        vec![live_case("judged"), live_case("unjudged")],
+        live_labels(&["judged"]),
+        None,
+        &std::collections::BTreeSet::from(["s_alpha".to_owned()]),
+        LiveBatchLimits {
+            max_requests: 100,
+            max_runtime_ms: 60_000,
+            attempts_per_case: 4,
+            fit_threshold: 0.3,
+            gate_threshold: 0.3,
+            robustness_variants: false,
+        },
+        &EntryClock::capture().unwrap(),
+        0,
+        |_| Ok(None),
+        |_| LiveRankOutcome {
+            decision: "ranked".into(),
+            suggested_skills: vec!["s_alpha".into()],
+            http_attempts: 2,
+            ..LiveRankOutcome::default()
+        },
+    )
+    .unwrap();
+    let queue = report.review_queue.unwrap();
+    let unjudged = queue
+        .entries
+        .iter()
+        .find(|entry| entry.key.case_id == "unjudged")
+        .expect("an unjudged case is queued for review");
+    assert!(
+        unjudged
+            .reasons
+            .iter()
+            .any(|reason| matches!(reason, ReviewReason::UnresolvedJudgment))
+    );
+    // The judged case was ranked without stage evidence: no policy could
+    // score it, so the comparison is not complete.
+    let baselines = report.baselines.unwrap();
+    assert_eq!(baselines.cases_without_evidence, 1);
+    assert!(!baselines.complete);
+}
+
+#[test]
+fn a_recorded_frame_queues_its_unjudged_cases_for_review() {
+    use skillranker::evaluation::batch::execute_labeled_frame_evaluation;
+    let record = |id: &str| {
+        json!({"schema_version": 1,
+               "key": {"frame_id": "f", "family_id": format!("fam-{id}"), "case_id": id,
+                       "replicate": 0, "policy_id": "p"},
+               "split": "holdout", "prompt_summary": "request", "decision": "ranked",
+               "suggested_skills": ["s_alpha"]})
+        .to_string()
+            + "\n"
+    };
+    let report = execute_labeled_frame_evaluation(
+        Cursor::new((record("judged") + &record("unjudged")).into_bytes()),
+        live_labels(&["judged"]),
+        None,
+        0,
+    )
+    .unwrap();
+    let queue = report
+        .review_queue
+        .expect("the recorded path builds a queue");
+    let queued: Vec<&str> = queue
+        .entries
+        .iter()
+        .map(|entry| entry.key.case_id.as_str())
+        .collect();
+    assert_eq!(queued, ["unjudged"]);
+    assert_eq!(queue.denominator_effect, "none");
 }

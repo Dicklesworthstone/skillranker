@@ -57,7 +57,8 @@ shortlisted skill descriptions and excerpts that no receipt counts. A receipt
 therefore bounds what the context offers a stage, not the exact bytes a stage
 sends; each final request is still redaction-scanned before sending. The live
 evaluation preflight binds each send to its previewed wide request by digest
-and records those requests' exact byte totals (`wide_request_bytes`).
+and records those requests' exact byte totals (`previewed_wide_request_bytes`,
+which also counts cases later refused or left unsent).
 
 ### Invariant 4: Profile and Flag Conformance
 - When `context_profile == ContextProfile::Minimal`:

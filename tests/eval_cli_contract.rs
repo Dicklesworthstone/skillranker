@@ -939,7 +939,7 @@ fn a_live_batch_ranks_each_case_fresh_and_accounts_every_attempt() {
     // The exact previewed wide bytes, bound to the sends above (a mismatch
     // would have withheld them and changed the provider's request count).
     assert!(
-        frozen["wide_request_bytes"].as_u64().unwrap() > 0,
+        frozen["previewed_wide_request_bytes"].as_u64().unwrap() > 0,
         "{frozen}"
     );
     assert!(
