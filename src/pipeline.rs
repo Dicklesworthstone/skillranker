@@ -3781,8 +3781,10 @@ mod persistent {
 
     /// Acquire the lease, retrying briefly: two processes opening the lease
     /// store at once can meet SQLite busy beyond its 25 ms wait. Without a
-    /// lease the run sends uncoordinated, so give up only after a few tries,
-    /// on cancellation, or while a second of budget remains for its own work.
+    /// lease the run sends uncoordinated, a duplicate evaluation, so keep
+    /// trying for a bounded time rather than a fixed count, which a loaded
+    /// host exhausts in a few busy waits (sr-azlc). Stop on cancellation or
+    /// once less than a second of budget remains for the run's own work.
     pub(super) async fn acquire(
         invocation: &ProcessInvocation,
         cx: &Cx,
@@ -3790,17 +3792,23 @@ mod persistent {
         path: &Path,
         key: CoordinationKey,
     ) -> Option<LeaseAcquisition> {
-        for _ in 0..5 {
+        let started = clock.now().as_millis();
+        loop {
             if let Some(acquisition) = try_acquire(invocation, cx, path, key) {
                 return Some(acquisition);
             }
-            if cx.is_cancel_requested() || clock.remaining_before_cleanup().as_millis() < 1_000 {
-                break;
+            if cx.is_cancel_requested()
+                || clock.remaining_before_cleanup().as_millis() < 1_000
+                || clock.now().as_millis().saturating_sub(started) >= LEASE_ACQUIRE_BUDGET_MS
+            {
+                return None;
             }
             asupersync::time::sleep(asupersync::time::wall_now(), Duration::from_millis(10)).await;
         }
-        None
     }
+
+    /// How long a run keeps trying to open and take a contended lease.
+    const LEASE_ACQUIRE_BUDGET_MS: u64 = 400;
 
     fn try_acquire(
         invocation: &ProcessInvocation,
