@@ -4794,6 +4794,13 @@ fn record_inflight_ranking(
 /// no decision whose membership it could describe; `snapshot_id` is nullable for
 /// exactly this case. `reason` is the failure's own typed kind, never its message,
 /// so nothing free-form reaches the ledger.
+/// An overrun run may still record its own failure row within this window
+/// from the moment it fails, ending at most `LATE_FAILURE_RECORD_LIMIT_MS`
+/// past its total deadline. The installed hook's outer timeout exceeds the
+/// internal deadline by at least a second, so both stay inside it.
+const LATE_FAILURE_RECORD_GRACE_MS: u64 = 300;
+const LATE_FAILURE_RECORD_LIMIT_MS: u64 = 900;
+
 fn record_failed_attempts(
     invocation: &ProcessInvocation,
     recording: &FailureRecording,
@@ -4825,10 +4832,21 @@ fn record_failed_attempts(
     };
     // The run may have failed because its work deadline passed, which would refuse this
     // write too and drop the failure from the availability denominator. Record it inside
-    // the cleanup reserve on a cleanup context instead (sr-73b6).
+    // the cleanup reserve on a cleanup context instead (sr-73b6). A run whose work
+    // overran the whole deadline has missed that window as well; it gets a short grace
+    // for this row alone, inside the hook's outer timeout, so it is recorded as its
+    // failure rather than left in-flight (sr-9fzp).
+    let finalization = invocation.clock().for_failure_finalization();
+    let clock = if finalization.admit_new_work().is_ok() {
+        finalization
+    } else {
+        invocation
+            .clock()
+            .for_late_failure_record(LATE_FAILURE_RECORD_GRACE_MS, LATE_FAILURE_RECORD_LIMIT_MS)
+    };
     let _ = crate::storage::record_ranking_with_attempts(
         invocation,
-        invocation.clock().for_failure_finalization(),
+        clock,
         &invocation.request_cleanup_cx(),
         crate::storage::LedgerAccess::ExistingOnly,
         location,

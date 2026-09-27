@@ -116,6 +116,37 @@ impl EntryClock {
         }
     }
 
+    /// [`Self::for_failure_finalization`] for a run that overran its total
+    /// deadline: a window of `grace_ms` from now, never ending more than
+    /// `limit_ms` past the original deadline, which callers keep inside the
+    /// harness's outer timeout. It admits only a failed run's own ledger row,
+    /// so an overrun is recorded as its failure instead of staying
+    /// `in-flight` (sr-9fzp); nothing recorded under it is published.
+    pub fn for_late_failure_record(self, grace_ms: u64, limit_ms: u64) -> Self {
+        let reserve = self.deadline.cleanup_reserve().as_millis();
+        let original = self.deadline.total().as_millis();
+        let total = self
+            .now()
+            .as_millis()
+            .saturating_add(grace_ms)
+            .min(original.saturating_add(limit_ms))
+            .max(original);
+        let deadline = DurationMillis::new("late_failure_record_total", total, u64::MAX)
+            .and_then(|total| {
+                let reserve = DurationMillis::new(
+                    "failure_finalization_reserve",
+                    (reserve / 2).max(1),
+                    reserve,
+                )?;
+                InvocationDeadline::new(self.deadline.start(), total, reserve)
+            })
+            .unwrap_or(self.deadline);
+        Self {
+            started: self.started,
+            deadline,
+        }
+    }
+
     pub fn now(&self) -> MonotonicMillis {
         let elapsed = self.started.elapsed();
         let ms = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX);
@@ -573,4 +604,44 @@ pub const fn default_deadline_ms() -> u64 {
 
 pub const fn default_cleanup_reserve_ms() -> u64 {
     DEFAULT_OUTPUT_CLEANUP_RESERVE_MS
+}
+
+#[cfg(test)]
+mod late_failure_record_tests {
+    use super::*;
+
+    fn clock(total_ms: u64, reserve_ms: u64) -> EntryClock {
+        EntryClock::capture_with(
+            DurationMillis::new("test", total_ms, 60_000).unwrap(),
+            DurationMillis::new("cleanup", reserve_ms, 60_000).unwrap(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn an_overrun_run_gets_a_short_window_from_now() {
+        let clock = clock(40, 10);
+        std::thread::sleep(std::time::Duration::from_millis(80));
+        assert!(clock.for_failure_finalization().admit_new_work().is_err());
+        assert!(
+            clock
+                .for_late_failure_record(200, 1_000)
+                .admit_new_work()
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn the_window_never_ends_past_its_limit() {
+        let clock = clock(20, 10);
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        // Anchored to now it would reach 400 ms, but the limit ends it at
+        // 50 ms, already past.
+        assert!(
+            clock
+                .for_late_failure_record(300, 30)
+                .admit_new_work()
+                .is_err()
+        );
+    }
 }

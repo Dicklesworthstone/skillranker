@@ -1099,3 +1099,110 @@ fn assert_withheld_for(preview: skillranker::pipeline::WidePreview) {
     }
     assert!(invocation.shutdown());
 }
+
+#[test]
+fn a_run_that_overruns_its_deadline_records_its_failure_not_in_flight() {
+    // sr-9fzp: the wide send blocks, uncooperatively, past the whole deadline.
+    // The run must still finalize its ledger row as a failure instead of
+    // leaving it in-flight.
+    let (_root, workspace) = create_test_env();
+    let skills_dir = workspace.join(".claude/skills");
+    create_skill(
+        &skills_dir,
+        "skill_a",
+        "Skill Alpha description",
+        "Alpha body",
+    );
+    create_skill(
+        &skills_dir,
+        "skill_b",
+        "Skill Beta description",
+        "Beta body",
+    );
+    let ctx_file = create_context_file(&workspace, "Help me refactor the pipeline");
+    let ledger = support::private_store_dir("overrun-ledger");
+
+    let setup_clock = test_clock();
+    let setup = ProcessInvocation::from_clock(setup_clock).unwrap();
+    let setup_cx = setup.request_cx().unwrap();
+    skillranker::storage::init_ledger(
+        &setup,
+        &setup_cx,
+        skillranker::storage::LedgerLocation::Directory(ledger.clone()),
+    )
+    .unwrap();
+
+    let clock = EntryClock::capture_with(
+        DurationMillis::new("test", 1_500, 30_000).unwrap(),
+        DurationMillis::new("cleanup", 200, 30_000).unwrap(),
+    )
+    .unwrap();
+    let invocation = ProcessInvocation::from_clock(clock).unwrap();
+    let cx = invocation.request_cx().unwrap();
+    let gate = EffectGate::new(
+        EffectFlags {
+            allow_network: true,
+            no_cache: true,
+            ..Default::default()
+        },
+        Scope::Rank,
+    )
+    .unwrap();
+    let mut sources = ConfigSources::default();
+    sources
+        .environment
+        .push(("TYPESAFE_API_KEY".into(), "test-api-key-xyz".into()));
+    let stall: ResponseGenerator = Box::new(|_| {
+        std::thread::sleep(std::time::Duration::from_millis(1_650));
+        Err(TransportError {
+            kind: skillranker::jev::client::TransportErrorKind::Deadline,
+            http_attempt_started: true,
+            retry_after: skillranker::jev::retry::RetryAfter::Absent,
+        })
+    });
+    let transport = DynamicMockTransport::new(vec![stall]);
+    let args = RankArgs {
+        workspace: workspace.clone(),
+        user_config_root: None,
+        home: None,
+        cache_dir: None,
+        sources,
+        gate,
+        source_options: SourceOptions {
+            context: Some(LocalPath::new(ctx_file)),
+            ..Default::default()
+        },
+        require_skills: Vec::new(),
+        shortlist_ids: Vec::new(),
+        roster_file: None,
+        explain: false,
+        why_not: None,
+        cursor: None,
+        output_json: true,
+        output_table: false,
+        dry_run: false,
+        save_case: None,
+        ledger_dir: Some(ledger.clone()),
+    };
+    let outcome = invocation
+        .runtime()
+        .block_on(async { execute_pipeline(&invocation, &cx, args, Some(&transport)).await });
+    assert!(
+        clock.now().as_millis() > 1_500,
+        "the run did not overrun its deadline"
+    );
+    let _ = outcome;
+    let db = rusqlite::Connection::open(ledger.join(skillranker::storage::LEDGER_FILE)).unwrap();
+    let reasons: Vec<String> = db
+        .prepare("SELECT reason FROM ranking_events")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(reasons.len(), 1, "{reasons:?}");
+    assert_eq!(
+        reasons[0], "timeout",
+        "an overrun run must record its timeout, not stay in-flight"
+    );
+}
