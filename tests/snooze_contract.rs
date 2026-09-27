@@ -279,6 +279,12 @@ fn a_skill_snooze_withholds_only_that_skill_in_its_own_session() {
         .permissions()
         .mode();
     assert_eq!(mode & 0o777, 0o600, "owner-only trusted configuration");
+    // Echoing the event ID is not an exposure of its advice.
+    let stats_snoozed = home.json(1, &["stats", "--json"]);
+    assert_eq!(
+        stats_snoozed["turns"]["emitted_suggestions"], stats_before["turns"]["emitted_suggestions"],
+        "a snooze command marked a ranking as emitted"
+    );
 
     // Same session: the snoozed skill leaves advisory selection before the
     // wide request, and stays visible in the explanation.

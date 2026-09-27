@@ -1464,7 +1464,8 @@ member_beads = ["sr-roadmap-l1i.7.3"]
 phase = "P6"
 title = "Install and remove only the managed Claude hook entry"
 unit_property_tests = [
-    "tests/hook_installer.rs::claude_settings_merge"
+    "tests/hook_installer_contract.rs::preserves_unrelated_settings_and_other_hooks",
+    "tests/hook_installer_contract.rs::apply_install_creates_settings_and_backup"
 ]
 e2e_suite = "shadow-hook"
 e2e_cases = ["install-diff-preview", "atomic-install-rollback"]
@@ -1480,7 +1481,8 @@ member_beads = ["sr-roadmap-l1i.7.1"]
 phase = "P6"
 title = "Implement the dedicated quiet Claude shadow protocol boundary"
 unit_property_tests = [
-    "tests/hook_contract.rs::shadow_hook_non_blocking"
+    "tests/hook_contract.rs::shadow_hook_non_blocking",
+    "tests/hook_contract.rs::quiet_on_failure"
 ]
 e2e_suite = "shadow-hook"
 e2e_cases = ["quiet-on-failure", "stdin-deadline-enforced"]

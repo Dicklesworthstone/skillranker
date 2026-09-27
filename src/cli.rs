@@ -952,6 +952,12 @@ pub fn run(clock: EntryClock) -> u8 {
         count_hook_entry(&args);
     }
     let wants_json = args.iter().any(|arg| arg == "--json") || !io::stdout().is_terminal();
+    // Only a ranking publishes its decision. Other commands can echo an
+    // event ID (snooze, feedback, replay) without exposing any advice.
+    let publishes_ranking = args
+        .get(1)
+        .and_then(|arg| arg.to_str())
+        .is_none_or(|first| first == "rank" || first.starts_with('-'));
     let location = if let Some(dir) = try_extract_dir(&args) {
         crate::storage::LedgerLocation::Directory(dir)
     } else {
@@ -966,6 +972,7 @@ pub fn run(clock: EntryClock) -> u8 {
                 match io::stdout().lock().write_all(output.as_bytes()) {
                     Ok(()) => {
                         if bytes_len > 0
+                            && publishes_ranking
                             && let Some(event_id) = try_extract_event_id(&output)
                         {
                             let _ = try_record_cli_emission(&clock, location, &event_id, bytes_len);
