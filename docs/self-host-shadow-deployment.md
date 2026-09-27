@@ -529,3 +529,27 @@ the confirmation to look for.
   Before the change, live Reranks took 374-640 ms. Host load at 02:00Z was
   about 30, against about 100 at 21:58Z, so part of the lower total is load.
   The Rerank times match the synthetic measurement.
+
+## Redeployment — 2026-09-27 04:31Z (AzureJaguar, budget, breaker and snoozes)
+
+- Binary: `~/.local/bin/sr`, SHA256
+  `143c23944d4d15607285bbaf5bc888865fcffd36796b42ffe207fe4ce5d8d5dc`, built
+  `--release --locked` through RCH from `9ac7caf` (freshness proven by the
+  `sr budget` help string, which the previous build lacks). The previous binary
+  (SHA256 `9c1c026a…`) is kept as `~/.local/bin/sr.backup.20260927T043000Z-075f928`.
+- Carries the peers' P6 work since `075f928`: the shared request allowance
+  (`sr budget`), the fenced provider breaker, snoozes, the sr-9fzp overrun
+  finalization, and the sr-azlc lease retry. Also `9ac7caf`, which caps a
+  persisted provider Retry-After at one hour (sr-0f7i item 1).
+- No allowance is configured: `sr budget` reports `Allowance: disabled`. With
+  no guard file, a hook attempt checks one path and opens no accounting store.
+- Sweep over the 88 submitted prompts, previous binary against this one: every
+  moment reaches the provider stage with both. With the refusing endpoint, the
+  new breaker opens after three transient failures, so this binary records
+  `provider-cooldown` where the previous one recorded `request-budget`. The
+  sweep script now counts `provider-cooldown` as the provider stage.
+- Live check with synthetic input (an invented one-prompt transcript, maintainer
+  key, 4 provider requests): both turns completed, in 807 ms and 993 ms end to
+  end, with Reranks of 190-199 ms.
+- Gates on `9ac7caf`'s tree: remote full suite 1468 passed, 0 failed; strict
+  clippy clean. `0d2b43c` alone: 1467 passed, 0 failed.
