@@ -10,7 +10,7 @@ available skills, and estimates which ones fit the next step. SkillRanker suppli
 the session integration, local safeguards, and inspectable feedback around it.
 
 **Fresh ranking requires your own credential for the selected provider.**
-TypeSafe.ai is the default; Cloudflare Workers AI is also supported.
+TypeSafe.ai is the default; Cloudflare-hosted TypeSafe Jev is also supported.
 
 [![License](https://img.shields.io/badge/license-MIT%20%2B%20OpenAI%2FAnthropic%20rider-blue)](LICENSE)
 ![Rust](https://img.shields.io/badge/language-Rust%202024-dea584)
@@ -235,7 +235,7 @@ cargo build --locked --release --bin sr
 ### Runtime setup
 
 **Choose a provider and create your own credential.** TypeSafe.ai is the default
-provider; Cloudflare Workers AI can be selected with `SR_PROVIDER=cloudflare`.
+provider; Cloudflare-hosted TypeSafe Jev can be selected with `SR_PROVIDER=cloudflare`.
 Every user supplies their own credential; SkillRanker does not distribute a
 shared key.
 
@@ -2005,8 +2005,8 @@ aliases remain part of the report when an immutable revision is unavailable.
 ## FAQ
 
 **Which providers are supported?**
-TypeSafe.ai is the default and uses `TYPESAFE_API_KEY`. Cloudflare Workers AI
-uses `SR_PROVIDER=cloudflare`, `CLOUDFLARE_ACCOUNT_ID`, and
+TypeSafe.ai is the default and uses `TYPESAFE_API_KEY`. Cloudflare-hosted
+TypeSafe Jev uses `SR_PROVIDER=cloudflare`, `CLOUDFLARE_ACCOUNT_ID`, and
 `CLOUDFLARE_API_TOKEN`. Both adapters return the same validated Jev answer
 contract; there is no bundled local model.
 

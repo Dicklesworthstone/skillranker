@@ -23,7 +23,7 @@ use std::fmt;
 
 pub const CONFIG_SCHEMA_VERSION: u32 = 1;
 pub const DEFAULT_MODEL: &str = "jev-latest";
-pub const DEFAULT_CLOUDFLARE_MODEL: &str = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
+pub const DEFAULT_CLOUDFLARE_MODEL: &str = "typesafe/jev";
 pub const MIN_TIMEOUT_MS: u64 = DEFAULT_OUTPUT_CLEANUP_RESERVE_MS + 1;
 pub const MAX_TIMEOUT_MS: u64 = 60_000;
 pub const MAX_RANK_SIZE: u32 = 32;

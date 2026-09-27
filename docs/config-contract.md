@@ -52,8 +52,9 @@ their text cannot appear in Display, Debug, or the public issue list.
 
 `provider.kind` defaults to `typesafe`. When it is `cloudflare`, the account ID
 and token are required, the default `jev-latest` alias maps to
-`@cf/meta/llama-3.3-70b-instruct-fp8-fast`, and requests use Cloudflare's
-OpenAI-compatible Workers AI endpoint. `SR_MODEL` can select another model.
+`typesafe/jev`, and requests use Cloudflare's native `/ai/run` Jev endpoint.
+`SR_MODEL` can select another Cloudflare model only when its response satisfies
+the validated Jev answer contract.
 
 Weights use the plan bounds `[0,4]`, `[0,0.5]` and `[0,1]`. Integer file values
 are accepted for float keys; NaN and infinity are rejected everywhere. After

@@ -36,10 +36,7 @@ fn cloudflare_configuration_selects_its_credential_and_default_model() {
     )
     .unwrap();
     assert_eq!(config.effective().provider().as_str(), "cloudflare");
-    assert_eq!(
-        config.effective().active_model(),
-        "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
-    );
+    assert_eq!(config.effective().active_model(), "typesafe/jev");
     assert!(config.credential().is_some());
 }
 
@@ -57,6 +54,7 @@ fn cloudflare_live_synthetic_probe() {
         ConfigSources {
             environment: vec![
                 (OsString::from("SR_PROVIDER"), OsString::from("cloudflare")),
+                (OsString::from("SR_MODEL"), OsString::from("typesafe/jev")),
                 (
                     OsString::from("CLOUDFLARE_ACCOUNT_ID"),
                     OsString::from(&account_id),
@@ -110,5 +108,6 @@ fn cloudflare_live_synthetic_probe() {
     let response = response.expect("Cloudflare should return a validated Jev response");
     assert!(matches!(response.answers["fit"], Answer::Noul(value) if (0.0..=1.0).contains(&value)));
     assert_eq!(response.requested_model, config.effective().active_model());
+    assert!(response.returned_model.starts_with("jev-"));
     assert!(invocation.shutdown(), "owned runtime must shut down");
 }
