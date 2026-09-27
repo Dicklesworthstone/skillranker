@@ -1671,6 +1671,13 @@ edits, but simultaneous edits by another program are unsupported: atomic rename
 alone cannot prevent every lost update. Raising the internal deadline beyond the
 installed outer timeout requires reinstalling the hook.
 
+Preview and apply both report what a recorded shadow trial still needs, and
+change none of it: an initialized ledger (`sr ledger init`), trusted network
+consent (`[network] enabled = true` in your user `sr/config.toml`, since a
+one-shot `--allow-network` never reaches a hook), and a `TYPESAFE_API_KEY` in
+the environment Claude Code gives the hook. The report never prints the key or
+configuration contents. `--settings-file FILE` targets a specific settings file.
+
 Other harnesses can supply versioned normalized context through
 `sr rank --context FILE`. Native integration support is enumerated by capabilities;
 a post-turn notification is not interchangeable with a pre-turn recommendation hook.

@@ -13,7 +13,7 @@ use std::ffi::OsString;
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
-const HELP: &str = "SkillRanker — powered by TypeSafe.ai Jev\n\nUsage: sr [rank] [--context FILE | --transcript FILE --harness NAME | --session PATH | --latest]\n                 [--roster FILE] [--require-skill ID] [--dry-run [--shortlist-ids ID,...]]\n                 [--offline | --allow-network] [--json | --table]\n                 [--top N] [--shortlist M] [--gate FLOAT] [--fits FLOAT]\n                 [--explain] [--why-not ID] [--cursor TOKEN] [--no-tools] [--no-cache]\n                 [--save-case FILE]\n       sr doctor [--json | --table] [--offline | --allow-network]\n       sr doctor --config [--json | --table] [--top N] [--shortlist N]\n       sr roster [--json] [--limit N] [--cursor TOKEN]\n       sr roster --snapshot FILE | --diff FILE\n       sr capabilities [--json]\n       sr demo --case <useful|none|explicit|unavailable> [--json | --table]\n       sr replay FILE [--policy FILE] [--compare-policy FILE] [--json | --table]\n       sr eval --dataset FILE [--allow-network] [--max-runtime-ms MS] [--timeout-ms MS] [--policy FILE] [--compare-policy FILE] [--explain] [--json | --table]\n       sr eval --dataset FRAME --labels FILE [--sample-size N [--seed S]] [--online --allow-network --max-requests N [--max-runtime-ms MS] [--robustness]] [--explain] [--json | --table]\n       sr feedback <EVENT_ID> --skill ID [--instead ID] [--verdict <useful|not-useful|unknown>] [--reason CODE] [--provenance TEXT] [--expected-version GEN] [--dir DIR] [--json]\n       sr budget [--max-attempts N --window 1h [--apply]] [--json]\n       sr snooze <EVENT_ID> (--skill ID --for DURATION | --all --for DURATION | --clear) [--apply] [--dir DIR] [--json]\n       sr ledger <init|migrate|status|prune|clear> [--before TIME] [--apply] [--json]\n       sr observe [--context FILE | --transcript FILE --harness NAME | --session PATH] [--branch NAME] [--roster FILE] [--dir DIR] [--json]\n       sr stats [--since DURATION] [--by-skill] [--dir DIR] [--json | --table]\n       sr hook <claude> [--shadow] [--offline | --allow-network] [--dir DIR]\n       sr install-hook <claude> [--settings FILE] [--target-dir DIR] [--apply] [--json]\n       sr uninstall-hook <claude> [--settings FILE] [--target-dir DIR] [--apply] [--json]\n       sr --help | --version\n\nRank the next step of an agent session using TypeSafe Jev.\nRequires your own TypeSafe API key (TYPESAFE_API_KEY) and network consent (--allow-network).\n";
+const HELP: &str = "SkillRanker — powered by TypeSafe.ai Jev\n\nUsage: sr [rank] [--context FILE | --transcript FILE --harness NAME | --session PATH | --latest]\n                 [--roster FILE] [--require-skill ID] [--dry-run [--shortlist-ids ID,...]]\n                 [--offline | --allow-network] [--json | --table]\n                 [--top N] [--shortlist M] [--gate FLOAT] [--fits FLOAT]\n                 [--explain] [--why-not ID] [--cursor TOKEN] [--no-tools] [--no-cache]\n                 [--save-case FILE]\n       sr doctor [--json | --table] [--offline | --allow-network]\n       sr doctor --config [--json | --table] [--top N] [--shortlist N]\n       sr roster [--json] [--limit N] [--cursor TOKEN]\n       sr roster --snapshot FILE | --diff FILE\n       sr capabilities [--json]\n       sr demo --case <useful|none|explicit|unavailable> [--json | --table]\n       sr replay FILE [--policy FILE] [--compare-policy FILE] [--json | --table]\n       sr eval --dataset FILE [--allow-network] [--max-runtime-ms MS] [--timeout-ms MS] [--policy FILE] [--compare-policy FILE] [--explain] [--json | --table]\n       sr eval --dataset FRAME --labels FILE [--sample-size N [--seed S]] [--online --allow-network --max-requests N [--max-runtime-ms MS] [--robustness]] [--explain] [--json | --table]\n       sr feedback <EVENT_ID> --skill ID [--instead ID] [--verdict <useful|not-useful|unknown>] [--reason CODE] [--provenance TEXT] [--expected-version GEN] [--dir DIR] [--json]\n       sr budget [--max-attempts N --window 1h [--apply]] [--json]\n       sr snooze <EVENT_ID> (--skill ID --for DURATION | --all --for DURATION | --clear) [--apply] [--dir DIR] [--json]\n       sr ledger <init|migrate|status|prune|clear> [--before TIME] [--apply] [--json]\n       sr observe [--context FILE | --transcript FILE --harness NAME | --session PATH] [--branch NAME] [--roster FILE] [--dir DIR] [--json]\n       sr stats [--since DURATION] [--by-skill] [--dir DIR] [--json | --table]\n       sr hook <claude> [--shadow] [--offline | --allow-network] [--dir DIR]\n       sr install-hook <claude> [--settings-file FILE] [--binary-path PATH] [--timeout-secs N] [--apply]\n       sr uninstall-hook <claude> [--settings-file FILE] [--binary-path PATH] [--timeout-secs N] [--apply]\n       sr --help | --version\n\nRank the next step of an agent session using TypeSafe Jev.\nRequires your own TypeSafe API key (TYPESAFE_API_KEY) and network consent (--allow-network).\n";
 
 const EVAL_HELP: &str = "sr eval --dataset FILE [--allow-network] [--max-runtime-ms MS] [--timeout-ms MS] [--policy FILE] [--compare-policy FILE] [--explain] [--json | --table]\n       sr eval --dataset FRAME --labels FILE [--sample-size N [--seed S]] [--online --allow-network --max-requests N [--max-runtime-ms MS] [--robustness]] [--explain] [--json | --table]\n\nEvaluate recorded or synthetic replay batches against local or comparison policies with bounded runtime and explicit accounting.\nWith --labels, score a labeled case frame against independent judgments, optionally over a stratified sample frozen before labels are joined.\n";
 
@@ -4589,6 +4589,57 @@ fn hook_claude_command(clock: &EntryClock, m: &clap::ArgMatches) -> Result<Strin
     Ok(String::new())
 }
 
+/// What a recorded shadow trial still needs, reported and never changed: an
+/// initialized ledger, trusted network consent (a one-shot `--allow-network`
+/// never reaches a hook) and a key in the hook's environment. Nothing private
+/// is printed: no key, and no configuration contents.
+fn hook_prerequisites(
+    clock: &EntryClock,
+    trusted_network: bool,
+    user_root: Option<&Path>,
+) -> String {
+    let ledger = crate::runtime::ProcessInvocation::from_clock(*clock)
+        .ok()
+        .and_then(|invocation| {
+            let cx = invocation.request_cx().ok()?;
+            crate::storage::open_ledger(
+                &invocation,
+                &cx,
+                crate::storage::LedgerAccess::ExistingOnly,
+                crate::storage::LedgerLocation::Platform,
+            )
+            .ok()
+        });
+    let ledger = match ledger {
+        Some(crate::storage::LedgerOpen::Ready(_)) => "initialized".to_owned(),
+        Some(crate::storage::LedgerOpen::ReadOnly(_)) => {
+            "read-only: a hook cannot record to it".to_owned()
+        }
+        _ => "missing: run `sr ledger init` before claiming a recorded trial".to_owned(),
+    };
+    let config = user_root.map_or_else(
+        || "your trusted sr/config.toml".to_owned(),
+        |root| root.join("sr/config.toml").display().to_string(),
+    );
+    let network = if trusted_network {
+        "enabled".to_owned()
+    } else {
+        format!(
+            "missing: hooks send nothing until `[network] enabled = true` is set in {config}; \
+             a one-shot --allow-network does not reach hooks"
+        )
+    };
+    let key = if std::env::var_os("TYPESAFE_API_KEY").is_some_and(|key| !key.is_empty()) {
+        "present in this shell; the hook uses Claude Code's own environment"
+    } else {
+        "absent in this shell; Claude Code's environment must provide TYPESAFE_API_KEY"
+    };
+    format!(
+        "Prerequisites for a recorded shadow trial (this command changes none of them):\n  \
+         ledger: {ledger}\n  trusted network consent: {network}\n  API key: {key}\n"
+    )
+}
+
 fn install_hook_command(clock: &EntryClock, m: &clap::ArgMatches) -> Result<String, Failure> {
     timely(clock)?;
     let Some(("claude", claude_matches)) = m.subcommand() else {
@@ -4627,8 +4678,15 @@ fn install_hook_command(clock: &EntryClock, m: &clap::ArgMatches) -> Result<Stri
             sources.environment.push((name, value));
         }
     }
-    let config_files = ConfigFiles::new(workspace, user_root);
+    let config_files = ConfigFiles::new(workspace, user_root.clone());
     let resolved = config_files.load(clock, sources);
+    let prerequisites = hook_prerequisites(
+        clock,
+        resolved
+            .as_ref()
+            .is_ok_and(|c| c.effective().trusted_user_network_enabled()),
+        user_root.as_deref(),
+    );
     let effective_mode = resolved
         .as_ref()
         .map(|c| c.effective().hook_mode())
@@ -4657,17 +4715,17 @@ fn install_hook_command(clock: &EntryClock, m: &clap::ArgMatches) -> Result<Stri
 
     match crate::installer::install_hook(&options) {
         Ok(crate::installer::InstallOutcome::Preview { diff, message }) => {
-            Ok(format!("{diff}\n{message}\n"))
+            Ok(format!("{diff}\n{message}\n{prerequisites}"))
         }
         Ok(crate::installer::InstallOutcome::Applied {
             backup_path,
             message,
         }) => Ok(format!(
-            "{message}\n(Backup created at {})\n",
+            "{message}\n(Backup created at {})\n{prerequisites}",
             backup_path.display()
         )),
         Ok(crate::installer::InstallOutcome::AlreadyInstalled { message }) => {
-            Ok(format!("{message}\n"))
+            Ok(format!("{message}\n{prerequisites}"))
         }
         Ok(crate::installer::InstallOutcome::Conflict { message }) => {
             Err((2, "invalid-usage", message))
