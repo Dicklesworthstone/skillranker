@@ -575,3 +575,17 @@ the confirmation to look for.
   completed, in 681 ms and 969 ms.
 - Gates at `ed60dc4`'s tree: remote full suite 1472 passed, 0 failed; strict
   clippy clean.
+- 21:12Z: 3 of the 4 live turns after this deploy were `in-flight` (18:03:58,
+  18:04:06, 21:11:07), so the binary was rolled back to `143c2394…` while
+  this was investigated.
+  - The stuck turns sit in two sessions at usage-limit interruptions and
+    resumptions of those Claude Code sessions. Two had both stage requests
+    `sent` and never completed; the third was admitted and never sent.
+  - Synthetic turns under the same host load (average 57): 3 of 3 completed on
+    each binary.
+  - SIGTERM mid-request, with a 1.2 s grace before SIGKILL like the harness:
+    both binaries exited within 0.1 s and recorded the turn
+    (`unavailable/timeout`, the open attempt `unknown`), or completed it.
+  - So those turns were killed without a SIGTERM, which no process can record,
+    and the ledger honestly counts them as in flight or killed. Redeployed
+    `89d6525a…` at 21:14Z.
