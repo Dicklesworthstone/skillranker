@@ -5,6 +5,7 @@ pub mod adapter;
 pub mod allowance;
 pub mod authorized_read;
 pub mod blocking;
+pub mod breaker;
 pub mod cache;
 pub mod capabilities;
 pub mod cli;

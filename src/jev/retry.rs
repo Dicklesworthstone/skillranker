@@ -280,7 +280,22 @@ impl<'a> RetrySession<'a> {
         stage: RankingStage,
         request: &Request,
         cx: &Cx,
+        authorize: impl FnMut() -> Result<NetworkConsent, ()>,
+    ) -> Result<StageResponse, RetryError> {
+        self.send_stage_observed(stage, request, cx, authorize, |_| {})
+            .await
+    }
+
+    /// [`Self::send_stage`], reporting how each admitted attempt settled: a
+    /// response, or its transport failure. A circuit breaker learns endpoint
+    /// health here; an attempt `authorize` refused never reaches it.
+    pub async fn send_stage_observed(
+        &mut self,
+        stage: RankingStage,
+        request: &Request,
+        cx: &Cx,
         mut authorize: impl FnMut() -> Result<NetworkConsent, ()>,
+        mut settled: impl FnMut(Result<(), &TransportError>),
     ) -> Result<StageResponse, RetryError> {
         if stage == RankingStage::Rerank
             && self
@@ -336,6 +351,7 @@ impl<'a> RetrySession<'a> {
                 result.as_ref().err(),
             );
             drop(flight);
+            settled(result.as_ref().map(|_| ()));
             accounting.map_err(|_| self.error(RetryErrorKind::Accounting, last_transport))?;
             match result {
                 Ok(response) => {

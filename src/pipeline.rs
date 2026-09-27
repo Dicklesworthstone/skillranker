@@ -148,6 +148,9 @@ pub struct ExecutionMetrics {
     pub wide_hit: bool,
     pub rerank_hit: bool,
     pub cache_age_ms: Option<u64>,
+    /// The shared circuit-breaker store was expected but unusable, so this
+    /// run's provider cooldown protection covered only its own process.
+    pub breaker_process_local: bool,
 }
 
 /// Read one explicitly selected input file: a bounded regular file under its
@@ -625,6 +628,7 @@ async fn execute_pipeline_supplied(
             progress.cache_recording_failures,
             completion_unconfirmed,
             progress.evaluated.store_refused,
+            progress.metrics.breaker_process_local,
         )
     });
     let result = result.and_then(|mut doc| {
@@ -727,6 +731,7 @@ async fn execute_pipeline_supplied(
                             progress.cache_recording_failures,
                             completion_unconfirmed,
                             progress.evaluated.store_refused,
+                            progress.metrics.breaker_process_local,
                         )
                     })
             }
@@ -741,8 +746,13 @@ fn with_storage_warnings(
     cache_recording_failures: u64,
     completion_unconfirmed: bool,
     store_refused: bool,
+    breaker_process_local: bool,
 ) -> Result<OutputDocument, PipelineFailure> {
-    if cache_recording_failures == 0 && !completion_unconfirmed && !store_refused {
+    if cache_recording_failures == 0
+        && !completion_unconfirmed
+        && !store_refused
+        && !breaker_process_local
+    {
         return Ok(doc);
     }
     let mut value = doc.as_value().clone();
@@ -765,6 +775,11 @@ fn with_storage_warnings(
             "cache-unavailable",
             u64::from(store_refused),
             "Response cache unavailable; this run could not reuse or record responses",
+        ),
+        (
+            "breaker-process-local",
+            u64::from(breaker_process_local),
+            "The shared provider cooldown store was unavailable; cooldown protection covered only this process",
         ),
     ] {
         if count == 0 {
@@ -4248,16 +4263,47 @@ async fn provider_stage(
 ) -> Result<Response, PipelineFailure> {
     let sent_before = session.receipt().sent_attempts;
     let origin = session.origin().clone();
+    // The breaker shares the allowance's private runtime directory; with
+    // persistent runtime state disabled it protects this process only.
+    let shared_dir = allowance
+        .filter(|_| matches!(gate.runtime_state(), StoreAccess::Enabled))
+        .and_then(|paths| paths.accounting.parent());
+    let breaker = crate::breaker::Breaker::for_cache_dir(shared_dir, origin.as_str());
+    let ticket = std::cell::RefCell::new(None);
+    let now = || crate::allowance::wall_clock_ms().unwrap_or(0);
     let mut refusal = None;
     let result = session
-        .send_stage(stage, request, cx, || {
-            authorize_send(clock, config_files, resolved_config, receipt, gate, stage)
-                .and_then(|consent| {
-                    debit_allowance(allowance, &origin, stage, gate, clock).map(|()| consent)
-                })
-                .map_err(|failure| refusal = Some(failure))
-        })
+        .send_stage_observed(
+            stage,
+            request,
+            cx,
+            || {
+                authorize_send(clock, config_files, resolved_config, receipt, gate, stage)
+                    .and_then(|consent| {
+                        // The breaker refuses before the allowance charges: a
+                        // cooldown refusal costs nothing.
+                        let lease = clock.remaining_before_cleanup().as_millis();
+                        let admitted = breaker.admit(now(), lease).map_err(cooldown_refusal)?;
+                        if let Err(failure) =
+                            debit_allowance(allowance, &origin, stage, gate, clock)
+                        {
+                            breaker.settle(&admitted, crate::breaker::Outcome::Neutral, now());
+                            return Err(failure);
+                        }
+                        *ticket.borrow_mut() = Some(admitted);
+                        Ok(consent)
+                    })
+                    .map_err(|failure| refusal = Some(failure))
+            },
+            |settled| {
+                if let Some(admitted) = ticket.borrow_mut().take() {
+                    breaker.settle(&admitted, breaker_outcome(settled), now());
+                }
+            },
+        )
         .await;
+    metrics.breaker_process_local |=
+        shared_dir.is_some() && breaker.protection() == crate::breaker::Protection::ProcessLocal;
     let cost = session.receipt();
     if cost.sent_attempts > sent_before {
         metrics.requests += 1;
@@ -4273,6 +4319,40 @@ async fn provider_stage(
             (kind, _) => retry_failure(kind, error.last_transport.map(|t| t.kind)),
         }),
     }
+}
+
+/// How an attempt bears on endpoint health: only a valid response or a
+/// retryable transport/HTTP failure. Authentication, validation, cancellation
+/// and local errors are not evidence about the endpoint.
+fn breaker_outcome(
+    settled: Result<(), &crate::jev::client::TransportError>,
+) -> crate::breaker::Outcome {
+    use crate::breaker::Outcome;
+    match settled {
+        Ok(()) => Outcome::Success,
+        Err(error) if crate::jev::retry::retryable(error.kind) => Outcome::Transient {
+            retry_after_ms: match error.retry_after {
+                crate::jev::retry::RetryAfter::Delay(delay) => {
+                    u64::try_from(delay.as_millis()).ok()
+                }
+                _ => None,
+            },
+        },
+        Err(_) => Outcome::Neutral,
+    }
+}
+
+fn cooldown_refusal(refusal: crate::breaker::Refusal) -> PipelineFailure {
+    let message = match refusal {
+        crate::breaker::Refusal::CoolingDown { until_unix_ms } => format!(
+            "The provider circuit is cooling down after repeated failures, until {until_unix_ms} \
+             (Unix ms)"
+        ),
+        crate::breaker::Refusal::ProbeInFlight => {
+            "Another process is probing the recovering provider; not sent".to_owned()
+        }
+    };
+    failure(ErrorKind::ProviderCooldown, message)
 }
 
 /// The terminal reason for a stage that exhausted or stopped its retries.

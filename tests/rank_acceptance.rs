@@ -1136,19 +1136,22 @@ fn a_transient_wide_failure_is_retried_within_the_allowance() {
 }
 
 #[test]
-fn persistent_provider_failure_stops_at_the_attempt_allowance() {
+fn persistent_provider_failure_opens_the_circuit_within_the_attempt_allowance() {
+    // Three consecutive transient failures open the provider circuit, so a
+    // persistently failing endpoint stops one attempt short of the
+    // four-attempt invocation cap (which tests/jev_retry.rs pins directly).
     let f = Fixture::new(CONSENT);
     let provider = Provider::start(&f, "always-503", &[]);
     let outcome = rank(&f, &provider, TASK, 10_000);
     let served = provider.finish();
     assert_eq!(
         stages(&served),
-        ["wide", "wide", "wide", "wide"],
-        "four HTTP attempts per invocation at most"
+        ["wide", "wide", "wide"],
+        "the circuit opens after three failures"
     );
-    let value = unavailable(outcome, 4, "request-budget");
-    assert_eq!(usage(&value), (1, 4, 0, 0));
-    assert_eq!(value["usage"]["unknown_usage_attempts"], 4);
+    let value = unavailable(outcome, 4, "provider-cooldown");
+    assert_eq!(usage(&value), (1, 3, 0, 0));
+    assert_eq!(value["usage"]["unknown_usage_attempts"], 3);
 }
 
 #[test]

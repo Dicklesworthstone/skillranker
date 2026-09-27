@@ -1542,6 +1542,13 @@ A half-open probe is the next permitted real request, with the same network
 authorization, deadline, and attempt debit; it adds no separate health call or
 background probe. Valid successful responses restore service and
 reset the local failure streak.
+Circuit state lives in `breaker.sqlite3` in the private `sr` cache directory,
+per endpoint origin, and a cooldown refusal is decided before the allowance
+charges anything. With `--no-persist`, each process keeps its own circuit;
+when the shared store is expected but unusable, the result carries a
+`breaker-process-local` warning. This build has no safe shared credential
+identity, so authentication failures never open the circuit: each stays with
+its own invocation and is not retried automatically.
 Responses carry their breaker generation: a late obsolete response cannot close
 a newer circuit or release its successor's probe lease. Authentication pauses
 are scoped to a verified credential profile/generation so a bad key cannot block
