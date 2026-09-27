@@ -553,3 +553,25 @@ the confirmation to look for.
   end, with Reranks of 190-199 ms.
 - Gates on `9ac7caf`'s tree: remote full suite 1468 passed, 0 failed; strict
   clippy clean. `0d2b43c` alone: 1467 passed, 0 failed.
+
+## Redeployment — 2026-09-27 17:37Z (AzureJaguar, hook-path review fixes)
+
+- Binary: `~/.local/bin/sr`, SHA256
+  `89d6525a1921a85f56f945847bc393f7df5e0a088dc106e866ebb711467196ed`, built
+  `--release --locked` through RCH from `ed60dc4` into a target directory
+  private to that build tree. The previous binary (SHA256 `143c2394…`) is kept
+  as `~/.local/bin/sr.backup.20260927T174000Z-9ac7caf`.
+- Adds the hook-path fixes since `9ac7caf`:
+  - `6929d63` (sr-0f7i): the breaker store is created only on a failure, busy
+    waits are bounded, the late-failure window is 3.5 s, and lease retries
+    only on busy;
+  - `16fbfd7`: an unrepresentable Retry-After saturates to the one-hour cap
+    instead of being dropped;
+  - `ed60dc4` (sr-azlc): a contended cache store open is retried for 400 ms
+    instead of five tries.
+- Sweep over the 90 submitted prompts, previous binary against this one:
+  identical outcomes, all at the provider stage.
+- Live check with synthetic input (maintainer key, 4 requests): both turns
+  completed, in 681 ms and 969 ms.
+- Gates at `ed60dc4`'s tree: remote full suite 1472 passed, 0 failed; strict
+  clippy clean.
