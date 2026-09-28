@@ -350,3 +350,34 @@ fn malformed_native_completion_remains_a_started_unknown_usage_failure() {
     }
     assert!(invocation.shutdown());
 }
+
+#[test]
+fn native_wrapper_also_counts_toward_the_nesting_limit() {
+    for (layers, accepted) in [
+        (crate::output::MAX_OUTPUT_DEPTH - 2, true),
+        (crate::output::MAX_OUTPUT_DEPTH - 1, false),
+    ] {
+        let mut state = Value::Null;
+        for _ in 0..layers {
+            state = json!([state]);
+        }
+        let request = Request::new(
+            CLOUDFLARE_JEV_MODEL.into(),
+            state,
+            request()
+                .questions()
+                .iter()
+                .map(|(id, q)| (id.clone(), q.clone())),
+        )
+        .unwrap();
+        assert!(request.to_json().is_ok());
+        let encoded = encode_request(&request);
+        if accepted {
+            assert!(encoded.is_ok());
+        } else {
+            assert!(matches!(encoded, Err(CodecError::InvalidJson)));
+        }
+    }
+}
+
+mod tls;

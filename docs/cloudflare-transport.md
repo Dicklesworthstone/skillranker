@@ -24,8 +24,9 @@ The transport follows Cloudflare's documented TypeSafe Jev AI Run contract:
 - Requests use `/client/v4/accounts/{account_id}/ai/run` and
   `{model,input:{state,questions}}`. Only the documented `typesafe/jev` model
   route is accepted; a TypeSafe alias is not silently rewritten or transmitted.
-- The 96 KiB request cap includes the native wrapper. Invalid or oversized
-  requests are rejected before the accounting callback or HTTP future is polled.
+- The 96 KiB request cap and depth-64 bound include the native wrapper. Invalid,
+  oversized or excessively nested requests are rejected before the accounting
+  callback or HTTP future is polled.
 - Responses go through the complete-envelope size/depth/duplicate checks in
   `cloudflare_codec`, then the shared Jev answer validator. Missing model or
   usage is an error, never a requested-model fallback or a known-zero charge.
@@ -49,10 +50,32 @@ that completed after cancellation or the work deadline.
 
 ## Qualification
 
-Focused native tests live under `jev::client::tests`; the existing TypeSafe TLS,
-retry, admission, configuration and pipeline suites must remain green. Run the
-focused tests and the complete locked suite on the exact integrated revision.
-Authored tests are not evidence of execution. This change has not been compiled
-or run in the authoring container because it has no Cargo/Rust toolchain; only
-source-snapshot, diff and whitespace checks were possible there. No live
-Cloudflare call or provider-quality claim accompanies this implementation.
+Fourteen native boundary tests live under `jev::client::tests`, including the
+exact byte and nesting limits, no-debit/no-send refusals and completion guards.
+Ten tests under `jev::client::tests::tls` exercise the real native client and
+`RetrySession` against an owned, bounded local TLS peer. These cover valid
+native envelopes; both protocols' Wide/Rerank connection reuse; per-attempt
+reauthorization; unknown usage on malformed answers and failed retries; header
+and body limits; redirect and Retry-After policy; certificate and hostname
+verification; and stalled-body cancellation/deadline closure.
+
+The peer uses only the repository's public synthetic TLS certificates and token,
+clears its environment, binds loopback on an ephemeral port and exits under a
+30-second watchdog. The Rust owner kills and reaps it on failure. No real
+credential, public-provider request or additional dependency is required.
+
+An independent Python self-check verifies the peer's behavior, not the Rust
+client. On 2026-09-28, this command passed 8 tests comprising 24 loopback TLS
+scenarios in the authoring container, with certificate verification enabled:
+
+```sh
+python3 tests/fixtures/jev-tls/test_cloudflare_server.py
+```
+
+The Rust tests have **not** been compiled or executed in that container: Cargo,
+rustc and rustfmt are absent. `git diff --check` passes, but is not a compiler or
+formatting-gate substitute. The existing TypeSafe TLS, retry, admission,
+configuration and pipeline suites plus the full locked suite must run on the
+exact integrated revision before qualification. No live Cloudflare call or
+provider-quality claim accompanies this implementation; CLI provider selection
+and allowance/readiness integration remain incomplete.
