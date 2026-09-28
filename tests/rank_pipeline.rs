@@ -1133,7 +1133,7 @@ fn a_run_that_overruns_its_deadline_records_its_failure_not_in_flight() {
     .unwrap();
 
     let clock = EntryClock::capture_with(
-        DurationMillis::new("test", 1_500, 30_000).unwrap(),
+        DurationMillis::new("test", 3_000, 30_000).unwrap(),
         DurationMillis::new("cleanup", 200, 30_000).unwrap(),
     )
     .unwrap();
@@ -1153,7 +1153,7 @@ fn a_run_that_overruns_its_deadline_records_its_failure_not_in_flight() {
         .environment
         .push(("TYPESAFE_API_KEY".into(), "test-api-key-xyz".into()));
     let stall: ResponseGenerator = Box::new(|_| {
-        std::thread::sleep(std::time::Duration::from_millis(1_550));
+        std::thread::sleep(std::time::Duration::from_millis(3_050));
         Err(TransportError {
             kind: skillranker::jev::client::TransportErrorKind::Deadline,
             http_attempt_started: true,
@@ -1188,10 +1188,11 @@ fn a_run_that_overruns_its_deadline_records_its_failure_not_in_flight() {
         .runtime()
         .block_on(async { execute_pipeline(&invocation, &cx, args, Some(&transport)).await });
     assert!(
-        clock.now().as_millis() > 1_500,
+        clock.now().as_millis() > 3_000,
         "the run did not overrun its deadline"
     );
-    let _ = outcome;
+    let elapsed_ms = clock.now().as_millis();
+    let failed = outcome.is_err();
     let db = rusqlite::Connection::open(ledger.join(skillranker::storage::LEDGER_FILE)).unwrap();
     let reasons: Vec<String> = db
         .prepare("SELECT reason FROM ranking_events")
@@ -1200,7 +1201,11 @@ fn a_run_that_overruns_its_deadline_records_its_failure_not_in_flight() {
         .unwrap()
         .map(Result::unwrap)
         .collect();
-    assert_eq!(reasons.len(), 1, "{reasons:?}");
+    assert_eq!(
+        reasons.len(),
+        1,
+        "{reasons:?} after {elapsed_ms} ms (run failed: {failed})"
+    );
     assert_eq!(
         reasons[0], "timeout",
         "an overrun run must record its timeout, not stay in-flight"
