@@ -2,15 +2,15 @@
 
 # SkillRanker
 
-**The right skill for the next step, powered by Jev from TypeSafe.ai.**
+**The right skill for the next step, powered by Jev-compatible providers.**
 
-A standalone Rust CLI that puts **[TypeSafe.ai's Jev](https://typesafe.ai)** at the
-center of skill selection: Jev evaluates your agent's live context, compares the
-available skills, and estimates which ones fit the next step. SkillRanker supplies
-the session integration, local safeguards, and inspectable feedback around it.
+A standalone Rust CLI that puts **Jev-compatible providers** at the center of
+skill selection: Jev evaluates your agent's live context, compares the available
+skills, and estimates which ones fit the next step. SkillRanker supplies the
+session integration, local safeguards, and inspectable feedback around it.
 
-**A TypeSafe API key is required to use SkillRanker's ranking system.
-Sign up at the [TypeSafe console](https://console.typesafe.ai) to get your own key.**
+**Fresh ranking requires your own credential for the selected provider.**
+TypeSafe.ai is the default; Cloudflare-hosted TypeSafe Jev is also supported.
 
 [![License](https://img.shields.io/badge/license-MIT%20%2B%20OpenAI%2FAnthropic%20rider-blue)](LICENSE)
 ![Rust](https://img.shields.io/badge/language-Rust%202024-dea584)
@@ -65,9 +65,9 @@ can redirect otherwise sensible work.
 
 **The solution.** SkillRanker (`sr`) combines the recent conversation, current
 request, workspace signals, and the selected harness's visible skill inventory.
-**Jev from TypeSafe.ai is the key enabler of the system.** It first compares the
-candidates broadly, then reads richer excerpts from a shortlist and evaluates
-whether each one fits. Both comparisons include a
+**The selected provider's Jev implementation is the key enabler of the system.**
+It first compares the candidates broadly, then reads richer excerpts from a
+shortlist and evaluates whether each one fits. Both comparisons include a
 real “none of these” option. The result is advisory: the agent follows the user's
 instructions and decides what to consult.
 
@@ -75,8 +75,8 @@ For libraries with more than 254 eligible skills, **Quill from FrankenSearch**
 narrows the candidates locally before Jev evaluates them. Smaller rosters reach
 Jev in full. Explicit skill requests resolve locally before either stage.
 
-SkillRanker does not include a local model or a substitute inference provider.
-The ranking workflow requires your own TypeSafe account and API key. Local
+SkillRanker does not include a local model. The ranking workflow requires your
+own account and credential for the selected provider. Local
 retrieval prepares the candidates; **Jev supplies the evaluations that make the
 recommendations possible**.
 
@@ -84,7 +84,7 @@ recommendations possible**.
 
 | Need | What SkillRanker provides |
 |---|---|
-| Evaluate meaning and task fit | Jev's typed Choice and Noul evaluations from TypeSafe.ai power both ranking passes |
+| Evaluate meaning and task fit | The selected provider's typed Jev Choice and Noul evaluations power both ranking passes |
 | Choose for the current step | Exact session identity, the newest prompt, recent tool evidence, and project signals |
 | Suggest something the agent can load | Harness-aware visibility, override resolution, stable skill identities, and content revalidation |
 | Respect an explicit request | Locally resolve a requested skill before probabilistic retrieval or ranking |
@@ -212,7 +212,7 @@ Detected Claude Code and Codex installations receive a small SkillRanker usage
 skill. Subcommand completions are installed for Bash, Zsh, and Fish. Existing
 customized integration files are preserved; `--no-configure` skips these steps.
 The installer leaves credentials and network consent to you and reports hooks
-as unconfigured. **Obtain your own TypeSafe API key before live ranking.**
+as unconfigured. **Obtain your own credential for the selected provider before live ranking.**
 See [installer options, verification, and rollback](docs/installation.md).
 
 ### From source
@@ -234,13 +234,14 @@ cargo build --locked --release --bin sr
 
 ### Runtime setup
 
-**Sign up for [TypeSafe.ai](https://console.typesafe.ai), then create your own API
-key in the console. A TypeSafe API key is required to use SkillRanker's ranking
-system.** Jev is the evaluation engine for the entire ranking workflow.
+**Choose a provider and create your own credential.** TypeSafe.ai is the default
+provider; Cloudflare-hosted TypeSafe Jev can be selected with `SR_PROVIDER=cloudflare`.
 Every user supplies their own credential; SkillRanker does not distribute a
 shared key.
 
-Set `TYPESAFE_API_KEY` through your shell or secret manager. The
+For the default TypeSafe provider, set `TYPESAFE_API_KEY`. For Cloudflare,
+set `SR_PROVIDER=cloudflare`, `CLOUDFLARE_ACCOUNT_ID`, and
+`CLOUDFLARE_API_TOKEN`. The
 [environment example](.env.example) lists the service settings. For a local
 checkout, create `.env` from the example only if it does not already exist and
 restrict access with `chmod 600 .env` **before** entering your own API key.
@@ -261,7 +262,7 @@ alone do not enable remote transmission.
 
 | Component | Role |
 |---|---|
-| TypeSafe API key | Authenticates fresh Jev evaluations |
+| Provider credential | Authenticates fresh Jev-compatible evaluations (`TYPESAFE_API_KEY`, or Cloudflare account/token) |
 | Network opt-in | `--allow-network` for a run, or `network.enabled` in trusted user configuration |
 | Visible skill inventory | Harness-resolved skills or an explicit roster file |
 | Session input | Claude hook, normalized context, supported native transcript, or optional cass export |
@@ -277,9 +278,9 @@ The supported local platform is Linux. Consult
    `explicit`, or `unavailable`. These labeled examples exercise the local
    pipeline without reading a private session or contacting Jev. Their output
    is non-actionable and does not establish live provider health.
-2. **Sign up and configure your own TypeSafe API key.** Create an account and key
-   in the [TypeSafe console](https://console.typesafe.ai), then export
-   `TYPESAFE_API_KEY` using the [runtime setup](#runtime-setup) instructions.
+2. **Choose a provider and configure your own credential.** TypeSafe is the
+   default; Cloudflare-hosted TypeSafe Jev is also supported. Follow the
+   [runtime setup](#runtime-setup) instructions for the selected provider.
    SkillRanker relies on Jev for its ranking evaluations.
 3. **Check the environment and roster.** Run `sr doctor --json`,
    `sr capabilities --json`, and `sr roster --json` in the agent's workspace.
@@ -688,6 +689,9 @@ configuration can only keep them skipped.
 |---|---|
 | `TYPESAFE_API_KEY` | TypeSafe bearer credential; never serialized or stored in project config |
 | `TYPESAFE_ENDPOINT` | Trusted HTTPS base origin; `sr` appends `/v1/systemone` once |
+| `SR_PROVIDER` | Provider selector: `typesafe` (default) or `cloudflare` |
+| `CLOUDFLARE_ACCOUNT_ID` | Cloudflare account ID required by Workers AI |
+| `CLOUDFLARE_API_TOKEN` | Cloudflare bearer credential; never serialized or stored in project config |
 | `SR_MODEL` | Requested model; default `jev-latest` |
 | `SR_MESSAGES`, `SR_BUDGET_CHARS` | Context-volume limits: 1–12 messages and 1–12,000 Unicode scalar values |
 | `SR_TOP`, `SR_SHORTLIST` | Output and rerank sizes, satisfying `1 ≤ top ≤ shortlist ≤ 32` |
@@ -706,7 +710,7 @@ roots merge as unions. Project roots must remain relative to the workspace;
 only trusted user configuration can authorize absolute roots. Readers also check
 symlink containment when opening files.
 
-Credentials are environment-only and kept outside serializable configuration.
+Credentials and provider account identifiers are environment-only and kept outside serializable configuration.
 The v1 endpoint override is environment-only; model overrides use trusted user
 configuration or `SR_MODEL`. Proxy, redaction-disable, and raw-retention settings
 are reserved and rejected. The [configuration contract](docs/config-contract.md)
@@ -963,8 +967,10 @@ When the gate passes, up to eight real candidates proceed to a detailed Choice
 with another none option and one fit Noul per candidate. If none wins the wide
 comparison, the detailed comparison still runs when the need gate passes:
 richer skill excerpts can resolve ambiguity left by short descriptions. The client
-uses the [TypeSafe HTTP API](https://docs.typesafe.ai/api), preserving typed answers
-and validating every requested option before scoring.
+uses the selected provider's Jev transport, preserving typed answers and
+validating every requested option before scoring. The TypeSafe adapter uses the
+[TypeSafe HTTP API](https://docs.typesafe.ai/api); the Cloudflare adapter uses
+Cloudflare's native Jev `/ai/run` contract.
 
 ### 4. Apply eligibility and rank survivors
 
@@ -1680,9 +1686,10 @@ installed outer timeout requires reinstalling the hook.
 Preview and apply both report what a recorded shadow trial still needs, and
 change none of it: an initialized ledger (`sr ledger init`), trusted network
 consent (`[network] enabled = true` in your user `sr/config.toml`, since a
-one-shot `--allow-network` never reaches a hook), and a `TYPESAFE_API_KEY` in
-the environment Claude Code gives the hook. The report never prints the key or
-configuration contents. `--settings-file FILE` targets a specific settings file.
+one-shot `--allow-network` never reaches a hook), and the selected provider's
+credential in the environment Claude Code gives the hook. The report never
+prints the credential or configuration contents. `--settings-file FILE` targets
+a specific settings file.
 
 Other harnesses can supply versioned normalized context through
 `sr rank --context FILE`. Native integration support is enumerated by capabilities;
@@ -1768,10 +1775,10 @@ with bundled SQLite. Concurrent WAL stores require a verified SQLite
 the actual linked engine is checked separately from the Rust crate version.
 FrankenTUI is optional.
 
-**The inference engine is TypeSafe.ai's Jev.** The surrounding Rust code gathers
-and protects context, constructs typed questions, validates Jev's answers, and
-turns them into useful agent recommendations. Quill retrieval, caching, and the
-ledger support that engine; they do not replace it.
+**The inference engine is the selected provider's Jev implementation.** The
+surrounding Rust code gathers and protects context, constructs typed questions,
+validates Jev's answers, and turns them into useful agent recommendations. Quill
+retrieval, caching, and the ledger support that engine; they do not replace it.
 
 Selected parsing and redaction code can be adapted from
 [meta_skill](https://github.com/Dicklesworthstone/meta_skill) with source provenance
@@ -1803,7 +1810,8 @@ unknown so a duplicated row cannot inflate the sample size.
 
 ## Privacy And Local State
 
-**Fresh Jev evaluations send redacted context and skill excerpts to TypeSafe.**
+**Fresh Jev evaluations send redacted context and skill excerpts to the selected
+provider.**
 Networking requires a trusted setup choice. Project files cannot enable it just
 because an API key is present. `--offline` guarantees zero network requests and
 can use local explicit resolution or an exact valid cache entry.
@@ -1980,8 +1988,8 @@ aliases remain part of the report when an immutable revision is unavailable.
 
 ## Limitations
 
-- Fresh inference depends on TypeSafe. Local inspection and response caching do
-  not make SkillRanker an offline model.
+- Fresh inference depends on the selected provider. Local inspection and response
+  caching do not make SkillRanker an offline model.
 - A roster's visibility and retrieval quality bound what can be recommended.
   Low shortlist fit alone cannot prove that the full library lacks a useful skill.
 - Load observations are incomplete and affected by the suggestion itself.
@@ -2000,17 +2008,17 @@ aliases remain part of the report when an immutable revision is unavailable.
 
 ## FAQ
 
-**Do I need a TypeSafe API key?**
-Yes. TypeSafe.ai's Jev powers SkillRanker's ranking system, and you must provide
-your own key as `TYPESAFE_API_KEY`. There is no bundled key, local replacement
-model, or alternative inference provider. Sign up at the
-[TypeSafe console](https://console.typesafe.ai) and create your own API key.
+**Which providers are supported?**
+TypeSafe.ai is the default and uses `TYPESAFE_API_KEY`. Cloudflare-hosted
+TypeSafe Jev uses `SR_PROVIDER=cloudflare`, `CLOUDFLARE_ACCOUNT_ID`, and
+`CLOUDFLARE_API_TOKEN`. Both adapters return the same validated Jev answer
+contract; there is no bundled local model.
 
 **Can I try an example before connecting a private session?**
 Yes. `sr demo --case useful` runs a labeled offline fixture without a key or user
 state. `none`, `explicit`, and `unavailable` show the other outcomes. Demo and
 saved-case replay return non-actionable results; fresh ranking still requires
-your own TypeSafe key and authorized Jev access.
+your own selected-provider credential and authorized network access.
 
 **Does SkillRanker execute a skill?**
 No. It recommends or returns a locally resolved target. The agent remains in
@@ -2046,7 +2054,7 @@ No. It disables ledger and ingestion-cursor access, observations, labels, and
 personalization. Use `--no-persist` to also disable persistent cache, key, and
 coordination state.
 
-**Can the hook stop my agent if TypeSafe is unavailable?**
+**Can the hook stop my agent if the selected provider is unavailable?**
 No. The dedicated hook produces a quiet non-blocking fallback. The ordinary CLI
 still reports the failure with a structured error and meaningful exit code.
 
@@ -2065,8 +2073,8 @@ enforcement state prevents new requests.
 
 **Does evaluation spend API credits by default?**
 No. `sr eval` replays offline. Live runs require `--online`, trusted network
-authorization, your TypeSafe key, and an explicit `--max-requests` cap that counts
-retries across the whole batch.
+authorization, the selected provider credential, and an explicit
+`--max-requests` cap that counts retries across the whole batch.
 
 **Does sampling or monitoring change live skill selection?**
 No. Sampling selects evaluation cases to judge. Optional monitoring reads

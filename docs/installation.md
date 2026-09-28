@@ -125,9 +125,9 @@ PATH for the current shell and backs up an existing rc file. It does not load
 the file into the current shell. Concurrent external rc-file edits are not
 supported. `--no-configure` skips agent skills and completions.
 
-Installation does not read `.env`, create or copy API keys, authorize network
-traffic, or enable hooks. Sign up at [TypeSafe.ai](https://console.typesafe.ai)
-for your own key and follow [runtime setup](../README.md#runtime-setup).
+Installation does not read `.env`, create or copy credentials, authorize network
+traffic, or enable hooks. Configure your own credential for the selected provider
+and follow [runtime setup](../README.md#runtime-setup).
 
 ## Rollback and removal
 

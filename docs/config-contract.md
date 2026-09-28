@@ -31,6 +31,9 @@ their text cannot appear in Display, Debug, or the public issue list.
 | `network.proxy` | — | — | reserved | reserved | — | — |
 | `typesafe.api_key` | `TYPESAFE_API_KEY` | — | forbidden | forbidden | allowed | — |
 | `typesafe.endpoint` | `TYPESAFE_ENDPOINT` | — | forbidden | forbidden | allowed | — |
+| `provider.kind` | `SR_PROVIDER` | — | allowed | forbidden | allowed | — |
+| `cloudflare.api_token` | `CLOUDFLARE_API_TOKEN` | — | forbidden | forbidden | allowed | — |
+| `cloudflare.account_id` | `CLOUDFLARE_ACCOUNT_ID` | — | forbidden | forbidden | allowed | — |
 | `provider.model` | `SR_MODEL` | — | allowed | forbidden | allowed | — |
 | `hook.mode` | — | `--shadow` | allowed | forbidden | — | restrict-only |
 | `hook.notification_turns` (`skip`\|`rank`) | — | — | allowed | restrict-only | — | — |
@@ -47,6 +50,16 @@ their text cannot appear in Display, Debug, or the public issue list.
 | `roster.roots` (≤32) | — | — | allowed | allowed (contained) | — | — |
 | `privacy.redaction`, `privacy.raw_retention` | — | — | reserved | reserved | — | — |
 
+`provider.kind` is `typesafe` by default and also accepts `cloudflare`. Model
+selection follows the winning provider after all layers resolve: an unspecified
+model defaults to `jev-latest` for TypeSafe and `typesafe/jev` for Cloudflare.
+An explicit model is never silently rewritten. Cloudflare currently accepts only
+`typesafe/jev`; an explicit `jev-latest` or another route is a configuration error.
+The account and token remain environment-only. Accounts must contain exactly
+32 ASCII hexadecimal digits and normalize to lowercase. Missing account setup
+can be inspected locally, but native endpoint construction fails before HTTP and
+never falls back to TypeSafe. See [provider integration](cloudflare-transport.md).
+
 Weights use the plan bounds `[0,4]`, `[0,0.5]` and `[0,1]`. Integer file values
 are accepted for float keys; NaN and infinity are rejected everywhere. After
 merging, `ranking.top` must not exceed `ranking.shortlist`. Disclosure-volume keys
@@ -59,10 +72,11 @@ as a non-turn: it is harness output, not a user request, and is never sent.
 
 The environment layer is strict inside `SR_`: an unrecognized `SR_*` variable or a
 non-UTF-8 `SR_` name is an error, so a misspelled privacy setting is never ignored.
-Other variables, including other `TYPESAFE_*` names, are outside the schema.
-Environment values are parsed as `true`/`false`, unsigned decimal digits, or Rust
-floating-point text. An empty `TYPESAFE_API_KEY` is absent; a key with whitespace,
-controls or more than 4 KiB is a configuration error.
+Other variables, including other `TYPESAFE_*` and `CLOUDFLARE_*` names, are outside
+the schema. Environment values are parsed as `true`/`false`, unsigned decimal
+digits, or Rust floating-point text. An empty provider token is absent; a token
+with whitespace, controls or more than 4 KiB is a configuration error. The
+selected provider uses only its own token; there is no cross-provider fallback.
 
 Project roots must be relative and lexically contained in the workspace. Only
 trusted user configuration may add an absolute root, which may not contain `..`.
@@ -93,7 +107,7 @@ configuration issues are `invalid-configuration` and flag conflicts are
 `invalid-usage` (both exit 2). A refused admission maps as follows: missing consent
 or dry run gives `network-denied` (exit 8), and offline gives `cache-miss`
 (exit 11). An offline refusal only arises when no complete valid cached result
-exists. A missing key gives `authentication` (exit 4).
+exists. A missing selected-provider key gives `credential-absent` (exit 4).
 
 ## Receipts and revalidation
 
@@ -105,8 +119,8 @@ for one boundary's dependency projection:
 
 | Boundary | Fields compared |
 | --- | --- |
-| Provider admission (every HTTP attempt) | consent, credential presence, endpoint, model, profile, no-tools, messages, budget, transcript roots, shortlist, exclusions, roster roots |
-| CLI advisory publication | top, shortlist, gate, fits, weights, exclusions, roster roots |
+| Provider admission (every HTTP attempt) | consent, credential presence, provider, provider account, endpoint, model, profile, no-tools, messages, budget, transcript roots, shortlist, exclusions, roster roots |
+| CLI advisory publication | provider, provider account, top, shortlist, gate, fits, weights, exclusions, roster roots |
 | CLI explicit publication | roster roots |
 | Hook advisory publication | CLI advisory fields plus hook mode |
 | Hook explicit publication | roster roots, hook mode |
@@ -128,6 +142,12 @@ its own lock and with an activation intent (`state = "intent"`, then
 `"ready"`). Its enforcement state is `allowance.sqlite3` in the private cache
 directory. Later phases add trial and learned policy fields.
 
+Allowance and breaker scopes remain per canonical origin. Cloudflare account
+IDs distinguish full request targets and cache identities, not allowance buckets.
+TypeSafe fingerprints retain their existing representation; unused Cloudflare
+inputs do not invalidate a TypeSafe decision. Provider changes withhold advisory
+publication as well as future attempts, but cannot veto local explicit results.
+
 ## Managed mutations
 
 `ManagedPolicyMutation` validates calibration apply and rollback changes. Its
@@ -147,5 +167,8 @@ trusted consent and `--allow-network` do. Further tests show that authority-shap
 fields in normalized input are rejected, that duplicate, unknown, NaN, infinite,
 out-of-range and non-UTF-8 inputs are all reported together, and cover precedence,
 all 128 flag combinations, boundary projections, fixed-layer edits, managed
-mutations and private `Debug` output. These are library-level tests; the CLI
-filesystem/effect matrix belongs to sr-roadmap-l1i.3.18 and sr-roadmap-l1i.5.1.
+mutations and private `Debug` output. `tests/provider_configuration.rs` covers
+provider defaults, precedence, credential isolation, native endpoint projection,
+account canonicalization and identity, no fallback, revalidation and managed
+mutation restrictions. Authored tests are not execution evidence; see the
+integration document for the exact validation limitations.

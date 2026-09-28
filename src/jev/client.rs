@@ -23,7 +23,8 @@ use std::time::Duration;
 
 const MAX_ADDITIONAL_ROOTS: usize = 8;
 const MAX_ROOT_BYTES: usize = 64 * 1024;
-const CLOUDFLARE_ORIGIN: &str = "https://api.cloudflare.com";
+#[cfg(all(test, unix))]
+const CLOUDFLARE_ORIGIN: &str = super::endpoint::CLOUDFLARE_API_ORIGIN;
 
 // Only the native wire details differ. Both protocols must traverse the same
 // authenticated HTTP exchange, accounting seam and final completion gate.
@@ -227,9 +228,9 @@ impl JevClient {
     /// Supply a Cloudflare-origin credential and a `typesafe/jev` request.
     /// The production origin is fixed; accounts cannot inject a host or path.
     pub fn cloudflare(account_id: &str) -> Result<Self, TransportError> {
-        let endpoint = EndpointConfig::from_base_origin_str(CLOUDFLARE_ORIGIN)
+        let endpoint = EndpointConfig::cloudflare(account_id)
             .map_err(|_| failure(TransportErrorKind::InvalidConfiguration, false))?;
-        Self::cloudflare_at(endpoint, account_id, Vec::new())
+        Self::new(endpoint)
     }
 
     /// Construct the native client and bind a supplied environment token to
@@ -255,6 +256,7 @@ impl JevClient {
 
     // Private seam for real loopback TLS tests; no public endpoint override can
     // turn Cloudflare credentials into a bearer token for an arbitrary service.
+    #[cfg(all(test, unix))]
     fn cloudflare_at(
         endpoint: EndpointConfig,
         account_id: &str,
@@ -306,10 +308,19 @@ impl JevClient {
         for root in roots {
             builder = builder.add_root_certificate(root);
         }
+        // The same resolved EndpointConfig supplies request identity and the
+        // native wire protocol. A host string alone never selects a provider.
+        let protocol = if endpoint.is_cloudflare() {
+            WireProtocol::Cloudflare {
+                target_url: endpoint.target_url().as_str().to_owned(),
+            }
+        } else {
+            WireProtocol::TypeSafe
+        };
         Ok(Self {
             endpoint,
             http: builder.build(),
-            protocol: WireProtocol::TypeSafe,
+            protocol,
         })
     }
 

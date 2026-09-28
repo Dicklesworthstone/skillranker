@@ -204,7 +204,7 @@ impl NetworkConsent {
     }
 }
 
-/// A TypeSafe bearer credential. It is never serialized, displayed or cloned
+/// A provider bearer credential. It is never serialized, displayed or cloned
 /// into diagnostics; receipts carry only [`CredentialStatus`]. It deliberately
 /// has no equality: nothing may compare credentials in non-constant time.
 #[derive(Clone)]
@@ -279,7 +279,7 @@ impl fmt::Display for ProviderAdmissionRefusal {
             Self::NetworkNotAuthorized => {
                 "network transmission is not authorized; use --allow-network or trusted network.enabled"
             }
-            Self::MissingCredential => "TYPESAFE_API_KEY is not set",
+            Self::MissingCredential => "the selected provider credential is not set",
         })
     }
 }

@@ -25,6 +25,9 @@ use std::str::FromStr;
 /// Documented production base origin for TypeSafe.ai Jev evaluations.
 pub const DEFAULT_TYPESAFE_ENDPOINT: &str = "https://api.typesafe.ai";
 
+/// Fixed hosting origin for the native TypeSafe Jev route.
+pub const CLOUDFLARE_API_ORIGIN: &str = "https://api.cloudflare.com";
+
 /// The one-time joined API path for Jev SystemOne evaluations.
 pub const SYSTEMONE_PATH: &str = "/v1/systemone";
 
@@ -284,7 +287,11 @@ impl fmt::Display for TargetUrl {
 
 impl fmt::Debug for TargetUrl {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "TargetUrl(\"{}\")", self.url)
+        if self.url.contains("/client/v4/accounts/") {
+            f.write_str("TargetUrl(<private Cloudflare account>)")
+        } else {
+            write!(f, "TargetUrl(\"{}\")", self.url)
+        }
     }
 }
 
@@ -293,26 +300,68 @@ impl fmt::Debug for TargetUrl {
 pub struct EndpointConfig {
     origin: CanonicalOrigin,
     target: TargetUrl,
+    cloudflare: bool,
 }
 
 impl EndpointConfig {
     pub fn from_base_origin_str(raw: &str) -> Result<Self, EndpointError> {
         let origin = CanonicalOrigin::parse(raw)?;
         let target = origin.join_systemone();
-        Ok(Self { origin, target })
+        Ok(Self {
+            origin,
+            target,
+            cloudflare: false,
+        })
     }
 
     pub fn production() -> Self {
         let origin = CanonicalOrigin::production();
         let target = origin.join_systemone();
-        Self { origin, target }
+        Self {
+            origin,
+            target,
+            cloudflare: false,
+        }
+    }
+
+    /// Build a native route from a bounded account identifier, never a URL.
+    /// The origin and path structure are fixed; TypeSafe overrides cannot alter it.
+    pub fn cloudflare(account_id: &str) -> Result<Self, EndpointError> {
+        if account_id.len() != 32 || !account_id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(EndpointError::InvalidCloudflareAccount);
+        }
+        let origin = CanonicalOrigin::parse(CLOUDFLARE_API_ORIGIN)?;
+        let target = TargetUrl {
+            url: format!(
+                "{}/client/v4/accounts/{}/ai/run",
+                origin.as_str(),
+                account_id.to_ascii_lowercase(),
+            ),
+            origin: origin.clone(),
+        };
+        Ok(Self {
+            origin,
+            target,
+            cloudflare: true,
+        })
+    }
+
+    pub(crate) const fn is_cloudflare(&self) -> bool {
+        self.cloudflare
     }
 
     /// Construct endpoint configuration from an endpoint override.
     pub fn from_override(
         endpoint: &crate::config::EndpointOverride,
     ) -> Result<Self, EndpointError> {
-        Self::from_base_origin_str(endpoint.as_str())
+        if endpoint.is_cloudflare() {
+            let account = endpoint
+                .cloudflare_account_id()
+                .ok_or(EndpointError::InvalidCloudflareAccount)?;
+            Self::cloudflare(account)
+        } else {
+            Self::from_base_origin_str(endpoint.as_str())
+        }
     }
 
     pub fn origin(&self) -> &CanonicalOrigin {
@@ -637,6 +686,7 @@ pub enum EndpointError {
     NonAsciiHostForbidden,
     UnbracketedIpv6Forbidden,
     NumericIpv4AliasForbidden,
+    InvalidCloudflareAccount,
 }
 
 impl EndpointError {
@@ -690,6 +740,9 @@ impl fmt::Display for EndpointError {
             }
             Self::NumericIpv4AliasForbidden => {
                 f.write_str("numeric IPv4 aliases and hex/octal IP formats are forbidden; only canonical dotted-decimal IPv4 is permitted")
+            }
+            Self::InvalidCloudflareAccount => {
+                f.write_str("Cloudflare account ID must contain exactly 32 hexadecimal digits")
             }
         }
     }
@@ -855,7 +908,8 @@ fn canonicalize_ipv4(host: &str) -> Result<(String, bool), EndpointError> {
         if part.len() > 1 && part.starts_with('0') {
             return Err(EndpointError::NumericIpv4AliasForbidden);
         }
-        let val = u32::from_str(part).map_err(|_| EndpointError::NumericIpv4AliasForbidden)?;
+        let val = u32::from_str(part).map_err(|_| EndpointError::NumericIpv4AliasForbidden);
+        let val = val?;
         if val > 255 {
             return Err(EndpointError::InvalidHost);
         }

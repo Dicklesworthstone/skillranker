@@ -4,9 +4,9 @@
 
 ## Purpose and scope
 
-SkillRanker (`sr`) is a standalone Rust CLI that recommends skills for the next step of an agent session. It captures bounded context, resolves the skills the harness can actually load, and uses TypeSafe's Jev for a broad selection followed by a more detailed rerank. Interactive output shows up to five eligible candidates; the default hook suggests at most one. Abstention is a normal result.
+SkillRanker (`sr`) is a standalone Rust CLI that recommends skills for the next step of an agent session. It captures bounded context, resolves the skills the harness can actually load, and uses the selected Jev-compatible provider for a broad selection followed by a more detailed rerank. Interactive output shows up to five eligible candidates; the default hook suggests at most one. Abstention is a normal result.
 
-**TypeSafe.ai's Jev is the ranking engine, and fresh evaluations require a TypeSafe API key and authorized network access.** Local retrieval, explicit resolution, inspection, and cached results do not constitute an alternative inference backend.
+**Jev is the ranking engine, and fresh evaluations require a credential for the selected provider and authorized network access.** TypeSafe is the default provider; Cloudflare-hosted TypeSafe Jev is an alternative provider using Cloudflare's native AI Run contract. Local retrieval, explicit resolution, inspection, and cached results do not constitute an alternative inference backend.
 
 The useful product is a fast, advisory selector with inspectable evidence. It does not load or execute skills, override user instructions, grant tool permissions, or decide whether an agent may continue. A failed recommendation service must not prevent the agent from working.
 
@@ -39,7 +39,7 @@ Live multi-turn context, an eight-skill shortlist, new gate questions, personali
 
 The first correctness review established what a recommendation may safely claim. This pass asks what makes the product worth using every day: finding a useful procedure, understanding a miss, controlling interruptions and expense, and fixing the underlying library or policy. The following are design priorities, not implemented features or measured improvements.
 
-The idea-wizard pass considered 30 candidates against robustness, reliability, performance, intuitiveness, usability, ergonomics, usefulness, appeal, added value, and implementation practicality. Usefulness and practicality received the greatest weight. The top five improve the core experience without another inference provider or extra routine Jev calls. Ten supporting ideas extend existing boundaries; experiments remain gated and do not delay the core CLI.
+The idea-wizard pass considered 30 candidates against robustness, reliability, performance, intuitiveness, usability, ergonomics, usefulness, appeal, added value, and implementation practicality. Usefulness and practicality received the greatest weight. The top five improve the core experience without extra routine Jev calls. Ten supporting ideas extend existing boundaries; experiments remain gated and do not delay the core CLI.
 
 ### The five highest-value improvements
 
@@ -475,9 +475,9 @@ Do not special-case overflow based on whether `ms` is installed. A single local 
 
 Chunking avoids the initial lexical filter but can still discard a correct candidate within a chunk or reduction round. It does not guarantee recall. Record the candidate sets at each stage. Measure extra requests, partial-result frequency, and recall before considering it a default.
 
-## TypeSafe request and response contract
+## Jev request and response contract
 
-Use the HTTP API directly behind a small transport interface. The documented endpoint is `POST https://api.typesafe.ai/v1/systemone`, authenticated with a bearer token. Requests contain `model`, `state`, and named typed questions; responses contain typed answers and usage. Start with string-valued Choice descriptions, the conservative common shape in the documentation. [API reference](https://docs.typesafe.ai/api)
+Use a small transport interface for provider-specific HTTP details. The default TypeSafe adapter uses `POST https://api.typesafe.ai/v1/systemone`, authenticated with a bearer token. The Cloudflare adapter uses `POST https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/run` with the native TypeSafe Jev input envelope and bearer token. Both adapters expose the same validated internal contract: `model`, `state`, named typed questions, typed answers, and usage. Start with string-valued Choice descriptions, the conservative common shape in the documentation. [TypeSafe API reference](https://docs.typesafe.ai/api) · [Cloudflare Jev model](https://developers.cloudflare.com/ai/models/typesafe/jev/)
 
 `TYPESAFE_ENDPOINT` is a trusted **base origin**, as in `.env.example`, not a complete API URL. Accept HTTPS scheme/host/optional port with an empty or `/` path, canonicalize the origin, and append `/v1/systemone` exactly once. Reject userinfo, query strings, fragments, and other paths as configuration errors; credentials never belong in the URL. The separate loopback-only development exception remains credential-free. Pin this joining behavior in transport fixtures, cache identity, and budget scope so differently spelled equivalent origins cannot create extra allowance buckets.
 
@@ -797,7 +797,7 @@ Watch mode permits at most one active ranking per session, coalesces changes, an
 
 Project files may tune ranking weights and exclusions within schema bounds. They cannot set credentials, change endpoints/proxies, expand transcript roots, disable redaction, enable raw retention, or authorize networking. Those settings come only from trusted user configuration, environment, or explicit CLI flags. Relative project skill roots cannot escape the workspace unless a trusted user setting grants access.
 
-Remote transmission is disabled by default and is an explicit setup choice (`network.enabled` in trusted user config or `--allow-network`). Hook installation shows that context and skill excerpts will be sent to TypeSafe and checks this setting; hooks never prompt interactively. An API key's mere presence is not a project's authorization to export content. `--offline` guarantees zero network calls and can use valid local cache/explicit resolution only.
+Remote transmission is disabled by default and is an explicit setup choice (`network.enabled` in trusted user config or `--allow-network`). Hook installation shows that context and skill excerpts will be sent to the selected provider and checks this setting; hooks never prompt interactively. A provider credential's mere presence is not a project's authorization to export content. `--offline` guarantees zero network calls and can use valid local cache/explicit resolution only.
 
 For v1, offline mode uses direct local/normalized inputs and the verified safe Git signal path; it does not invoke cass. Local-only inspection and dry-run also avoid unverified child commands. An explicitly selected cass source in these modes returns `unavailable / unsupported-source-mode` (exit 7), with a hint to supply a direct transcript or normalized input; never silently switch sources. `--offline` and `--allow-network` conflict and are rejected. A missing complete offline cache result is `unavailable / cache-miss` (exit 11), not an authentication failure or a no-skill determination.
 
@@ -1274,7 +1274,7 @@ These methods change evidence collection and interpretation, not skill eligibili
 ### Promotion gates
 
 1. **Offline core:** all identity, response-validation, ranking, privacy, and cache invariants pass with positive and negative cases.
-2. **Transport ready:** real local TLS/cancellation tests pass and a live contract smoke test verifies the selected TypeSafe model, limits, trust roots, and answer shapes.
+2. **Transport ready:** real local TLS/cancellation tests pass and a live contract smoke test verifies the selected provider/model, limits, trust roots, and answer shapes.
 3. **Shadow hook:** exact-session input and non-blocking failure behavior pass a real supported Claude version; no text is injected during initial observation.
 4. **Advisory hook:** meet the declared latency/error budgets and predeclared quality tolerances on held-out evaluation. Compare against baseline with uncertainty; if evidence is too small, remain experimental.
 5. **Learning:** independent labels and held-out benefit justify thresholds/priors; observation counts alone never enable adaptation.

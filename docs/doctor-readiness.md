@@ -12,7 +12,7 @@ changes no configuration. Invalid configuration fails first, with
 | `configuration` | `valid`, with `policy_fingerprint` | invalid configuration exits 2 instead |
 | `input` | `not-evaluated`: doctor reads no session | — |
 | `roster` | `ready`, `empty`, `no-advisory-candidates`, `unusable`, `timeout` | add skills, or inspect `sr roster --json` |
-| `credential` | `present` or `absent`; `verified` is always `false` | create your own key in the TypeSafe console |
+| `credential` | `present` or `absent`; `verified` is always `false` | configure your own credential for the selected provider |
 | `network` | `authorized` (with `source`), `not-authorized`, `blocked` (with `by`) | `--allow-network`, or trusted `network.enabled = true` |
 | `transport` | `untested`, `previously-verified`, `invalidated`; `ambient_proxy_ignored` names set proxy variables | allow direct HTTPS egress when a proxy variable is set |
 | `ledger` | `not-available`, `blocks_ranking: false` | — |
