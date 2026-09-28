@@ -148,6 +148,9 @@ pub struct ExecutionMetrics {
     pub wide_hit: bool,
     pub rerank_hit: bool,
     pub cache_age_ms: Option<u64>,
+    /// The shared circuit-breaker store was expected but unusable, so this
+    /// run's provider cooldown protection covered only its own process.
+    pub breaker_process_local: bool,
 }
 
 /// Read one explicitly selected input file: a bounded regular file under its
@@ -215,6 +218,11 @@ struct Progress {
     supplied_context: Option<Vec<u8>>,
     /// Per-stage answers captured for an evaluation run; `None` otherwise.
     stage_evidence: Option<StageEvidence>,
+    /// For an evaluation send bound to its preview: what its wide request
+    /// must still be when it is about to be sent. `None`: not bound.
+    expected_wide_digest: Option<WidePreview>,
+    /// The advisory snoozes this decision applied, for its provenance.
+    snooze_provenance: Option<Value>,
 }
 
 /// Identity and cost carried out of a failing run, so an unavailable event can
@@ -387,7 +395,7 @@ pub async fn execute_pipeline(
     args: RankArgs,
     transport: Option<&dyn JevTransport>,
 ) -> Result<OutputDocument, PipelineFailure> {
-    execute_pipeline_supplied(invocation, cx, args, transport, None, None).await
+    execute_pipeline_supplied(invocation, cx, args, transport, None, None, None).await
 }
 
 /// Rank one normalized context already held in memory, such as a case of an
@@ -401,6 +409,7 @@ pub async fn execute_pipeline_with_context(
     transport: Option<&dyn JevTransport>,
     context: Vec<u8>,
     evidence: &mut StageEvidence,
+    expected_wide_digest: Option<WidePreview>,
 ) -> Result<OutputDocument, PipelineFailure> {
     execute_pipeline_supplied(
         invocation,
@@ -409,6 +418,7 @@ pub async fn execute_pipeline_with_context(
         transport,
         Some(context),
         Some(evidence),
+        expected_wide_digest,
     )
     .await
 }
@@ -480,6 +490,20 @@ pub struct StageEvidence {
     /// when production ran Quill itself or no pass ran.
     #[serde(default)]
     pub lexical_elapsed_ms: u64,
+    /// The run was bound to a disclosure preview and refused its wide request
+    /// before any attempt, because the request no longer matched the preview.
+    #[serde(default)]
+    pub preview_refused: bool,
+}
+
+/// What an evaluation send was bound to by its disclosure preview.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WidePreview {
+    /// The preview's exact wide request: the send must still hash to it.
+    Digest([u8; 32]),
+    /// The preview ended locally and sent nothing, so any wide request now
+    /// is one nobody previewed and is refused.
+    NoRequest,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -508,6 +532,7 @@ async fn execute_pipeline_supplied(
     transport: Option<&dyn JevTransport>,
     supplied_context: Option<Vec<u8>>,
     evidence: Option<&mut StageEvidence>,
+    expected_wide_digest: Option<WidePreview>,
 ) -> Result<OutputDocument, PipelineFailure> {
     let clock = &invocation.clock();
     // Every effect restriction comes from the gate; `args.dry_run` can only add
@@ -541,9 +566,19 @@ async fn execute_pipeline_supplied(
     let mut progress = Progress {
         supplied_context,
         stage_evidence: evidence.is_some().then(StageEvidence::default),
+        expected_wide_digest,
         ..Progress::default()
     };
     let result = rank_once(invocation, clock, cx, args, transport, &mut progress).await;
+    let result = match (result, progress.snooze_provenance.take()) {
+        (Ok(doc), Some(snoozes)) => doc.with_snoozes(snoozes).map_err(|e| {
+            failure(
+                ErrorKind::OutputLimit,
+                format!("Snooze provenance contract error: {e:?}"),
+            )
+        }),
+        (result, _) => result,
+    };
     if let (Some(sink), Some(captured)) = (evidence, progress.stage_evidence.take()) {
         *sink = captured;
     }
@@ -593,6 +628,7 @@ async fn execute_pipeline_supplied(
             progress.cache_recording_failures,
             completion_unconfirmed,
             progress.evaluated.store_refused,
+            progress.metrics.breaker_process_local,
         )
     });
     let result = result.and_then(|mut doc| {
@@ -695,6 +731,7 @@ async fn execute_pipeline_supplied(
                             progress.cache_recording_failures,
                             completion_unconfirmed,
                             progress.evaluated.store_refused,
+                            progress.metrics.breaker_process_local,
                         )
                     })
             }
@@ -709,8 +746,13 @@ fn with_storage_warnings(
     cache_recording_failures: u64,
     completion_unconfirmed: bool,
     store_refused: bool,
+    breaker_process_local: bool,
 ) -> Result<OutputDocument, PipelineFailure> {
-    if cache_recording_failures == 0 && !completion_unconfirmed && !store_refused {
+    if cache_recording_failures == 0
+        && !completion_unconfirmed
+        && !store_refused
+        && !breaker_process_local
+    {
         return Ok(doc);
     }
     let mut value = doc.as_value().clone();
@@ -733,6 +775,11 @@ fn with_storage_warnings(
             "cache-unavailable",
             u64::from(store_refused),
             "Response cache unavailable; this run could not reuse or record responses",
+        ),
+        (
+            "breaker-process-local",
+            u64::from(breaker_process_local),
+            "The shared provider cooldown store was unavailable; cooldown protection covered only this process",
         ),
     ] {
         if count == 0 {
@@ -925,6 +972,12 @@ async fn rank_once(
 
     // 1. Initial configuration loading and policy receipt capture
     let config_files = ConfigFiles::new(args.workspace.clone(), args.user_config_root.clone());
+    // The trusted request allowance lives under the user configuration root;
+    // `--no-cache` never relocates its enforcement state.
+    let allowance_paths = args
+        .user_config_root
+        .as_deref()
+        .map(crate::allowance::AllowancePaths::for_user);
     let resolved_config = config_files.load(clock, args.sources.clone())?;
     let mut current_receipt = resolved_config.receipt(gate.policy());
 
@@ -1778,8 +1831,45 @@ async fn rank_once(
     }
     let excluded_refs: BTreeSet<&SkillId> = excluded_skills.iter().collect();
     let loaded_refs: BTreeSet<&SkillId> = loaded_records.iter().map(|r| &r.skill_id).collect();
+
+    // Trusted advisory snoozes for this session's scope (I04). They are read
+    // like configuration, also with the ledger or persistence disabled, never
+    // cleaned up here, and applied before retrieval. Explicit requests were
+    // resolved above and ignore them.
+    let snooze_scope = current_snooze_scope(&normalized_context);
+    let snooze_controls = match &snooze_scope {
+        Some(scope) => config_files
+            .snoozes(clock)?
+            .controls(scope, crate::snooze::wall_clock_ms()),
+        None => crate::snooze::ScopeControls::default(),
+    };
+    let mut snoozed_skills: BTreeSet<SkillId> = BTreeSet::new();
+    if !snooze_controls.is_empty() {
+        for skill in roster.skills() {
+            let muted = snooze_controls.mutes(skill.record().id.as_str())
+                || skill
+                    .bindings()
+                    .iter()
+                    .any(|b| snooze_controls.mutes(b.id.as_str()));
+            if muted {
+                snoozed_skills.insert(skill.record().id.clone());
+                snoozed_skills.extend(skill.bindings().iter().map(|b| b.id.clone()));
+            }
+        }
+        progress.snooze_provenance = Some(json!({
+            "all": snooze_controls.all,
+            "skill_ids": snooze_controls.skills,
+            "uncertain_expiry": snooze_controls.uncertain_expiry,
+        }));
+    }
+    let snoozed_refs: BTreeSet<&SkillId> = snoozed_skills.iter().collect();
+    let snooze_check = SnoozeCheck {
+        scope: snooze_scope.as_ref(),
+        used: &snooze_controls,
+    };
     let policy_view = PolicyView {
         excluded: &excluded_refs,
+        snoozed: &snoozed_refs,
         already_loaded: &loaded_refs,
     };
 
@@ -1837,8 +1927,22 @@ async fn rank_once(
         return Ok(doc);
     }
 
-    // Initial admission before Wide
-    let admission = admit(&initial_advisory, &excluded_refs, loaded_state);
+    // Initial admission before Wide. Snoozed skills leave first; when they
+    // were every advisory candidate, the decision abstains without Jev.
+    let unsnoozed: Vec<AdvisorySkill> = initial_advisory
+        .iter()
+        .filter(|s| !snoozed_refs.contains(&s.binding.id) && !snoozed_refs.contains(&s.record.id))
+        .copied()
+        .collect();
+    let admission = if unsnoozed.is_empty() {
+        crate::eligibility::Admission {
+            admitted: Vec::new(),
+            removed: Vec::new(),
+            verdict: Some(Verdict::Abstain(crate::eligibility::AbstainReason::Snoozed)),
+        }
+    } else {
+        admit(&unsnoozed, &excluded_refs, loaded_state)
+    };
     if let Some(verdict) = admission.verdict {
         match verdict {
             Verdict::Abstain(reason) => {
@@ -1898,6 +2002,7 @@ async fn rank_once(
                     &config_files,
                     &resolved_config,
                     &current_receipt,
+                    &snooze_check,
                     cx,
                     clock,
                 )?;
@@ -2067,6 +2172,7 @@ async fn rank_once(
             &config_files,
             &resolved_config,
             &current_receipt,
+            &snooze_check,
             cx,
             clock,
         )?;
@@ -2119,16 +2225,6 @@ async fn rank_once(
                 ErrorKind::OversizedInput,
                 "The context could not be rendered within its bounds",
             ),
-        })?;
-    // The receipt is the disclosure account shown to the user; a receipt that
-    // disagrees with the bytes about to be sent fails closed before any request.
-    disclosure_receipt
-        .verify_against_payload(&rendered_context)
-        .map_err(|_| {
-            failure(
-                ErrorKind::UnsupportedInput,
-                "The disclosure receipt does not match the rendered context",
-            )
         })?;
     // Report the rendered input truthfully. Essential content that is missing,
     // or a latest request that had to be truncated, cannot support a ranked
@@ -2289,7 +2385,10 @@ async fn rank_once(
         });
         capture.local_evidence = Some(CapturedLocalEvidence {
             as_of_unix_ms: clock.now().as_millis(),
-            active_snoozes: Vec::new(),
+            active_snoozes: snoozed_skills
+                .iter()
+                .map(|id| id.as_str().to_owned())
+                .collect(),
             loaded_references: loaded_records
                 .iter()
                 .map(|r| CapturedLoadedReference {
@@ -2675,6 +2774,26 @@ async fn rank_once(
                     None => opened,
                 }
             });
+            // An evaluation send bound to its disclosure preview goes out only
+            // if its final wide request is byte-identical to what was previewed.
+            // A preview that sent nothing binds too: no wide request may go.
+            let unpreviewed = match progress.expected_wide_digest {
+                None => false,
+                Some(WidePreview::NoRequest) => true,
+                Some(WidePreview::Digest(expected)) => {
+                    *blake3::hash(wide_builder.bytes()).as_bytes() != expected
+                }
+            };
+            if unpreviewed {
+                // Refused before any attempt: nothing was sent or charged.
+                if let Some(evidence) = progress.stage_evidence.as_mut() {
+                    evidence.preview_refused = true;
+                }
+                return Err(failure(
+                    ErrorKind::Superseded,
+                    "The request changed since its disclosure preview; not sent",
+                ));
+            }
             let stage = provider_stage(
                 active,
                 RankingStage::Wide,
@@ -2683,6 +2802,7 @@ async fn rank_once(
                 &resolved_config,
                 &mut current_receipt,
                 &gate,
+                allowance_paths.as_ref(),
                 &mut progress.metrics,
                 cx,
                 clock,
@@ -2838,6 +2958,7 @@ async fn rank_once(
                 &config_files,
                 &resolved_config,
                 &current_receipt,
+                &snooze_check,
                 cx,
                 clock,
             )?;
@@ -2925,6 +3046,7 @@ async fn rank_once(
                 &resolved_config,
                 &mut current_receipt,
                 &gate,
+                allowance_paths.as_ref(),
                 &mut progress.metrics,
                 cx,
                 clock,
@@ -3129,6 +3251,7 @@ async fn rank_once(
                     &config_files,
                     &resolved_config,
                     &current_receipt,
+                    &snooze_check,
                     cx,
                     clock,
                 )?;
@@ -3326,6 +3449,7 @@ async fn rank_once(
         &config_files,
         &resolved_config,
         &current_receipt,
+        &snooze_check,
         cx,
         clock,
     )?;
@@ -3335,16 +3459,51 @@ async fn rank_once(
 /// Revalidate every advisory outcome, including a negative recommendation.
 /// Cache reuse never bypasses this boundary: its responses still feed the same
 /// evaluation paths. Run after rendering so trace work shares the deadline too.
+/// The snooze controls a decision used, rechecked at publication.
+struct SnoozeCheck<'a> {
+    scope: Option<&'a crate::snooze::SnoozeScope>,
+    used: &'a crate::snooze::ScopeControls,
+}
+
+/// This context's snooze scope, as the ledger records its events. A context
+/// without a session identity has none, so no snooze can apply to it.
+fn current_snooze_scope(context: &NormalizedContext) -> Option<crate::snooze::SnoozeScope> {
+    let session = context.session_id.as_ref()?;
+    crate::snooze::SnoozeScope::from_event(
+        "current",
+        context.workspace_root.as_str(),
+        session.as_str(),
+        context.branch_id.as_ref().map_or("main", |b| b.as_str()),
+    )
+    .ok()
+}
+
+#[allow(clippy::too_many_arguments)]
 fn validate_advisory_publication(
     source: &roster::Source<'_>,
     dependencies: &crate::roster::revalidation::Dependencies,
     config_files: &ConfigFiles,
     config: &ResolvedConfig,
     receipt: &PolicyReceipt,
+    snoozes: &SnoozeCheck<'_>,
     cx: &Cx,
     clock: &EntryClock,
 ) -> Result<(), PipelineFailure> {
     source.validate(dependencies, cx, clock)?;
+    // A snooze applied while this ranking ran withholds it: advice computed
+    // without that mute is stale. An expiry only relaxes the controls, and a
+    // decision made under the stricter ones stays publishable.
+    if let Some(scope) = snoozes.scope {
+        let current = config_files
+            .snoozes(clock)?
+            .controls(scope, crate::snooze::wall_clock_ms());
+        if (current.all && !snoozes.used.all) || !current.skills.is_subset(&snoozes.used.skills) {
+            return Err(failure(
+                ErrorKind::Superseded,
+                "An advisory snooze was applied before publication",
+            ));
+        }
+    }
     let (_, revalidation) = config_files.refresh(
         clock,
         config,
@@ -3604,26 +3763,39 @@ mod persistent {
     pub(super) const LEASES_FILE: &str = crate::storage::CACHE_FILE;
 
     fn coordinator(invocation: &ProcessInvocation, cx: &Cx, path: &Path) -> Option<CacheStore> {
-        if path.file_name()? != crate::storage::CACHE_FILE {
-            return None;
+        open_coordinator(invocation, cx, path).ok().flatten()
+    }
+
+    /// The lease store, `Ok(None)` when there is none to use, or the error
+    /// that opening it met, so callers can tell busy from permanent.
+    fn open_coordinator(
+        invocation: &ProcessInvocation,
+        cx: &Cx,
+        path: &Path,
+    ) -> Result<Option<CacheStore>, crate::storage::StoreError> {
+        let (Some(name), Some(parent)) = (path.file_name(), path.parent()) else {
+            return Ok(None);
+        };
+        if name != crate::storage::CACHE_FILE {
+            return Ok(None);
         }
         match crate::storage::open_cache(
             invocation,
             cx,
             CacheAccess::ExistingOnly,
-            CacheLocation::Directory(path.parent()?.to_owned()),
-        )
-        .ok()?
-        {
-            CacheOpen::Ready(store) => Some(*store),
-            CacheOpen::Disabled | CacheOpen::Missing => None,
+            CacheLocation::Directory(parent.to_owned()),
+        )? {
+            CacheOpen::Ready(store) => Ok(Some(*store)),
+            CacheOpen::Disabled | CacheOpen::Missing => Ok(None),
         }
     }
 
     /// Acquire the lease, retrying briefly: two processes opening the lease
     /// store at once can meet SQLite busy beyond its 25 ms wait. Without a
-    /// lease the run sends uncoordinated, so give up only after a few tries,
-    /// on cancellation, or while a second of budget remains for its own work.
+    /// lease the run sends uncoordinated, a duplicate evaluation, so keep
+    /// trying for a bounded time rather than a fixed count, which a loaded
+    /// host exhausts in a few busy waits (sr-azlc). Stop on cancellation or
+    /// once less than a second of budget remains for the run's own work.
     pub(super) async fn acquire(
         invocation: &ProcessInvocation,
         cx: &Cx,
@@ -3631,27 +3803,38 @@ mod persistent {
         path: &Path,
         key: CoordinationKey,
     ) -> Option<LeaseAcquisition> {
-        for _ in 0..5 {
-            if let Some(acquisition) = try_acquire(invocation, cx, path, key) {
-                return Some(acquisition);
+        let started = clock.now().as_millis();
+        loop {
+            match try_acquire(invocation, cx, path, key) {
+                Ok(acquisition) => return Some(acquisition),
+                // A missing, full, corrupt or unsupported store will not heal
+                // within this run: send uncoordinated at once.
+                Err(error) if error != crate::storage::StoreError::Busy => return None,
+                Err(_) => {}
             }
-            if cx.is_cancel_requested() || clock.remaining_before_cleanup().as_millis() < 1_000 {
-                break;
+            if cx.is_cancel_requested()
+                || clock.remaining_before_cleanup().as_millis() < 1_000
+                || clock.now().as_millis().saturating_sub(started) >= LEASE_ACQUIRE_BUDGET_MS
+            {
+                return None;
             }
             asupersync::time::sleep(asupersync::time::wall_now(), Duration::from_millis(10)).await;
         }
-        None
     }
 
+    /// How long a run keeps trying to open and take a contended lease.
+    const LEASE_ACQUIRE_BUDGET_MS: u64 = 400;
+
+    /// One attempt. `Err(Busy)` is worth retrying; every other error is not.
     fn try_acquire(
         invocation: &ProcessInvocation,
         cx: &Cx,
         path: &Path,
         key: CoordinationKey,
-    ) -> Option<LeaseAcquisition> {
-        coordinator(invocation, cx, path)?
+    ) -> Result<LeaseAcquisition, crate::storage::StoreError> {
+        open_coordinator(invocation, cx, path)?
+            .ok_or(crate::storage::StoreError::Missing)?
             .acquire_lease(invocation, cx, key, false)
-            .ok()
             .map(|(_, result)| result)
     }
 
@@ -3750,6 +3933,9 @@ mod persistent {
         }
     }
 
+    /// How long a run keeps trying to open a store another run is initializing.
+    const STORE_OPEN_BUDGET_MS: u64 = 400;
+
     pub(super) struct Store(CacheStore);
 
     impl Store {
@@ -3767,8 +3953,14 @@ mod persistent {
             gate: &EffectGate,
             dir: &Path,
         ) -> Result<Option<Self>, StoreError> {
+            // Keep trying for a bounded time rather than a fixed count, like
+            // lease acquisition (a5bda88): the first of two concurrent runs can
+            // hold the store's initialization lock longer than a few quick
+            // tries on a loaded host, and the second then ranks with no cache
+            // and no single flight, sending the same evaluation again (sr-azlc).
+            let started = clock.now().as_millis();
             let mut last = StoreError::Busy;
-            for _ in 0..5 {
+            while clock.now().as_millis().saturating_sub(started) < STORE_OPEN_BUDGET_MS {
                 match gate.open_cache(
                     invocation,
                     cx,
@@ -4058,6 +4250,32 @@ fn authorize_send(
     Ok(consent)
 }
 
+/// Charges one attempt to the trusted shared allowance, when one is
+/// configured, after policy re-authorization and before the send. The debit
+/// is durable and never refunded; a spent window is `request-budget`, and
+/// unusable or incomplete enforcement state is `budget-state`, both exit 4.
+fn debit_allowance(
+    allowance: Option<&crate::allowance::AllowancePaths>,
+    origin: &crate::jev::CanonicalOrigin,
+    stage: RankingStage,
+    gate: &EffectGate,
+    clock: &EntryClock,
+) -> Result<(), PipelineFailure> {
+    let Some(paths) = allowance else {
+        return Ok(());
+    };
+    let persistent = matches!(gate.runtime_state(), StoreAccess::Enabled);
+    let lock_budget =
+        std::time::Duration::from_millis(clock.remaining_before_cleanup().as_millis().min(250));
+    match crate::allowance::admit(paths, origin, stage, persistent, lock_budget) {
+        Ok(_) => Ok(()),
+        Err(error @ crate::allowance::AllowanceError::Exhausted { .. }) => {
+            Err(failure(ErrorKind::RequestBudget, error.to_string()))
+        }
+        Err(error) => Err(failure(ErrorKind::BudgetState, error.to_string())),
+    }
+}
+
 /// Run one logical stage through the invocation's retry session. Policy is
 /// re-authorized before every attempt, retries included. Usage comes from the
 /// allowance's receipt, so unknown usage from attempts that returned nothing
@@ -4071,18 +4289,57 @@ async fn provider_stage(
     resolved_config: &ResolvedConfig,
     receipt: &mut PolicyReceipt,
     gate: &EffectGate,
+    allowance: Option<&crate::allowance::AllowancePaths>,
     metrics: &mut ExecutionMetrics,
     cx: &Cx,
     clock: &EntryClock,
 ) -> Result<Response, PipelineFailure> {
     let sent_before = session.receipt().sent_attempts;
+    let origin = session.origin().clone();
+    // The breaker shares the allowance's private runtime directory; with
+    // persistent runtime state disabled it protects this process only.
+    let shared_dir = allowance
+        .filter(|_| matches!(gate.runtime_state(), StoreAccess::Enabled))
+        .and_then(|paths| paths.accounting.parent());
+    let breaker = crate::breaker::Breaker::for_cache_dir(shared_dir, origin.as_str())
+        .with_busy_wait(std::time::Duration::from_millis(
+            clock.remaining_before_cleanup().as_millis(),
+        ));
+    let ticket = std::cell::RefCell::new(None);
+    let now = || crate::allowance::wall_clock_ms().unwrap_or(0);
     let mut refusal = None;
     let result = session
-        .send_stage(stage, request, cx, || {
-            authorize_send(clock, config_files, resolved_config, receipt, gate, stage)
-                .map_err(|failure| refusal = Some(failure))
-        })
+        .send_stage_observed(
+            stage,
+            request,
+            cx,
+            || {
+                authorize_send(clock, config_files, resolved_config, receipt, gate, stage)
+                    .and_then(|consent| {
+                        // The breaker refuses before the allowance charges: a
+                        // cooldown refusal costs nothing.
+                        let lease = clock.remaining_before_cleanup().as_millis();
+                        let admitted = breaker.admit(now(), lease).map_err(cooldown_refusal)?;
+                        if let Err(failure) =
+                            debit_allowance(allowance, &origin, stage, gate, clock)
+                        {
+                            breaker.settle(&admitted, crate::breaker::Outcome::Neutral, now());
+                            return Err(failure);
+                        }
+                        *ticket.borrow_mut() = Some(admitted);
+                        Ok(consent)
+                    })
+                    .map_err(|failure| refusal = Some(failure))
+            },
+            |settled| {
+                if let Some(admitted) = ticket.borrow_mut().take() {
+                    breaker.settle(&admitted, breaker_outcome(settled), now());
+                }
+            },
+        )
         .await;
+    metrics.breaker_process_local |=
+        shared_dir.is_some() && breaker.protection() == crate::breaker::Protection::ProcessLocal;
     let cost = session.receipt();
     if cost.sent_attempts > sent_before {
         metrics.requests += 1;
@@ -4098,6 +4355,43 @@ async fn provider_stage(
             (kind, _) => retry_failure(kind, error.last_transport.map(|t| t.kind)),
         }),
     }
+}
+
+/// How an attempt bears on endpoint health: only a valid response or a
+/// retryable transport/HTTP failure. Authentication, validation, cancellation
+/// and local errors are not evidence about the endpoint.
+fn breaker_outcome(
+    settled: Result<(), &crate::jev::client::TransportError>,
+) -> crate::breaker::Outcome {
+    use crate::breaker::Outcome;
+    match settled {
+        Ok(()) => Outcome::Success,
+        Err(error) if crate::jev::retry::retryable(error.kind) => Outcome::Transient {
+            retry_after_ms: match error.retry_after {
+                // Saturate rather than drop: a delay too large for u64
+                // milliseconds is the longest Retry-After, which the breaker
+                // caps at MAX_RETRY_AFTER_MS instead of ignoring.
+                crate::jev::retry::RetryAfter::Delay(delay) => {
+                    Some(u64::try_from(delay.as_millis()).unwrap_or(u64::MAX))
+                }
+                _ => None,
+            },
+        },
+        Err(_) => Outcome::Neutral,
+    }
+}
+
+fn cooldown_refusal(refusal: crate::breaker::Refusal) -> PipelineFailure {
+    let message = match refusal {
+        crate::breaker::Refusal::CoolingDown { until_unix_ms } => format!(
+            "The provider circuit is cooling down after repeated failures, until {until_unix_ms} \
+             (Unix ms)"
+        ),
+        crate::breaker::Refusal::ProbeInFlight => {
+            "Another process is probing the recovering provider; not sent".to_owned()
+        }
+    };
+    failure(ErrorKind::ProviderCooldown, message)
 }
 
 /// The terminal reason for a stage that exhausted or stopped its retries.
@@ -4539,6 +4833,16 @@ fn record_inflight_ranking(
 /// no decision whose membership it could describe; `snapshot_id` is nullable for
 /// exactly this case. `reason` is the failure's own typed kind, never its message,
 /// so nothing free-form reaches the ledger.
+/// An overrun run may still record its own failure row within this window
+/// from the moment it fails, ending at most `LATE_FAILURE_RECORD_LIMIT_MS`
+/// past its total deadline. Its work must also finish before that window's
+/// half-reserve, so at the default 3 s deadline every late write is bounded by
+/// about 3.5 s, inside the installed hook's 4 s outer timeout (and the
+/// harness's measured SIGTERM-to-SIGKILL grace beyond it). A tighter limit
+/// left too little time for the write itself on a loaded host.
+const LATE_FAILURE_RECORD_GRACE_MS: u64 = 300;
+const LATE_FAILURE_RECORD_LIMIT_MS: u64 = 600;
+
 fn record_failed_attempts(
     invocation: &ProcessInvocation,
     recording: &FailureRecording,
@@ -4570,10 +4874,21 @@ fn record_failed_attempts(
     };
     // The run may have failed because its work deadline passed, which would refuse this
     // write too and drop the failure from the availability denominator. Record it inside
-    // the cleanup reserve on a cleanup context instead (sr-73b6).
+    // the cleanup reserve on a cleanup context instead (sr-73b6). A run whose work
+    // overran the whole deadline has missed that window as well; it gets a short grace
+    // for this row alone, inside the hook's outer timeout, so it is recorded as its
+    // failure rather than left in-flight (sr-9fzp).
+    let finalization = invocation.clock().for_failure_finalization();
+    let clock = if finalization.admit_new_work().is_ok() {
+        finalization
+    } else {
+        invocation
+            .clock()
+            .for_late_failure_record(LATE_FAILURE_RECORD_GRACE_MS, LATE_FAILURE_RECORD_LIMIT_MS)
+    };
     let _ = crate::storage::record_ranking_with_attempts(
         invocation,
-        invocation.clock().for_failure_finalization(),
+        clock,
         &invocation.request_cleanup_cx(),
         crate::storage::LedgerAccess::ExistingOnly,
         location,
@@ -5412,16 +5727,23 @@ fn compute_stage_trace(
     if let Some(pv) = policy {
         let is_excluded =
             siblings.iter().any(|id| pv.excluded.contains(id)) || pv.excluded.contains(target);
+        let is_snoozed =
+            siblings.iter().any(|id| pv.snoozed.contains(id)) || pv.snoozed.contains(target);
         let is_loaded = siblings.iter().any(|id| pv.already_loaded.contains(id))
             || pv.already_loaded.contains(target);
-        if is_excluded {
+        if is_excluded || is_snoozed {
+            let (reason, hint) = if is_excluded {
+                ("excluded", "review-exclusions")
+            } else {
+                ("snoozed", "review-snoozes")
+            };
             entries.push(TraceEntry::excluded(
                 target.clone(),
                 TraceStage::LocalPolicy,
-                "excluded",
+                reason,
                 None,
                 None,
-                Some("review-exclusions".into()),
+                Some(hint.into()),
             ));
             for stage in &TraceStage::ALL[3..] {
                 entries.push(TraceEntry::not_evaluated(target.clone(), *stage));
@@ -5699,4 +6021,39 @@ fn compute_stage_trace(
     }
 
     entries
+}
+
+#[cfg(test)]
+mod breaker_outcome_tests {
+    use super::breaker_outcome;
+    use crate::breaker::Outcome;
+    use crate::jev::client::{TransportError, TransportErrorKind};
+    use crate::jev::retry::RetryAfter;
+    use std::time::Duration;
+
+    fn throttled(delay: Duration) -> TransportError {
+        TransportError {
+            kind: TransportErrorKind::HttpStatus(429),
+            http_attempt_started: true,
+            retry_after: RetryAfter::Delay(delay),
+        }
+    }
+
+    #[test]
+    fn an_unrepresentable_retry_after_saturates_instead_of_vanishing() {
+        // Too large for u64 milliseconds: kept as the longest delay, so the
+        // breaker applies its one-hour cap rather than no cooldown at all.
+        assert_eq!(
+            breaker_outcome(Err(&throttled(Duration::MAX))),
+            Outcome::Transient {
+                retry_after_ms: Some(u64::MAX)
+            }
+        );
+        assert_eq!(
+            breaker_outcome(Err(&throttled(Duration::from_secs(120)))),
+            Outcome::Transient {
+                retry_after_ms: Some(120_000)
+            }
+        );
+    }
 }

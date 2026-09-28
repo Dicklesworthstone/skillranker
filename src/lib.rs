@@ -2,8 +2,10 @@
 #![forbid(unsafe_code)]
 
 pub mod adapter;
+pub mod allowance;
 pub mod authorized_read;
 pub mod blocking;
+pub mod breaker;
 pub mod cache;
 pub mod capabilities;
 pub mod cli;
@@ -26,6 +28,7 @@ pub mod replay;
 pub mod roster;
 pub mod runtime;
 pub mod scoring;
+pub mod snooze;
 pub mod sqlite_engine;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub mod storage;

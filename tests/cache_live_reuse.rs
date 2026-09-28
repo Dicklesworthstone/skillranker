@@ -88,6 +88,10 @@ impl Fixture {
             .env_clear()
             .env("HOME", self.home())
             .env("XDG_CONFIG_HOME", self.home().join(".config"))
+            // These cases test persistence, not the deadline. A debug binary on
+            // a degraded build worker overran the 3 s production default and
+            // reported `timeout` instead of its store's state (sr-0sgw).
+            .env("SR_TIMEOUT_MS", "10000")
             .current_dir(self.workspace())
             .args(["rank", "--offline", "--json"])
             .args(extra)

@@ -423,7 +423,12 @@ judgment names a skill missing from the current roster, are reported not estimab
 and are never sent. Before the first request, every remaining case is previewed
 with no network; a refused preview is never sent, and the report freezes the
 batch's disclosure totals and receipt digest. An authentication or consent failure
-stops scheduling. Live runs write nothing to the ledger or response cache.
+stops scheduling. Live runs write nothing to the ledger or response cache;
+a configured [shared attempt allowance](#share-an-http-attempt-allowance-across-sessions)
+still charges each of their sends.
+The report also gives the process's peak resident memory and projects its main
+rankings' attempts and known tokens to 1,000 similar turns, disclosing
+unknown-usage attempts; it attaches no price.
 From the same answers, with no extra request, the report also scores intrinsic
 coverage (an acceptable skill admitted, and shortlisted when the gate passes) and
 the policies on one judged cohort: Quill-only, choice-only, fit-only, a
@@ -1500,6 +1505,11 @@ before it is visible, the old policy remains in force. Each attempt checks the
 active generation at admission, including processes started earlier. Already
 admitted requests cannot be recalled. Inspection itself makes no network requests.
 
+The guard lives in `sr/allowance.toml` under your configuration directory, and
+its accounting in `allowance.sqlite3` in the private `sr` cache directory, which
+`--no-cache` does not relocate. Each endpoint origin, port included, has its own
+count.
+
 Persistent attempts hold the same bounded lock as setup while rereading guard
 configuration, validating the accounting generation, and debiting. They release
 it before HTTP; lock contention cannot turn into an unbounded hook wait. With
@@ -1535,6 +1545,16 @@ A half-open probe is the next permitted real request, with the same network
 authorization, deadline, and attempt debit; it adds no separate health call or
 background probe. Valid successful responses restore service and
 reset the local failure streak.
+Circuit state lives in `breaker.sqlite3` in the private `sr` cache directory,
+per endpoint origin, and a cooldown refusal is decided before the allowance
+charges anything. With `--no-persist`, each process keeps its own circuit;
+when the shared store is expected but unusable, the result carries a
+`breaker-process-local` warning. This build has no safe shared credential
+identity, so authentication failures never open the circuit: each stays with
+its own invocation and is not retried automatically.
+A valid response clears a stored `Retry-After`. Live `sr eval` batches share
+the same per-origin circuit, so provider failures during an evaluation also
+cool down hook traffic to that endpoint.
 Responses carry their breaker generation: a late obsolete response cannot close
 a newer circuit or release its successor's probe lease. Authentication pauses
 are scoped to a verified credential profile/generation so a bad key cannot block
@@ -1586,6 +1606,12 @@ maximum of 128 entries, and durations from one minute to 24 hours. Missing or
 ambiguous event attribution cannot create a broadly scoped mute. Doctor shows
 active entries and expiry anomalies; uncertain expiry remains muted until
 resolved or explicitly cleared.
+
+They live in `sr/snoozes.toml` under your configuration directory, and the
+event's recorded workspace, session and agent branch bound each one. A snooze
+applied while a ranking is in flight withholds that ranking's advice at
+publication; a request already sent may still incur cost, and advice already
+published cannot be recalled.
 
 Snoozed skills remain visible in explanations but leave advisory eligibility
 before retrieval. Muting every advisory candidate skips Jev. Explicit skill
@@ -1650,6 +1676,13 @@ Backups stay in owner-only private state. Cooperating installers serialize their
 edits, but simultaneous edits by another program are unsupported: atomic rename
 alone cannot prevent every lost update. Raising the internal deadline beyond the
 installed outer timeout requires reinstalling the hook.
+
+Preview and apply both report what a recorded shadow trial still needs, and
+change none of it: an initialized ledger (`sr ledger init`), trusted network
+consent (`[network] enabled = true` in your user `sr/config.toml`, since a
+one-shot `--allow-network` never reaches a hook), and a `TYPESAFE_API_KEY` in
+the environment Claude Code gives the hook. The report never prints the key or
+configuration contents. `--settings-file FILE` targets a specific settings file.
 
 Other harnesses can supply versioned normalized context through
 `sr rank --context FILE`. Native integration support is enumerated by capabilities;

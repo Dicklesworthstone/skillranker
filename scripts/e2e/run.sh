@@ -25,4 +25,8 @@ if [ "${1-}" = "--suite" ] && [ "${2-}" = "replay" ]; then
     shift 2
     exec "$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)/replay.sh" "$@"
 fi
+if [ "${1-}" = "--suite" ] && [ "${2-}" = "shadow-hook" ]; then
+    shift 2
+    exec "$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)/shadow-hook.sh" "$@"
+fi
 exec /usr/bin/python3 -I -B "$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)/runner.py" "$@"

@@ -135,6 +135,67 @@ pub struct Inputs<'a> {
     /// and ignores them; values are never read into the report.
     pub ambient_proxy_vars: Vec<&'static str>,
     pub ledger: LedgerCheck,
+    pub snoozes: SnoozeCheck,
+}
+
+/// The trusted snooze file as doctor read it, without writing anything.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SnoozeCheck {
+    /// No trusted user configuration directory exists to hold snoozes.
+    NoUserRoot,
+    Invalid(String),
+    Loaded {
+        set: crate::snooze::SnoozeSet,
+        now_unix_ms: Option<u64>,
+    },
+}
+
+fn snooze_report(check: &SnoozeCheck) -> Value {
+    match check {
+        SnoozeCheck::NoUserRoot => json!({
+            "state": "none", "entries": 0, "expired": 0, "uncertain_expiry": 0,
+            "muting": [], "next_step": null,
+        }),
+        SnoozeCheck::Invalid(why) => json!({
+            "state": "invalid", "reason": why, "next_step":
+                "fix or clear the trusted snoozes file; ranking refuses it until then",
+        }),
+        SnoozeCheck::Loaded { set, now_unix_ms } => {
+            let mut muting = Vec::new();
+            let (mut expired, mut uncertain) = (0, 0);
+            for entry in set.entries() {
+                let status = entry.status(*now_unix_ms);
+                match status {
+                    crate::snooze::EntryStatus::Expired => expired += 1,
+                    crate::snooze::EntryStatus::UncertainExpiry => uncertain += 1,
+                    crate::snooze::EntryStatus::Active => {}
+                }
+                if status.mutes() {
+                    muting.push(json!({
+                        "status": status.as_str(),
+                        "workspace_root": entry.workspace_root,
+                        "session_id": entry.session_id,
+                        "agent_branch": entry.agent_branch,
+                        "skill_id": entry.skill_id,
+                        "expires_at_unix_ms": entry.expires_at_unix_ms,
+                    }));
+                }
+            }
+            json!({
+                "state": if muting.is_empty() { "none" } else { "active" },
+                "entries": set.entries().len(),
+                "expired": expired,
+                // The clock reads before an entry's creation: its expiry is
+                // unknown, so it stays muted until the clock passes it or the
+                // scope is cleared.
+                "uncertain_expiry": uncertain,
+                "muting": muting,
+                "next_step": (uncertain > 0).then_some(
+                    "check the system clock, or clear the scope with sr snooze EVENT_ID --clear --apply",
+                ),
+            })
+        }
+    }
 }
 
 /// Implemented local commands a user can still run, whatever failed.
@@ -336,7 +397,7 @@ pub fn report(inputs: &Inputs<'_>) -> Value {
                 "mode": effective.hook_mode().as_str(),
                 "mode_sources": sources(config, crate::config::SettingKey::HookMode),
                 "installation": "not-checked",
-                "snoozes": "not-available",
+                "snoozes": snooze_report(&inputs.snoozes),
             },
         },
         "next_steps": next_steps,

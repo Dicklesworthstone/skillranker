@@ -936,6 +936,16 @@ fn a_live_batch_ranks_each_case_fresh_and_accounts_every_attempt() {
     assert_eq!(frozen["cases_refused"], 0);
     assert!(frozen["disclosed_bytes"].as_u64().unwrap() > 0);
     assert_eq!(frozen["receipts_digest"].as_str().unwrap().len(), 64);
+    // The exact previewed wide bytes, bound to the sends above (a mismatch
+    // would have withheld them and changed the provider's request count).
+    assert!(
+        frozen["previewed_wide_request_bytes"].as_u64().unwrap() > 0,
+        "{frozen}"
+    );
+    assert!(
+        frozen["scope"].as_str().unwrap().contains("not previewed"),
+        "{frozen}"
+    );
     // The same answers score the baselines; no extra request was made.
     let baselines = &report["baselines"];
     let names: Vec<&str> = baselines["policies"]

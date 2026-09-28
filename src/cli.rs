@@ -13,12 +13,14 @@ use std::ffi::OsString;
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
-const HELP: &str = "SkillRanker — powered by TypeSafe.ai Jev\n\nUsage: sr [rank] [--context FILE | --transcript FILE --harness NAME | --session PATH | --latest]\n                 [--roster FILE] [--require-skill ID] [--dry-run [--shortlist-ids ID,...]]\n                 [--offline | --allow-network] [--json | --table]\n                 [--top N] [--shortlist M] [--gate FLOAT] [--fits FLOAT]\n                 [--explain] [--why-not ID] [--cursor TOKEN] [--no-tools] [--no-cache]\n                 [--save-case FILE]\n       sr doctor [--json | --table] [--offline | --allow-network]\n       sr doctor --config [--json | --table] [--top N] [--shortlist N]\n       sr roster [--json] [--limit N] [--cursor TOKEN]\n       sr roster --snapshot FILE | --diff FILE\n       sr capabilities [--json]\n       sr demo --case <useful|none|explicit|unavailable> [--json | --table]\n       sr replay FILE [--policy FILE] [--compare-policy FILE] [--json | --table]\n       sr eval --dataset FILE [--allow-network] [--max-runtime-ms MS] [--timeout-ms MS] [--policy FILE] [--compare-policy FILE] [--explain] [--json | --table]\n       sr eval --dataset FRAME --labels FILE [--sample-size N [--seed S]] [--online --allow-network --max-requests N [--max-runtime-ms MS] [--robustness]] [--explain] [--json | --table]\n       sr feedback <EVENT_ID> --skill ID [--instead ID] [--verdict <useful|not-useful|unknown>] [--reason CODE] [--provenance TEXT] [--expected-version GEN] [--dir DIR] [--json]\n       sr ledger <init|migrate|status|prune|clear> [--before TIME] [--apply] [--json]\n       sr observe [--context FILE | --transcript FILE --harness NAME | --session PATH] [--branch NAME] [--roster FILE] [--dir DIR] [--json]\n       sr stats [--since DURATION] [--by-skill] [--dir DIR] [--json | --table]\n       sr hook <claude> [--shadow] [--offline | --allow-network] [--dir DIR]\n       sr install-hook <claude> [--settings FILE] [--target-dir DIR] [--apply] [--json]\n       sr uninstall-hook <claude> [--settings FILE] [--target-dir DIR] [--apply] [--json]\n       sr --help | --version\n\nRank the next step of an agent session using TypeSafe Jev.\nRequires your own TypeSafe API key (TYPESAFE_API_KEY) and network consent (--allow-network).\n";
+const HELP: &str = "SkillRanker — powered by TypeSafe.ai Jev\n\nUsage: sr [rank] [--context FILE | --transcript FILE --harness NAME | --session PATH | --latest]\n                 [--roster FILE] [--require-skill ID] [--dry-run [--shortlist-ids ID,...]]\n                 [--offline | --allow-network] [--json | --table]\n                 [--top N] [--shortlist M] [--gate FLOAT] [--fits FLOAT]\n                 [--explain] [--why-not ID] [--cursor TOKEN] [--no-tools] [--no-cache]\n                 [--save-case FILE]\n       sr doctor [--json | --table] [--offline | --allow-network]\n       sr doctor --config [--json | --table] [--top N] [--shortlist N]\n       sr roster [--json] [--limit N] [--cursor TOKEN]\n       sr roster --snapshot FILE | --diff FILE\n       sr capabilities [--json]\n       sr demo --case <useful|none|explicit|unavailable> [--json | --table]\n       sr replay FILE [--policy FILE] [--compare-policy FILE] [--json | --table]\n       sr eval --dataset FILE [--allow-network] [--max-runtime-ms MS] [--timeout-ms MS] [--policy FILE] [--compare-policy FILE] [--explain] [--json | --table]\n       sr eval --dataset FRAME --labels FILE [--sample-size N [--seed S]] [--online --allow-network --max-requests N [--max-runtime-ms MS] [--robustness]] [--explain] [--json | --table]\n       sr feedback <EVENT_ID> --skill ID [--instead ID] [--verdict <useful|not-useful|unknown>] [--reason CODE] [--provenance TEXT] [--expected-version GEN] [--dir DIR] [--json]\n       sr budget [--max-attempts N --window 1h [--apply]] [--json]\n       sr snooze <EVENT_ID> (--skill ID --for DURATION | --all --for DURATION | --clear) [--apply] [--dir DIR] [--json]\n       sr ledger <init|migrate|status|prune|clear> [--before TIME] [--apply] [--json]\n       sr observe [--context FILE | --transcript FILE --harness NAME | --session PATH] [--branch NAME] [--roster FILE] [--dir DIR] [--json]\n       sr stats [--since DURATION] [--by-skill] [--dir DIR] [--json | --table]\n       sr hook <claude> [--shadow] [--offline | --allow-network] [--dir DIR]\n       sr install-hook <claude> [--settings-file FILE] [--binary-path PATH] [--timeout-secs N] [--apply]\n       sr uninstall-hook <claude> [--settings-file FILE] [--binary-path PATH] [--timeout-secs N] [--apply]\n       sr --help | --version\n\nRank the next step of an agent session using TypeSafe Jev.\nRequires your own TypeSafe API key (TYPESAFE_API_KEY) and network consent (--allow-network).\n";
 
 const EVAL_HELP: &str = "sr eval --dataset FILE [--allow-network] [--max-runtime-ms MS] [--timeout-ms MS] [--policy FILE] [--compare-policy FILE] [--explain] [--json | --table]\n       sr eval --dataset FRAME --labels FILE [--sample-size N [--seed S]] [--online --allow-network --max-requests N [--max-runtime-ms MS] [--robustness]] [--explain] [--json | --table]\n\nEvaluate recorded or synthetic replay batches against local or comparison policies with bounded runtime and explicit accounting.\nWith --labels, score a labeled case frame against independent judgments, optionally over a stratified sample frozen before labels are joined.\n";
 
 const STATS_HELP: &str = "sr stats [--since DURATION] [--by-skill] [--dir DIR] [--json | --table]\n\nReport observation and operational metrics across honest cohorts (evaluations, suggestions, abstentions, latency, loads, judgments, tokens, and cost).\n";
 
+const BUDGET_HELP: &str = "sr budget [--max-attempts N --window 1h [--apply]] [--json]\n\nInspect the optional shared HTTP-attempt allowance and its accounting health, or preview and, with --apply, configure it: 1 to 10,000 admissions per fixed one-hour UTC window for each endpoint origin, across this user's local sr processes. No network request is made.\n";
+const SNOOZE_HELP: &str = "sr snooze <EVENT_ID> (--skill ID --for DURATION | --all --for DURATION | --clear) [--apply] [--dir DIR] [--json]\n\nPreview, then with --apply write, a temporary advisory snooze in the recorded event's workspace, session and agent branch. DURATION is 1m to 24h (e.g. 30m, 2h). Explicit skill requests still resolve; a snooze is not a usefulness label.\n";
 const FEEDBACK_HELP: &str = "sr feedback <EVENT_ID> --skill ID [--instead ID] [--verdict <useful|not-useful|unknown>] [--reason CODE] [--provenance TEXT] [--expected-version GEN] [--dir DIR] [--json]\n\nRecord explicit feedback or paired corrective labels for a historical ranking event.\n";
 
 const OBSERVE_HELP: &str = "sr observe [--context FILE | --transcript FILE --harness NAME | --session PATH] [--branch NAME] [--roster FILE] [--dir DIR] [--json]\n\nIngest session tool events, record loaded skill observations, attribute to recent emissions, and advance observation watermark.\n";
@@ -541,6 +543,88 @@ fn command() -> Command {
                 ),
         )
         .subcommand(
+            Command::new("budget")
+                .disable_help_flag(true)
+                .arg(
+                    Arg::new("help")
+                        .long("help")
+                        .short('h')
+                        .action(ArgAction::SetTrue),
+                )
+                .arg(
+                    Arg::new("max-attempts")
+                        .long("max-attempts")
+                        .help("Admissions per window, 1 to 10,000")
+                        .action(ArgAction::Set),
+                )
+                .arg(
+                    Arg::new("window")
+                        .long("window")
+                        .help("Window length; only fixed one-hour UTC windows (1h)")
+                        .action(ArgAction::Set),
+                )
+                .arg(
+                    Arg::new("apply")
+                        .long("apply")
+                        .help("Configure the previewed allowance")
+                        .action(ArgAction::SetTrue),
+                )
+                .arg(Arg::new("json").long("json").action(ArgAction::SetTrue)),
+        )
+        .subcommand(
+            Command::new("snooze")
+                .disable_help_flag(true)
+                .arg(
+                    Arg::new("help")
+                        .long("help")
+                        .short('h')
+                        .action(ArgAction::SetTrue),
+                )
+                .arg(
+                    Arg::new("event_id")
+                        .help("Recorded ranking event whose scope to snooze")
+                        .index(1)
+                        .action(ArgAction::Set),
+                )
+                .arg(
+                    Arg::new("skill")
+                        .long("skill")
+                        .help("Snooze one skill (stable ID or the event's invocation name)")
+                        .action(ArgAction::Set),
+                )
+                .arg(
+                    Arg::new("all")
+                        .long("all")
+                        .help("Snooze every advisory candidate")
+                        .action(ArgAction::SetTrue),
+                )
+                .arg(
+                    Arg::new("clear")
+                        .long("clear")
+                        .help("Clear this scope's snoozes")
+                        .action(ArgAction::SetTrue),
+                )
+                .arg(
+                    Arg::new("for")
+                        .long("for")
+                        .help("Duration from 1m to 24h, e.g. 30m or 2h")
+                        .action(ArgAction::Set),
+                )
+                .arg(
+                    Arg::new("apply")
+                        .long("apply")
+                        .help("Write the previewed change")
+                        .action(ArgAction::SetTrue),
+                )
+                .arg(Arg::new("json").long("json").action(ArgAction::SetTrue))
+                .arg(
+                    Arg::new("dir")
+                        .long("dir")
+                        .help("Custom ledger directory")
+                        .action(ArgAction::Set),
+                ),
+        )
+        .subcommand(
             Command::new("feedback")
                 .disable_help_flag(true)
                 .arg(
@@ -868,6 +952,12 @@ pub fn run(clock: EntryClock) -> u8 {
         count_hook_entry(&args);
     }
     let wants_json = args.iter().any(|arg| arg == "--json") || !io::stdout().is_terminal();
+    // Only a ranking publishes its decision. Other commands can echo an
+    // event ID (snooze, feedback, replay) without exposing any advice.
+    let publishes_ranking = args
+        .get(1)
+        .and_then(|arg| arg.to_str())
+        .is_none_or(|first| first == "rank" || first.starts_with('-'));
     let location = if let Some(dir) = try_extract_dir(&args) {
         crate::storage::LedgerLocation::Directory(dir)
     } else {
@@ -882,6 +972,7 @@ pub fn run(clock: EntryClock) -> u8 {
                 match io::stdout().lock().write_all(output.as_bytes()) {
                     Ok(()) => {
                         if bytes_len > 0
+                            && publishes_ranking
                             && let Some(event_id) = try_extract_event_id(&output)
                         {
                             let _ = try_record_cli_emission(&clock, location, &event_id, bytes_len);
@@ -1228,6 +1319,18 @@ fn execute(clock: &EntryClock, mut args: Vec<OsString>) -> Result<String, Failur
         }
         return ledger_command(clock, ledger_matches);
     }
+    if let Some(("budget", budget_matches)) = matches.subcommand() {
+        if budget_matches.get_flag("help") {
+            return Ok(BUDGET_HELP.into());
+        }
+        return budget_command(clock, budget_matches);
+    }
+    if let Some(("snooze", snooze_matches)) = matches.subcommand() {
+        if snooze_matches.get_flag("help") {
+            return Ok(SNOOZE_HELP.into());
+        }
+        return snooze_command(clock, snooze_matches);
+    }
     if let Some(("feedback", feedback_matches)) = matches.subcommand() {
         if feedback_matches.get_flag("help") {
             return Ok(FEEDBACK_HELP.into());
@@ -1272,6 +1375,354 @@ fn execute(clock: &EntryClock, mut args: Vec<OsString>) -> Result<String, Failur
     }
     // Bare `sr` ranks once, as documented.
     rank_command(clock, None)
+}
+
+/// `sr budget`: inspect, preview or configure the trusted shared allowance.
+/// Local only: no provider request, and nothing is written without `--apply`.
+fn budget_command(clock: &EntryClock, matches: &clap::ArgMatches) -> Result<String, Failure> {
+    use crate::allowance::{AllowanceError, AllowancePaths};
+    timely(clock)?;
+    let usage = |message: String| (2u8, "invalid-usage", message);
+    let limit = match (
+        matches.get_one::<String>("max-attempts"),
+        matches.get_one::<String>("window"),
+    ) {
+        (Some(n), Some(window)) => {
+            crate::allowance::parse_window(window).map_err(|e| usage(e.to_string()))?;
+            Some(crate::allowance::parse_max_attempts(n).map_err(|e| usage(e.to_string()))?)
+        }
+        (None, None) => None,
+        _ => {
+            return Err(usage(
+                "--max-attempts and --window are given together, e.g. --max-attempts 100 --window 1h"
+                    .into(),
+            ));
+        }
+    };
+    let apply = matches.get_flag("apply");
+    if apply && limit.is_none() {
+        return Err(usage("--apply needs --max-attempts N --window 1h".into()));
+    }
+    let user_root = user_config_root()?.ok_or_else(|| {
+        (
+            2u8,
+            "invalid-configuration",
+            "No trusted user configuration directory: set XDG_CONFIG_HOME or HOME".to_owned(),
+        )
+    })?;
+    // Endpoint overrides are environment-only; charges key on the canonical origin.
+    let origin = match std::env::var("TYPESAFE_ENDPOINT") {
+        Ok(text) if !text.is_empty() => crate::jev::CanonicalOrigin::parse(&text)
+            .map_err(|_| invalid("TYPESAFE_ENDPOINT is not a valid origin"))?,
+        _ => crate::jev::CanonicalOrigin::production(),
+    };
+    let now = crate::allowance::wall_clock_ms().ok_or_else(|| {
+        (
+            4u8,
+            "budget-state",
+            "The wall clock reads before 1970; no window can be computed".to_owned(),
+        )
+    })?;
+    let paths = AllowancePaths::for_user(&user_root);
+    let storage = |error: AllowanceError| (9u8, "storage-failure", error.to_string());
+    let plan = match limit {
+        Some(max_attempts) if apply => {
+            let budget = std::time::Duration::from_millis(
+                clock.remaining_before_cleanup().as_millis().min(1_000),
+            );
+            Some(
+                crate::allowance::apply_setup(&paths, max_attempts, budget, None)
+                    .map_err(storage)?,
+            )
+        }
+        Some(max_attempts) => {
+            Some(crate::allowance::preview_setup(&paths, max_attempts).map_err(storage)?)
+        }
+        None => None,
+    };
+    let report = crate::allowance::inspect(&paths, &origin, now);
+    timely(clock)?;
+    let guard = report.guard.map(|guard| {
+        json!({
+            "state": guard.phase.as_str(),
+            "generation": guard.generation,
+            "max_attempts": guard.max_attempts,
+        })
+    });
+    let value = json!({
+        "schema_version": 1,
+        "kind": "budget",
+        "mode": match (&plan, apply) {
+            (None, _) => "inspect",
+            (Some(_), false) => "preview",
+            (Some(_), true) => "applied",
+        },
+        "scope": {"user": "local sr processes of this user", "origin": origin.as_str()},
+        "window": {
+            "length": crate::allowance::WINDOW_TEXT,
+            "kind": "fixed-utc",
+            "start_unix_ms": report.window_start_unix_ms,
+            "end_unix_ms": report.window_end_unix_ms,
+        },
+        "guard": guard,
+        "health": report.health,
+        "detail": report.detail,
+        "accounting_generation": report.accounting_generation,
+        "charged_attempts": report.charged_attempts,
+        "remaining_attempts": report.remaining(),
+        "plan": plan.as_ref().map(|plan| json!({
+            "max_attempts": plan.target.max_attempts,
+            "generation": plan.target.generation,
+            "unchanged": plan.unchanged,
+            "resumes_intent": plan.resumes_intent,
+        })),
+        "notes": [
+            "Fixed UTC windows, not a rolling hour: adjacent windows can each be spent near their boundary.",
+            "Each admission is charged durably before its request is sent and never refunded; this is not a monetary or billing cap.",
+            "Changing the limit keeps charges already made; a request admitted before a change cannot be recalled.",
+        ],
+    });
+    if matches.get_flag("json") {
+        return Ok(format!("{value:#}\n"));
+    }
+    let mut out = format!(
+        "Allowance: {}\n  origin: {}\n  window: {} to {} (fixed UTC hour)\n",
+        report.health,
+        origin.as_str(),
+        crate::storage::format_unix_ms(report.window_start_unix_ms as i64),
+        crate::storage::format_unix_ms(report.window_end_unix_ms as i64),
+    );
+    if let Some(guard) = report.guard {
+        out.push_str(&format!(
+            "  limit: {} attempts per window (generation {}, {})\n",
+            guard.max_attempts,
+            guard.generation,
+            guard.phase.as_str()
+        ));
+    }
+    if let (Some(charged), Some(remaining)) = (report.charged_attempts, report.remaining()) {
+        out.push_str(&format!("  charged: {charged}, remaining: {remaining}\n"));
+    }
+    if let Some(plan) = &plan {
+        let verb = match (apply, plan.unchanged) {
+            (_, true) => "Unchanged",
+            (true, false) => "Configured",
+            (false, false) => "Would configure",
+        };
+        out.push_str(&format!(
+            "{verb}: {} attempts per window at generation {}\n",
+            plan.target.max_attempts, plan.target.generation
+        ));
+        if !apply && !plan.unchanged {
+            out.push_str("Preview only: add --apply to configure it.\n");
+        }
+    }
+    if let Some(detail) = &report.detail {
+        out.push_str(&format!("  detail: {detail}\n"));
+    }
+    Ok(crate::output::table::sanitize_terminal_text(&out))
+}
+
+/// `sr snooze`: resolve the event's recorded scope, preview the change and,
+/// with `--apply`, write it to trusted user configuration. No provider call,
+/// ledger write or usefulness label is involved.
+fn snooze_command(clock: &EntryClock, matches: &clap::ArgMatches) -> Result<String, Failure> {
+    use crate::snooze::{SnoozeChange, SnoozeError, SnoozeScope};
+    timely(clock)?;
+    let usage = |message: &str| (2u8, "invalid-usage", message.to_owned());
+    let event_id = matches
+        .get_one::<String>("event_id")
+        .ok_or_else(|| usage("Missing event ID for snooze"))?;
+    let skill = matches.get_one::<String>("skill");
+    let (all, clear) = (matches.get_flag("all"), matches.get_flag("clear"));
+    if usize::from(skill.is_some()) + usize::from(all) + usize::from(clear) != 1 {
+        return Err(usage("Choose exactly one of --skill, --all or --clear"));
+    }
+    let duration_ms = match (matches.get_one::<String>("for"), clear) {
+        (Some(_), true) => return Err(usage("--clear does not accept --for")),
+        (None, false) => {
+            return Err(usage(
+                "--skill and --all require --for DURATION, from 1m to 24h",
+            ));
+        }
+        (Some(text), false) => {
+            Some(crate::snooze::parse_duration(text).map_err(|error| usage(&error.to_string()))?)
+        }
+        (None, true) => None,
+    };
+    let user_root = user_config_root()?.ok_or_else(|| {
+        (
+            2u8,
+            "invalid-configuration",
+            "No trusted user configuration directory: set XDG_CONFIG_HOME or HOME".to_owned(),
+        )
+    })?;
+    let now = crate::snooze::wall_clock_ms().ok_or_else(|| {
+        (
+            3u8,
+            "missing-session",
+            "The wall clock reads before 1970; a snooze expiry cannot be computed".to_owned(),
+        )
+    })?;
+
+    let invocation = crate::runtime::ProcessInvocation::from_clock(*clock)
+        .map_err(|_| (6u8, "timeout", "Local runtime unavailable".into()))?;
+    let cx = invocation
+        .request_cx()
+        .map_err(|_| (6u8, "timeout", "Runtime context unavailable".into()))?;
+    let location = match matches.get_one::<String>("dir") {
+        Some(dir) => crate::storage::LedgerLocation::Directory(PathBuf::from(dir)),
+        None => crate::storage::LedgerLocation::Platform,
+    };
+    let recorded = crate::storage::read_event_snooze_scope(
+        &invocation,
+        &cx,
+        location,
+        event_id,
+        skill.map(String::as_str),
+    )
+    .map_err(|error| match error {
+        crate::storage::FeedbackError::EventNotFound(id) => (
+            2u8,
+            "event-not-found",
+            format!("Ranking event '{id}' not found in ledger"),
+        ),
+        crate::storage::FeedbackError::MissingSnapshot => (
+            crate::output::ErrorKind::IncompleteRoster.exit_code() as u8,
+            crate::output::ErrorKind::IncompleteRoster.as_str(),
+            "The event's roster snapshot cannot resolve that name; supply the stable skill ID"
+                .into(),
+        ),
+        crate::storage::FeedbackError::InvalidSkillId(message) => (
+            2u8,
+            "invalid-arguments",
+            format!("Invalid skill: {message}"),
+        ),
+        crate::storage::FeedbackError::Store(crate::storage::StoreError::Missing) => (
+            9u8,
+            "storage-failure",
+            "No ledger to resolve the event in; snoozes are scoped to recorded events".into(),
+        ),
+        other => (
+            9u8,
+            "storage-failure",
+            format!("Ledger read failed: {other}"),
+        ),
+    })?;
+    let scope = SnoozeScope::from_event(
+        event_id,
+        &recorded.workspace_root,
+        &recorded.session_id,
+        &recorded.agent_branch,
+    )
+    .map_err(|error| (3u8, "missing-session", error.to_string()))?;
+    let (action, change) = match duration_ms {
+        Some(duration_ms) => (
+            if all { "all" } else { "skill" },
+            SnoozeChange::Snooze {
+                event_id: event_id.clone(),
+                scope: scope.clone(),
+                skill_id: recorded.skill_id.clone(),
+                duration_ms,
+            },
+        ),
+        None => (
+            "clear",
+            SnoozeChange::Clear {
+                scope: scope.clone(),
+            },
+        ),
+    };
+    timely(clock)?;
+
+    let snooze_failure = |error: SnoozeError| match error {
+        SnoozeError::Malformed(_) => (2u8, "invalid-configuration", error.to_string()),
+        SnoozeError::Unattributed => (3u8, "missing-session", error.to_string()),
+        SnoozeError::InvalidDuration(_) | SnoozeError::TooMany => {
+            (2u8, "invalid-usage", error.to_string())
+        }
+        SnoozeError::LockBusy | SnoozeError::ExternalModification => (
+            crate::output::ErrorKind::RevisionConflict.exit_code() as u8,
+            crate::output::ErrorKind::RevisionConflict.as_str(),
+            error.to_string(),
+        ),
+        SnoozeError::Io(_) => (9u8, "storage-failure", error.to_string()),
+    };
+    let apply = matches.get_flag("apply");
+    let (planned, backup_written) = if apply {
+        let applied = crate::snooze::apply(&user_root, &change, now).map_err(snooze_failure)?;
+        (applied.planned, applied.backup.is_some())
+    } else {
+        let current = crate::snooze::load(&user_root).map_err(snooze_failure)?;
+        (
+            crate::snooze::plan(&current, &change, now).map_err(snooze_failure)?,
+            false,
+        )
+    };
+    let limits = "A ranking already past provider admission may still incur cost, and advice \
+                  already published cannot be recalled.";
+    let mut effect = match (action, &recorded.skill_id) {
+        ("skill", Some(skill)) => format!(
+            "Withholds advisory suggestions of '{skill}' in this workspace, session and agent \
+             branch until expiry. Explicit requests for it still resolve, and no usefulness \
+             label or prior changes. {limits}"
+        ),
+        ("all", _) => format!(
+            "Withholds every advisory suggestion in this workspace, session and agent branch \
+             until expiry; rankings there abstain without a provider request. Explicit \
+             requests still resolve, and no usefulness label or prior changes. {limits}"
+        ),
+        _ => "Removes this scope's snoozes; advisory suggestions resume from the next ranking."
+            .to_owned(),
+    };
+    if !apply {
+        effect.push_str(" Preview only: add --apply to write it.");
+    }
+    let report = json!({
+        "schema_version": 1,
+        "kind": "snooze",
+        "applied": apply,
+        "action": action,
+        "event_id": event_id,
+        "scope": {
+            "workspace_root": scope.workspace_root,
+            "session_id": scope.session_id,
+            "agent_branch": scope.agent_branch,
+        },
+        "skill_id": recorded.skill_id,
+        "duration_ms": duration_ms,
+        "expires_at_unix_ms": planned.expires_at_unix_ms,
+        "renews_existing": planned.renewed,
+        "clears": planned.cleared,
+        "expired_pruned": planned.expired_pruned,
+        "entries_after": planned.next.entries().len(),
+        "backup_written": backup_written,
+        "effect": effect,
+    });
+    if matches.get_flag("json") {
+        return Ok(format!("{report:#}\n"));
+    }
+    let target = recorded
+        .skill_id
+        .as_deref()
+        .unwrap_or("every advisory candidate");
+    let headline = match (action, apply) {
+        ("clear", true) => format!("Cleared {} snooze(s)", planned.cleared),
+        ("clear", false) => format!("Would clear {} snooze(s)", planned.cleared),
+        (_, true) => format!("Snoozed {target}"),
+        (_, false) => format!("Would snooze {target}"),
+    };
+    let expiry = planned
+        .expires_at_unix_ms
+        .map(|at| {
+            let at = i64::try_from(at).unwrap_or(i64::MAX);
+            format!("\n  expires: {}", crate::storage::format_unix_ms(at))
+        })
+        .unwrap_or_default();
+    Ok(crate::output::table::sanitize_terminal_text(&format!(
+        "{headline}\n  session: {}\n  agent branch: {}{expiry}\n{effect}\n",
+        scope.session_id, scope.agent_branch
+    )))
 }
 
 fn feedback_command(
@@ -3128,9 +3579,13 @@ fn eval_live_command(
     let home = std::env::var_os("HOME")
         .filter(|path| !path.is_empty())
         .map(PathBuf::from);
+    // A live batch records no cache or ledger history, but it is not
+    // stateless: its sends stay subject to a configured shared attempt
+    // allowance, which persistent runtime state enforces.
     let flags = crate::privacy::EffectFlags {
         allow_network: eval_matches.get_flag("allow-network"),
-        no_persist: true,
+        no_cache: true,
+        no_ledger: true,
         ..Default::default()
     };
     let gate = crate::effects::EffectGate::new(flags, crate::effects::Scope::Rank)
@@ -3238,6 +3693,7 @@ fn eval_live_command(
             save_case: None,
         }
     };
+    let previews = std::cell::RefCell::new(PreviewedRequests::new());
     let report = crate::evaluation::batch::execute_live_frame_evaluation(
         cases,
         labels,
@@ -3246,8 +3702,26 @@ fn eval_live_command(
         limits,
         clock,
         now_unix_ms,
-        |case| preview_live_case(clock, per_case_ms, case_args(case, preview_gate), case),
-        |case| rank_live_case(clock, per_case_ms, case_args(case, gate), case),
+        |case| {
+            preview_live_case(
+                clock,
+                per_case_ms,
+                case_args(case, preview_gate),
+                case,
+                &previews,
+            )
+        },
+        |case| {
+            // Only the previewed context is bound; an ablation arm or a
+            // robustness variant of the same case is a different request.
+            let context = serde_json::to_vec(&case.context).unwrap_or_default();
+            let expected = previews
+                .borrow()
+                .get(&case.key.case_id)
+                .filter(|(previewed, _)| *previewed == context)
+                .map(|(_, preview)| *preview);
+            rank_live_case(clock, per_case_ms, case_args(case, gate), case, expected)
+        },
     )
     .map_err(eval_error)?;
     render_eval_report(report, eval_matches)
@@ -3261,6 +3735,7 @@ fn run_case_pipeline(
     args: crate::pipeline::RankArgs,
     case: &crate::evaluation::batch::LiveEvaluationCase,
     evidence: &mut crate::pipeline::StageEvidence,
+    expected_wide_digest: Option<crate::pipeline::WidePreview>,
 ) -> Result<OutputDocument, &'static str> {
     let remaining = batch.remaining_until_expiry().as_millis();
     let total = per_case_ms.min(remaining);
@@ -3291,6 +3766,7 @@ fn run_case_pipeline(
                     None,
                     context,
                     evidence,
+                    expected_wide_digest,
                 ),
             )
         });
@@ -3304,15 +3780,38 @@ fn preview_live_case(
     per_case_ms: u64,
     args: crate::pipeline::RankArgs,
     case: &crate::evaluation::batch::LiveEvaluationCase,
+    previews: &std::cell::RefCell<PreviewedRequests>,
 ) -> Result<Option<Value>, String> {
     let mut unused = crate::pipeline::StageEvidence::default();
-    let document = run_case_pipeline(batch, per_case_ms, args, case, &mut unused)?;
+    let document = run_case_pipeline(batch, per_case_ms, args, case, &mut unused, None)?;
     let value = document.as_value();
+    // The exact wide request this preview would send binds the live send.
+    let wide = value["provider_request"]["stages"]
+        .as_array()
+        .and_then(|stages| stages.iter().find(|stage| stage["stage"] == "wide"))
+        .and_then(|stage| stage["request"].as_str());
+    // A preview that sends no wide request binds too: the live run may then
+    // send none either, or it would disclose something nobody previewed.
+    if let Ok(context) = serde_json::to_vec(&case.context) {
+        let preview = match wide {
+            Some(request) => {
+                crate::pipeline::WidePreview::Digest(*blake3::hash(request.as_bytes()).as_bytes())
+            }
+            None => crate::pipeline::WidePreview::NoRequest,
+        };
+        previews
+            .borrow_mut()
+            .insert(case.key.case_id.clone(), (context, preview));
+    }
     // Every preview carries a `disclosure` key; it is null when the run ends
     // locally, which must fall through to the local decision below rather
     // than count as a receipt (or admit a local `unavailable`).
     if let Some(receipt) = value.get("disclosure").filter(|receipt| !receipt.is_null()) {
-        return Ok(Some(receipt.clone()));
+        let mut receipt = receipt.clone();
+        if let (Some(object), Some(request)) = (receipt.as_object_mut(), wide) {
+            object.insert("wide_request_bytes".into(), Value::from(request.len()));
+        }
+        return Ok(Some(receipt));
     }
     let local = value.get("local_decision").unwrap_or(value);
     match local["decision"].as_str() {
@@ -3330,12 +3829,20 @@ fn rank_live_case(
     per_case_ms: u64,
     args: crate::pipeline::RankArgs,
     case: &crate::evaluation::batch::LiveEvaluationCase,
+    expected_wide_digest: Option<crate::pipeline::WidePreview>,
 ) -> crate::evaluation::batch::LiveRankOutcome {
     use crate::evaluation::batch::LiveRankOutcome;
     let started = std::time::Instant::now();
     let elapsed = || u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     let mut evidence = crate::pipeline::StageEvidence::default();
-    let document = match run_case_pipeline(batch, per_case_ms, args, case, &mut evidence) {
+    let document = match run_case_pipeline(
+        batch,
+        per_case_ms,
+        args,
+        case,
+        &mut evidence,
+        expected_wide_digest,
+    ) {
         Ok(document) => document,
         Err(kind) => {
             return LiveRankOutcome {
@@ -3344,8 +3851,10 @@ fn rank_live_case(
                 elapsed_ms: elapsed(),
                 // Candidates are admitted just before the first request, so a
                 // run that got that far may have sent some without reporting
-                // them: its attempts are unknown, never zero.
-                attempts_unknown: !evidence.admitted.is_empty(),
+                // them: its attempts are unknown, never zero. A preview
+                // refusal stops before any attempt, so it cost nothing.
+                attempts_unknown: !evidence.admitted.is_empty() && !evidence.preview_refused,
+                preview_refused: evidence.preview_refused,
                 ..LiveRankOutcome::default()
             };
         }
@@ -3371,11 +3880,17 @@ fn rank_live_case(
         output_tokens: usage("output_tokens"),
         error_kind: value["error"]["kind"].as_str().map(str::to_owned),
         elapsed_ms: elapsed(),
+        preview_refused: evidence.preview_refused,
         evidence: Some(evidence),
         // The decision document reports its own usage.
         attempts_unknown: false,
     }
 }
+
+/// Each previewed case's context bytes and what its preview bound: the BLAKE3
+/// digest of the exact wide request it would send, or that it sends none.
+type PreviewedRequests =
+    std::collections::BTreeMap<String, (Vec<u8>, crate::pipeline::WidePreview)>;
 
 /// The longest live or replay batch deadline accepted: one day.
 const MAX_EVAL_RUNTIME_MS: u64 = 86_400_000;
@@ -4081,6 +4596,57 @@ fn hook_claude_command(clock: &EntryClock, m: &clap::ArgMatches) -> Result<Strin
     Ok(String::new())
 }
 
+/// What a recorded shadow trial still needs, reported and never changed: an
+/// initialized ledger, trusted network consent (a one-shot `--allow-network`
+/// never reaches a hook) and a key in the hook's environment. Nothing private
+/// is printed: no key, and no configuration contents.
+fn hook_prerequisites(
+    clock: &EntryClock,
+    trusted_network: bool,
+    user_root: Option<&Path>,
+) -> String {
+    let ledger = crate::runtime::ProcessInvocation::from_clock(*clock)
+        .ok()
+        .and_then(|invocation| {
+            let cx = invocation.request_cx().ok()?;
+            crate::storage::open_ledger(
+                &invocation,
+                &cx,
+                crate::storage::LedgerAccess::ExistingOnly,
+                crate::storage::LedgerLocation::Platform,
+            )
+            .ok()
+        });
+    let ledger = match ledger {
+        Some(crate::storage::LedgerOpen::Ready(_)) => "initialized".to_owned(),
+        Some(crate::storage::LedgerOpen::ReadOnly(_)) => {
+            "read-only: a hook cannot record to it".to_owned()
+        }
+        _ => "missing: run `sr ledger init` before claiming a recorded trial".to_owned(),
+    };
+    let config = user_root.map_or_else(
+        || "your trusted sr/config.toml".to_owned(),
+        |root| root.join("sr/config.toml").display().to_string(),
+    );
+    let network = if trusted_network {
+        "enabled".to_owned()
+    } else {
+        format!(
+            "missing: hooks send nothing until `[network] enabled = true` is set in {config}; \
+             a one-shot --allow-network does not reach hooks"
+        )
+    };
+    let key = if std::env::var_os("TYPESAFE_API_KEY").is_some_and(|key| !key.is_empty()) {
+        "present in this shell; the hook uses Claude Code's own environment"
+    } else {
+        "absent in this shell; Claude Code's environment must provide TYPESAFE_API_KEY"
+    };
+    format!(
+        "Prerequisites for a recorded shadow trial (this command changes none of them):\n  \
+         ledger: {ledger}\n  trusted network consent: {network}\n  API key: {key}\n"
+    )
+}
+
 fn install_hook_command(clock: &EntryClock, m: &clap::ArgMatches) -> Result<String, Failure> {
     timely(clock)?;
     let Some(("claude", claude_matches)) = m.subcommand() else {
@@ -4119,8 +4685,15 @@ fn install_hook_command(clock: &EntryClock, m: &clap::ArgMatches) -> Result<Stri
             sources.environment.push((name, value));
         }
     }
-    let config_files = ConfigFiles::new(workspace, user_root);
+    let config_files = ConfigFiles::new(workspace, user_root.clone());
     let resolved = config_files.load(clock, sources);
+    let prerequisites = hook_prerequisites(
+        clock,
+        resolved
+            .as_ref()
+            .is_ok_and(|c| c.effective().trusted_user_network_enabled()),
+        user_root.as_deref(),
+    );
     let effective_mode = resolved
         .as_ref()
         .map(|c| c.effective().hook_mode())
@@ -4149,17 +4722,17 @@ fn install_hook_command(clock: &EntryClock, m: &clap::ArgMatches) -> Result<Stri
 
     match crate::installer::install_hook(&options) {
         Ok(crate::installer::InstallOutcome::Preview { diff, message }) => {
-            Ok(format!("{diff}\n{message}\n"))
+            Ok(format!("{diff}\n{message}\n{prerequisites}"))
         }
         Ok(crate::installer::InstallOutcome::Applied {
             backup_path,
             message,
         }) => Ok(format!(
-            "{message}\n(Backup created at {})\n",
+            "{message}\n(Backup created at {})\n{prerequisites}",
             backup_path.display()
         )),
         Ok(crate::installer::InstallOutcome::AlreadyInstalled { message }) => {
-            Ok(format!("{message}\n"))
+            Ok(format!("{message}\n{prerequisites}"))
         }
         Ok(crate::installer::InstallOutcome::Conflict { message }) => {
             Err((2, "invalid-usage", message))
@@ -4307,6 +4880,37 @@ impl ConfigFiles {
         timely(clock)?;
         let comparison = receipt.compare(&current.receipt(receipt.effects()), boundary);
         Ok((current, comparison))
+    }
+
+    /// Trusted advisory snoozes, read under the same bounded, authorized and
+    /// strict rules as the configuration beside them, and read even when the
+    /// ledger or persistence is disabled. Reading never cleans them up.
+    pub fn snoozes(&self, clock: &EntryClock) -> Result<crate::snooze::SnoozeSet, Failure> {
+        let Some(root) = &self.user_root else {
+            return Ok(crate::snooze::SnoozeSet::default());
+        };
+        timely(clock)?;
+        let authorized = match AuthorizedRoot::open_absolute(root) {
+            Ok(root) => root,
+            Err(ReadError::NotFound) => return Ok(crate::snooze::SnoozeSet::default()),
+            Err(_) => return Err(invalid("trusted-user: configuration root unavailable")),
+        };
+        let bytes = match AuthorizedRoots::single(authorized).read_bounded(
+            0,
+            Path::new(crate::snooze::SNOOZE_FILE),
+            CONFIG_FILE_BYTES,
+        ) {
+            Ok(bytes) => bytes,
+            Err(ReadError::NotFound) => return Ok(crate::snooze::SnoozeSet::default()),
+            Err(_) => {
+                return Err(invalid(
+                    "trusted-user: snoozes must be a bounded authorized regular file",
+                ));
+            }
+        };
+        timely(clock)?;
+        crate::snooze::decode_bytes(bytes.bytes())
+            .map_err(|error| invalid(format!("trusted-user: {error}")))
     }
 
     fn read_user(&self, clock: &EntryClock) -> Result<Vec<(String, RawValue)>, Failure> {
@@ -4503,6 +5107,16 @@ fn readiness(
             .map(|(name, _)| name)
             .collect(),
         ledger,
+        snoozes: match user_config_root() {
+            Ok(Some(root)) => match crate::snooze::load(&root) {
+                Ok(set) => crate::readiness::SnoozeCheck::Loaded {
+                    set,
+                    now_unix_ms: crate::snooze::wall_clock_ms(),
+                },
+                Err(error) => crate::readiness::SnoozeCheck::Invalid(error.to_string()),
+            },
+            _ => crate::readiness::SnoozeCheck::NoUserRoot,
+        },
     });
     timely(clock)?;
     if json_output {
@@ -4877,15 +5491,9 @@ mod documented_flag_tests {
             }
         }
         collect(&app, &mut known);
-        // These belong to whole commands whose absence is already published.
-        for (owner, flags) in [
-            ("calibrate", &["evaluation", "rollback"][..]),
-            ("budget", &["max-attempts", "window"][..]),
-            ("snooze", &["all", "clear", "for"][..]),
-        ] {
-            if crate::capabilities::planned_command_phase(owner).is_some() {
-                known.extend(flags.iter().map(|flag| (*flag).to_owned()));
-            }
+        // These belong to a whole command whose absence is already published.
+        if crate::capabilities::planned_command_phase("calibrate").is_some() {
+            known.extend(["evaluation", "rollback"].map(str::to_owned));
         }
         // Cargo and install.sh options in installation prose are not sr flags.
         let external = [

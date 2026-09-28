@@ -54,7 +54,13 @@ unambiguous.
 
 The suite passes only if every case passes. Catalogs live in
 `scripts/e2e/product/`. `scripts/e2e/run.sh --suite roster` delegates to this
-runner for the P2 catalog.
+runner for the P2 catalog, and `--suite shadow-hook` does the same for P6:
+- hook installation and rollback;
+- quiet, non-blocking hook failures;
+- the P6 acceptance chain (`tests/p6_gate.rs`).
+
+That chain drives the hook with fixture payloads, so it is not native Claude
+Code evidence.
 
 `scripts/e2e/test_product_cases.py` shows that missing, failed, undeclared
 ignored, duplicated, incomplete, filtered and empty runs never pass a case. It

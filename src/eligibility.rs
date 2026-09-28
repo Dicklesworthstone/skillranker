@@ -26,6 +26,8 @@ pub enum AbstainReason {
     AlreadyLoaded,
     /// Restrictions or explicit exclusions removed every candidate.
     Excluded,
+    /// Trusted advisory snoozes muted every candidate.
+    Snoozed,
     /// No remaining candidate's own Choice probability beat `__none__`.
     NoShortlistMatch,
 }
@@ -36,6 +38,7 @@ impl AbstainReason {
             Self::LowFit => "low-fit",
             Self::AlreadyLoaded => "already-loaded",
             Self::Excluded => "excluded",
+            Self::Snoozed => "snoozed",
             Self::NoShortlistMatch => "no-shortlist-match",
         }
     }

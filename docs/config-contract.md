@@ -116,8 +116,17 @@ consent does not gate local publication. Comments, file bytes and hidden edits
 do not supersede advice: an edit overridden by a fixed CLI or environment value
 leaves the effective value unchanged and is not reported as a revocation. Invalid
 current configuration fails closed. A superseded result is withheld; the change
-never authorizes a replacement request. Later phases add snooze, trial and learned
-policy fields.
+never authorizes a replacement request. Trusted advisory snoozes live beside
+the user configuration in `sr/snoozes.toml`, outside this key registry: `sr
+snooze --apply` alone writes them, and advisory publication rechecks the
+decision's session scope, withholding advice that a newly applied snooze mutes
+(`superseded`); an expiry only relaxes controls and supersedes nothing. The
+optional shared attempt allowance is likewise a separate sr-managed trusted
+file, `sr/allowance.toml`, outside this registry, so project configuration can
+neither enable, raise nor disable it. Only `sr budget --apply` writes it, under
+its own lock and with an activation intent (`state = "intent"`, then
+`"ready"`). Its enforcement state is `allowance.sqlite3` in the private cache
+directory. Later phases add trial and learned policy fields.
 
 ## Managed mutations
 

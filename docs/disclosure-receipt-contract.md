@@ -19,7 +19,7 @@ This boundary guarantees that:
    - `truncated_count`: Number of fields subjected to head/tail scalar truncation.
    - `redaction_count`: Number of sensitive credential or secret pattern matches redacted.
 3. The receipt **never** contains matched secret fragments, raw credentials, local filesystem paths, or confidential transcript prose.
-4. Receipt metrics strictly match the actual serialized context payload (`assertion_id: receipt_accurate`).
+4. Receipt metrics strictly match the rendered context payload (`assertion_id: receipt_accurate`), an upper bound on the session context each stage request sends (Invariant 6).
 
 ## 2. Invariants
 
@@ -50,6 +50,16 @@ Receipt metrics must strictly reflect the payload generated during the same sing
 - Sum of `categories[*].redaction_count == receipt.total_redactions`
 - Category-level included counts strictly match the element counts in `payload` (e.g., non-tool messages, tool messages, project signal items, session state items).
 
+Parity is with the rendered context, before each Jev stage fits it to its
+request budget. The wide and rerank builders may then drop the oldest recent
+messages (reported separately as `trimming.dropped_messages`), and rerank adds
+shortlisted skill descriptions and excerpts that no receipt counts. A receipt
+therefore bounds what the context offers a stage, not the exact bytes a stage
+sends; each final request is still redaction-scanned before sending. The live
+evaluation preflight binds each send to its previewed wide request by digest
+and records those requests' exact byte totals (`previewed_wide_request_bytes`,
+which also counts cases later refused or left unsent).
+
 ### Invariant 4: Profile and Flag Conformance
 - When `context_profile == ContextProfile::Minimal`:
   - `tool_events.included_count == 0`
@@ -62,6 +72,28 @@ Receipt metrics must strictly reflect the payload generated during the same sing
 ### Invariant 5: Safe Explain and Dry-Run Provenance
 - The receipt is safe to emit in plain text, structured JSON, or terminal diagnostics.
 - It provides complete transparency regarding data disclosure without widening attack surfaces or exposing developer environment state.
+
+### Invariant 6: Upper Bound Across Stage Requests
+The receipt describes the rendered context, with the parity Invariant 3 defines
+against the payload of the same render. Each provider request is then built from that payload.
+When a request would exceed the serialized request bound, the wide and rerank
+builders drop the oldest `recent_messages`, one at a time, until it fits. They never
+add, reorder or rewrite context.
+- A request's session context is therefore the rendered payload with a prefix of
+  `recent_messages` removed. `tests/jev_wide.rs` and `tests/jev_rerank.rs` pin the
+  oldest-first, suffix-kept order.
+- The receipt is thus an upper bound on the session context each stage sends. Its
+  counts and `disclosed_bytes` equal the sent context only when that stage dropped
+  nothing. The dry-run reports each stage's `trimming.dropped_messages` separately.
+- `truncated_count` and `redaction_count` describe the render. A message dropped
+  later was still truncated or redacted before it was dropped.
+- Stage requests also carry skill text that is not session context: option IDs,
+  descriptions and, for rerank, body excerpts. The receipt's five categories do not
+  cover them. That text is redacted and scanned with the rest of each request
+  (`Redactor::inspect_payload` on the final bytes).
+- A live evaluation batch's frozen `disclosure_preflight` previews each case's wide
+  request, and each live send is bound to that preview by digest (see the note
+  under Invariant 3).
 
 ## 3. Data Model and API
 

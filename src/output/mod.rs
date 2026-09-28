@@ -358,6 +358,19 @@ impl OutputDocument {
     }
 
     /// Attaches a bounded stage trace to a decision document.
+    /// Records the advisory snoozes a decision applied in its roster provenance.
+    pub fn with_snoozes(mut self, snoozes: Value) -> Result<Self, ContractError> {
+        if let Some(provenance) = self
+            .value
+            .get_mut("roster")
+            .and_then(|roster| roster.get_mut("provenance"))
+            .and_then(Value::as_object_mut)
+        {
+            provenance.insert("snoozes".into(), snoozes);
+        }
+        Self::from_value(self.value)
+    }
+
     pub fn with_trace(mut self, trace: Value) -> Result<Self, ContractError> {
         if let Some(obj) = self.value.as_object_mut() {
             obj.insert("trace".into(), trace);
@@ -769,6 +782,22 @@ fn validate_roster(
         let p = object(v)?;
         digest(field(p, "snapshot_id")?)?;
         identifier(field(p, "policy_version")?)?;
+        if let Some(snoozes) = p.get("snoozes") {
+            let s = object(snoozes)?;
+            boolean(s, "all")?;
+            let ids = field(s, "skill_ids")?
+                .as_array()
+                .ok_or(ContractError::InvalidField)?;
+            if ids.len() > crate::snooze::MAX_SNOOZES {
+                return Err(ContractError::InvalidField);
+            }
+            for id in ids {
+                text(id)?;
+            }
+            if field(s, "uncertain_expiry")?.as_u64().is_none() {
+                return Err(ContractError::InvalidField);
+            }
+        }
         for (name, evaluated) in [("wide_set_id", wide > 0), ("rerank_set_id", shortlist > 0)] {
             let id = field(p, name)?;
             if id.is_null() == evaluated {

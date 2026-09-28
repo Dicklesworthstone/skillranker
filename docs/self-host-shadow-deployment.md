@@ -529,3 +529,63 @@ the confirmation to look for.
   Before the change, live Reranks took 374-640 ms. Host load at 02:00Z was
   about 30, against about 100 at 21:58Z, so part of the lower total is load.
   The Rerank times match the synthetic measurement.
+
+## Redeployment — 2026-09-27 04:31Z (AzureJaguar, budget, breaker and snoozes)
+
+- Binary: `~/.local/bin/sr`, SHA256
+  `143c23944d4d15607285bbaf5bc888865fcffd36796b42ffe207fe4ce5d8d5dc`, built
+  `--release --locked` through RCH from `9ac7caf` (freshness proven by the
+  `sr budget` help string, which the previous build lacks). The previous binary
+  (SHA256 `9c1c026a…`) is kept as `~/.local/bin/sr.backup.20260927T043000Z-075f928`.
+- Carries the peers' P6 work since `075f928`: the shared request allowance
+  (`sr budget`), the fenced provider breaker, snoozes, the sr-9fzp overrun
+  finalization, and the sr-azlc lease retry. Also `9ac7caf`, which caps a
+  persisted provider Retry-After at one hour (sr-0f7i item 1).
+- No allowance is configured: `sr budget` reports `Allowance: disabled`. With
+  no guard file, a hook attempt checks one path and opens no accounting store.
+- Sweep over the 88 submitted prompts, previous binary against this one: every
+  moment reaches the provider stage with both. With the refusing endpoint, the
+  new breaker opens after three transient failures, so this binary records
+  `provider-cooldown` where the previous one recorded `request-budget`. The
+  sweep script now counts `provider-cooldown` as the provider stage.
+- Live check with synthetic input (an invented one-prompt transcript, maintainer
+  key, 4 provider requests): both turns completed, in 807 ms and 993 ms end to
+  end, with Reranks of 190-199 ms.
+- Gates on `9ac7caf`'s tree: remote full suite 1468 passed, 0 failed; strict
+  clippy clean. `0d2b43c` alone: 1467 passed, 0 failed.
+
+## Redeployment — 2026-09-27 17:37Z (AzureJaguar, hook-path review fixes)
+
+- Binary: `~/.local/bin/sr`, SHA256
+  `89d6525a1921a85f56f945847bc393f7df5e0a088dc106e866ebb711467196ed`, built
+  `--release --locked` through RCH from `ed60dc4` into a target directory
+  private to that build tree. The previous binary (SHA256 `143c2394…`) is kept
+  as `~/.local/bin/sr.backup.20260927T174000Z-9ac7caf`.
+- Adds the hook-path fixes since `9ac7caf`:
+  - `6929d63` (sr-0f7i): the breaker store is created only on a failure, busy
+    waits are bounded, the late-failure window is 3.5 s, and lease retries
+    only on busy;
+  - `16fbfd7`: an unrepresentable Retry-After saturates to the one-hour cap
+    instead of being dropped;
+  - `ed60dc4` (sr-azlc): a contended cache store open is retried for 400 ms
+    instead of five tries.
+- Sweep over the 90 submitted prompts, previous binary against this one:
+  identical outcomes, all at the provider stage.
+- Live check with synthetic input (maintainer key, 4 requests): both turns
+  completed, in 681 ms and 969 ms.
+- Gates at `ed60dc4`'s tree: remote full suite 1472 passed, 0 failed; strict
+  clippy clean.
+- 21:12Z: 3 of the 4 live turns after this deploy were `in-flight` (18:03:58,
+  18:04:06, 21:11:07), so the binary was rolled back to `143c2394…` while
+  this was investigated.
+  - The stuck turns sit in two sessions at usage-limit interruptions and
+    resumptions of those Claude Code sessions. Two had both stage requests
+    `sent` and never completed; the third was admitted and never sent.
+  - Synthetic turns under the same host load (average 57): 3 of 3 completed on
+    each binary.
+  - SIGTERM mid-request, with a 1.2 s grace before SIGKILL like the harness:
+    both binaries exited within 0.1 s and recorded the turn
+    (`unavailable/timeout`, the open attempt `unknown`), or completed it.
+  - So those turns were killed without a SIGTERM, which no process can record,
+    and the ledger honestly counts them as in flight or killed. Redeployed
+    `89d6525a…` at 21:14Z.

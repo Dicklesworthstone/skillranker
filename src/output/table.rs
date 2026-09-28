@@ -518,6 +518,9 @@ fn render_trace_section(trace_val: &Value) -> String {
                     "Check invocation restrictions: agent invocation is forbidden."
                 }
                 "review-exclusions" => "Review local policy exclusions: skill is in excluded list.",
+                "review-snoozes" => {
+                    "Snoozed for this session and agent branch; `sr snooze EVENT_ID --clear --apply` lifts it."
+                }
                 "refine-request" => "Refine user prompt or task anchor to match skill intent.",
                 _ => "Inspect configuration and candidate requirements.",
             };

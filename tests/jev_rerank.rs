@@ -330,6 +330,15 @@ fn an_oversized_request_trims_context_then_excerpts_and_never_the_shortlist() {
     let trimming = rerank.trimming();
     assert!(rerank.bytes().len() <= MAX_REQUEST_BYTES);
     assert!(trimming.dropped_messages > 0);
+    // Only the oldest messages go, and the rest remain in order, so the
+    // disclosure receipt of the render stays an upper bound (sr-xafi).
+    let sent: serde_json::Value = serde_json::from_slice(rerank.bytes()).unwrap();
+    let kept = sent["state"]["recent_messages"].as_array().unwrap();
+    assert_eq!(kept.len(), 12 - trimming.dropped_messages);
+    for (offset, kept) in kept.iter().enumerate() {
+        let text = kept["text"].as_str().unwrap();
+        assert!(text.starts_with(&format!("message {} ", trimming.dropped_messages + offset)));
+    }
     // Excerpts shrink only after every older message is gone.
     if trimming.body_cap < 700 || trimming.description_cap < 1000 {
         assert_eq!(trimming.dropped_messages, 12);

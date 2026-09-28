@@ -1,0 +1,81 @@
+{
+  "schema_version": 1,
+  "suite": "shadow-hook",
+  "tier": "rust-product-integration",
+  "targets": [
+    "allowance_contract",
+    "breaker_contract",
+    "hook_contract",
+    "hook_installer_contract",
+    "onboarding_contract",
+    "p6_gate",
+    "snooze_contract"
+  ],
+  "cases": [
+    {
+      "id": "install-diff-preview",
+      "assertions": [
+        "install_clean"
+      ],
+      "tests": [
+        "hook_installer_contract::preview_install_by_default_does_not_create_file",
+        "hook_installer_contract::preserves_unrelated_settings_and_other_hooks",
+        "hook_installer_contract::refuses_malformed_settings_without_overwriting",
+        "hook_installer_contract::reports_enterprise_read_only_restrictions",
+        "hook_installer_contract::install_refuses_timeout_not_above_internal_deadline",
+        "hook_installer_contract::the_default_harness_timeout_strictly_exceeds_the_internal_deadline",
+        "hook_installer_contract::a_harness_timeout_that_cannot_bound_the_deadline_is_refused_with_its_numbers",
+        "onboarding_contract::the_setup_journey_from_demo_to_a_recorded_shadow_trial"
+      ]
+    },
+    {
+      "id": "atomic-install-rollback",
+      "assertions": [
+        "install_clean"
+      ],
+      "tests": [
+        "hook_installer_contract::apply_install_creates_settings_and_backup",
+        "hook_installer_contract::install_is_idempotent",
+        "hook_installer_contract::preview_and_apply_uninstall",
+        "hook_installer_contract::refuses_to_uninstall_modified_entry_and_displays_conflict",
+        "hook_installer_contract::hook_clamp_budget_comes_from_the_installed_entry",
+        "hook_installer_contract::internal_deadline_exceeding_installed_budget_is_clamped"
+      ]
+    },
+    {
+      "id": "quiet-on-failure",
+      "assertions": [
+        "non_blocking_hook"
+      ],
+      "tests": [
+        "hook_contract::quiet_on_failure",
+        "hook_contract::shadow_hook_non_blocking",
+        "hook_contract::cli_errors_retain_exit_code",
+        "hook_contract::pre_context_hook_failures_are_recorded_once_per_turn",
+        "breaker_contract::three_transient_failures_open_the_circuit_for_the_next_process",
+        "breaker_contract::authentication_failures_never_open_the_circuit",
+        "allowance_contract::without_persistence_a_guard_refuses_sends_but_explicit_requests_resolve",
+        "snooze_contract::muting_everything_skips_jev_while_explicit_requests_still_resolve"
+      ]
+    },
+    {
+      "id": "stdin-deadline-enforced",
+      "assertions": [
+        "non_blocking_hook"
+      ],
+      "tests": [
+        "hook_contract::stdin_deadline_enforced",
+        "hook_contract::hook_stdin_payload_parsing_and_bounds"
+      ]
+    },
+    {
+      "id": "complete-phase-coverage",
+      "assertions": [
+        "complete_independent_evidence"
+      ],
+      "tests": [
+        "p6_gate::all_p6_contracts_verified"
+      ]
+    }
+  ]
+}

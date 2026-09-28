@@ -141,6 +141,72 @@ pub struct BatchAccounting {
     pub output_tokens: u64,
 }
 
+/// Process memory and token use of a live batch, projected to a named
+/// workload. No price is attached: prices are separately versioned estimates.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ResourceUsage {
+    /// Peak resident set size of the whole `sr` process (Linux `VmHWM`);
+    /// `None` where the platform does not report it.
+    pub peak_rss_bytes: Option<u64>,
+    pub peak_rss_scope: String,
+    /// `None` when no main ranking was evaluated.
+    pub projection: Option<WorkloadProjection>,
+}
+
+/// Mean use per main ranking in this batch, scaled to a workload of
+/// `turns` ranked turns like these cases. Context-ablation arms and
+/// robustness variants are excluded; tokens of attempts that returned no
+/// usage are unknown and not included, so their rate is disclosed.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct WorkloadProjection {
+    pub workload: String,
+    pub turns: u64,
+    pub basis_cases: usize,
+    pub http_attempts: f64,
+    pub input_tokens: f64,
+    pub output_tokens: f64,
+    pub unknown_usage_attempts: f64,
+    pub caveat: String,
+}
+
+const PROJECTION_TURNS: u64 = 1_000;
+
+impl WorkloadProjection {
+    fn from_main(main: &BatchAccounting, cases: usize) -> Option<Self> {
+        if cases == 0 {
+            return None;
+        }
+        let scale = PROJECTION_TURNS as f64 / cases as f64;
+        Some(Self {
+            workload: format!("{PROJECTION_TURNS} ranked turns like this batch's cases"),
+            turns: PROJECTION_TURNS,
+            basis_cases: cases,
+            http_attempts: main.http_attempts as f64 * scale,
+            input_tokens: main.input_tokens as f64 * scale,
+            output_tokens: main.output_tokens as f64 * scale,
+            unknown_usage_attempts: main.unknown_usage_attempts as f64 * scale,
+            caveat: "Means of this batch's main rankings, not of real hook traffic: cache \
+                     hits, abstentions before the gate and roster size change real use. \
+                     Tokens of unknown-usage attempts are not included."
+                .to_owned(),
+        })
+    }
+}
+
+/// Peak resident set size of this process, from Linux `/proc/self/status`.
+fn peak_rss_bytes() -> Option<u64> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    let line = status.lines().find(|line| line.starts_with("VmHWM:"))?;
+    let kib: u64 = line
+        .trim_start_matches("VmHWM:")
+        .trim()
+        .trim_end_matches("kB")
+        .trim()
+        .parse()
+        .ok()?;
+    kib.checked_mul(1024)
+}
+
 /// Common 0/1/2 evaluation loss metrics matching `evaluation_policy.v1.json`.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct BatchLossSummary {
@@ -199,6 +265,9 @@ pub struct EvaluationBatchReport {
     /// Requested by `--explain`; derived only from this report's own values.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub explanation: Option<ReportExplanation>,
+    /// A live batch's process memory and projected token use.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resource_usage: Option<ResourceUsage>,
     pub cases: Vec<BatchCaseReport>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<ReportError>,
@@ -459,6 +528,7 @@ pub fn execute_evaluation_batch<R: BufRead>(
         review_queue: None,
         baselines: None,
         explanation: None,
+        resource_usage: None,
         cases: reports,
         error,
     };
@@ -545,6 +615,7 @@ struct FrameRun {
     preflight: Option<DisclosurePreflight>,
     baselines: Option<BaselineComparison>,
     review_queue: Option<crate::evaluation::review::ReviewQueue>,
+    resource_usage: Option<ResourceUsage>,
 }
 
 impl FrameRun {
@@ -558,6 +629,7 @@ impl FrameRun {
             preflight: None,
             baselines: None,
             review_queue: None,
+            resource_usage: None,
         }
     }
 }
@@ -659,6 +731,42 @@ fn score_frame(
 
     let requested = reports.len();
     let complete = completed == requested;
+    // A fatal error in a supplementary pass (context ablation, robustness)
+    // leaves every main case complete. The artifact's top-level error means a
+    // partial run, so report it with the comparison it cut short instead.
+    // The recorded path has no stage evidence, so only unresolved judgments
+    // (and, in a stratified sample, sparse strata) can queue a case there.
+    let review_queue = match run.review_queue {
+        Some(queue) => Some(queue),
+        None => {
+            let judgments = resolve_label_revisions(labels)?;
+            let strata: BTreeMap<&CaseKey, &str> = manifest
+                .iter()
+                .flat_map(|manifest| &manifest.selected_cases)
+                .map(|entry| (&entry.case_key, entry.stratum_key.as_str()))
+                .collect();
+            let inputs: Vec<crate::evaluation::review::ReviewInput<'_>> = evaluated
+                .iter()
+                .map(|record| crate::evaluation::review::ReviewInput {
+                    key: &record.key,
+                    split: record.split,
+                    stratum: strata.get(&record.key).copied(),
+                    evidence: None,
+                    judgment: judgments.get(&record.key.case_id),
+                })
+                .collect();
+            Some(crate::evaluation::review::review_queue(
+                &inputs,
+                crate::evaluation::review::ReviewPolicy::default(),
+            ))
+        }
+    };
+    let baselines = run.baselines.map(|mut baselines| {
+        if complete {
+            baselines.supplementary_error = run.error.clone();
+        }
+        baselines
+    });
     let report = EvaluationBatchReport {
         schema_version: SCHEMA_VERSION,
         kind: "report".into(),
@@ -686,9 +794,10 @@ fn score_frame(
         sample_manifest: manifest,
         design_weighted_loss,
         disclosure_preflight: run.preflight,
-        review_queue: run.review_queue,
-        baselines: run.baselines,
+        review_queue,
+        baselines,
         explanation: None,
+        resource_usage: run.resource_usage,
         cases: reports,
         error: if complete { None } else { run.error },
     };
@@ -774,6 +883,9 @@ pub struct LiveRankOutcome {
     /// have sent requests (its cleanup overran, say), so its attempts are
     /// unknown. The batch charges its worst case, never zero.
     pub attempts_unknown: bool,
+    /// The send was refused before any attempt because its wide request no
+    /// longer matched its disclosure preview (or the preview sent none).
+    pub preview_refused: bool,
 }
 
 /// The attempts and unknown-usage attempts one ranking is charged: as
@@ -809,14 +921,24 @@ pub struct LiveBatchLimits {
 }
 
 /// What a live batch will disclose, frozen before its first request: every
-/// case to be sent was previewed locally with no network, and a case whose
-/// preview was refused is never sent.
+/// case to be sent was previewed locally with no network, a case whose
+/// preview was refused is never sent, and each case's wide request goes out
+/// only if it is byte-identical to its preview.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DisclosurePreflight {
+    /// What this preflight covers and what it does not.
+    #[serde(default)]
+    pub scope: String,
     pub cases_checked: usize,
     pub cases_refused: usize,
     /// Cases whose preview ends locally, so a live run sends nothing for them.
     pub cases_without_request: usize,
+    /// Exact bytes of every previewed wide request. Cases later refused,
+    /// left unfinished or stopped by the budget still count: this bounds what
+    /// the batch could send, not what it sent.
+    #[serde(default)]
+    pub previewed_wide_request_bytes: u64,
+    /// The rendered context before per-stage trimming (the receipt's figure).
     pub disclosed_bytes: u64,
     pub total_redactions: u64,
     pub total_truncated: u64,
@@ -890,6 +1012,11 @@ pub fn execute_live_frame_evaluation<L: BufRead>(
         ..FrameRun::recorded()
     };
     let mut pending = Vec::with_capacity(selected.len());
+    // Main rankings only, for the workload projection.
+    let mut main = BatchAccounting::default();
+    let mut main_cases = 0;
+    // Unjudged cases are never sent, yet they belong in the review queue.
+    let mut unjudged: Vec<(CaseKey, EvaluationSplit)> = Vec::new();
     for record in selected {
         let judgment = judgments.get(&record.key.case_id);
         let off_roster = judgment.is_some_and(|label| {
@@ -899,6 +1026,9 @@ pub fn execute_live_frame_evaluation<L: BufRead>(
                 .chain(label.explicit_directive.as_ref())
                 .any(|skill| !current_roster.contains(skill))
         });
+        if judgment.is_none() {
+            unjudged.push((record.key.clone(), record.split));
+        }
         let skip = match (judgment, off_roster) {
             (None, _) => Some("no independent judgment for this case; not sent"),
             (Some(_), true) => Some("a judged skill is absent from the current roster; not sent"),
@@ -935,6 +1065,7 @@ pub fn execute_live_frame_evaluation<L: BufRead>(
                     Some(receipt) => {
                         let count = |name: &str| receipt[name].as_u64().unwrap_or(0);
                         frozen.disclosed_bytes += count("disclosed_bytes");
+                        frozen.previewed_wide_request_bytes += count("wide_request_bytes");
                         frozen.total_redactions += count("total_redactions");
                         frozen.total_truncated += count("total_truncated");
                         frozen.total_omitted += count("total_omitted");
@@ -957,6 +1088,12 @@ pub fn execute_live_frame_evaluation<L: BufRead>(
         }
     }
     frozen.receipts_digest = hasher.finalize().to_hex().to_string();
+    frozen.scope = "Wide requests exactly as previewed, each bound to its send by digest; \
+        receipt counts describe the context before per-stage trimming. Rerank requests (which \
+        add shortlisted skill descriptions and excerpts), context-ablation arms (a subset of \
+        the previewed context) and robustness variants (fixed synthetic text added) are not \
+        previewed."
+        .into();
     run.preflight = Some(frozen);
 
     let mut executed = Vec::with_capacity(admitted.len());
@@ -1006,12 +1143,29 @@ pub fn execute_live_frame_evaluation<L: BufRead>(
         }
         let outcome = rank(case);
         let (attempts, unknown_usage) = charged_attempts(&outcome, limits.attempts_per_case);
-        let accounting = &mut run.accounting;
-        accounting.requests += outcome.requests;
-        accounting.http_attempts += attempts;
-        accounting.unknown_usage_attempts += unknown_usage;
-        accounting.input_tokens += outcome.input_tokens;
-        accounting.output_tokens += outcome.output_tokens;
+        for accounting in [&mut run.accounting, &mut main] {
+            accounting.requests += outcome.requests;
+            accounting.http_attempts += attempts;
+            accounting.unknown_usage_attempts += unknown_usage;
+            accounting.input_tokens += outcome.input_tokens;
+            accounting.output_tokens += outcome.output_tokens;
+        }
+        main_cases += usize::from(!outcome.preview_refused);
+        // The request changed after its preview (for example a newly dirtied
+        // path), so it was withheld: the case was never evaluated, and the
+        // selector is not charged for it.
+        // Only a preview refusal was never sent. Other `superseded` failures
+        // (policy revalidation after sending, a policy change during retry)
+        // stay operational failures.
+        if outcome.preview_refused {
+            run.skipped.push((
+                record.key,
+                CaseExecutionStatus::NotEstimable {
+                    reason: "request changed since its disclosure preview; not sent".into(),
+                },
+            ));
+            continue;
+        }
         run.elapsed_ms
             .insert(record.key.clone(), outcome.elapsed_ms);
         production_elapsed.push(
@@ -1160,14 +1314,23 @@ pub fn execute_live_frame_evaluation<L: BufRead>(
         }
     }
     run.error = stopped.map(|(_, error)| error);
+    // A sampled case's stratum comes from the frozen manifest; an unsampled
+    // frame assigns none, so sparse-stratum review needs a stratified sample.
+    let strata: BTreeMap<&CaseKey, &str> = manifest
+        .iter()
+        .flat_map(|manifest| &manifest.selected_cases)
+        .map(|entry| (&entry.case_key, entry.stratum_key.as_str()))
+        .collect();
     let review_inputs: Vec<crate::evaluation::review::ReviewInput<'_>> = executed
         .iter()
-        .map(|record| crate::evaluation::review::ReviewInput {
-            key: &record.key,
-            split: record.split,
-            stratum: None,
-            evidence: evidence_by_case.get(&record.key),
-            judgment: judgments.get(&record.key.case_id),
+        .map(|record| (&record.key, record.split))
+        .chain(unjudged.iter().map(|(key, split)| (key, *split)))
+        .map(|(key, split)| crate::evaluation::review::ReviewInput {
+            key,
+            split,
+            stratum: strata.get(key).copied(),
+            evidence: evidence_by_case.get(key),
+            judgment: judgments.get(&key.case_id),
         })
         .collect();
     run.review_queue = Some(crate::evaluation::review::review_queue(
@@ -1198,6 +1361,11 @@ pub fn execute_live_frame_evaluation<L: BufRead>(
         .retain(|note| !note.starts_with("context ablation"));
     comparison.robustness = robustness;
     run.baselines = Some(comparison);
+    run.resource_usage = Some(ResourceUsage {
+        peak_rss_bytes: peak_rss_bytes(),
+        peak_rss_scope: "the whole sr process, including evaluation bookkeeping".to_owned(),
+        projection: WorkloadProjection::from_main(&main, main_cases),
+    });
     score_frame(executed, &labels, manifest, run)
 }
 
@@ -1300,6 +1468,10 @@ pub struct BaselineComparison {
     /// True when no case had to be left out of the shared cohort.
     #[serde(default)]
     pub complete: bool,
+    /// A fatal error that stopped a supplementary pass after every main
+    /// ranking completed; its remaining arms or variants were not run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supplementary_error: Option<ReportError>,
     /// Fit calibration on judged reranked pairs.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fit_calibration: Option<FitCalibration>,
@@ -1677,7 +1849,8 @@ fn compare_baselines(
         .collect();
     comparison.excluded_unscorable = shared.iter().filter(|scorable| !**scorable).count();
     comparison.shared_cohort_cases = cohort.len() - comparison.excluded_unscorable + failed.len();
-    comparison.complete = comparison.excluded_unscorable == 0;
+    comparison.complete =
+        comparison.excluded_unscorable == 0 && comparison.cases_without_evidence == 0;
     for (name, definition, policy) in BASELINE_POLICIES {
         let picks: Vec<Pick<'_>> = cohort
             .iter()
@@ -2062,16 +2235,27 @@ fn push_design_quantities(
     });
 }
 
-/// Why a count of harmful outcomes (loss 2: a wrong or needless suggestion,
-/// or an operational failure) still leaves room for a harmful rate, at 95%.
+/// Harmful outcomes (loss 2: a wrong or needless suggestion, or an
+/// operational failure), with a 95% upper bound only where a binomial model
+/// is justified: a probability sample of families with equal inclusion
+/// probabilities and one attempted case per family. Otherwise cases share
+/// families and context and are not independent draws, so only the observed
+/// rate is reported (AGENTS: independent families alone do not justify an
+/// arbitrary binomial confidence claim).
 fn harmful_outcome_card(report: &EvaluationBatchReport) -> Option<ExplainedQuantity> {
     let n = report.loss_summary.attempted_cases;
     if n == 0 {
         return None;
     }
-    let harmful = report
-        .cases
-        .iter()
+    let attempted = report.cases.iter().filter(|case| {
+        matches!(
+            case.status,
+            CaseExecutionStatus::Completed { loss: Some(_), .. }
+                | CaseExecutionStatus::OperationalFailure { .. }
+        )
+    });
+    let harmful = attempted
+        .clone()
         .filter(|case| {
             matches!(
                 case.status,
@@ -2080,17 +2264,47 @@ fn harmful_outcome_card(report: &EvaluationBatchReport) -> Option<ExplainedQuant
             )
         })
         .count();
+    let one_per_family = {
+        let mut families = BTreeSet::new();
+        attempted
+            .clone()
+            .all(|case| families.insert(case.family_id.clone()))
+    };
+    let equal_probability_sample = report.sample_manifest.as_ref().is_some_and(|manifest| {
+        let mut probabilities = manifest
+            .selected_cases
+            .iter()
+            .map(|entry| entry.inclusion_probability);
+        let first = probabilities.next().flatten();
+        manifest.design_status == DesignStatus::StratifiedProbabilitySample
+            && first.is_some()
+            && probabilities.all(|p| p.zip(first).is_some_and(|(p, f)| (p - f).abs() < 1e-12))
+    });
+    if !(equal_probability_sample && one_per_family) {
+        return Some(ExplainedQuantity {
+            name: "harmful_outcome_rate_observed".into(),
+            equation: "k / n over attempted cases; no confidence bound".to_owned(),
+            substituted: format!("{harmful} / {n}"),
+            value: Some(harmful as f64 / n as f64),
+            would_change: Some(
+                "No 95% upper bound is claimed: these cases are not independent draws under \
+                 a probability sample of families with equal inclusion probabilities and one \
+                 case per family. Evaluate such a sample to bound the harmful rate."
+                    .to_owned(),
+            ),
+        });
+    }
     let upper =
         crate::evaluation::numerics::clopper_pearson_one_sided_upper(harmful, n, 0.95).ok()?;
     let (equation, substituted, would_change) = if harmful == 0 {
         // The smallest n whose zero-event bound is below 5%.
         let needed = ((0.05f64).ln() / (0.95f64).ln()).ceil() as usize;
         (
-            "U = 1 - (1 - 0.95)^(1 / n) for zero harmful outcomes in n cases".to_owned(),
+            "U = 1 - (1 - 0.95)^(1 / n) for zero harmful outcomes in n sampled families".to_owned(),
             format!("1 - 0.05^(1 / {n})"),
             format!(
                 "Zero of {n} still allows a harmful rate up to {upper:.4}; about {needed} \
-                 harm-free judged cases are needed before U falls below 0.05."
+                 harm-free sampled families are needed before U falls below 0.05."
             ),
         )
     } else {
@@ -2099,7 +2313,7 @@ fn harmful_outcome_card(report: &EvaluationBatchReport) -> Option<ExplainedQuant
             format!("k = {harmful}, n = {n}"),
             format!(
                 "U cannot fall below the observed rate {harmful} / {n}; it falls only as more \
-                 harm-free judged cases are added."
+                 harm-free sampled families are added."
             ),
         )
     };

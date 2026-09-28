@@ -11,7 +11,8 @@ writes the prompt. It then runs the hook in an owner-only sandbox:
 - a loopback endpoint that refuses connections, so nothing leaves the machine.
 
 It reports each moment's recorded outcome. A healthy moment ends at the provider
-stage (`request-budget` or `network-failure`, the refused endpoint). Anything
+stage (`request-budget`, `network-failure` or `provider-cooldown`, the refused
+endpoint, whose failures open the provider breaker). Anything
 else is refused locally and worth a look: `ambiguous-branch`, `unsupported-input`
 or `insufficient-context`.
 
@@ -36,7 +37,9 @@ import tempfile
 from pathlib import Path
 
 REFUSING_ENDPOINT = "https://127.0.0.1:9"
-PROVIDER_STAGE = {"request-budget", "network-failure", "timeout"}
+# With the refusing endpoint, the provider breaker opens after three transient
+# failures and refuses the rest as `provider-cooldown`: also the provider stage.
+PROVIDER_STAGE = {"request-budget", "network-failure", "timeout", "provider-cooldown"}
 
 
 def encoded_project_dir(workspace: Path) -> Path:

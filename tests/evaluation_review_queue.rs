@@ -46,6 +46,7 @@ fn stages(
         quill_ranked,
         lexical: None,
         lexical_elapsed_ms: 0,
+        preview_refused: false,
         wide: Some(WideEvidence {
             needs_skill,
             none_probability: 0.1,
