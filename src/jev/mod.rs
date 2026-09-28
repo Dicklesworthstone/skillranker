@@ -7,6 +7,7 @@
 
 pub mod admission;
 pub mod client;
+pub mod cloudflare_codec;
 pub mod codec;
 pub mod endpoint;
 pub mod rerank;
