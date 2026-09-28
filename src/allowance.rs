@@ -319,6 +319,9 @@ fn publish_guard(paths: &AllowancePaths, guard: &Guard) -> Result<(), AllowanceE
 /// Opens the accounting database with the durability enforcement requires:
 /// WAL and `synchronous=FULL`, each read back, a page quota and defensive mode.
 fn open_accounting(path: &Path, create: bool) -> Result<Connection, AllowanceError> {
+    // NOFOLLOW refuses a symlink anywhere in the path, so spell macOS's
+    // trusted /tmp and /var aliases as their /private targets first.
+    let path = &crate::platform_path::storage_path(path.to_path_buf());
     let fail = |_| state("the accounting database is unavailable");
     if let Some(parent) = path.parent() {
         create_private_dir(parent)?;

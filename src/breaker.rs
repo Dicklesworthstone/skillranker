@@ -338,6 +338,9 @@ fn transact<T>(
 }
 
 fn open(path: &Path, busy: Duration) -> rusqlite::Result<Connection> {
+    // NOFOLLOW refuses a symlink anywhere in the path, so spell macOS's
+    // trusted /tmp and /var aliases as their /private targets first.
+    let path = &crate::platform_path::storage_path(path.to_path_buf());
     if let Some(parent) = path.parent() {
         let mut builder = std::fs::DirBuilder::new();
         builder.recursive(true);
