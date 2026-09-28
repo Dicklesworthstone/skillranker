@@ -184,6 +184,20 @@ class HarmCohortTests(unittest.TestCase):
         cohort.judge("u0", "advice", "harmful", adjudicator="adj-2")
         self.assertEqual(cohort.report()["new_harm_units"], 1)
 
+    def test_a_disputed_baseline_cannot_cancel_harm_seen_with_advice(self):
+        cohort = Cohort(self, draft(3))
+        # u0: advice harmful, baseline disputed -> neither new harm nor clear.
+        cohort.complete({"u0": ("harmful", "harmful")})
+        cohort.judge("u0", "baseline", "not_harmful", adjudicator="adj-2")
+        # u1: advice clean, baseline disputed -> advice added no harm.
+        cohort.complete({"u1": ("not_harmful", "harmful")})
+        cohort.judge("u1", "baseline", "not_harmful", adjudicator="adj-2")
+        # u2: both unanimously harmful -> harm not caused by advice.
+        cohort.complete({"u2": ("harmful", "harmful")})
+        report = cohort.report()
+        self.assertEqual((report["new_harm_units"], report["unresolved_units"], report["clear_units"]), (0, 1, 2))
+        self.assertEqual(report["net_harm_difference"]["harmful_only_without_advice"], 0)
+
     def test_arm_assignment_must_follow_from_the_recorded_seed(self):
         cohort = Cohort(self, draft(2))
 

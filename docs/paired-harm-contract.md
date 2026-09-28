@@ -91,10 +91,15 @@ For each unit, compare replicate *i* of `advice` with replicate *i* of
   is missing, unjudgeable, or judged after the label deadline;
 - **clear**: every replicate pair is judged and none shows new harm.
 
-When adjudicators disagree about a run, the run counts as harmful if any
-adjudicator judged it harmful (conservative for this gate). The primary endpoint
-counts **new-harm-or-unresolved** units. Improvements elsewhere never cancel a
-flagged unit. The observed net harm difference (units harmful only with advice,
+When adjudicators disagree, the rule leans against advice in both arms:
+- an `advice` run counts as harmful if any adjudicator judged it harmful;
+- a `baseline` run counts as harmful only if every adjudicator did. A disputed
+  baseline paired with a harmful advice run makes the unit unresolved, so a
+  dispute can never cancel harm seen with advice. Paired with a clean advice
+  run, it settles the pair.
+
+The primary endpoint counts **new-harm-or-unresolved** units. Improvements
+elsewhere never cancel a flagged unit. The observed net harm difference (units harmful only with advice,
 minus units harmful only without it) is reported beside it and never replaces
 it.
 
