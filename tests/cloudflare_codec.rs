@@ -54,8 +54,8 @@ fn all_supported_unambiguous_shapes_have_the_same_result() {
         json!({"success": true, "result": result()}),
         top_level,
     ] {
-        let response = decode_response(&request(), &serde_json::to_vec(&envelope).unwrap())
-            .unwrap();
+        let response =
+            decode_response(&request(), &serde_json::to_vec(&envelope).unwrap()).unwrap();
         assert_eq!(response.returned_model, "jev-1.13.0");
         assert_eq!(response.usage.input_tokens, 12);
         assert!(matches!(response.answers["fit"], Answer::Noul(v) if v == 0.75));
@@ -75,13 +75,24 @@ fn duplicate_definitions_are_rejected_before_translation() {
         envelope.replacen("\"type\":", "\"type\":\"choice\",\"type\":", 1),
         envelope.replacen("\"noul\":", "\"noul\":0,\"noul\":", 1),
         envelope.replacen("\"usage\":", "\"usage\":{},\"usage\":", 1),
-        envelope.replacen("\"input_tokens\":", "\"input_tokens\":99,\"input_tokens\":", 1),
-        envelope.replacen("\"output_tokens\":", "\"output_tokens\":99,\"output_tokens\":", 1),
+        envelope.replacen(
+            "\"input_tokens\":",
+            "\"input_tokens\":99,\"input_tokens\":",
+            1,
+        ),
+        envelope.replacen(
+            "\"output_tokens\":",
+            "\"output_tokens\":99,\"output_tokens\":",
+            1,
+        ),
         envelope.replacen("\"result\":", "\"result\":{},\"result\":", 1),
         format!(r#"{{"success":true,"metadata":{{"x":1,"x":2}},"result":{inner}}}"#),
     ];
     for body in variants {
-        assert_ne!(body, envelope, "fixture mutation must introduce a duplicate");
+        assert_ne!(
+            body, envelope,
+            "fixture mutation must introduce a duplicate"
+        );
         assert_eq!(
             decode_response(&request(), body.as_bytes()).err(),
             Some(CodecError::InvalidJson)
@@ -92,8 +103,17 @@ fn duplicate_definitions_are_rejected_before_translation() {
 #[test]
 fn malformed_brace_boundaries_and_non_json_never_panic() {
     for body in [
-        "}{", "explanation } then {", "é } then {", "{", "}", "", "null", "[]",
-        "```json\n{}\n```", "{} trailing", "{}{}",
+        "}{",
+        "explanation } then {",
+        "é } then {",
+        "{",
+        "}",
+        "",
+        "null",
+        "[]",
+        "```json\n{}\n```",
+        "{} trailing",
+        "{}{}",
     ] {
         assert!(decode_response(&request(), body.as_bytes()).is_err());
     }
@@ -153,9 +173,10 @@ fn usage_must_contain_unsigned_integer_counts() {
             );
         }
     }
-    let oversized_count = String::from_utf8(wrap(&result()))
-        .unwrap()
-        .replace("\"input_tokens\":12", "\"input_tokens\":18446744073709551616");
+    let oversized_count = String::from_utf8(wrap(&result())).unwrap().replace(
+        "\"input_tokens\":12",
+        "\"input_tokens\":18446744073709551616",
+    );
     assert_eq!(
         decode_response(&request(), oversized_count.as_bytes()).err(),
         Some(CodecError::InvalidAnswer)
@@ -263,7 +284,9 @@ fn envelope_validation_preserves_common_answer_rejections() {
     });
     for inner in [foreign, missing, invalid_probability, wrong_type] {
         let req = request();
-        let expected = req.decode_response(&serde_json::to_vec(&inner).unwrap()).err();
+        let expected = req
+            .decode_response(&serde_json::to_vec(&inner).unwrap())
+            .err();
         assert!(expected.is_some());
         assert_eq!(decode_response(&req, &wrap(&inner)).err(), expected);
     }
