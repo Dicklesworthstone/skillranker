@@ -23,6 +23,30 @@ use std::time::Duration;
 
 const MAX_ADDITIONAL_ROOTS: usize = 8;
 const MAX_ROOT_BYTES: usize = 64 * 1024;
+const CLOUDFLARE_ORIGIN: &str = "https://api.cloudflare.com";
+
+// Only the native wire details differ. Both protocols must traverse the same
+// authenticated HTTP exchange, accounting seam and final completion gate.
+enum WireProtocol {
+    TypeSafe,
+    Cloudflare { target_url: String },
+}
+
+impl WireProtocol {
+    fn encode(&self, request: &Request) -> Result<Vec<u8>, CodecError> {
+        match self {
+            Self::TypeSafe => request.to_json(),
+            Self::Cloudflare { .. } => super::cloudflare_codec::encode_request(request),
+        }
+    }
+
+    fn decode(&self, request: &Request, body: &[u8]) -> Result<Response, CodecError> {
+        match self {
+            Self::TypeSafe => request.decode_response(body),
+            Self::Cloudflare { .. } => super::cloudflare_codec::decode_response(request, body),
+        }
+    }
+}
 
 /// A boxed provider attempt.
 pub type TransportFuture<'a> =
@@ -177,6 +201,7 @@ impl std::error::Error for TransportError {}
 pub struct JevClient {
     endpoint: EndpointConfig,
     http: HttpClient,
+    protocol: WireProtocol,
 }
 impl fmt::Debug for JevClient {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -188,6 +213,66 @@ impl JevClient {
     pub fn origin(&self) -> &super::CanonicalOrigin {
         self.endpoint.origin()
     }
+    /// The actual request target, including the account-specific native path.
+    /// This is sensitive identity material for request fingerprints, not logs.
+    pub fn target_url(&self) -> &str {
+        match &self.protocol {
+            WireProtocol::TypeSafe => self.endpoint.target_url().as_str(),
+            WireProtocol::Cloudflare { target_url } => target_url,
+        }
+    }
+
+    /// Explicit library-level Cloudflare-hosted Jev transport. This does not
+    /// change CLI provider selection or grant permission to send session data.
+    /// Supply a Cloudflare-origin credential and a `typesafe/jev` request.
+    /// The production origin is fixed; accounts cannot inject a host or path.
+    pub fn cloudflare(account_id: &str) -> Result<Self, TransportError> {
+        let endpoint = EndpointConfig::from_base_origin_str(CLOUDFLARE_ORIGIN)
+            .map_err(|_| failure(TransportErrorKind::InvalidConfiguration, false))?;
+        Self::cloudflare_at(endpoint, account_id, Vec::new())
+    }
+
+    /// Construct the native client and bind a supplied environment token to
+    /// Cloudflare's fixed origin. Neither credentials nor consent are read from
+    /// the process implicitly. Empty and malformed tokens fail before sending.
+    pub fn cloudflare_with_environment_token(
+        account_id: &str,
+        token: String,
+    ) -> Result<(Self, OriginScopedCredential), TransportError> {
+        let token = crate::privacy::ApiCredential::from_environment(token)
+            .map_err(|_| failure(TransportErrorKind::InvalidConfiguration, false))?
+            .ok_or_else(|| {
+                failure(
+                    TransportErrorKind::Admission(ProviderAdmissionRefusal::MissingCredential),
+                    false,
+                )
+            })?;
+        let client = Self::cloudflare(account_id)?;
+        let credential = OriginScopedCredential::bind(token, client.origin())
+            .map_err(|_| failure(TransportErrorKind::CredentialOriginMismatch, false))?;
+        Ok((client, credential))
+    }
+
+    // Private seam for real loopback TLS tests; no public endpoint override can
+    // turn Cloudflare credentials into a bearer token for an arbitrary service.
+    fn cloudflare_at(
+        endpoint: EndpointConfig,
+        account_id: &str,
+        roots: Vec<Certificate>,
+    ) -> Result<Self, TransportError> {
+        if account_id.len() != 32 || !account_id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(failure(TransportErrorKind::InvalidConfiguration, false));
+        }
+        let target_url = format!(
+            "{}/client/v4/accounts/{}/ai/run",
+            endpoint.origin().as_str(),
+            account_id.to_ascii_lowercase(),
+        );
+        let mut client = Self::with_additional_roots(endpoint, roots)?;
+        client.protocol = WireProtocol::Cloudflare { target_url };
+        Ok(client)
+    }
+
     /// Uses the native trust roots selected by the pinned Cargo feature graph.
     /// The caller supplies an endpoint from trusted configuration.
     pub fn new(endpoint: EndpointConfig) -> Result<Self, TransportError> {
@@ -224,6 +309,7 @@ impl JevClient {
         Ok(Self {
             endpoint,
             http: builder.build(),
+            protocol: WireProtocol::TypeSafe,
         })
     }
 
@@ -283,14 +369,15 @@ impl JevClient {
         let header = credential
             .authorization_header_for(self.endpoint.origin())
             .map_err(|_| failure(TransportErrorKind::CredentialOriginMismatch, false))?;
-        let bytes = request
-            .to_json()
+        let bytes = self
+            .protocol
+            .encode(request)
             .map_err(|e| failure(TransportErrorKind::Request(e), false))?;
         budget(cx, clock, false)?;
         let timeout = Duration::from_millis(clock.remaining_before_cleanup().as_millis());
         let mut exchange = self
             .http
-            .post(self.endpoint.target_url().as_str())
+            .post(self.target_url())
             .header("Authorization", header)
             .header("Accept", "application/json")
             .header("Accept-Encoding", "identity");
@@ -342,12 +429,20 @@ impl JevClient {
         }
         // No decompression is negotiated or performed. A compressed body is
         // rejected above, never inflated outside the decoded-body byte bound.
-        let result = request
-            .decode_response(&response.body)
-            .map_err(|e| failure(TransportErrorKind::Response(e), true))?;
-        budget(cx, clock, true)?;
-        Ok(result)
+        finish_response(cx, clock, || self.protocol.decode(request, &response.body))
     }
+}
+
+// Decoding is bounded but synchronous. Cancellation or deadline expiry during
+// it must never turn into an accepted answer, cache entry or known-zero cost.
+fn finish_response(
+    cx: &Cx,
+    clock: &EntryClock,
+    decode: impl FnOnce() -> Result<Response, CodecError>,
+) -> Result<Response, TransportError> {
+    let result = decode();
+    budget(cx, clock, true)?;
+    result.map_err(|error| failure(TransportErrorKind::Response(error), true))
 }
 
 fn failure(kind: TransportErrorKind, http_attempt_started: bool) -> TransportError {
@@ -427,3 +522,6 @@ async fn drive_exchange(
         }
     }
 }
+
+#[cfg(all(test, unix))]
+mod tests;

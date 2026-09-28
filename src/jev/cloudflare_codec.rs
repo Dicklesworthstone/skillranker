@@ -1,13 +1,43 @@
-//! Pure validation of Cloudflare-hosted TypeSafe Jev response envelopes.
+//! Bounded native wire encoding and validation for Cloudflare-hosted TypeSafe Jev.
 //!
 //! This codec does not select a provider or authorize a network request. A
 //! transport must still enforce HTTP policy and check cancellation/deadline
 //! after decoding, before returning a successful accounted response.
 
-use super::codec::{CodecError, MAX_RESPONSE_BYTES, Request, Response};
+use super::codec::{CodecError, MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES, Request, Response};
 use crate::output::JsonSeed;
 use serde::de::DeserializeSeed;
-use serde_json::Value;
+use serde_json::{Value, json};
+
+/// The documented Cloudflare route for TypeSafe's structured evaluation model.
+/// Do not silently route a TypeSafe alias or a different inference model.
+pub const CLOUDFLARE_JEV_MODEL: &str = "typesafe/jev";
+
+/// Encode the native `{model,input:{state,questions}}` request. The final byte
+/// limit includes the native wrapper, not just the inner TypeSafe document.
+/// Authorization and redaction remain the caller's responsibility.
+pub fn encode_request(request: &Request) -> Result<Vec<u8>, CodecError> {
+    if request.model() != CLOUDFLARE_JEV_MODEL {
+        return Err(CodecError::InvalidRequest);
+    }
+    // Validate and bound even a Request constructed via serde before allocating
+    // another value tree. This JSON is locally generated, not provider output.
+    let validated = request.to_json()?;
+    let mut input: Value =
+        serde_json::from_slice(&validated).map_err(|_| CodecError::InvalidRequest)?;
+    let model = input
+        .as_object_mut()
+        .and_then(|object| object.remove("model"))
+        .ok_or(CodecError::InvalidRequest)?;
+    let body = serde_json::to_vec(&json!({"model": model, "input": input}))
+        .map_err(|_| CodecError::TooLarge)?;
+    // The intermediate serialization is bounded by the validated request plus
+    // the fixed wrapper. An over-limit request must fail before attempt debit.
+    if body.len() > MAX_REQUEST_BYTES {
+        return Err(CodecError::TooLarge);
+    }
+    Ok(body)
+}
 
 /// Translate one bounded native envelope into the common validated Jev result.
 ///
