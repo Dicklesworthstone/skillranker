@@ -58,7 +58,9 @@ fn invocation() -> ProcessInvocation {
 }
 
 fn credential(origin: &CanonicalOrigin) -> OriginScopedCredential {
-    let token = ApiCredential::from_environment(TOKEN.into()).unwrap().unwrap();
+    let token = ApiCredential::from_environment(TOKEN.into())
+        .unwrap()
+        .unwrap();
     OriginScopedCredential::bind(token, origin).unwrap()
 }
 
@@ -93,7 +95,10 @@ fn native_target_is_fixed_scoped_and_canonical() {
     );
     assert!(!format!("{client:?}").contains(ACCOUNT));
     let ordinary = JevClient::new(EndpointConfig::production()).unwrap();
-    assert_eq!(ordinary.target_url(), "https://api.typesafe.ai/v1/systemone");
+    assert_eq!(
+        ordinary.target_url(),
+        "https://api.typesafe.ai/v1/systemone"
+    );
 }
 
 #[test]
@@ -117,7 +122,8 @@ fn invalid_accounts_cannot_change_the_native_host_or_path() {
 
 #[test]
 fn supplied_native_token_is_validated_and_bound_without_environment_reads() {
-    let (client, key) = JevClient::cloudflare_with_environment_token(ACCOUNT, TOKEN.into()).unwrap();
+    let (client, key) =
+        JevClient::cloudflare_with_environment_token(ACCOUNT, TOKEN.into()).unwrap();
     assert!(key.authorization_header_for(client.origin()).is_ok());
     assert!(
         key.authorization_header_for(&CanonicalOrigin::production())
@@ -148,14 +154,20 @@ fn native_request_preserves_typed_questions_and_escaped_context() {
 fn native_wrapper_counts_toward_the_exact_request_limit() {
     let empty = request_with_state(CLOUDFLARE_JEV_MODEL, "");
     let overhead = encode_request(&empty).unwrap().len();
-    let full = request_with_state(CLOUDFLARE_JEV_MODEL, &"x".repeat(MAX_REQUEST_BYTES - overhead));
+    let full = request_with_state(
+        CLOUDFLARE_JEV_MODEL,
+        &"x".repeat(MAX_REQUEST_BYTES - overhead),
+    );
     assert_eq!(encode_request(&full).unwrap().len(), MAX_REQUEST_BYTES);
     let oversized = request_with_state(
         CLOUDFLARE_JEV_MODEL,
         &"x".repeat(MAX_REQUEST_BYTES - overhead + 1),
     );
     assert!(oversized.to_json().unwrap().len() <= MAX_REQUEST_BYTES);
-    assert!(matches!(encode_request(&oversized), Err(CodecError::TooLarge)));
+    assert!(matches!(
+        encode_request(&oversized),
+        Err(CodecError::TooLarge)
+    ));
 }
 
 #[test]
@@ -179,7 +191,10 @@ fn invalid_native_request_fails_before_debit_or_socket() {
         CLOUDFLARE_JEV_MODEL,
         &"x".repeat(MAX_REQUEST_BYTES - encode_request(&empty).unwrap().len() + 1),
     );
-    for request in [request_with_state("jev-latest", "synthetic context"), oversized] {
+    for request in [
+        request_with_state("jev-latest", "synthetic context"),
+        oversized,
+    ] {
         let mut starts = 0;
         let mut start = || {
             starts += 1;
