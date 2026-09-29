@@ -737,15 +737,14 @@ fn typed_value(
         (ValueKind::ModelName, RawValue::String(text)) => {
             bounded_text(text, MAX_MODEL_BYTES).map(|t| TypedValue::Model(ModelName(t)))
         }
-        (ValueKind::Endpoint, RawValue::String(text)) => {
-            bounded_text(text, MAX_STRING_VALUE_BYTES).map(|origin| {
+        (ValueKind::Endpoint, RawValue::String(text)) => bounded_text(text, MAX_STRING_VALUE_BYTES)
+            .map(|origin| {
                 TypedValue::Endpoint(EndpointOverride {
                     origin,
                     cloudflare_account: None,
                     native_cloudflare: false,
                 })
-            })
-        }
+            }),
         (ValueKind::SkillReferences, RawValue::StringList(items)) => {
             let refs = bounded_list(items, MAX_LIST_ITEMS)?
                 .into_iter()
@@ -1212,7 +1211,9 @@ impl EffectiveConfig {
             (K::NetworkEnabled, T::Bool(v)) => self.network_enabled = v,
             (K::TypesafeEndpoint, T::Endpoint(v)) => self.endpoint = Some(v),
             (K::Provider, T::Provider(v)) => self.provider = v,
-            (K::CloudflareAccountId, T::CloudflareAccountId(v)) => self.cloudflare_account = Some(v),
+            (K::CloudflareAccountId, T::CloudflareAccountId(v)) => {
+                self.cloudflare_account = Some(v)
+            }
             (K::ProviderModel, T::Model(v)) => self.model = v,
             (K::HookMode, T::Hook(v)) => self.hook_mode = v,
             (K::HookNotificationTurns, T::Notification(v)) => self.notification_turns = v,
@@ -1589,8 +1590,10 @@ impl PolicyReceipt {
                 PolicyField::CredentialPresence => self.credential != current.credential,
                 PolicyField::Provider => a.provider != b.provider,
                 PolicyField::ProviderAccount => {
-                    a.endpoint().and_then(EndpointOverride::cloudflare_account_id)
-                        != b.endpoint().and_then(EndpointOverride::cloudflare_account_id)
+                    a.endpoint()
+                        .and_then(EndpointOverride::cloudflare_account_id)
+                        != b.endpoint()
+                            .and_then(EndpointOverride::cloudflare_account_id)
                 }
                 PolicyField::Endpoint => a.endpoint() != b.endpoint(),
                 PolicyField::Model => a.model != b.model,

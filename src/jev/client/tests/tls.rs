@@ -14,7 +14,10 @@ struct Server {
 
 fn read_json(lines: &mut impl BufRead) -> Value {
     let mut line = String::new();
-    assert!(lines.read_line(&mut line).unwrap() > 0, "fixture exited early");
+    assert!(
+        lines.read_line(&mut line).unwrap() > 0,
+        "fixture exited early"
+    );
     serde_json::from_str(&line).unwrap()
 }
 
@@ -45,8 +48,7 @@ impl Server {
 
     fn client(&self, native: bool, host: &str, trusted: bool) -> JevClient {
         let endpoint =
-            EndpointConfig::from_base_origin_str(&format!("https://{host}:{}", self.port))
-                .unwrap();
+            EndpointConfig::from_base_origin_str(&format!("https://{host}:{}", self.port)).unwrap();
         let roots = if trusted {
             Certificate::from_pem(include_bytes!("../../../../tests/fixtures/jev-tls/ca.pem"))
                 .unwrap()
@@ -280,7 +282,10 @@ fn native_http_enforces_response_headers_and_body_limits() {
         ("missing-type", TransportErrorKind::InvalidContentType),
         ("duplicate-type", TransportErrorKind::InvalidContentType),
         ("encoding", TransportErrorKind::UnsupportedEncoding),
-        ("duplicate-encoding", TransportErrorKind::UnsupportedEncoding),
+        (
+            "duplicate-encoding",
+            TransportErrorKind::UnsupportedEncoding,
+        ),
         ("oversized", TransportErrorKind::BodyTooLarge),
     ] {
         let server = Server::new(&[step], true);
