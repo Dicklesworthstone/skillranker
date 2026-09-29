@@ -589,3 +589,22 @@ the confirmation to look for.
   - So those turns were killed without a SIGTERM, which no process can record,
     and the ledger honestly counts them as in flight or killed. Redeployed
     `89d6525a…` at 21:14Z.
+
+## Redeployment — 2026-09-29 18:48Z (AzureJaguar, Cloudflare provider on main)
+
+- Binary: `~/.local/bin/sr`, SHA256
+  `72ddf91fe668074b322c9ad5404007192303013a225bb42c020a0263d17b032f`, built
+  `--release --locked` through RCH from `5f71eac`. The previous binary (SHA256
+  `89d6525a…`) is kept as `~/.local/bin/sr.backup.20260929T185000Z-ed60dc4`.
+- Carries the optional Cloudflare-hosted Jev transport (c031d75, 6a3245d,
+  5f71eac). This host runs the default TypeSafe provider, whose request
+  bytes, endpoint and allowance and breaker keys are unchanged. This host's
+  CLOUDFLARE_* variables pass the new strict validation (exit-code check
+  only); sr-sgca tracks the variables that do not.
+- An earlier sweep under load average 180 showed only load noise: both
+  binaries overran on the same moments. Rerun on a quiet host (load average
+  4.6), all 104 submitted prompts had identical outcomes.
+- Live check with synthetic input (maintainer key, 4 requests): both turns
+  completed, in 456 ms and 608 ms.
+- Gates at `5f71eac`'s tree: remote full suite 1532 passed, 0 failed; strict
+  clippy clean; rustfmt fixed in 4244c14 (formatting only).
