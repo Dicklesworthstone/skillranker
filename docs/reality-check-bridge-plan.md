@@ -1,10 +1,291 @@
 # SkillRanker reality check and bridge plan
 
-Latest assessment: 2026-09-22 UTC evening, live-deployment audit at `09f93b8`. Earlier reviews and receipts are retained below as
-history. Inventory and ownership statements describe their stated snapshots, not
-a frozen release or a product-completion percentage.
+Latest assessment: 2026-09-30 UTC, frozen source `ef85a1e`, with live tracker
+state refreshed after `07d7393`. Earlier reviews and receipts are retained below
+as history. Inventory and ownership statements describe their stated snapshots,
+not a frozen release or a product-completion percentage.
 
-## Current assessment — 2026-09-22 UTC evening, live-deployment audit at `09f93b8`
+## Current assessment — 2026-09-30 UTC
+
+**SkillRanker has a substantial working core and an operational shadow
+deployment. It has not established that its recommendations improve agent work,
+meet the hook performance targets, or are ready for a qualified advisory release.**
+The September 22 assessment that the deployment had produced no usable rankings
+is superseded: this repository now has 73 recorded shadow rankings and 29
+abstentions. The next decisive work is independent labels and controlled emitted
+advice, alongside the remaining core defects and platform qualification. More
+command implementation alone cannot answer whether the product helps.
+
+### Scope, authority and reproducibility
+
+Read all 678 lines of AGENTS.md and all 2,105 lines of README.md before substantive
+work, then the comprehensive plan, the current bridge assessment, relevant
+engineering contracts, source, dependency pins, tests and live task state.
+The intended product is next-step advice for one exact live session, with Jev as
+the essential inference engine and a selected-provider credential plus trusted
+network consent for fresh ranking. Local explicit resolution, Quill, cache and
+feedback support that workflow; none is an alternative inference backend.
+
+This pass inspected the installed binary, scoped hook settings, trusted mode,
+ledger and release inventory without changing deployment settings or sending
+session content. No provider credential was retrieved and no public Jev request
+was made. Synthetic CLI checks used private scratch directories, cleared
+credentials, no network consent and no persistence. Source tests use a frozen
+RCH checkout of `ef85a1eca2a22bfab7de29a5c1479059d8cedd00`, not the mutable
+shared tree. `07d7393` changes tracker ownership only; its Rust source and
+lockfile match the frozen revision.
+
+The pre-review tracker had 331 issues: 265 closed, 56 open, two in progress,
+two blocked and six deferred. These are bookkeeping states, not a completion
+percentage. The root roadmap and the P4 core epic remain active/open. Existing
+untracked Claude settings, WAL recovery directories and `return` are peer/local
+state and are preserved.
+
+### Intended workflow against actual implementation
+
+| Vision or boundary | What exists | Remaining qualification or implementation |
+|---|---|---|
+| Exact session and current prompt | Native Claude and normalized context, branch/epoch identity, prompt overlay, bounded tail readers and optional cass adapter | Capability metadata still marks Claude/cass unverified and lists no tested harness versions; real version-specific delivery/visibility evidence is separate |
+| User authority | Local explicit requirements before redaction/retrieval; exclusions, manual-only restrictions and exact target checks | Preserve these in every experimental hook/provider path; local explicit success was exercised here with zero requests |
+| Visible roster | Bounded filesystem/explicit inventory, metadata parsing, collision/precedence resolution, snapshot/diff and full-selection revalidation | Claude precedence remains provisional; a discovered file is not proof that the actual harness can invoke it |
+| Retrieval | Pinned in-memory Quill with literal bounded queries and deterministic overflow selection | Retrieval quality on independent positive overflow cases remains P7 evidence; passage/query-view/chunk experiments are P9 |
+| Jev selection | Real sequential wide/rerank builders, none option, strict response validation, per-candidate eligibility and local finite scoring | TypeSafe has historical live maximum-shape evidence; Cloudflare needs its own qualification and preview repair |
+| Privacy and bounded effects | Explicit consent, redaction, input limits, trusted configuration projections, Asupersync deadlines/cancellation and owned processes | Full suite and actual harness tests prove specific exercised boundaries, not universal privacy or stall immunity |
+| Cache and coordination | Namespaced keyed identities, validated response cache, current-policy reapplication, leases, allowance and breakers | Production single-flight and the tested standalone coordinator remain divergent (`sr-shnb`); live observed cache reuse is zero in this ledger |
+| Observations and judgments | SQLite ledger, observe, feedback/corrections, stats, retention/migration and explicit case capture | Zero current usefulness judgments; adoption is not an independent usefulness label; prior learning remains absent |
+| Replay and evaluation | Bounded inert replay, comparisons, weighted/sampled evaluation, explanation cards, robustness and online batch caps | A report that executes successfully is not a passed relevance/harm gate; the independent promotion corpus is not acquired |
+| Claude hooks | Production shadow wrapper, fail-quiet boundary, managed install/uninstall, snoozes and shared budgets | Real experimental emitted delivery/rollback, harm and representative availability remain open P7 gates |
+| Learning | Statistical/numerical evaluation support and policy artifacts | `calibrate`, learned-policy apply/rollback, shrunk priors and sequential monitoring remain P8 work |
+| TUI and watch | Shared result model and reserved Cargo feature | `tui = []` implements no terminal UI; TUI, refresh/watch and recovery tests remain P9 |
+| Description/gap tools | Existing roster parsing and stage explanations provide inputs | `doctor --descriptions`, `gaps` and evaluation-only overlays remain P9 |
+| Other native harnesses | Normalized context is the general boundary | Codex, omp/pi and Grok contract, implementation and real-harness gates have separate tasks; implementation tasks are deferred pending contracts |
+| Distribution | Standalone Rust package, pinned lock/toolchain, source installer and deployment binary | GitHub release API returned an empty release list; DSR publication and target/provider qualification remain separate work |
+
+The actual registry exposes **16 subcommands**, plus help/version: `rank`,
+`roster`, `doctor`, `capabilities`, `demo`, `hook`, `install-hook`,
+`uninstall-hook`, `stats`, `observe`, `feedback`, `snooze`, `budget`, `replay`,
+`eval`, and `ledger`. `calibrate`, `tui`, `gaps`, and `doctor --descriptions`
+are planned and refused. The four demo cases run as non-actionable synthetic
+artifacts. This is considerably beyond the old five-command capability summary;
+it does not make P7–P9 accepted.
+
+Architecture inspection and the fresh feature-graph guard confirm a single
+Rust 2024 package, unsafe-forbidden crate roots, pinned Asupersync, bundled
+rusqlite and default-disabled Quill/core. All four default/no-default and
+`tui` feature combinations exclude Tantivy, alternate runtimes/HTTP clients and
+embedding engines. Numerical helpers are narrow local adaptations documented
+in THIRD_PARTY_NOTICES.md, rather than runtime meta_skill or broad numerical
+workspace dependencies. Feature-graph coverage is not native platform execution.
+
+### Source, deployment and released product are different snapshots
+
+The installed `~/.local/bin/sr` reports `sr 0.1.0` and has SHA-256
+`72ddf91fe668074b322c9ad5404007192303013a225bb42c020a0263d17b032f`, matching
+the [September 29 receipt](self-host-shadow-deployment.md). That receipt is for
+`5f71eac`, with later formatting at `4244c14`. It reports 1,532 Rust passes,
+strict Clippy and synthetic local/provider checks. Those are historical results,
+not this pass's fresh suite or proof that the newest deployment has had a
+representative organic soak.
+
+The managed sr hook is repository-local in `.claude/settings.local.json`, with
+outer timeout four seconds. Trusted hook mode is shadow; networking is enabled
+in trusted user configuration. There is no managed sr hook in global settings.
+No shared allowance configuration is installed, although the budget command and
+durable enforcement are implemented. Scaling a controlled trial should choose
+an explicit cap as its preregistration requires, rather than assuming a cap
+exists. The existing ledger is compatible schema 1 with a reported v2 upgrade
+available; this audit neither migrated nor cleared it.
+
+The local Claude executable reports **2.1.285**. Current official
+[hook documentation](https://code.claude.com/docs/en/hooks) describes prompt
+identity, transcript lag and `UserPromptSubmit.additionalContext` injection.
+Its versioned contract supports the direction of the implementation; it does
+not verify the local inventory, precedence, prompt overlay or delivery at that
+version. The capability registry's empty `tested_versions` is therefore an
+honest unresolved qualification, not something to fill merely from `--version`.
+
+No GitHub release was present at the read-only API check. The documented
+installer's source fallback and a private maintainer binary are real paths;
+neither is a published, independently verified target matrix. Keep DSR as the
+release orchestrator. No release, advisory switch or real hook was changed here.
+
+### What the ledger establishes, and what it cannot
+
+`sr stats --json` at **2026-09-30 21:26:28Z** reports 170 ledger turns across
+workspaces: 167 shadow and three CLI. For this repository alone, read-only SQL
+finds 160 shadow rows plus two CLI rows:
+
+| Repository shadow state | Count | Interpretation |
+|---|---:|---|
+| Ranked | 73 | Computed recommendations withheld in shadow, not emitted exposures |
+| Abstain | 29 | Recorded abstentions, not independent correctness labels |
+| Completed unavailable | 50 | 31 credential-absent, seven authentication, seven ambiguous-branch, four unsupported-input, one invalid-provider-response |
+| In-flight | 8 | Outcome unknown; do not count as fast success, proven failure or valid abstention |
+
+The whole-ledger stats output agrees about the eight unfinished turns and
+excludes them from latency. It reports median **1,132 ms**, p95 **2,110 ms**
+over finished mixed-history turns. This mixes setup failures, older binaries,
+workspaces and CLI/shadow traffic; it is not a representative warm-network
+performance claim for the deployed revision.
+
+Whole-ledger provider accounting reports 234 attempts: 220 settled and 14
+unknown, 2,394,033 known tokens and 14 unknown-usage attempts. There are **zero
+usefulness judgments and zero cache-served events**. Cost per useful suggestion
+is not estimable; unknown usage is not free. The judgments count does not deny
+the separately stored diagnostic pilot, which has a different provenance.
+
+The hook-entry counter covers a later bounded span: 312 counted invocations,
+135 recorded hook turns, 154 non-turn deliveries and 23 unrecorded invocations.
+The counter is not full and has no unreadable entries. Unrecorded is an upper
+bound on missing failures because redelivery can produce two invocations for
+one turn. Do not pool this span with all historical rows or call all 23 outages.
+These denominators are still short of the ≥500 representative-invocation gate.
+
+Recent in-repository shadow traffic since September 27 comprises 22 rows:
+15 ranked, two abstained and five unfinished. Only two rows occur since
+September 29 UTC, both before the receipt's 18:48 deployment time. Thus the
+ledger proves operational progress since September 22, but does not establish
+an organic soak after the latest redeployment.
+
+### Gates that still separate the product from its promise
+
+| Gate | Current disposition | Owner or next evidence |
+|---|---|---|
+| Exact-cache p95 ≤100 ms | Historical quiet synthetic measurement meets it; busy measurement does not; current organic cache-served count is zero | `docs/latency-measurements.md`, representative matched cache strata |
+| Warm network p50 ≤600 ms / p95 ≤1,500 ms | Not established. Historical cold decision measurements are 1,397 / 2,279 ms; no compatible warm cohort certifies the target | `sr-w4in`, then source-bound phase timings and a frozen representative cohort |
+| ≥90% top-one relevance, 95% lower bound ≥80%; ≥80% positive coverage | Not established | `sr-uv2v`, `sr-roadmap-l1i.8.1` |
+| Needless suggestions ≤5%, upper bound ≤10% | Not established | Same independent primary-family holdout, including no-match/near-miss coverage |
+| Controlled new-harm upper bound ≤2% | Not established; shadow recommendations are not treatments | `.8.2`, `.8.3`, `.8.9`, `.8.10` |
+| ≤5% operational fallback over ≥500 representative hooks | Not established; setup history and unknown outcomes require separate strata | `sr-1uf4`, `.8.4` |
+| macOS full native storage/export release matrix | Blocked qualification, not wholly missing macOS code | `sr-roadmap-l1i.5.23`; physical Intel/HFS+ evidence and accessible workers remain unresolved |
+| Learned policy improves untouched holdout | Not implemented or established | P8 `.9.1`–`.9.9`, after independent labels |
+| Published qualified release | No GitHub release at this snapshot | `.8.7`, with explicit target/provider dispositions |
+
+The [relevance corpus contract](relevance-corpus-contract.md) contains an
+18-case constructed diagnostic pilot, including AI adjudication. It does not
+meet the independently adjudicated 300-primary-family promotion contract.
+Its blend first pass had 11 correct among 14 suggestions and needless advice
+on one of five no-match cases; a rerun had two of five. Choice-only comparisons
+are useful hypotheses, not a license to tune defaults against this pilot or
+claim the production precision gate. The positive/overflow miss denominator
+must survive abstention and operational failures. Fresh corpus-validator tests
+confirm the primary-family counting protections; actual independent cases and
+labels are still required.
+
+Two sequential provider stages are mandatory. Local overlap/concurrency can
+reduce local work; it cannot by itself guarantee a 600 ms total network median.
+Measure entry/discovery/context/Quill/serialization/wide/rerank/revalidation/
+cleanup, cold versus warm, cache versus network, failed versus completed and
+busy versus quiet before deciding what portion can change. Keep the total
+deadline and no-late-publication assertions intact; no speculative extra calls
+or weaker tests are warranted by a missed target.
+
+### Concrete defects and documentation reconciliation
+
+1. **Unused Cloudflare environment can disable TypeSafe.** An isolated
+   `doctor --config --json` with `SR_PROVIDER=typesafe` and a malformed synthetic
+   Cloudflare account exits 2/invalid-configuration. This confirms existing
+   `sr-sgca`; its in-progress ownership was preserved. The same task already
+   identifies installer prerequisites that inspect only a TypeSafe key.
+2. **Cloudflare preview is not final wire bytes.** The installed binary's
+   credential-free synthetic dry-run emits a 1,869-byte wide document with
+   `model/state/questions`; production `WireProtocol::Cloudflare` instead calls
+   `cloudflare_codec::encode_request`, producing `model/input` and an additional
+   nesting level. The independently reconstructed wrapper is 1,879 bytes. The
+   route matches the official
+   [Cloudflare Jev request contract](https://developers.cloudflare.com/ai/models/typesafe/jev/).
+   The mismatch violates exact preview and final-byte preflight semantics;
+   transport's own bound still protects actual send. New **`.5.30`** owns this
+   repair, including stage-2, depth/size boundary twins and CLI/TLS byte equality.
+3. **Cloudflare qualification has no distinct owner.** Native codec and local
+   transport implementation are real, but TypeSafe-origin capacity receipts
+   cannot qualify a different origin. New **`.2.14`**, organized under P7,
+   owns selected-provider local/live qualification with explicit consent/caps.
+   It depends on `sr-sgca` and `.5.30`. A TypeSafe-only release may state the
+   optional route's unqualified disposition rather than wait for its quality
+   study.
+4. **Current docs still describe superseded capability states.** This pass
+   updates AGENTS and `docs/capabilities.md` to the 16-command implementation,
+   corrects case-capture help/behavior, updates doctor's ledger states, separates
+   Cloudflare authoring limitations from the later Rust receipt, and removes
+   README's claim that an empty `--features tui` build makes TUI available.
+   README retains its requested finished-product voice. Historical receipts
+   remain historical; no old failures were silently converted into new passes.
+
+The live [TypeSafe protocol](https://docs.typesafe.ai/api) still specifies 255
+Choice options in total. The 254-skill-plus-none design is appropriate; the
+accepted 0.1 distribution tolerance remains supported by the project's real
+provider history. No protocol bound, sentinel, eligible-candidate none check,
+fit default or scoring weight was changed during this assessment.
+
+### Bridge plan and task coverage
+
+| Order | Deliverable and owner | Reviewable acceptance |
+|---|---|---|
+| 1 | Finish `sr-sgca`; repair `.5.30` | Default TypeSafe survives malformed unused Cloudflare values; selected Cloudflare still rejects malformed setup. Both selected-protocol previews equal actual wire bytes with zero preview effects |
+| 2 | Resolve `sr-shnb` and `.5.23` | Production single-flight uses the actually tested path or the redundant path is retired through authorized implementation; native target/storage/export receipts are complete or release targets remain explicitly unqualified |
+| 3 | Instrument/measure `sr-w4in` and refresh `sr-1uf4` readout | Frozen source/policy/harness/model identity, compatible timing strata and honest invocation/unknown/usage counts; choose a bounded allowance before scaling trials |
+| 4 | Acquire `sr-uv2v`; run `.8.1` | Independent primary-family labels, frozen split, positive/no-match/near-miss/overflow coverage and untouched holdout. Always-abstain loses on missed useful cases |
+| 5 | `.8.9` + `.8.10`, then `.8.2`–`.8.5` | Actual version-pinned experimental emitted advice and outage-safe local rollback; blinded paired cohorts, conservative unresolved outcomes and representative availability/cost evidence |
+| 6 | `.8.6`–`.8.8`, plus `.2.14` provider disposition | Explicit user opt-in, proven local rollback, DSR target/provider artifacts and a qualified release with remaining limitations named |
+| 7 | P8 learning, then individually selected P9 work | Independent labels and holdout benefit before priors/calibration; separate equal-budget/terminal/harness gates for each optional feature |
+
+Rows 1–3 contain independent work and can advance without new inference; they
+do not require serializing all engineering behind corpus acquisition. Corpus
+acquisition can advance independently as preregistered. Harm/availability
+studies depend on actual emitted-trial conformance; they cannot consume shadow
+output as delivered treatment. P9 experiments do not block a useful core CLI.
+
+Every major README/plan vision item already has an existing epic/implementation/
+verification chain. This pass adds only the two uncovered Cloudflare boundaries
+and refines existing `.8.7` release and `.8.10` real-harness acceptance criteria.
+It does not create duplicate calibration, TUI, corpus or adapter tasks, claim
+peer work, close unfinished gates, or run any experiment.
+
+### Ambition and refinement passes
+
+Three successive reviews raised the plan's practical standard in place:
+
+1. Replace command-count progress with user benefit: prioritize independent
+   usefulness, needless-advice, harm, operational and spend denominators.
+2. Separate source, installed binary, provider origin, harness version and
+   release targets: add native preview/qualification tasks and refine existing
+   release/version-specific trial acceptance.
+3. Reduce time to decisive evidence while retaining scope: use existing
+   replay/evaluation/feedback tools, keep independent engineering and corpus
+   work parallelizable, preserve shadow defaults and avoid duplicate features.
+
+Five Beads refinement passes checked: (1) existing coverage/ownership before
+creation; (2) correct scoped parenting and minimal blocking dependencies;
+(3) independent expected bytes, true local boundary tests, adverse cases and
+success twins; (4) privacy, explicit consent, exact revision/usage/deadline
+receipts and provider-specific release dispositions; (5) DAG validity and
+stopping at no further justified structural change. The wrapper-size correction
+was independently calculated before freezing the preview task. Only `br`
+created/modified issues; `bv --robot-*` diagnoses the graph. New tasks remain
+open: planning and tests specified in a task are not implementation evidence.
+
+### Fresh verification in this assessment
+
+| Check | Result and scope |
+|---|---|
+| `python3 -B scripts/validate_public_contracts.py` | Passed before edits; final edited-doc recheck is recorded below. Documentation syntax/link/example consistency only |
+| `python3 -B scripts/check_dependency_graph.py` | Passed four locked feature graphs; no forbidden package/feature activation; no target compilation claim |
+| `python3 -B -m unittest discover -s scripts -p 'test_*.py' -v` | 127 passed in 20.594 s, including corpus primary-family/bounds, policy, harm-cohort, dependency and evidence-matrix regressions |
+| `python3 -B tests/fixtures/jev-tls/test_cloudflare_server.py` | Eight passed in 4.474 s; Python peer behavior, not execution of the Rust client |
+| `cargo fmt --check` | Passed on the reviewed source before further peer changes |
+| Installed isolated CLI journeys | Capabilities, four inert demos and three planned-command refusals behaved as classified; explicit offline resolution used zero attempts; no-persist offline gave exit 11/cache-miss; malformed unused Cloudflare and preview mismatch reproduced |
+| Frozen full Rust suite | RCH remote run at `ef85a1e`; completion/result recorded below after the job finishes |
+
+Retained local audit artifacts are under
+`/scratch/tmp/skillranker-reality-20260930-sqet8624/`. They include the baseline
+tracker inventory, synthetic journey outputs/receipts, stats snapshot and graph
+receipts. Stats are local sensitive metadata and were not copied into Git;
+this document records aggregates only. Scratch data was retained under the
+repository's no-deletion rule. No Rust source, live settings, credentials or
+real ledger state was changed by this pass.
+
+## Historical assessment — 2026-09-22 UTC evening, live-deployment audit at `09f93b8`
 
 **The previous pass framed the self-hosted shadow deployment as live, and the
 measured cohort as the whole ballgame. The deployment is installed, but it has
