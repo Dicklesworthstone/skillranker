@@ -279,7 +279,9 @@ creation; (2) correct scoped parenting and minimal blocking dependencies;
 (3) independent expected bytes, true local boundary tests, adverse cases and
 success twins; (4) privacy, explicit consent, exact revision/usage/deadline
 receipts and provider-specific release dispositions; (5) DAG validity and
-stopping at no further justified structural change. The wrapper-size correction
+remaining coverage. A further final source-level denominator review found
+`.8.11`; its dependency and corpus criteria were added, then the complete graph
+was validated again. The wrapper-size correction
 was independently calculated before freezing the preview task. Only `br`
 created/modified issues; `bv --robot-*` diagnoses the graph. New tasks remain
 open: planning and tests specified in a task are not implementation evidence.
@@ -288,14 +290,40 @@ open: planning and tests specified in a task are not implementation evidence.
 
 | Check | Result and scope |
 |---|---|
-| `python3 -B scripts/validate_public_contracts.py` | Passed before edits; final edited-doc recheck is recorded below. Documentation syntax/link/example consistency only |
+| `python3 -B scripts/validate_public_contracts.py` | Passed before and after edits: 47 local links, 19 phase checks, two compared examples, five JSON, 22 shell and one TOML example. Documentation consistency only; examples were not executed |
 | `python3 -B scripts/check_dependency_graph.py` | Passed four locked feature graphs; no forbidden package/feature activation; no target compilation claim |
 | `python3 -B -m unittest discover -s scripts -p 'test_*.py' -v` | 127 passed in 20.594 s, including corpus uniqueness/bounds, policy, harm-cohort, dependency and evidence-matrix regressions; no sibling quota-inflation coverage |
 | Adversarial corpus-validator subprocess | Incorrectly exits 0/passed for two-positive/one-overflow minima when the primary population has only one positive/zero overflow; confirmed `.8.11`, not a test pass |
 | `python3 -B tests/fixtures/jev-tls/test_cloudflare_server.py` | Eight passed in 4.474 s; Python peer behavior, not execution of the Rust client |
 | `cargo fmt --check` | Passed on the reviewed source before further peer changes |
-| Installed isolated CLI journeys | Capabilities, four inert demos and three planned-command refusals behaved as classified; explicit offline resolution used zero attempts; no-persist offline gave exit 11/cache-miss; malformed unused Cloudflare and preview mismatch reproduced |
-| Frozen full Rust suite | RCH remote run at `ef85a1e`; completion/result recorded below after the job finishes |
+| Installed isolated CLI journeys | All 16 implemented subcommand help paths, capabilities, four inert demos and three planned-command refusals behaved as classified; explicit offline resolution used zero attempts; no-persist offline gave exit 11/cache-miss; malformed unused Cloudflare and preview mismatch reproduced; the malformed-config hook returned 0 with empty stdout |
+| Frozen full Rust suite | **1,532 passed, 0 failed, 10 ignored**, 148 harness reports, exit 0; RCH remote `hz3` at `ef85a1e`, default features, locked dependencies |
+| Beads and BV | Final 334 issues, 265 closed and 69 not closed; three new open tasks. `br dep cycles` and refreshed `bv --robot-insights`, triage and plan found no cycles |
+| Staged UBS | Exit 3 for Markdown: no supported language and no scanner ran. This is not a scanner pass |
+
+The full Rust command was:
+
+```sh
+RCH_REQUIRE_REMOTE=1 RCH_VISIBILITY=summary rch exec \
+  --base ef85a1e --clean-overlay --no-overlay -- cargo test --locked
+```
+
+RCH's receipt identifies base
+`ef85a1eca2a22bfab7de29a5c1479059d8cedd00`, clean tree
+`09422397b238787feb804222b51508980089af03`, and overlay fingerprint
+`fe0d5151031be8fda7951fe7fe1f42f7ce344018fdb3ed21e6ada866b230b195`.
+The test profile was unoptimized with debug information; compilation took
+56m49s and the remote operation 3,559.7s. Foreign Rust builds overlapped
+compilation; none was observed in the process snapshot at the first captured
+test output. This observation is not continuous worker-load qualification or
+a production-hook latency measurement.
+
+The ten ignored harness cases are five separately consented public TypeSafe
+selections, one actual-installed-cass selection, two manual contention/startup
+diagnostics and two subprocess child entry points. Child entry points are
+invoked by their ordinary parent tests; ignore status is not missing child
+coverage or an executed live provider check. No new live selection, Clippy
+result, macOS matrix or advisory quality gate is claimed by this suite.
 
 Retained local audit artifacts are under
 `/scratch/tmp/skillranker-reality-20260930-sqet8624/`. They include the baseline
