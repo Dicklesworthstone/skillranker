@@ -168,9 +168,10 @@ Its blend first pass had 11 correct among 14 suggestions and needless advice
 on one of five no-match cases; a rerun had two of five. Choice-only comparisons
 are useful hypotheses, not a license to tune defaults against this pilot or
 claim the production precision gate. The positive/overflow miss denominator
-must survive abstention and operational failures. Fresh corpus-validator tests
-confirm the primary-family counting protections; actual independent cases and
-labels are still required.
+must survive abstention and operational failures. Although the existing 127
+Python tooling tests pass, a fresh adversarial check exposes a quota bug:
+non-primary siblings inflate declared strata. Repair `.8.11` before trusting
+promotion sufficiency; actual independent cases and labels are still required.
 
 Two sequential provider stages are mandatory. Local overlap/concurrency can
 reduce local work; it cannot by itself guarantee a 600 ms total network median.
@@ -204,7 +205,19 @@ or weaker tests are warranted by a missed target.
    It depends on `sr-sgca` and `.5.30`. A TypeSafe-only release may state the
    optional route's unqualified disposition rather than wait for its quality
    study.
-4. **Current docs still describe superseded capability states.** This pass
+4. **Sibling variants can falsely satisfy primary-family corpus quotas.** At
+   `ef85a1e`, `scripts/validate_corpus.py` checks primary uniqueness but increments
+   positive/no-match/near-miss/overflow-positive quotas for every record. The
+   real validator accepted a valid synthetic three-family corpus plus one
+   non-primary positive overflow sibling: it reported two positives and one
+   overflow-positive against those declared minima, although the primary
+   population contained one positive and zero overflow positives. Exit zero
+   and `status: passed` establish the reproduction, not a valid quality gate.
+   The 127-test suite does not cover this attack. New **`.8.11`** preserves
+   diagnostic siblings while enforcing primary-only quotas and downstream
+   denominators. Held-out promotion `.8.1` now depends on it; independent corpus
+   acquisition can proceed while the validator is repaired.
+5. **Current docs still describe superseded capability states.** This pass
    updates AGENTS and `docs/capabilities.md` to the 16-command implementation,
    corrects case-capture help/behavior, updates doctor's ledger states, separates
    Cloudflare authoring limitations from the later Rust receipt, and removes
@@ -224,7 +237,7 @@ fit default or scoring weight was changed during this assessment.
 
 | Order | Deliverable and owner | Reviewable acceptance |
 |---|---|---|
-| 1 | Finish `sr-sgca`; repair `.5.30` | Default TypeSafe survives malformed unused Cloudflare values; selected Cloudflare still rejects malformed setup. Both selected-protocol previews equal actual wire bytes with zero preview effects |
+| 1 | Repair `.8.11`; finish `sr-sgca`; repair `.5.30` | Corpus variants cannot satisfy primary-family quotas. Default TypeSafe survives malformed unused Cloudflare values; selected Cloudflare still rejects malformed setup. Both selected-protocol previews equal actual wire bytes with zero preview effects |
 | 2 | Resolve `sr-shnb` and `.5.23` | Production single-flight uses the actually tested path or the redundant path is retired through authorized implementation; native target/storage/export receipts are complete or release targets remain explicitly unqualified |
 | 3 | Instrument/measure `sr-w4in` and refresh `sr-1uf4` readout | Frozen source/policy/harness/model identity, compatible timing strata and honest invocation/unknown/usage counts; choose a bounded allowance before scaling trials |
 | 4 | Acquire `sr-uv2v`; run `.8.1` | Independent primary-family labels, frozen split, positive/no-match/near-miss/overflow coverage and untouched holdout. Always-abstain loses on missed useful cases |
@@ -239,9 +252,11 @@ studies depend on actual emitted-trial conformance; they cannot consume shadow
 output as delivered treatment. P9 experiments do not block a useful core CLI.
 
 Every major README/plan vision item already has an existing epic/implementation/
-verification chain. This pass adds only the two uncovered Cloudflare boundaries
-and refines existing `.8.7` release and `.8.10` real-harness acceptance criteria.
-It does not create duplicate calibration, TUI, corpus or adapter tasks, claim
+verification chain. This pass adds three uncovered boundaries: two for
+Cloudflare and one corpus-validator quota defect. It refines existing `.8.7`
+release, `.8.10` real-harness and `sr-uv2v` corpus acceptance criteria, adds the
+`.8.1` prerequisite and a fresh `sr-1uf4` evidence comment.
+It does not create duplicate calibration, TUI, corpus-acquisition or adapter tasks, claim
 peer work, close unfinished gates, or run any experiment.
 
 ### Ambition and refinement passes
@@ -256,6 +271,8 @@ Three successive reviews raised the plan's practical standard in place:
 3. Reduce time to decisive evidence while retaining scope: use existing
    replay/evaluation/feedback tools, keep independent engineering and corpus
    work parallelizable, preserve shadow defaults and avoid duplicate features.
+   An additional adversarial denominator review found and prioritized `.8.11`
+   rather than treating the passing existing tests as validator correctness.
 
 Five Beads refinement passes checked: (1) existing coverage/ownership before
 creation; (2) correct scoped parenting and minimal blocking dependencies;
@@ -273,7 +290,8 @@ open: planning and tests specified in a task are not implementation evidence.
 |---|---|
 | `python3 -B scripts/validate_public_contracts.py` | Passed before edits; final edited-doc recheck is recorded below. Documentation syntax/link/example consistency only |
 | `python3 -B scripts/check_dependency_graph.py` | Passed four locked feature graphs; no forbidden package/feature activation; no target compilation claim |
-| `python3 -B -m unittest discover -s scripts -p 'test_*.py' -v` | 127 passed in 20.594 s, including corpus primary-family/bounds, policy, harm-cohort, dependency and evidence-matrix regressions |
+| `python3 -B -m unittest discover -s scripts -p 'test_*.py' -v` | 127 passed in 20.594 s, including corpus uniqueness/bounds, policy, harm-cohort, dependency and evidence-matrix regressions; no sibling quota-inflation coverage |
+| Adversarial corpus-validator subprocess | Incorrectly exits 0/passed for two-positive/one-overflow minima when the primary population has only one positive/zero overflow; confirmed `.8.11`, not a test pass |
 | `python3 -B tests/fixtures/jev-tls/test_cloudflare_server.py` | Eight passed in 4.474 s; Python peer behavior, not execution of the Rust client |
 | `cargo fmt --check` | Passed on the reviewed source before further peer changes |
 | Installed isolated CLI journeys | Capabilities, four inert demos and three planned-command refusals behaved as classified; explicit offline resolution used zero attempts; no-persist offline gave exit 11/cache-miss; malformed unused Cloudflare and preview mismatch reproduced |
