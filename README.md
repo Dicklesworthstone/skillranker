@@ -1982,7 +1982,7 @@ aliases remain part of the report when an immutable revision is unavailable.
 | A key is present but ranking fails | Doctor separates credential presence, network permission, and verified transport; presence alone proves no live connection |
 | Replay reports `not-replayable` | Supply compatible complete recorded responses or run a separately authorized evaluation for changed inputs |
 | A setting differs from expectations | Use `sr doctor --config` to see its winning source and rejected overrides |
-| TUI unavailable | Build with `--features tui`, or use table/JSON output |
+| TUI unavailable | Check `sr capabilities --json` for this build's TUI support; use table/JSON output when unavailable |
 | Evaluation stops with unfinished cases | Review the batch's HTTP-attempt and runtime caps; retries consume the request budget |
 | A zero-harm evaluation fails its gate | Check the number of independent task families and the one-sided upper bound; zero observed harms alone is insufficient |
 

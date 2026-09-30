@@ -15,7 +15,7 @@ changes no configuration. Invalid configuration fails first, with
 | `credential` | `present` or `absent`; `verified` is always `false` | configure your own credential for the selected provider |
 | `network` | `authorized` (with `source`), `not-authorized`, `blocked` (with `by`) | `--allow-network`, or trusted `network.enabled = true` |
 | `transport` | `untested`, `previously-verified`, `invalidated`; `ambient_proxy_ignored` names set proxy variables | allow direct HTTPS egress when a proxy variable is set |
-| `ledger` | `not-available`, `blocks_ranking: false` | — |
+| `ledger` | `ready`, `read-only`, or `not-available`; `blocks_ranking: false`, nullable `cleanup_debt` | ready stores with cleanup debt suggest explicit `sr ledger prune --apply` |
 | `hook` | `mode` and `mode_sources`; `installation: not-checked`; `snoozes` with `state` `none`, `active` or `invalid`, entry counts, `uncertain_expiry` and the `muting` entries | fix or clear an invalid file; check the clock for uncertain expiry |
 
 Notes:

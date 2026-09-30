@@ -6,7 +6,7 @@
 | Field | Contents |
 | --- | --- |
 | `commands` | Every command in the roadmap, marked `implemented` or `planned` with its earliest phase |
-| `planned_flags` | Flags the parser knows but refuses until their phase ships, such as `rank --save-case` (P5) |
+| `planned_flags` | Flags the parser knows but refuses until their phase ships; currently `doctor --descriptions` (P9) |
 | `adapters` | Adapter support, identity and visibility semantics, tested and unverified versions, and conformance evidence |
 | `schemas` | Output, configuration, roster import/listing/snapshot/diff, retrieval and question-policy versions |
 | `features` | Compiled Cargo features and whether each is implemented. `tui` is reserved and not implemented |
@@ -19,6 +19,12 @@ so the registry cannot list a command or adapter the foundation does not
 declare. Limits come from `limits::ALL_DEFAULT_LIMITS`, and exit codes from
 `output::ErrorKind::ALL`.
 
+The implemented subcommands are `rank`, `roster`, `doctor`, `capabilities`,
+`demo`, `hook`, `install-hook`, `uninstall-hook`, `stats`, `observe`, `feedback`,
+`snooze`, `budget`, `replay`, `eval`, and `ledger`, plus help and version.
+`calibrate` (P8), `tui` and `gaps` (P9) remain planned. An empty `tui` Cargo
+feature does not implement the command.
+
 The registry states what this binary runs. It claims no phase acceptance,
 provider availability, native harness support or installed-version
 compatibility. The Claude adapter stays unverified with no tested version, so
@@ -29,8 +35,8 @@ Behavior that must match the registry:
 - A planned command is refused as `invalid-usage` (exit 2). It is never
   partially run.
 - `sr --help` names every implemented command and no planned one.
-- `rank --save-case FILE` is refused with `invalid-usage` and writes nothing.
-  Its conflicts with `--dry-run` and `--no-persist` are still reported.
+- `rank --save-case FILE` is implemented as explicit private case capture.
+  Its conflicts with `--dry-run` and `--no-persist` are reported before capture.
 - Bare `sr` is `sr rank`. Flags given without a subcommand are rank flags.
 
 ## Verification
@@ -39,7 +45,8 @@ Behavior that must match the registry:
 - the printed registry equals the library registry;
 - every implemented command answers `--help`;
 - every planned command is refused;
-- help names only implemented commands and hides `--save-case`;
-- the planned flag is refused without writing a file;
+- help names only implemented commands, includes `--save-case`, and hides
+  planned flags;
+- each planned flag is refused without starting its planned behavior;
 - bare `sr` reaches ranking;
 - limits, error kinds and adapter support match their sources.

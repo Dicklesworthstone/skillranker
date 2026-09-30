@@ -103,10 +103,19 @@ The local Python TLS peer has a separate self-check:
 python3 -B tests/fixtures/jev-tls/test_cloudflare_server.py
 ```
 
-A Python peer check is not execution of the Rust client. The authoring container
-has no Cargo, rustc or rustfmt, so this integration has not been compiled or
-run there. Source and whitespace checks are not substitutes for the focused and
-full locked Rust suites. No public-provider request or model-quality acceptance
-is claimed. Run the native transport, configuration, pipeline, allowance,
-breaker and full regression suites on the exact integrated revision before
-production qualification. PR #8 remains closed; this work is committed to main.
+A Python peer check is not execution of the Rust client. The original authoring
+container had no Rust toolchain; that limitation describes the initial authoring
+step. The [September 29 deployment receipt](self-host-shadow-deployment.md)
+records 1,532 default-feature Rust test passes and strict Clippy on the integrated
+`5f71eac` source, with formatting recorded at `4244c14`. Those checks supersede
+the original compile limitation, but do not establish public Cloudflare capacity,
+availability, model quality, or warm-hook latency. TypeSafe-origin qualification
+cannot establish those properties for a different provider origin.
+
+The [current reality check](reality-check-bridge-plan.md) separates these gates.
+`sr-sgca` owns malformed unused-provider environment isolation;
+`sr-roadmap-l1i.5.30` owns final native wire-byte preview correctness;
+`sr-roadmap-l1i.2.14` owns provider-specific qualification. Public checks require
+separate explicit consent, synthetic or consented inputs, and attempt/runtime
+caps. No public Cloudflare request or quality acceptance is claimed here.
+PR #8 remains closed; the integration is committed to main.

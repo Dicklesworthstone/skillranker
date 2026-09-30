@@ -430,7 +430,10 @@ preflight backup/WAL/temporary space and fail before mutation if it is insuffici
   with schemas, adapters/events, compiled features, limits, examples, and exits.
   Distinguish planned commands from implemented capabilities and tested harness
   versions from unverified ones. The binary implements `rank`, `roster`, `doctor`,
-  `demo`, and `capabilities`, in addition to help and version. Implementation is
+  `demo`, `capabilities`, `hook`, `install-hook`, `uninstall-hook`, `stats`,
+  `observe`, `feedback`, `snooze`, `budget`, `replay`, `eval`, and `ledger`, in
+  addition to help and version. `calibrate`, `tui`, `gaps`, and
+  `doctor --descriptions` remain planned. Implementation is
   distinct from phase acceptance: consult the live capability registry, Beads and
   revision-bound evidence for limitations and pending qualification. Hooks,
   ledger/replay/evaluation, learning and TUI retain their separate gates. Preserve
