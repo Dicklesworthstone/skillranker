@@ -209,6 +209,8 @@ or weaker tests are warranted by a missed target.
    corrects case-capture help/behavior, updates doctor's ledger states, separates
    Cloudflare authoring limitations from the later Rust receipt, and removes
    README's claim that an empty `--features tui` build makes TUI available.
+   P1 document introductions now distinguish the later successful TypeSafe
+   maximum-shape receipt from earlier incomplete attempts and from Cloudflare.
    README retains its requested finished-product voice. Historical receipts
    remain historical; no old failures were silently converted into new passes.
 

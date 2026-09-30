@@ -64,9 +64,12 @@ Phase P1 acceptance is supported by:
 6. **Classified Retries:**
    - 429, 529, 503 classified as retryable; 400, 401, 403, 404 classified as non-retryable.
    - `Retry-After` bounded by remaining deadline.
-7. **Live Provider Contract — incomplete:**
+7. **Live Provider Contract — scoped TypeSafe-origin qualification:**
    - Explicitly selected smoke execution requires consent and an exported key.
    - A small successful request can establish that request's HTTPS and answer shape.
+   - The `99de43e` receipt separately establishes the successful synthetic
+     maximum-shape wide/rerank pair; it does not qualify Cloudflare or today's
+     availability, relevance or warm-hook performance.
    - Provider capacity, negotiated TLS version, and an immutable model revision
      must not be inferred from local assertions or client configuration.
 

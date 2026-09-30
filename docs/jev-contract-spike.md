@@ -1,14 +1,19 @@
 # Jev contract qualification (`sr-roadmap-l1i.2.10`)
 
-## Scope and remaining gate
+## Current qualification scope
 
-Qualification is incomplete. The live smoke test exercises one synthetic request
-through the production Asupersync HTTPS client: a three-option Choice including
-`__none__`, plus one Noul question. It does not establish the provider's maximum
-context, criteria length, question count, or response size. The application caps
-of 96 KiB/request, 2 MiB/decoded response and 255 Choice options are local limits,
-not measurements of the service's capacity. P1 acceptance remains open until its
-full live and transport requirements have revision-bound evidence.
+The successful September 19 maximum-shape receipt below qualifies the synthetic
+TypeSafe-origin wide/rerank pair at `99de43e` under the accepted 0.1 distribution
+tolerance. See [P1 readiness](p1-readiness-gate.md) for the related runtime and
+transport gates. Earlier attempts and failures below remain historical evidence.
+
+The small smoke alone exercises a three-option Choice including `__none__`, plus
+one Noul question; it cannot establish maximum capacity. The later pair tests
+254 real options plus none and the 32-candidate detailed stage. The application
+caps of 96 KiB/request and 2 MiB/decoded response remain local limits, not a
+universal service-capacity guarantee. This receipt establishes neither current
+availability, ranking quality, warm-hook latency nor Cloudflare-origin support.
+Cloudflare has a separate qualification task, `sr-roadmap-l1i.2.14`.
 
 Earlier versions of this document presented a response, token counts (361/58),
 680 ms latency, TLS 1.3, and model `jev-1.13.0` as verified by this test. No
@@ -433,4 +438,3 @@ pair.
 4. **Diagnostic sums**: `budgeted_live_distribution_diagnostic` was omitted to
    avoid exceeding the single authorized live test; exact float sums were not
    logged beyond strict acceptance by the production decoder.
-
