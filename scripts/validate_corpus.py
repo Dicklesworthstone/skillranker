@@ -215,7 +215,9 @@ def run(manifest_path: Path, cases_path: Path) -> None:
     family_split: dict[str, str] = {}
     family_primary: dict[str, str] = {}
     counts = {key: 0 for key in strata_keys}
+    variant_counts = {key: 0 for key in strata_keys}
     double_judged = 0
+    primary_double_judged = 0
 
     with regular_file(cases_path, MAX_CASES_BYTES, "cases") as handle:
         total_bytes = 0
@@ -262,17 +264,22 @@ def run(manifest_path: Path, cases_path: Path) -> None:
             kind = require_str(case.get("case_kind"), f"{case_id}.case_kind")
             acceptable = case.get("acceptable_additional_invocations_y")
             near_miss = case.get("near_miss_skill_ids")
+            # Every record has already undergone the same trust/label checks.
+            # Only the preselected primary can supply independent-family quotas.
+            stratum_counts = counts if case["primary_family_case"] else variant_counts
             if kind == "positive_advisory":
-                counts["positive"] += 1
+                stratum_counts["positive"] += 1
             elif kind == "no_match_advisory":
                 require(acceptable == [], f"{case_id} is no-match but names acceptable skills")
-                counts["no_match"] += 1
+                stratum_counts["no_match"] += 1
             elif kind == "near_miss_advisory":
-                counts["near_miss"] += 1
+                stratum_counts["near_miss"] += 1
             if case.get("overflow") is True and acceptable:
-                counts["overflow_positive"] += 1
+                stratum_counts["overflow_positive"] += 1
             if len(case.get("adjudications")) > 1:
                 double_judged += 1
+                if case["primary_family_case"]:
+                    primary_double_judged += 1
             require(isinstance(near_miss, list), f"{case_id}.near_miss_skill_ids must be a list")
 
     for family_id in family_split:
@@ -298,7 +305,7 @@ def run(manifest_path: Path, cases_path: Path) -> None:
     for key in strata_keys:
         require(
             counts[key] >= minimums.get(key, 0),
-            f"stratum {key} has {counts[key]} cases, below the declared minimum "
+            f"stratum {key} has {counts[key]} primary cases, below the declared minimum "
             f"{minimums.get(key, 0)}",
         )
 
@@ -321,17 +328,32 @@ def run(manifest_path: Path, cases_path: Path) -> None:
     if recorded is not None:
         require(recorded == dataset_digest, "dataset_digest does not match the frozen split lists")
 
+    # Preserve the frozen split order so consumers can select the same cohort
+    # without treating diagnostic siblings as independent observations.
+    primary_lists = {
+        name: [case_id for case_id in frozen_lists[name] if cases[case_id]["primary_family_case"]]
+        for name in SPLIT_NAMES
+    }
     print(
         json.dumps(
             {
                 "status": "passed",
                 "cases": len(cases),
                 "families": len(family_split),
+                "primary_cases": len(family_primary),
+                "variant_cases": len(cases) - len(family_primary),
                 "strata": counts,
+                "variant_strata": variant_counts,
                 "double_judged": double_judged,
+                "double_judgment_population": "all-records",
+                "double_judgment_denominator": len(cases),
+                "primary_double_judged": primary_double_judged,
                 "dataset_digest": dataset_digest,
+                "primary_case_ids_by_split": primary_lists,
+                "primary_dataset_digest": canonical_digest(primary_lists),
                 "declared_population": declared["description"],
                 "narrowed": declared["narrowed"],
+                "scope": "diagnostic" if declared["narrowed"] else "corpus-validation-only",
             },
             indent=2,
         )

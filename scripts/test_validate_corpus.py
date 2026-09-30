@@ -141,6 +141,138 @@ class CorpusValidatorTest(unittest.TestCase):
             f"failure for {needle!r} must name its cause: {result.stderr}",
         )
 
+    def append_frozen_case(self, manifest, cases, case):
+        cases.append(case)
+        split = case["split"]
+        frozen = manifest["splits"][split]
+        frozen["case_ids"].append(case["case_id"])
+        frozen["digest"] = digest({"split": split, "case_ids": frozen["case_ids"]})
+
+    def assert_quota_requires_independent_primary(self, stratum, kind, overflow=False):
+        manifest, cases = valid_corpus()
+        manifest["strata_minimums"][stratum] = 1 if overflow else 2
+        for index in range(12):
+            sibling = base_case(f"variant-{index}", "training", kind, cases[0]["family_id"])
+            sibling["primary_family_case"] = False
+            sibling["overflow"] = overflow
+            if kind == "no_match_advisory":
+                sibling["acceptable_additional_invocations_y"] = []
+            if kind == "near_miss_advisory":
+                sibling["near_miss_skill_ids"] = ["s_tempt"]
+            self.append_frozen_case(manifest, cases, sibling)
+        self.assert_fails_with(manifest, cases, f"stratum {stratum}")
+
+        independent = base_case("independent-primary", "holdout", kind)
+        independent["overflow"] = overflow
+        if kind == "no_match_advisory":
+            independent["acceptable_additional_invocations_y"] = []
+        if kind == "near_miss_advisory":
+            independent["near_miss_skill_ids"] = ["s_tempt"]
+        self.append_frozen_case(manifest, cases, independent)
+        result = self.run_validator(manifest, cases)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        report = json.loads(result.stdout)
+        self.assertEqual(report["strata"][stratum], 1 if overflow else 2)
+        self.assertEqual(report["variant_strata"][stratum], 12)
+        self.assertEqual(report["primary_cases"], 4)
+        self.assertEqual(report["variant_cases"], 12)
+        self.assertEqual(report["primary_case_ids_by_split"]["holdout"], ["independent-primary"])
+
+    def test_positive_siblings_cannot_supply_primary_quota(self):
+        self.assert_quota_requires_independent_primary("positive", "positive_advisory")
+
+    def test_no_match_siblings_cannot_supply_primary_quota(self):
+        self.assert_quota_requires_independent_primary("no_match", "no_match_advisory")
+
+    def test_near_miss_siblings_cannot_supply_primary_quota(self):
+        self.assert_quota_requires_independent_primary("near_miss", "near_miss_advisory")
+
+    def test_overflow_siblings_cannot_supply_primary_quota(self):
+        self.assert_quota_requires_independent_primary("overflow_positive", "positive_advisory", True)
+
+    def test_mixed_variants_preserve_frozen_primary_report_cohort(self):
+        manifest, cases = valid_corpus()
+        for index in range(300):
+            kind = ("positive_advisory", "no_match_advisory", "near_miss_advisory")[index % 3]
+            sibling = base_case(f"mixed-{index}", "training", kind, cases[0]["family_id"])
+            sibling["primary_family_case"] = False
+            sibling["overflow"] = True
+            if kind == "no_match_advisory":
+                sibling["acceptable_additional_invocations_y"] = []
+            if kind == "near_miss_advisory":
+                sibling["near_miss_skill_ids"] = ["s_tempt"]
+            self.append_frozen_case(manifest, cases, sibling)
+        result = self.run_validator(manifest, cases)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        report = json.loads(result.stdout)
+        self.assertEqual(report["cases"], 303)
+        self.assertEqual(report["primary_cases"], 3)
+        self.assertEqual(report["families"], 3)
+        self.assertEqual(report["variant_cases"], 300)
+        self.assertEqual(report["strata"], {"positive": 1, "no_match": 1, "near_miss": 1, "overflow_positive": 0})
+        self.assertEqual(report["variant_strata"], {"positive": 100, "no_match": 100, "near_miss": 100, "overflow_positive": 200})
+        expected_ids = {
+            "training": ["case-pos", "case-nomatch"],
+            "validation": ["case-nearmiss"],
+            "holdout": [],
+        }
+        self.assertEqual(report["primary_case_ids_by_split"], expected_ids)
+        self.assertEqual(report["primary_dataset_digest"], digest(expected_ids))
+        # Report consumers select this frozen cohort, never all retained records.
+        primary_ids = {case_id for ids in report["primary_case_ids_by_split"].values() for case_id in ids}
+        cohort = [case for case in cases if case["case_id"] in primary_ids]
+        self.assertEqual(len(cohort), 3)
+        self.assertTrue(all(case["primary_family_case"] for case in cohort))
+        self.assertEqual(report["scope"], "diagnostic")
+        manifest["strata_minimums"]["positive"] = 150
+        self.assert_fails_with(manifest, cases, "stratum positive has 1 primary cases")
+
+    def test_variants_retain_all_trust_and_label_validation(self):
+        for field, value, message in (
+            ("consent_reference", "", "consent_reference"),
+            ("acceptable_additional_invocations_y", ["s_ghost"], "not in the roster"),
+            ("adjudications", [], "adjudication record"),
+            ("near_miss_skill_ids", ["s_good"], "both acceptable and near-miss"),
+        ):
+            with self.subTest(field=field):
+                manifest, cases = valid_corpus()
+                sibling = base_case("bad-variant", "training", family=cases[0]["family_id"])
+                sibling["primary_family_case"] = False
+                sibling[field] = value
+                self.append_frozen_case(manifest, cases, sibling)
+                self.assert_fails_with(manifest, cases, message)
+
+    def test_family_without_primary_fails(self):
+        manifest, cases = valid_corpus()
+        cases[0]["primary_family_case"] = False
+        self.assert_fails_with(manifest, cases, "has no primary case")
+
+    def test_review_fraction_keeps_all_record_population_explicit(self):
+        manifest, cases = valid_corpus()
+        sibling = base_case("reviewed-variant", "validation", family=cases[2]["family_id"])
+        sibling["primary_family_case"] = False
+        second = {"adjudicator": "adj-2", "blindness_attested": True,
+                  "rubric_version": RUBRIC, "labeled_at_unix_ms": 3}
+        cases[2]["adjudications"].append(copy.deepcopy(second))
+        self.append_frozen_case(manifest, cases, sibling)
+        manifest["double_judgment_fraction"] = 0.5
+        self.assert_fails_with(manifest, cases, "only 1 of 4 cases are double-judged")
+        sibling["adjudications"].append(second)
+        result = self.run_validator(manifest, cases)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        report = json.loads(result.stdout)
+        self.assertEqual(report["double_judged"], 2)
+        self.assertEqual(report["primary_double_judged"], 1)
+        self.assertEqual(report["double_judgment_population"], "all-records")
+        self.assertEqual(report["double_judgment_denominator"], 4)
+
+    def test_broad_validation_receipt_does_not_claim_promotion(self):
+        manifest, cases = valid_corpus()
+        manifest["declared_population"]["narrowed"] = False
+        result = self.run_validator(manifest, cases)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["scope"], "corpus-validation-only")
+
     def test_deep_json_is_rejected_before_decoding(self):
         for target in ("manifest", "case"):
             for nesting in (64, 65):

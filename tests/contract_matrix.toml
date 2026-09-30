@@ -418,7 +418,7 @@ status = "planned"
 [[boundaries]]
 id = "p1_acceptance_gate"
 owner_bead = "sr-roadmap-l1i.2.12"
-member_beads = ["sr-roadmap-l1i.2.12"]
+member_beads = ["sr-roadmap-l1i.2.12", "sr-roadmap-l1i.2.14"]
 phase = "P1"
 title = "Accept transport/runtime readiness on the selected build"
 unit_property_tests = [
@@ -1184,7 +1184,7 @@ status = "planned"
 [[boundaries]]
 id = "p4_core_cli_acceptance"
 owner_bead = "sr-roadmap-l1i.5.21"
-member_beads = ["sr-roadmap-l1i.5.21", "sr-roadmap-l1i.5.10", "sr-roadmap-l1i.5.17", "sr-roadmap-l1i.5.18", "sr-roadmap-l1i.5.19", "sr-roadmap-l1i.5.2", "sr-roadmap-l1i.5.3", "sr-roadmap-l1i.5.4", "sr-roadmap-l1i.5.5", "sr-roadmap-l1i.5.6", "sr-roadmap-l1i.5.7", "sr-roadmap-l1i.5.8", "sr-roadmap-l1i.5.9", "sr-roadmap-l1i.5.10.1", "sr-roadmap-l1i.5.10.2", "sr-roadmap-l1i.5.10.3", "sr-roadmap-l1i.5.24", "sr-roadmap-l1i.5.24.1", "sr-roadmap-l1i.5.24.2", "sr-roadmap-l1i.5.25", "sr-roadmap-l1i.5.26", "sr-roadmap-l1i.5.27", "sr-roadmap-l1i.5.27.1", "sr-roadmap-l1i.5.28", "sr-roadmap-l1i.5.29"]
+member_beads = ["sr-roadmap-l1i.5.21", "sr-roadmap-l1i.5.10", "sr-roadmap-l1i.5.17", "sr-roadmap-l1i.5.18", "sr-roadmap-l1i.5.19", "sr-roadmap-l1i.5.2", "sr-roadmap-l1i.5.3", "sr-roadmap-l1i.5.4", "sr-roadmap-l1i.5.5", "sr-roadmap-l1i.5.6", "sr-roadmap-l1i.5.7", "sr-roadmap-l1i.5.8", "sr-roadmap-l1i.5.9", "sr-roadmap-l1i.5.10.1", "sr-roadmap-l1i.5.10.2", "sr-roadmap-l1i.5.10.3", "sr-roadmap-l1i.5.24", "sr-roadmap-l1i.5.24.1", "sr-roadmap-l1i.5.24.2", "sr-roadmap-l1i.5.25", "sr-roadmap-l1i.5.26", "sr-roadmap-l1i.5.27", "sr-roadmap-l1i.5.27.1", "sr-roadmap-l1i.5.28", "sr-roadmap-l1i.5.29", "sr-roadmap-l1i.5.30"]
 phase = "P4"
 title = "Accept the useful standalone core CLI"
 unit_property_tests = [
@@ -1640,7 +1640,7 @@ status = "planned"
 [[boundaries]]
 id = "p7_acceptance_gate"
 owner_bead = "sr-roadmap-l1i.8.8"
-member_beads = ["sr-roadmap-l1i.8.8", "sr-roadmap-l1i.8.1", "sr-roadmap-l1i.8.10", "sr-roadmap-l1i.8.2", "sr-roadmap-l1i.8.3", "sr-roadmap-l1i.8.4", "sr-roadmap-l1i.8.5", "sr-roadmap-l1i.8.7", "sr-roadmap-l1i.8.9"]
+member_beads = ["sr-roadmap-l1i.8.8", "sr-roadmap-l1i.8.1", "sr-roadmap-l1i.8.10", "sr-roadmap-l1i.8.11", "sr-roadmap-l1i.8.2", "sr-roadmap-l1i.8.3", "sr-roadmap-l1i.8.4", "sr-roadmap-l1i.8.5", "sr-roadmap-l1i.8.7", "sr-roadmap-l1i.8.9"]
 phase = "P7"
 title = "Accept evidence-backed advisory rollout"
 unit_property_tests = ["tests/p7_gate.rs::all_p7_contracts_verified"]

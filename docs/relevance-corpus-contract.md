@@ -74,6 +74,8 @@ Exactly one case per family is marked `primary_family_case: true`, chosen by
 the family's registered rule (§5.2) before outcomes are inspected. Only
 primary cases enter promotion denominators; sibling variants are reported
 separately with family-aware uncertainty.
+Declared positive, no-match, near-miss and overflow-positive minima likewise
+count only these primary cases. Retaining many siblings cannot satisfy a quota.
 
 ### 2.4 Overflow stratum
 
@@ -166,6 +168,11 @@ A declared fraction of cases (pilot: at least 40%; full corpus: at least 15%)
 is adjudicated independently by two adjudicators. Disagreements are resolved
 by discussion to a single label with the disagreement recorded; the
 disagreement rate is a pilot exit metric (§8).
+This review fraction applies to **all retained records**, including diagnostic
+siblings; it is a review-coverage check, separate from primary-only promotion
+denominators. Validator receipts name this population and report its denominator
+and the double-judged primary count separately. This clarifies the existing
+all-record check without changing the registered fraction or population.
 
 ### 4.3 Blindness
 
@@ -238,7 +245,7 @@ is the corpus's definition of done. It fails on:
 
 - duplicate case IDs or duplicate JSON object keys;
 - a case in more than one split, or a family spanning splits;
-- per-stratum counts below the manifest's declared minimums;
+- primary-case stratum counts below the manifest's declared minimums;
 - a case missing its roster manifest, adjudication record, blindness
   attestation, or consent reference;
 - an adjudicator identity matching the selector identity or an adjudicator
@@ -250,7 +257,19 @@ is the corpus's definition of done. It fails on:
 - a case in a frozen split that is absent from the frozen case-ID list, or a
   listed case missing from the corpus (digest mismatch).
 
-The validator's output, not a case count, is this bead's exit evidence.
+The receipt reports `primary_cases`, `variant_cases`, primary-only `strata`,
+and separate `variant_strata`. `primary_case_ids_by_split` preserves the frozen
+split order; `primary_dataset_digest` binds that exact primary cohort. Reports
+must select these primary IDs before computing independent-family quotas or
+promotion statistics, while retaining the all-record dataset digest for diagnostic
+variants. A narrowed receipt has `scope: "diagnostic"`; other receipts have
+`scope: "corpus-validation-only"`. Neither scope establishes a passed relevance
+or rollout gate.
+
+The validator's output, not a case count, is the mechanical corpus-check
+evidence. The Rust evaluation frame uses one frozen representative per family;
+it does not yet import this adjudicated-corpus schema. Held-out promotion remains
+separate work and must bind its judged cohort to the receipt's primary IDs.
 
 ## 10. Pilot result — 2026-09-24 (outcome (c): revise the rubric first)
 
