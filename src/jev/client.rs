@@ -4,7 +4,7 @@
 //! boundary never follows redirects, inherits a proxy, or retries internally.
 
 use super::admission::RankingStage;
-use super::codec::{CodecError, MAX_RESPONSE_BYTES, Request, Response};
+use super::codec::{CodecError, MAX_RESPONSE_BYTES, Request, RequestFormat, Response};
 use super::retry::RetryAfter;
 use super::{EndpointConfig, OriginScopedCredential, SKILLRANKER_USER_AGENT};
 use crate::privacy::{
@@ -35,10 +35,10 @@ enum WireProtocol {
 
 impl WireProtocol {
     fn encode(&self, request: &Request) -> Result<Vec<u8>, CodecError> {
-        match self {
-            Self::TypeSafe => request.to_json(),
-            Self::Cloudflare { .. } => super::cloudflare_codec::encode_request(request),
-        }
+        request.to_wire_json(match self {
+            Self::TypeSafe => RequestFormat::TypeSafe,
+            Self::Cloudflare { .. } => RequestFormat::Cloudflare,
+        })
     }
 
     fn decode(&self, request: &Request, body: &[u8]) -> Result<Response, CodecError> {

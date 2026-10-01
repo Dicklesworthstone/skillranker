@@ -178,10 +178,15 @@ A preview carries exactly one of two results:
   `stages` starts with `wide` and adds `rerank` only for explicit
   `--shortlist-ids` evidence; a network-free run cannot know the model's own
   shortlist. Each stage has the exact redacted request as `request` text, its
-  `request_bytes` (which must equal the text's length, at most 96 KiB), and its
+  `request_bytes` (the text's UTF-8 byte length, at most 96 KiB), and its
   candidate count. `disclosure` is the disclosure receipt for the rendered
   context. The preview corresponds to `--no-persist`: a persistent run may
   include additional historical evidence and send different bytes.
+  Text contains the final selected-provider wire representation: TypeSafe's
+  logical document or Cloudflare's `{model,input:{state,questions}}` wrapper.
+  Both byte and nesting limits include that wrapper. Live evaluation preflight
+  counts and binds these same final bytes; logical cache/replay identity remains
+  separate and unchanged.
 - `local_decision`: the decision that ends the run before any request, such as
   explicit resolution, local abstention or an unavailable result. The preview's
   exit is that decision's exit.

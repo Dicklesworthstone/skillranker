@@ -2,7 +2,9 @@
 
 use serde_json::{Value, json};
 use skillranker::jev::cloudflare_codec::decode_response;
-use skillranker::jev::codec::{Answer, CodecError, MAX_RESPONSE_BYTES, Question, Request};
+use skillranker::jev::codec::{
+    Answer, CodecError, MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES, Question, Request, RequestFormat,
+};
 
 fn request() -> Request {
     Request::new(
@@ -33,6 +35,92 @@ fn wrap(inner: &Value) -> Vec<u8> {
         "result": {"gatewayMetadata": {}, "result": inner}
     }))
     .unwrap()
+}
+
+#[test]
+fn selected_wire_encoding_matches_independent_expected_bytes() {
+    let logical = br#"{"model":"typesafe/jev","state":"synthetic state","questions":{"fit":{"type":"noul","instructions":"Return a bounded synthetic score."}}}"#;
+    let native = br#"{"input":{"questions":{"fit":{"instructions":"Return a bounded synthetic score.","type":"noul"}},"state":"synthetic state"},"model":"typesafe/jev"}"#;
+    assert_eq!(
+        request().to_wire_json(RequestFormat::TypeSafe).unwrap(),
+        logical
+    );
+    assert_eq!(request().to_json().unwrap(), logical);
+    assert_eq!(
+        request().to_wire_json(RequestFormat::Cloudflare).unwrap(),
+        native
+    );
+    assert_eq!(native.len(), logical.len() + 10);
+    assert_eq!(
+        request().to_wire_json(RequestFormat::Cloudflare).unwrap(),
+        native
+    );
+}
+
+fn with_state(state: Value) -> Request {
+    Request::new("typesafe/jev".into(), state, request().questions().clone()).unwrap()
+}
+
+#[test]
+fn selected_wire_encoding_counts_utf8_bytes_and_json_escaping() {
+    let state = "é界\n\"quoted\"\\state";
+    let request = with_state(json!(state));
+    let native = request.to_wire_json(RequestFormat::Cloudflare).unwrap();
+    let text = std::str::from_utf8(&native).unwrap();
+    assert!(native.len() > text.chars().count());
+    let expected = json!({"model":"typesafe/jev","input":{
+        "state":state,"questions":{"fit":{"type":"noul",
+            "instructions":"Return a bounded synthetic score."}}
+    }});
+    assert_eq!(serde_json::from_slice::<Value>(&native).unwrap(), expected);
+}
+
+#[test]
+fn selected_wire_encoding_includes_native_byte_overhead_at_the_boundary() {
+    let overhead = with_state(json!(""))
+        .to_wire_json(RequestFormat::Cloudflare)
+        .unwrap()
+        .len();
+    let accepted = with_state(json!("x".repeat(MAX_REQUEST_BYTES - overhead)));
+    assert_eq!(
+        accepted
+            .to_wire_json(RequestFormat::Cloudflare)
+            .unwrap()
+            .len(),
+        MAX_REQUEST_BYTES
+    );
+    let rejected = with_state(json!("x".repeat(MAX_REQUEST_BYTES - overhead + 1)));
+    assert!(
+        rejected
+            .to_wire_json(RequestFormat::TypeSafe)
+            .unwrap()
+            .len()
+            <= MAX_REQUEST_BYTES
+    );
+    assert_eq!(
+        rejected
+            .to_wire_json(RequestFormat::Cloudflare)
+            .unwrap_err(),
+        CodecError::TooLarge
+    );
+}
+
+#[test]
+fn selected_wire_encoding_includes_native_depth_overhead_at_the_boundary() {
+    let mut state = json!("synthetic leaf");
+    for _ in 0..62 {
+        state = json!([state]);
+    }
+    let accepted = with_state(state.clone());
+    assert!(accepted.to_wire_json(RequestFormat::Cloudflare).is_ok());
+    let rejected = with_state(json!([state]));
+    assert!(rejected.to_wire_json(RequestFormat::TypeSafe).is_ok());
+    assert_eq!(
+        rejected
+            .to_wire_json(RequestFormat::Cloudflare)
+            .unwrap_err(),
+        CodecError::InvalidJson
+    );
 }
 
 #[test]

@@ -603,6 +603,120 @@ fn test_dry_run_preview_without_network() {
 }
 
 #[test]
+fn real_cli_previews_final_selected_wire_for_both_stages_without_effects() {
+    use std::process::Stdio;
+    let (root, workspace) = create_test_env();
+    create_skill(
+        &workspace.join(".claude/skills"),
+        "skill_a",
+        "Synthetic é界 guidance",
+        "Synthetic procedure.",
+    );
+    let context = create_context_file(&workspace, "Plan a synthetic é界 exercise");
+    let run = |provider: &str, shortlist: Option<&str>| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_sr"));
+        command
+            .current_dir(&workspace)
+            .env_clear()
+            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+            .env("HOME", root.join("home"))
+            .env("XDG_CONFIG_HOME", root.join("config"))
+            .env("XDG_DATA_HOME", root.join("data"))
+            .env("XDG_CACHE_HOME", root.join("cache"))
+            .env("SR_PROVIDER", provider)
+            .env("CLOUDFLARE_ACCOUNT_ID", "0123456789abcdef0123456789abcdef")
+            .stdin(Stdio::null())
+            .args([
+                "rank",
+                "--context",
+                context.to_str().unwrap(),
+                "--dry-run",
+                "--no-persist",
+                "--json",
+                "--timeout-ms",
+                "20000",
+            ]);
+        if let Some(shortlist) = shortlist {
+            command.args(["--shortlist-ids", shortlist]);
+        }
+        let output = command.output().unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        serde_json::from_slice::<Value>(&output.stdout).unwrap()
+    };
+    let roster = Command::new(env!("CARGO_BIN_EXE_sr"))
+        .current_dir(&workspace)
+        .env_clear()
+        .env("HOME", root.join("home"))
+        .env("XDG_CONFIG_HOME", root.join("config"))
+        .stdin(Stdio::null())
+        .args(["roster", "--json"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        roster.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&roster.stderr)
+    );
+    let roster: Value = serde_json::from_slice(&roster.stdout).unwrap();
+    let id = roster["records"][0]["skill_id"].as_str().unwrap();
+    let native = run("cloudflare", Some(id));
+    let typesafe = run("typesafe", Some(id));
+    for preview in [&native, &typesafe] {
+        assert_eq!(preview["kind"], "preview");
+        assert_eq!(preview["actionable"], false);
+        assert_eq!(preview["stateless"], true);
+        assert_eq!(
+            preview["provider_request"]["stages"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+        assert!(
+            !serde_json::to_string(preview)
+                .unwrap()
+                .contains("0123456789abcdef0123456789abcdef")
+        );
+        for effect in ["unverified_children", "cross_process_coordination"] {
+            assert_eq!(
+                preview["effects"][effect], false,
+                "{effect}: {}",
+                preview["effects"]
+            );
+        }
+        assert_eq!(preview["effects"]["network"]["state"], "blocked");
+        for effect in ["response_cache", "ledger", "runtime_state"] {
+            assert_eq!(preview["effects"][effect]["state"], "disabled");
+        }
+    }
+    for index in 0..2 {
+        let native_stage = &native["provider_request"]["stages"][index];
+        let typesafe_stage = &typesafe["provider_request"]["stages"][index];
+        let native_text = native_stage["request"].as_str().unwrap();
+        let typesafe_text = typesafe_stage["request"].as_str().unwrap();
+        assert_eq!(native_stage["request_bytes"], native_text.len());
+        assert!(native_text.len() > native_text.chars().count());
+        assert_eq!(typesafe_stage["request_bytes"], typesafe_text.len());
+        let native_wire: Value = serde_json::from_str(native_text).unwrap();
+        let mut logical: Value = serde_json::from_str(typesafe_text).unwrap();
+        logical.as_object_mut().unwrap().remove("model");
+        assert_eq!(
+            native_wire,
+            json!({"model":"typesafe/jev", "input":logical})
+        );
+    }
+    for state in ["data", "cache"] {
+        assert!(!root.join(state).exists(), "dry-run created {state}");
+    }
+}
+
+#[test]
 fn test_cli_bare_sr_and_rank_flags() {
     let (_root, workspace) = create_test_env();
     let skills_dir = workspace.join(".claude/skills");

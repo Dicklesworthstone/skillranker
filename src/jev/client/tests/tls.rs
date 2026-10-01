@@ -166,6 +166,163 @@ fn both_protocols_reuse_wide_tls_and_close_after_rerank() {
 }
 
 #[test]
+fn stateless_pipeline_previews_match_actual_tls_wire_and_evaluation_admission() {
+    use crate::config::ConfigSources;
+    use crate::context::source::SourceOptions;
+    use crate::effects::{EffectGate, Scope};
+    use crate::identity::{LogicalSkillKey, SkillId, SourceId};
+    use crate::pipeline::{
+        RankArgs, StageEvidence, WidePreview, execute_pipeline, execute_pipeline_with_context,
+    };
+    use crate::privacy::EffectFlags;
+    use crate::roster::LocalPath;
+    use std::fs;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+
+    for native in [false, true] {
+        let root = std::env::temp_dir().join(format!(
+            "sr-wire-preview-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        let skill = root.join(".claude/skills/alpha/SKILL.md");
+        fs::create_dir_all(skill.parent().unwrap()).unwrap();
+        fs::write(
+            &skill,
+            "---\nname: alpha\ndescription: Synthetic é界 procedure\n---\nSynthetic body.\n",
+        )
+        .unwrap();
+        let mut context: Value = serde_json::from_slice(include_bytes!(
+            "../../../../tests/fixtures/normalized-context.v1.json"
+        ))
+        .unwrap();
+        context["workspace_root"] = json!(root);
+        context["harness"] = json!("claude_code");
+        context["current_request"]["text"] = json!("Plan a synthetic é界 exercise");
+        let context_bytes = serde_json::to_vec(&context).unwrap();
+        let context_path = root.join("context.json");
+        fs::write(&context_path, &context_bytes).unwrap();
+        #[cfg(unix)]
+        let path_bytes = {
+            use std::os::unix::ffi::OsStrExt;
+            skill.as_os_str().as_bytes()
+        };
+        let id = SkillId::from_source(
+            &SourceId::new("claude_code.project").unwrap(),
+            &LogicalSkillKey::new(blake3::hash(path_bytes).to_hex().to_string()).unwrap(),
+        );
+        let sources = ConfigSources {
+            environment: vec![
+                (
+                    "SR_PROVIDER".into(),
+                    if native { "cloudflare" } else { "typesafe" }.into(),
+                ),
+                ("CLOUDFLARE_ACCOUNT_ID".into(), ACCOUNT.into()),
+                ("CLOUDFLARE_API_TOKEN".into(), TOKEN.into()),
+                ("TYPESAFE_API_KEY".into(), TOKEN.into()),
+            ],
+            ..Default::default()
+        };
+        let args = |dry_run| RankArgs {
+            workspace: root.clone(),
+            user_config_root: None,
+            home: None,
+            cache_dir: Some(root.join("never-cache")),
+            ledger_dir: Some(root.join("never-ledger")),
+            sources: sources.clone(),
+            gate: EffectGate::new(
+                EffectFlags {
+                    dry_run,
+                    allow_network: !dry_run,
+                    no_persist: true,
+                    ..Default::default()
+                },
+                Scope::Rank,
+            )
+            .unwrap(),
+            source_options: SourceOptions {
+                context: Some(LocalPath::new(context_path.clone())),
+                ..Default::default()
+            },
+            require_skills: Vec::new(),
+            shortlist_ids: if dry_run {
+                vec![id.clone()]
+            } else {
+                Vec::new()
+            },
+            roster_file: None,
+            explain: false,
+            why_not: None,
+            cursor: None,
+            output_json: true,
+            output_table: false,
+            dry_run,
+            save_case: None,
+        };
+        let preview_invocation = invocation();
+        let preview_cx = preview_invocation.request_cx().unwrap();
+        let preview = preview_invocation
+            .runtime()
+            .block_on(execute_pipeline(
+                &preview_invocation,
+                &preview_cx,
+                args(true),
+                None,
+            ))
+            .unwrap();
+        let stages = preview.as_value()["provider_request"]["stages"]
+            .as_array()
+            .unwrap();
+        assert_eq!(stages.len(), 2);
+        let expected: Vec<&str> = stages
+            .iter()
+            .map(|stage| {
+                let text = stage["request"].as_str().unwrap();
+                assert_eq!(stage["request_bytes"], text.len());
+                text
+            })
+            .collect();
+        assert!(!root.join("never-cache").exists());
+        assert!(!root.join("never-ledger").exists());
+        assert!(preview_invocation.shutdown());
+
+        let server = Server::new(&["capture-reuse", "capture"], native);
+        let client = server.client(native, "localhost", true);
+        let live_invocation = invocation();
+        let live_cx = live_invocation.request_cx().unwrap();
+        let mut evidence = StageEvidence::default();
+        let result = live_invocation
+            .runtime()
+            .block_on(execute_pipeline_with_context(
+                &live_invocation,
+                &live_cx,
+                args(false),
+                Some(&client),
+                context_bytes,
+                &mut evidence,
+                Some(WidePreview::Digest(
+                    *blake3::hash(expected[0].as_bytes()).as_bytes(),
+                )),
+            ))
+            .unwrap();
+        assert_eq!(
+            result.as_value()["decision"],
+            "ranked",
+            "{}",
+            result.as_value()
+        );
+        assert_eq!(result.as_value()["usage"]["requests"], 2);
+        assert!(!evidence.preview_refused);
+        let captured = server.finish(2);
+        assert_eq!(captured["captured_requests"], json!(expected));
+        assert!(!root.join("never-cache").exists());
+        assert!(!root.join("never-ledger").exists());
+        assert!(live_invocation.shutdown());
+    }
+}
+
+#[test]
 fn malformed_native_https_is_not_retried_or_recorded_as_zero_usage_success() {
     for step in [
         "missing-usage",

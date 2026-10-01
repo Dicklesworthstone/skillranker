@@ -14,7 +14,7 @@ MAX_REQUEST = 96 * 1024
 MAX_HEADERS = 32 * 1024
 
 
-def read_request(reader, protocol):
+def read_request(reader, protocol, capture=False):
     line = reader.readline(MAX_HEADERS + 1)
     if not line:
         return None
@@ -52,17 +52,39 @@ def read_request(reader, protocol):
         assert set(document) == {"model", "state", "questions"}
         assert document["model"] == "jev-latest"
         payload = document
-    assert payload["state"] == "synthetic context"
-    assert payload["questions"]["fit"]["type"] == "noul"
-    return headers.get("connection", "").lower()
+    if not capture:
+        assert payload["state"] == "synthetic context"
+        assert payload["questions"]["fit"]["type"] == "noul"
+    else:
+        assert isinstance(payload["state"], (str, dict, list))
+        assert isinstance(payload["questions"], dict) and payload["questions"]
+    return headers.get("connection", "").lower(), body, payload
 
 
-def response(step, protocol):
+def response(step, protocol, payload=None):
     result = {
         "model": "jev-synthetic-revision",
         "answers": {"fit": {"type": "noul", "noul": 0.75}},
         "usage": {"input_tokens": 12, "output_tokens": 7},
     }
+    if step.startswith("capture"):
+        # Synthetic contract answers bind every real question/option ID. This
+        # peer proves bytes and TLS behavior, never recommendation quality.
+        answers = {}
+        for key, question in payload["questions"].items():
+            if question["type"] == "noul":
+                value = 0.1 if key == "gate::context_suffices" else 0.8
+                answers[key] = {"type": "noul", "noul": value}
+            else:
+                assert question["type"] == "choice"
+                options = list(question["criteria"])
+                favored = next((option for option in options if option != "__none__"), options[0])
+                rest = [option for option in options if option != favored]
+                probabilities = {option: 0.2 / len(rest) for option in rest}
+                probabilities[favored] = 0.8 if rest else 1.0
+                answers[key] = {"type": "choice", "choice": favored,
+                                "probabilities": probabilities, "confidence": 0.8}
+        result["answers"] = answers
     status = 200
     extra = []
     if step.startswith("status:"):
@@ -122,6 +144,7 @@ def main():
     report = {
         "requests": 0, "connections": 0, "extra_connections": 0,
         "closed": [], "connection_headers": [], "valid_requests": 0,
+        "captured_requests": [],
     }
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
@@ -140,17 +163,20 @@ def main():
                 break
             with stream, stream.makefile("rb") as reader:
                 while index < len(steps):
-                    connection = read_request(reader, protocol)
-                    if connection is None:
+                    captured = read_request(reader, protocol, steps[index].startswith("capture"))
+                    if captured is None:
                         report["closed"].append(True)
                         break
+                    connection, request_body, payload = captured
                     report["requests"] += 1
                     report["valid_requests"] += 1
                     report["connection_headers"].append(connection)
                     step = steps[index]
+                    if step.startswith("capture"):
+                        report["captured_requests"].append(request_body.decode("utf-8"))
                     index += 1
-                    status, headers, body = response(step, protocol)
-                    keep = step == "reuse" and index < len(steps)
+                    status, headers, body = response(step, protocol, payload)
+                    keep = step in ("reuse", "capture-reuse") and index < len(steps)
                     length = len(body) if step != "stall" else len(body) + 1024
                     headers.extend([
                         ("Content-Length", str(length)),

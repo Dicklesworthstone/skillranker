@@ -98,6 +98,36 @@ class NativePeerTests(unittest.TestCase):
                     connection.close()
                 self.assert_report(report(child), 1, 1)
 
+    def test_capture_preserves_exact_synthetic_unicode_body_for_both_protocols(self):
+        for protocol in ("native", "typesafe"):
+            with self.subTest(protocol=protocol), peer(["capture"], protocol) as (child, port):
+                payload = {"state":"é界 synthetic", "questions":{
+                    "which":{"type":"choice", "instructions":"choose",
+                             "criteria":{"s_alpha":"alpha", "__none__":"none"}},
+                    "gate::context_suffices":{"type":"noul", "instructions":"sufficient?"}
+                }}
+                document = ({"model":"typesafe/jev", "input":payload} if protocol == "native"
+                            else {"model":"jev-latest", **payload})
+                wire = json.dumps(document, ensure_ascii=False, separators=(",", ":")).encode()
+                connection = connect(port)
+                try:
+                    path = f"/client/v4/accounts/{ACCOUNT}/ai/run" if protocol == "native" else "/v1/systemone"
+                    connection.request("POST", path, wire, {
+                        "Authorization":f"Bearer {TOKEN}", "Content-Type":"application/json",
+                        "Accept-Encoding":"identity", "Connection":"close"
+                    })
+                    answer = connection.getresponse()
+                    self.assertEqual(answer.status, 200)
+                    body = json.loads(answer.read())
+                    result = body["result"]["result"] if protocol == "native" else body
+                    self.assertEqual(result["answers"]["which"]["choice"], "s_alpha")
+                    self.assertEqual(result["answers"]["gate::context_suffices"]["noul"], 0.1)
+                finally:
+                    connection.close()
+                output = report(child)
+                self.assert_report(output, 1, 1)
+                self.assertEqual(output["captured_requests"], [wire.decode()])
+
     def test_both_protocols_reuse_a_verified_tls_connection(self):
         for protocol in ("typesafe", "native"):
             with self.subTest(protocol=protocol), peer(["reuse", "ok"], protocol) as (child, port):

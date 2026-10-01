@@ -2430,14 +2430,21 @@ async fn rank_once(
     )
     .map_err(|e| failure(e.kind(), format!("Wide build failed: {e:?}")))?;
 
+    // Final provider bytes include the native wrapper's size and nesting.
+    // Logical builder bytes remain the canonical cache/replay identity below.
+    let request_format = match effective.provider() {
+        crate::config::Provider::TypeSafe => crate::jev::codec::RequestFormat::TypeSafe,
+        crate::config::Provider::Cloudflare => crate::jev::codec::RequestFormat::Cloudflare,
+    };
+    let wide_wire = wide_builder
+        .request()
+        .to_wire_json(request_format)
+        .map_err(|e| failure(e.kind(), format!("Wide wire encoding failed: {e}")))?;
+
     // A stateless preview: the exact redacted bytes a matching `--no-persist`
     // run would send. Stage 2 is previewed only for supplied shortlist IDs.
     if dry_run {
-        let mut stages = vec![preview_stage(
-            "wide",
-            wide_builder.bytes(),
-            candidate_ids.len(),
-        )?];
+        let mut stages = vec![preview_stage("wide", &wide_wire, candidate_ids.len())?];
         if !args.shortlist_ids.is_empty() {
             // `effective` is `(M, K)`: a stage-2 shortlist holds up to M.
             let (shortlist, _) = sizes.effective(candidate_ids.len());
@@ -2460,9 +2467,13 @@ async fn rank_once(
                 effective.model().as_str(),
             )
             .map_err(|e| failure(e.kind(), format!("Rerank build failed: {e:?}")))?;
+            let rerank_wire = rerank_builder
+                .request()
+                .to_wire_json(request_format)
+                .map_err(|e| failure(e.kind(), format!("Rerank wire encoding failed: {e}")))?;
             stages.push(preview_stage(
                 "rerank",
-                rerank_builder.bytes(),
+                &rerank_wire,
                 args.shortlist_ids.len(),
             )?);
         }
@@ -2781,7 +2792,7 @@ async fn rank_once(
                 None => false,
                 Some(WidePreview::NoRequest) => true,
                 Some(WidePreview::Digest(expected)) => {
-                    *blake3::hash(wide_builder.bytes()).as_bytes() != expected
+                    *blake3::hash(&wide_wire).as_bytes() != expected
                 }
             };
             if unpreviewed {

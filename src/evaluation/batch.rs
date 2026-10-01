@@ -933,7 +933,8 @@ pub struct DisclosurePreflight {
     pub cases_refused: usize,
     /// Cases whose preview ends locally, so a live run sends nothing for them.
     pub cases_without_request: usize,
-    /// Exact bytes of every previewed wide request. Cases later refused,
+    /// Final selected-provider wire bytes of every previewed wide request,
+    /// including native wrappers. Cases later refused,
     /// left unfinished or stopped by the budget still count: this bounds what
     /// the batch could send, not what it sent.
     #[serde(default)]

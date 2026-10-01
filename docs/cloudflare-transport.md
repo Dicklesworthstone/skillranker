@@ -15,6 +15,13 @@ cannot satisfy the Cloudflare credential requirement. Selecting a provider or
 supplying a credential never grants consent; offline and dry-run still block
 network access. Hooks use the same configuration snapshot and selected credential.
 
+Malformed unused `CLOUDFLARE_ACCOUNT_ID` or `CLOUDFLARE_API_TOKEN` values cannot
+disable the TypeSafe path. Their sanitized validation errors remain in the frozen
+environment snapshot and become errors if mutable trusted configuration later
+selects Cloudflare. Duplicate definitions and unknown `SR_*` names remain errors
+regardless of provider. Hook installation prerequisites name the selected
+provider's credential and account requirements.
+
 The default model is resolved after all layers: `jev-latest` for TypeSafe and
 `typesafe/jev` for Cloudflare. An explicit `provider.model` or `SR_MODEL` is never
 silently rewritten. Cloudflare currently accepts only `typesafe/jev`; an explicit
@@ -73,9 +80,11 @@ The native protocol follows the TypeSafe Jev AI Run contract:
   `{model,input:{state,questions}}`, with model `typesafe/jev`.
 - The complete transmitted request, including its native wrapper, must fit
   96 KiB and depth 64. Invalid requests are refused before the accounting
-  callback or HTTP future is polled. The current dry-run and evaluation preview
-  show the logical Jev document; their byte count is not the native wrapper's
-  final wire size. Transport independently enforces the final size and depth.
+  callback or HTTP future is polled. Dry-run stages and evaluation preflight
+  show/count these final native wire bytes through the same pure encoder used
+  by HTTP. Evaluation admission compares the final wire digest to its preview.
+  Logical canonical request bytes still identify cache and replay evidence;
+  the existing full target URL keeps provider/account namespaces distinct.
 - The strict native decoder checks the complete response envelope's byte limit,
   nesting and duplicate keys before extracting the result. Required model and
   usage come from the provider, not request aliases or fabricated zero counts.

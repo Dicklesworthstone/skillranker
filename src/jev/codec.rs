@@ -13,6 +13,14 @@ use std::io::{self, Write};
 pub const MAX_REQUEST_BYTES: usize = 96 * crate::limits::KIB;
 pub const MAX_RESPONSE_BYTES: usize = 2 * crate::limits::MIB;
 pub const MAX_CHOICE_OPTIONS: usize = 255;
+
+/// Selected provider's final request representation. Choosing a format is pure:
+/// it neither constructs a transport nor authorizes transmission.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RequestFormat {
+    TypeSafe,
+    Cloudflare,
+}
 /// How far a Choice distribution's total may be from one before it is
 /// rejected as malformed. Accepted answers are renormalized, and the raw
 /// values are kept. The live provider returns totals such as 0.99 for large
@@ -185,6 +193,15 @@ impl Request {
     }
     pub fn questions(&self) -> &BTreeMap<String, Question> {
         &self.questions
+    }
+
+    /// Final bounded wire bytes, shared by previews, disclosure admission and
+    /// HTTP. `to_json` remains the logical canonical/cache evidence encoding.
+    pub fn to_wire_json(&self, format: RequestFormat) -> Result<Vec<u8>, CodecError> {
+        match format {
+            RequestFormat::TypeSafe => self.to_json(),
+            RequestFormat::Cloudflare => super::cloudflare_codec::encode_request(self),
+        }
     }
 
     pub fn to_json(&self) -> Result<Vec<u8>, CodecError> {
