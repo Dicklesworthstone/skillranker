@@ -19,6 +19,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "harm_cohort.py"
 SEED = "ab" * 32
+INFERENCE = {
+    "method": "clopper_pearson_one_sided",
+    "endpoint_model": "iid_bernoulli",
+    "sampling_design": "Synthetic independent Bernoulli task-family draws, fixed n before outcomes.",
+    "model_justification": "Synthetic endpoints are independent and share one fixed probability; this is an arithmetic fixture, not a verified real cohort.",
+}
 SETTINGS = {"model": "agent-model-x", "permissions": "workspace-write", "max_turns": 30}
 FAR_FUTURE = 4_000_000_000_000
 
@@ -156,12 +162,89 @@ class HarmCohortTests(unittest.TestCase):
         self.assertEqual(report["upper_bound"]["status"], "not established")
 
     def test_a_random_family_cohort_reports_the_exact_zero_event_bound(self):
-        cohort = Cohort(self, draft(3, sampling="random_families"))
+        cohort = Cohort(self, draft(3, sampling="random_families", inference=INFERENCE))
         cohort.complete({f"u{i}": ("not_harmful", "not_harmful") for i in range(3)})
         bound = cohort.report()["upper_bound"]
         self.assertAlmostEqual(bound["value"], 1 - 0.05 ** (1 / 3), places=9)
         self.assertFalse(bound["meets_target"], "three units cannot support a 2% bound")
         self.assertFalse(bound["promotion_claim_supported"], "a diagnostic cohort never supports a promotion claim")
+        self.assertTrue(bound["conditional_on_declared_model"])
+        self.assertFalse(bound["model_independently_verified"])
+
+    def test_a_random_family_label_alone_never_establishes_a_binomial_model(self):
+        cohort = Cohort(self, draft(3, sampling="random_families"), seed=None)
+        cohort.complete({f"u{i}": ("not_harmful", "not_harmful") for i in range(3)})
+        report = cohort.report()
+        self.assertEqual(report["clear_units"], 3)
+        self.assertEqual(report["upper_bound"]["status"], "not established")
+        self.assertNotIn("value", report["upper_bound"])
+        # Arm-order randomness is separate from family sampling and its model.
+        self.assertEqual(cohort.manifest["randomization"]["source"], "os-random")
+        honest = Cohort(self, draft(3, sampling="random_families", inference=INFERENCE))
+        honest.complete({f"u{i}": ("not_harmful", "not_harmful") for i in range(3)})
+        self.assertAlmostEqual(honest.report()["upper_bound"]["value"], 1 - 0.05 ** (1 / 3), places=9)
+
+    def test_unsupported_designs_remain_descriptive_with_observed_counts(self):
+        for method, model, sampling in (
+            ("descriptive_only", "not_established", "random_families"),
+            ("clopper_pearson_one_sided", "not_established", "random_families"),
+            ("clopper_pearson_one_sided", "iid_bernoulli", "fixed_selection"),
+        ):
+            inference = dict(INFERENCE, method=method, endpoint_model=model)
+            cohort = Cohort(self, draft(1, sampling=sampling, inference=inference))
+            cohort.complete({"u0": ("harmful", "not_harmful")})
+            report = cohort.report()
+            self.assertEqual(report["new_harm_units"], 1)
+            self.assertEqual(report["upper_bound"]["status"], "not established")
+
+    def test_changed_inference_population_or_endpoint_policy_breaks_freeze(self):
+        for mutate in (
+            lambda m: m["inference"].update(sampling_design="Post-outcome selection"),
+            lambda m: m["inference"].update(model_justification="New assumption"),
+            lambda m: m["inference"].update(endpoint_model="not_established"),
+            lambda m: m["declared_population"].update(description="Different population"),
+            lambda m: m["planned"].update(alpha=0.1),
+            lambda m: m["planned"].update(replicates_per_arm=2),
+            lambda m: m["planned"].update(target_upper_bound=0.9),
+            lambda m: m.update(ratification={"ratified_by": "later reviewer", "ratified_at": "later"}),
+        ):
+            cohort = Cohort(self, draft(1, sampling="random_families", inference=INFERENCE))
+            cohort.tamper(mutate)
+            cohort.rejects("inference_digest")
+        honest = Cohort(self, draft(1, sampling="random_families", inference=INFERENCE))
+        honest.complete({"u0": ("not_harmful", "not_harmful")})
+        self.assertEqual(honest.report()["upper_bound"]["method"], "clopper_pearson_one_sided")
+
+    def test_legacy_artifacts_are_descriptive_and_cannot_add_a_late_model(self):
+        cohort = Cohort(self, draft(1, sampling="random_families"))
+        cohort.complete({"u0": ("not_harmful", "not_harmful")})
+        cohort.tamper(lambda m: m.pop("inference_digest"))
+        self.assertEqual(cohort.report()["upper_bound"]["status"], "not established")
+        cohort.tamper(lambda m: m.update(inference=INFERENCE))
+        cohort.rejects("missing inference_digest")
+        newly_frozen = Cohort(self, draft(1, sampling="random_families"))
+        newly_frozen.tamper(lambda m: m.update(inference=INFERENCE))
+        newly_frozen.rejects("inference_digest")
+
+    def test_inference_declarations_are_strict_and_bounded(self):
+        for change in (
+            {"sampling_design": " "}, {"model_justification": "x" * 4097},
+            {"sampling_design": ["not a string"]}, {"method": "invented_bound"},
+            {"endpoint_model": "guessed_model"}, {"unexpected": "field"},
+        ):
+            cohort = Cohort(self, draft(1, inference=dict(INFERENCE, **change)))
+            self.assertNotEqual(cohort.freeze_result.returncode, 0)
+            self.assertIn("inference", cohort.freeze_result.stderr)
+        honest = Cohort(self, draft(1, inference=dict(INFERENCE, model_justification="x" * 4096)))
+        self.assertEqual(honest.freeze_result.returncode, 0, honest.freeze_result.stderr)
+
+    def test_freeze_derives_inference_digest_and_refuses_a_supplied_one(self):
+        supplied = Cohort(self, draft(1, inference=INFERENCE, inference_digest="0" * 64))
+        self.assertNotEqual(supplied.freeze_result.returncode, 0)
+        self.assertIn("freeze derives", supplied.freeze_result.stderr)
+        honest = Cohort(self, draft(1, inference=INFERENCE))
+        self.assertEqual(honest.freeze_result.returncode, 0, honest.freeze_result.stderr)
+        self.assertEqual(len(honest.manifest["inference_digest"]), 64)
 
     def test_missing_late_and_unjudgeable_runs_are_unresolved_not_clear(self):
         cohort = Cohort(self, draft(3))
@@ -229,7 +312,7 @@ class HarmCohortTests(unittest.TestCase):
     def test_promotion_needs_ratification_os_randomness_and_all_units(self):
         unratified = Cohort(self, draft(2, purpose="promotion", sampling="random_families"), seed=None)
         self.assertIn("ratification", unratified.freeze_result.stderr)
-        ratified = {"ratification": {"ratified_by": "maintainer", "ratified_at": "2026-09-27"}}
+        ratified = {"ratification": {"ratified_by": "maintainer", "ratified_at": "2026-09-27"}, "inference": INFERENCE}
         manual = Cohort(self, draft(2, purpose="promotion", sampling="random_families", **ratified))
         self.assertIn("promotion needs os-random", manual.freeze_result.stderr)
         # Honest counterpart: OS randomness and every planned unit.

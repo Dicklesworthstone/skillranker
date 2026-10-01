@@ -54,6 +54,18 @@ MAX_RECORD_BYTES = 1024 * 1024
 MAX_UNITS = 10_000
 MAX_RECORDS = 200_000
 MAX_REPLICATES = 100
+INFERENCE_FIELDS = {"method", "endpoint_model", "sampling_design", "model_justification"}
+
+
+def inference_digest(manifest: dict[str, Any]) -> str:
+    """Bind the declared design and endpoint policy, separately from arm draws."""
+    return canonical_digest({
+        "purpose": manifest["purpose"],
+        "ratification": manifest.get("ratification"),
+        "declared_population": manifest["declared_population"],
+        "inference": manifest.get("inference"),
+        "planned": manifest["planned"],
+    })
 
 
 def fail(message: str) -> None:
@@ -135,6 +147,18 @@ def check_common(manifest: Any) -> dict[str, Any]:
     require(isinstance(population, dict), "declared_population must be an object")
     require_str(population.get("description"), "declared_population.description")
     require(population.get("sampling") in SAMPLINGS, f"declared_population.sampling must be one of {SAMPLINGS}")
+    if "inference" in manifest:
+        inference = manifest["inference"]
+        require(isinstance(inference, dict) and set(inference) == INFERENCE_FIELDS,
+                "inference must declare method, endpoint_model, sampling_design and model_justification")
+        require(inference["method"] in ("clopper_pearson_one_sided", "descriptive_only"),
+                "unsupported inference.method")
+        require(inference["endpoint_model"] in ("iid_bernoulli", "not_established"),
+                "unsupported inference.endpoint_model")
+        for field in ("sampling_design", "model_justification"):
+            value = require_str(inference[field], f"inference.{field}")
+            require(bool(value.strip()) and len(value) <= 4096,
+                    f"inference.{field} must be non-blank and at most 4096 characters")
     require_str(manifest.get("agent_identity"), "agent_identity")
     require_str(manifest.get("selector_identity"), "selector_identity")
     require(isinstance(manifest.get("settings"), dict) and manifest["settings"], "settings must be a non-empty object")
@@ -161,7 +185,7 @@ def check_common(manifest: Any) -> dict[str, Any]:
 def freeze(draft_path: Path, out_path: Path, seed_hex: str | None) -> None:
     draft = check_common(load_json(draft_path, MAX_MANIFEST_BYTES, "draft"))
     units = check_units_shape(draft.get("units"))
-    for field in ("randomization", "units_digest", "settings_digest", "frozen_at_unix_ms"):
+    for field in ("randomization", "units_digest", "settings_digest", "inference_digest", "frozen_at_unix_ms"):
         require(field not in draft, f"a draft must not carry {field}; freeze derives it")
     if seed_hex is None:
         seed = os.urandom(32)
@@ -180,6 +204,7 @@ def freeze(draft_path: Path, out_path: Path, seed_hex: str | None) -> None:
     frozen["units"] = frozen_units
     frozen["units_digest"] = canonical_digest(frozen_units)
     frozen["settings_digest"] = canonical_digest(draft["settings"])
+    frozen["inference_digest"] = inference_digest(draft)
     frozen["frozen_at_unix_ms"] = int(time.time() * 1000)
     require(
         frozen["frozen_at_unix_ms"] < draft["planned"]["label_deadline_unix_ms"],
@@ -248,6 +273,14 @@ def check_frozen(manifest: dict[str, Any]) -> tuple[bytes, dict[str, dict[str, A
             len(units) == manifest["planned"]["units"],
             f"a promotion cohort needs exactly its planned {manifest['planned']['units']} units",
         )
+    if "inference_digest" in manifest:
+        require(manifest["inference_digest"] == inference_digest(manifest),
+                "inference_digest does not match the frozen design and endpoint")
+    else:
+        # Older v1 artifacts remain descriptive. Appending a declaration to
+        # them after outcomes exist cannot authorize a new confidence claim.
+        require("inference" not in manifest,
+                "inference was not bound at freeze: missing inference_digest")
     return seed, by_id
 
 
@@ -392,7 +425,12 @@ def validate(manifest_path: Path, runs_path: Path, judgments_path: Path) -> dict
         },
     }
     reason = None
-    if manifest["declared_population"]["sampling"] != "random_families":
+    inference = manifest.get("inference")
+    if inference is None:
+        reason = "no endpoint model and sampling design were declared at freeze"
+    elif inference["method"] != "clopper_pearson_one_sided" or inference["endpoint_model"] != "iid_bernoulli":
+        reason = "the declared design does not support an iid binomial bound"
+    elif manifest["declared_population"]["sampling"] != "random_families":
         reason = "declared sampling is not random_families; no binomial model is justified"
     elif n != planned["units"]:
         reason = f"cohort has {n} of its planned {planned['units']} units"
@@ -405,6 +443,8 @@ def validate(manifest_path: Path, runs_path: Path, judgments_path: Path) -> dict
             "target": planned["target_upper_bound"],
             "meets_target": upper <= planned["target_upper_bound"],
             "promotion_claim_supported": manifest["purpose"] == "promotion",
+            "conditional_on_declared_model": True,
+            "model_independently_verified": False,
         }
     else:
         report["upper_bound"] = {"status": "not established", "reason": reason}

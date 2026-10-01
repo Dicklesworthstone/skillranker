@@ -121,10 +121,16 @@ exists so that a slow, selective trickle of labels cannot decide the result.
   favorable result. A cohort that cannot reach n is reported as incomplete with
   its observed counts, and makes no bound claim.
 - **Interval.** A one-sided 95% Clopper–Pearson upper bound on the
-  new-harm-or-unresolved rate. It is claimed only when the declared sampling is
-  `random_families`: units drawn at random from a declared finite frame of task
-  families, so an i.i.d. binomial model is justified. For any other declared
-  sampling the bound is **not established**. The design needs a separately
+  new-harm-or-unresolved rate, conditional on a prospectively justified i.i.d.
+  Bernoulli endpoint model with a common probability across task-family units.
+  A `random_families` label alone does not establish that model. Random sampling
+  without replacement from a finite frame is not itself an i.i.d. design, and
+  randomizing arm order does not randomly select the supplied family list.
+  [Binomial assumptions](https://www.itl.nist.gov/div898/handbook/eda/section3/eda366i.htm)
+  require a declared sampling mechanism and a model justification. The tool
+  checks that these declarations were frozen; it cannot independently verify
+  the design or the justification. For an unsupported or undeclared model the
+  bound is **not established**. The design needs a separately
   prespecified design-valid method before any claim, never a friendlier interval
   chosen afterwards. A plain bootstrap over zero events is degenerate and is
   never evidence.
@@ -140,6 +146,13 @@ exists so that a slow, selective trickle of labels cannot decide the result.
   `purpose` is `promotion`;
 - the declared population, and `sampling`: `random_families` or
   `fixed_selection`;
+- optional `inference`, required for a bound: `method`
+  (`clopper_pearson_one_sided` or `descriptive_only`), `endpoint_model`
+  (`iid_bernoulli` or `not_established`), `sampling_design` (the actual family
+  selection mechanism), and `model_justification`. The latter two are non-blank
+  strings of at most 4,096 characters. Unknown fields or methods are errors.
+  A binomial bound requires both the supported method/model and
+  `random_families`; a descriptive design retains its observed endpoint counts;
 - the agent identity, the selector identity, and the shared `settings` with
   their digest;
 - `planned`: units, replicates per arm, alpha, target upper bound, label
@@ -152,6 +165,20 @@ exists so that a slow, selective trickle of labels cannot decide the result.
   SHA-256(seed ‖ 0x00 ‖ unit_id ‖ 0x00 ‖ arm);
 - the unit list (unit ID, family ID, snapshot digest, arm order, blind
   labels), its digest, and `frozen_at_unix_ms`.
+
+Freeze also derives `inference_digest` over the purpose, ratification, declared
+population, inference declaration and entire `planned` endpoint policy. Validation rejects changes
+without a matching freeze. These plain digests detect inconsistency; they do
+not authenticate authorship or prove temporal provenance against a rewritten
+artifact. Maintainer review must establish those facts and the model's validity.
+Existing v1 artifacts without an inference declaration/digest remain readable
+for counts, with no confidence bound; appending a model to a legacy freeze is
+rejected. A changed design requires a new prospective cohort.
+
+The numeric report marks a computed bound `conditional_on_declared_model` and
+`model_independently_verified: false`. `promotion_claim_supported` records that
+the artifact has the promotion-purpose requirements; it is conditional on the
+declared model and does not establish a passed harm gate or verified blinding.
 
 Run records (`skillranker.harm_run.v1`) and judgments
 (`skillranker.harm_judgment.v1`) refer to runs by blind label and replicate
