@@ -14,7 +14,7 @@
 //! 5. `--no-cache`, `--no-persist`, and storage unavailable paths preserve documented behavior.
 
 use serde_json::{Value, json};
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read};
 use std::os::unix::fs::DirBuilderExt;
 use std::path::PathBuf;
 use std::process::{Child, ChildStdout, Command, Stdio};
@@ -149,8 +149,38 @@ impl Fixture {
 
 struct Provider {
     child: Child,
-    lines: BufReader<ChildStdout>,
+    reader: Option<std::thread::JoinHandle<Result<Vec<Value>, String>>>,
     pub port: u16,
+}
+
+// Drain diagnostics while sr is waiting for the provider. The peer emits its
+// complete synthetic request before answering; three such records can fill a
+// small pipe and otherwise manufacture a successor timeout.
+fn read_provider_records(mut lines: BufReader<ChildStdout>) -> Result<Vec<Value>, String> {
+    const MAX_RECORD_BYTES: usize = 512 * 1024;
+    const MAX_RECORDS: usize = 16;
+    let mut records = Vec::new();
+    for _ in 0..MAX_RECORDS {
+        let mut line = String::new();
+        let count = (&mut lines)
+            .take((MAX_RECORD_BYTES + 1) as u64)
+            .read_line(&mut line)
+            .map_err(|_| "provider diagnostic read failed")?;
+        if count == 0 {
+            return Err("provider ended before its final report".into());
+        }
+        if count > MAX_RECORD_BYTES || !line.ends_with('\n') {
+            return Err("provider diagnostic record exceeded its bound or was incomplete".into());
+        }
+        let value: Value =
+            serde_json::from_str(&line).map_err(|_| "invalid provider diagnostic JSON")?;
+        let done = value["done"] == true;
+        records.push(value);
+        if done {
+            return Ok(records);
+        }
+    }
+    Err("provider diagnostic record count exceeded its bound".into())
 }
 
 impl Provider {
@@ -185,12 +215,27 @@ impl Provider {
             .stderr(Stdio::inherit())
             .spawn()
             .unwrap();
-        let mut lines = BufReader::new(child.stdout.take().unwrap());
+        let stdout = child.stdout.take().unwrap();
+        // Linux x86_64 has 4 KiB pages, so this fixes the pipe at two pages.
+        // Other Unix targets still drain concurrently without assuming their
+        // pipe-size API or page granularity.
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        assert_eq!(
+            nix::fcntl::fcntl(&stdout, nix::fcntl::FcntlArg::F_SETPIPE_SZ(8192)).unwrap(),
+            8192,
+            "exercise diagnostic saturation without increasing the pipe capacity"
+        );
+        let mut lines = BufReader::new(stdout);
         let mut line = String::new();
         lines.read_line(&mut line).unwrap();
         let hello: Value = serde_json::from_str(&line).unwrap();
         let port = u16::try_from(hello["port"].as_u64().unwrap()).unwrap();
-        Self { child, lines, port }
+        let reader = Some(std::thread::spawn(move || read_provider_records(lines)));
+        Self {
+            child,
+            reader,
+            port,
+        }
     }
 
     fn finish(self) -> Vec<Value> {
@@ -205,13 +250,14 @@ impl Provider {
         drop(done);
         let mut served = Vec::new();
         let mut rejected = 0;
-        loop {
-            let mut line = String::new();
-            assert!(
-                self.lines.read_line(&mut line).unwrap() > 0,
-                "provider ended early"
-            );
-            let value: Value = serde_json::from_str(&line).unwrap();
+        let records = self
+            .reader
+            .take()
+            .unwrap()
+            .join()
+            .expect("provider diagnostic reader panicked")
+            .expect("provider diagnostic reader failed");
+        for value in records {
             if value["done"] == true {
                 assert_eq!(value["requests"].as_u64().unwrap() as usize, served.len());
                 break;
@@ -231,6 +277,9 @@ impl Drop for Provider {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
+        if let Some(reader) = self.reader.take() {
+            let _ = reader.join();
+        }
     }
 }
 

@@ -1086,7 +1086,7 @@ status = "planned"
 [[boundaries]]
 id = "p4_cache_isolation"
 owner_bead = "sr-roadmap-l1i.5.20"
-member_beads = ["sr-roadmap-l1i.5.20"]
+member_beads = ["sr-roadmap-l1i.5.20", "sr-roadmap-l1i.5.31"]
 phase = "P4"
 title = "Prove real cache isolation, invalidation and concurrent ownership"
 unit_property_tests = [
@@ -1119,6 +1119,8 @@ unit_property_tests = [
     "tests/coordination_contract.rs::no_hidden_response_body_in_coordination_store",
     "tests/coordination_contract.rs::missing_owner_usage_remains_unknown_no_duplicate_attempt_charges",
     "tests/coordination_contract.rs::private_bounded_sqlite_qualifications",
+    "tests/real_rank_coordination.rs::ordinary_two_consumer_success_incurs_one_pair_and_subsequent_exact_offline_reuse",
+    "tests/real_rank_coordination.rs::stale_leader_superseded_cannot_overwrite_newer_cache_or_complete_lease",
     "tests/cache_policy_revocation.rs::exact_hit_consumer_withholds_stale_exclusion_authority",
     "tests/cache_policy_revocation.rs::two_process_follower_withholds_stale_exclusion_authority",
     "tests/cache_policy_revocation.rs::exact_hit_network_only_revocation_preserves_valid_local_result",
