@@ -4613,6 +4613,7 @@ fn hook_prerequisites(
     clock: &EntryClock,
     trusted_network: bool,
     user_root: Option<&Path>,
+    resolved: Option<&ResolvedConfig>,
 ) -> String {
     let ledger = crate::runtime::ProcessInvocation::from_clock(*clock)
         .ok()
@@ -4645,10 +4646,33 @@ fn hook_prerequisites(
              a one-shot --allow-network does not reach hooks"
         )
     };
-    let key = if std::env::var_os("TYPESAFE_API_KEY").is_some_and(|key| !key.is_empty()) {
-        "present in this shell; the hook uses Claude Code's own environment"
-    } else {
-        "absent in this shell; Claude Code's environment must provide TYPESAFE_API_KEY"
+    let key = match resolved {
+        Some(config) if config.effective().provider() == crate::config::Provider::Cloudflare => {
+            match (
+                config.credential().is_some(),
+                config.effective().cloudflare_account_id().is_some(),
+            ) {
+                (true, true) => {
+                    "Cloudflare token and account present in this shell; the hook uses Claude Code's own environment"
+                }
+                (false, true) => {
+                    "Cloudflare token absent; Claude Code's environment must provide CLOUDFLARE_API_TOKEN"
+                }
+                (true, false) => {
+                    "Cloudflare account absent; Claude Code's environment must provide CLOUDFLARE_ACCOUNT_ID"
+                }
+                (false, false) => {
+                    "Cloudflare token and account absent; Claude Code's environment must provide CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID"
+                }
+            }
+        }
+        Some(config) if config.credential().is_some() => {
+            "present in this shell; the hook uses Claude Code's own environment"
+        }
+        Some(_) => "absent in this shell; Claude Code's environment must provide TYPESAFE_API_KEY",
+        None => {
+            "unavailable: correct the selected provider's configuration before a recorded trial"
+        }
     };
     format!(
         "Prerequisites for a recorded shadow trial (this command changes none of them):\n  \
@@ -4698,6 +4722,7 @@ fn install_hook_command(clock: &EntryClock, m: &clap::ArgMatches) -> Result<Stri
             .as_ref()
             .is_ok_and(|c| c.effective().trusted_user_network_enabled()),
         user_root.as_deref(),
+        resolved.as_ref().ok(),
     );
     let effective_mode = resolved
         .as_ref()

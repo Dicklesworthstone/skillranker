@@ -73,6 +73,129 @@ fn typesafe_defaults_and_fingerprints_are_not_changed_by_unused_cloudflare_input
 }
 
 #[test]
+fn malformed_unused_cloudflare_values_do_not_disable_typesafe() {
+    let baseline = resolve(inputs("typesafe"));
+    for (name, values) in [
+        (
+            "CLOUDFLARE_ACCOUNT_ID",
+            vec!["".to_owned(), "PRIVATE-CANARY-invalid-account".into()],
+        ),
+        (
+            "CLOUDFLARE_API_TOKEN",
+            vec!["PRIVATE-CANARY bad token".into(), "x".repeat(4097)],
+        ),
+    ] {
+        for value in values {
+            let mut sources = inputs("typesafe");
+            sources.environment.retain(|(key, _)| key != name);
+            sources.environment.push(var(name, &value));
+            let config = resolve(sources.clone());
+            assert_eq!(config.effective().provider(), Provider::TypeSafe);
+            assert_eq!(
+                config.effective().policy_fingerprint(),
+                baseline.effective().policy_fingerprint()
+            );
+            assert!(config.credential().is_some());
+            assert_eq!(endpoint(&config).unwrap(), endpoint(&baseline).unwrap());
+            assert!(!format!("{config:?}").contains("PRIVATE-CANARY"));
+
+            sources.trusted_user = vec![setting("provider.kind", "cloudflare")];
+            let error = ResolvedConfig::resolve(sources, 1).unwrap_err();
+            assert!(!format!("{error} {error:?}").contains("PRIVATE-CANARY"));
+            assert!(
+                error
+                    .issues()
+                    .iter()
+                    .any(|issue| issue.layer == ConfigLayer::Environment)
+            );
+        }
+    }
+}
+
+#[test]
+fn unused_cloudflare_errors_are_enforced_after_file_provider_switch() {
+    let mut sources = inputs("typesafe");
+    sources.environment[2] = var("CLOUDFLARE_ACCOUNT_ID", "PRIVATE-CANARY-invalid-account");
+    sources.environment[1] = var("CLOUDFLARE_API_TOKEN", "PRIVATE-CANARY bad token");
+    let config = resolve(sources.clone());
+    let error = config
+        .reresolve_files(vec![setting("provider.kind", "cloudflare")], Vec::new(), 2)
+        .unwrap_err();
+    for key in [
+        SettingKey::CloudflareAccountId,
+        SettingKey::CloudflareApiToken,
+    ] {
+        assert!(error.contains(
+            ConfigLayer::Environment,
+            &IssueKey::Known(key),
+            ConfigProblem::InvalidValue
+        ));
+    }
+    assert!(!format!("{error} {error:?}").contains("PRIVATE-CANARY"));
+
+    // A frozen environment provider override still wins over mutable files.
+    sources.environment.push(var("SR_PROVIDER", "typesafe"));
+    let frozen = resolve(sources);
+    let unchanged = frozen
+        .reresolve_files(vec![setting("provider.kind", "cloudflare")], Vec::new(), 2)
+        .unwrap();
+    assert_eq!(unchanged.effective().provider(), Provider::TypeSafe);
+    assert_eq!(
+        unchanged.effective().policy_fingerprint(),
+        frozen.effective().policy_fingerprint()
+    );
+}
+
+#[test]
+fn unused_provider_does_not_relax_duplicate_or_unknown_environment_keys() {
+    let mut sources = inputs("typesafe");
+    sources
+        .environment
+        .push(var("CLOUDFLARE_ACCOUNT_ID", "bad"));
+    let error = ResolvedConfig::resolve(sources, 1).unwrap_err();
+    assert!(error.contains(
+        ConfigLayer::Environment,
+        &IssueKey::Known(SettingKey::CloudflareAccountId),
+        ConfigProblem::DuplicateKey
+    ));
+    let mut sources = inputs("typesafe");
+    sources
+        .environment
+        .push(var("SR_PRIVATE_CANARY_UNKNOWN", "value"));
+    let error = ResolvedConfig::resolve(sources, 1).unwrap_err();
+    assert!(error.contains(
+        ConfigLayer::Environment,
+        &IssueKey::Unknown,
+        ConfigProblem::UnknownKey
+    ));
+}
+
+#[cfg(unix)]
+#[test]
+fn non_utf8_unused_provider_values_stay_local_and_fail_when_selected() {
+    use std::os::unix::ffi::OsStringExt;
+    for name in ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"] {
+        let mut sources = inputs("typesafe");
+        sources.environment.retain(|(key, _)| key != name);
+        sources.environment.push((
+            name.into(),
+            OsString::from_vec(b"PRIVATE-CANARY\xff".to_vec()),
+        ));
+        let config = resolve(sources);
+        let error = config
+            .reresolve_files(vec![setting("provider.kind", "cloudflare")], Vec::new(), 2)
+            .unwrap_err();
+        assert!(
+            error
+                .issues()
+                .iter()
+                .any(|issue| issue.problem == ConfigProblem::NonUtf8)
+        );
+        assert!(!format!("{config:?} {error:?}").contains("PRIVATE-CANARY"));
+    }
+}
+
+#[test]
 fn trusted_cloudflare_selection_reaches_the_existing_client_constructor() {
     let config = resolve(inputs("cloudflare"));
     assert_eq!(config.effective().provider(), Provider::Cloudflare);

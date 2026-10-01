@@ -77,6 +77,32 @@ fn doctor_config_resolves_layers_without_disclosing_credentials() {
 }
 
 #[test]
+fn real_cli_ignores_malformed_unused_cloudflare_but_refuses_selected_values() {
+    let f = Fixture::new();
+    for provider in ["typesafe", "cloudflare"] {
+        let output = f.run(
+            &["doctor", "--config", "--json"],
+            &[
+                ("SR_PROVIDER", provider),
+                ("TYPESAFE_API_KEY", "synthetic-typesafe-key"),
+                ("CLOUDFLARE_API_TOKEN", "PRIVATE-CANARY bad token"),
+                ("CLOUDFLARE_ACCOUNT_ID", "PRIVATE-CANARY-invalid-account"),
+            ],
+        );
+        assert_eq!(
+            output.status.code(),
+            Some(if provider == "typesafe" { 0 } else { 2 })
+        );
+        assert!(!String::from_utf8_lossy(&output.stdout).contains("PRIVATE-CANARY"));
+        assert!(!String::from_utf8_lossy(&output.stderr).contains("PRIVATE-CANARY"));
+        if provider == "typesafe" {
+            let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(report["settings"]["provider.kind"]["value"], "typesafe");
+        }
+    }
+}
+
+#[test]
 fn malformed_and_forbidden_configuration_never_echoes_private_input() {
     let f = Fixture::new();
     for bytes in [

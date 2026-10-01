@@ -24,6 +24,52 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 static FIXTURE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+#[test]
+fn cloudflare_installer_prerequisites_name_the_selected_token_and_account() {
+    let f = InstallerFixture::new();
+    fs::write(
+        f.config_dir().join("config.toml"),
+        "[provider]\nkind=\"cloudflare\"\n",
+    )
+    .unwrap();
+    for (token, account, expected) in [
+        (false, false, "Cloudflare token and account absent"),
+        (true, false, "Cloudflare account absent"),
+        (false, true, "Cloudflare token absent"),
+        (true, true, "Cloudflare token and account present"),
+    ] {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_sr"));
+        command
+            .env_clear()
+            .env("HOME", f.home())
+            .env("XDG_CONFIG_HOME", f.home().join(".config"))
+            .env("XDG_STATE_HOME", f.home().join(".local/state"))
+            .env("TYPESAFE_API_KEY", "synthetic-unselected-typesafe-key")
+            .current_dir(f.workspace())
+            .stdin(Stdio::null())
+            .args(["install-hook", "claude"]);
+        if token {
+            command.env("CLOUDFLARE_API_TOKEN", "synthetic-selected-cloudflare-key");
+        }
+        if account {
+            command.env("CLOUDFLARE_ACCOUNT_ID", "0123456789abcdef0123456789abcdef");
+        }
+        let output = command.output().unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let text = String::from_utf8(output.stdout).unwrap();
+        assert!(text.contains(expected), "{text}");
+        assert!(!text.contains("TYPESAFE_API_KEY"));
+        assert!(!text.contains("synthetic-selected-cloudflare-key"));
+        assert!(!text.contains("0123456789abcdef0123456789abcdef"));
+        assert!(!f.settings_path().exists());
+    }
+}
+
 struct InstallerFixture {
     root: PathBuf,
 }

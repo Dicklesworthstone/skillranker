@@ -899,14 +899,24 @@ impl LayerBuilder {
 /// Strict for the `SR_` namespace: an unrecognized `SR_*` variable is an error
 /// so a misspelled privacy setting cannot be silently ignored. Other variables,
 /// including unrelated `TYPESAFE_*` names, are outside this schema.
+struct ValidatedEnvironment {
+    layer: ValidatedLayer,
+    typesafe_credential: Option<ApiCredential>,
+    cloudflare_credential: Option<ApiCredential>,
+    // Keep only sanitized errors, never malformed tokens/accounts. A later
+    // file-layer provider switch must still enforce this frozen environment.
+    cloudflare_issues: Vec<ConfigIssue>,
+}
+
 fn validate_environment(
     vars: Vec<(OsString, OsString)>,
     sink: &mut IssueSink,
-) -> (ValidatedLayer, Option<ApiCredential>, Option<ApiCredential>) {
+) -> ValidatedEnvironment {
     let layer = ConfigLayer::Environment;
     let mut builder = LayerBuilder::new(layer);
     let mut typesafe_credential = None;
     let mut cloudflare_credential = None;
+    let mut cloudflare_issues = Vec::new();
     let mut recognized = 0usize;
     for (name, value) in vars {
         let strict_namespace = name.as_encoded_bytes().starts_with(b"SR_");
@@ -947,18 +957,58 @@ fn validate_environment(
                     SettingKey::CloudflareApiToken => cloudflare_credential = found,
                     _ => unreachable!("credential key checked above"),
                 },
+                Err(problem) if key == SettingKey::CloudflareApiToken => {
+                    cloudflare_issues.push(ConfigIssue {
+                        layer,
+                        key: IssueKey::Known(key),
+                        problem,
+                    });
+                }
                 Err(problem) => sink.push(layer, IssueKey::Known(key), problem),
             }
             continue;
         }
         let kind = key.spec().kind;
+        if key == SettingKey::CloudflareAccountId {
+            // Duplicate definitions and layer authority remain unconditional.
+            // Only value validation depends on the final selected provider.
+            if builder.first_occurrence(key, sink) && check_rule(key.spec(), layer, sink) {
+                match text
+                    .and_then(|t| environment_raw(kind, t))
+                    .and_then(|raw| typed_value(key.spec(), layer, raw))
+                {
+                    Ok(value) => {
+                        builder.validated.values.insert(key, value);
+                    }
+                    Err(problem) => cloudflare_issues.push(ConfigIssue {
+                        layer,
+                        key: IssueKey::Known(key),
+                        problem,
+                    }),
+                }
+            }
+            continue;
+        }
         builder.insert(key, text.and_then(|t| environment_raw(kind, t)), sink);
     }
-    (
-        builder.validated,
+    ValidatedEnvironment {
+        layer: builder.validated,
         typesafe_credential,
         cloudflare_credential,
-    )
+        cloudflare_issues,
+    }
+}
+
+fn selected_cloudflare_errors(
+    effective: &EffectiveConfig,
+    issues: &[ConfigIssue],
+    sink: &mut IssueSink,
+) {
+    if effective.provider() == Provider::Cloudflare {
+        for issue in issues {
+            sink.push(issue.layer, issue.key.clone(), issue.problem);
+        }
+    }
 }
 
 /// Where an effective value came from. Union lists record every contributor.
@@ -1252,6 +1302,7 @@ pub struct ResolvedConfig {
     cloudflare_credential: Option<ApiCredential>,
     /// Process environment and arguments stay fixed for the whole invocation.
     environment: ValidatedLayer,
+    cloudflare_issues: Vec<ConfigIssue>,
     cli: ValidatedLayer,
     generation: u64,
 }
@@ -1262,16 +1313,17 @@ impl ResolvedConfig {
         let mut sink = IssueSink::default();
         let user = validate_entries(ConfigLayer::TrustedUser, sources.trusted_user, &mut sink);
         let project = validate_entries(ConfigLayer::Project, sources.project, &mut sink);
-        let (environment, typesafe_credential, cloudflare_credential) =
-            validate_environment(sources.environment, &mut sink);
+        let environment = validate_environment(sources.environment, &mut sink);
         let cli = validate_entries(ConfigLayer::Cli, sources.cli, &mut sink);
-        let merged = merge(&user, &project, &environment, &cli, &mut sink);
+        let merged = merge(&user, &project, &environment.layer, &cli, &mut sink);
+        selected_cloudflare_errors(&merged.0, &environment.cloudflare_issues, &mut sink);
         sink.finish(merged).map(|(effective, sources)| Self {
             effective,
             sources,
-            typesafe_credential,
-            cloudflare_credential,
-            environment,
+            typesafe_credential: environment.typesafe_credential,
+            cloudflare_credential: environment.cloudflare_credential,
+            environment: environment.layer,
+            cloudflare_issues: environment.cloudflare_issues,
             cli,
             generation,
         })
@@ -1289,12 +1341,14 @@ impl ResolvedConfig {
         let user = validate_entries(ConfigLayer::TrustedUser, trusted_user, &mut sink);
         let project = validate_entries(ConfigLayer::Project, project, &mut sink);
         let merged = merge(&user, &project, &self.environment, &self.cli, &mut sink);
+        selected_cloudflare_errors(&merged.0, &self.cloudflare_issues, &mut sink);
         sink.finish(merged).map(|(effective, sources)| Self {
             effective,
             sources,
             typesafe_credential: self.typesafe_credential.clone(),
             cloudflare_credential: self.cloudflare_credential.clone(),
             environment: self.environment.clone(),
+            cloudflare_issues: self.cloudflare_issues.clone(),
             cli: self.cli.clone(),
             generation,
         })
