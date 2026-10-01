@@ -78,3 +78,46 @@ fn unknown_keys_are_not_canonicalized_as_known_aliases() {
     assert_eq!(err, FrontmatterError::DuplicateKey);
     assert!(!format!("{err:?} {err}").contains("private-canary"));
 }
+
+#[test]
+fn dynamic_markers_preserve_reference_reuse_safety_and_ascii_digit_rules() {
+    for (body, dynamic) in [
+        ("Ordinary reusable guidance", false),
+        ("$", false),
+        ("$x $é1 $９ $١", false),
+        ("ARGUMENTS CLAUDE_ command", false),
+        ("$0", true),
+        ("$9", true),
+        ("$$5", true),
+        ("$123", true),
+        ("Use $ARGUMENTS here", true),
+        ("Use ${CLAUDE_SESSION_ID} here", true),
+        ("Read !`command` here", true),
+        ("Unicode λ🙂 before $7 and a trailing $", true),
+    ] {
+        let doc = format!("---\ndescription: Reference\nusage: reference\n---\n{body}");
+        let parsed = parse_skill_metadata(doc.as_bytes()).unwrap();
+        assert_eq!(parsed.dynamic_content, dynamic, "body: {body}");
+        assert_eq!(parsed.usage_kind, UsageKind::Reference);
+    }
+}
+
+#[test]
+fn dynamic_markers_at_the_full_file_boundary_are_not_lost_to_excerpting() {
+    use skillranker::roster::MAX_SKILL_FILE_BYTES;
+    let header = "---\ndescription: Reference\nusage: reference\n---\n";
+    for (tail, dynamic) in [
+        ("$8", true),
+        ("$ARGUMENTS", true),
+        ("$９", false),
+        ("$", false),
+    ] {
+        let doc = format!(
+            "{header}{}{tail}",
+            "x".repeat(MAX_SKILL_FILE_BYTES - header.len() - tail.len())
+        );
+        assert_eq!(doc.len(), MAX_SKILL_FILE_BYTES);
+        let parsed = parse_skill_metadata(doc.as_bytes()).unwrap();
+        assert_eq!(parsed.dynamic_content, dynamic, "tail: {tail}");
+    }
+}

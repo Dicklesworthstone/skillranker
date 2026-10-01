@@ -309,10 +309,11 @@ fn has_dynamic_content(body: &str) -> bool {
     body.contains("!`")
         || body.contains("$ARGUMENTS")
         || body.contains("${CLAUDE_")
-        || body
-            .as_bytes()
-            .windows(2)
-            .any(|pair| pair[0] == b'$' && pair[1].is_ascii_digit())
+        || body.match_indices('$').any(|(offset, _)| {
+            body.as_bytes()
+                .get(offset + 1)
+                .is_some_and(u8::is_ascii_digit)
+        })
 }
 
 // --- Frontmatter YAML Parser ---
