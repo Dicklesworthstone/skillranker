@@ -83,10 +83,23 @@ agent) and is out of scope here.
 
 ## 6. Revocation
 
-`sr uninstall-hook claude --apply` removes only the managed entry (preview
-first; the existing compact-check hook is untouched). Setting
-`network.enabled = false` stops Jev spend while leaving recording of local
-turns intact. Both paths are tested by the installer contract suite.
+The current repository-local deployment uses the private credential wrapper
+recorded in the October 3 receipt. Preview removal of that exact entry:
+
+```bash
+sr uninstall-hook claude --settings-file /data/projects/skillranker/.claude/settings.local.json --binary-path /home/ubuntu/.local/libexec/skillranker/sr --timeout-secs 4
+```
+
+After reviewing the preview, repeat with `--apply`. Both the settings path and
+wrapper path are required; the default settings path is global. Unrelated
+settings and the global compact-check hook remain intact. Live preview and
+isolated apply/repeat/conflict checks passed on October 3; the live hook has
+not been uninstalled. The earlier customized shell command correctly refused
+uninstallation until it was reconciled with this exact managed command.
+
+Setting `network.enabled = false` in trusted user configuration stops Jev spend
+from the existing hook while leaving local turn recording enabled. No consent
+or allowance setting was changed during the October 3 redeployment.
 
 ## 7. What the cohort report must contain (before any gate claim)
 
@@ -608,3 +621,106 @@ the confirmation to look for.
   completed, in 456 ms and 608 ms.
 - Gates at `5f71eac`'s tree: remote full suite 1532 passed, 0 failed; strict
   clippy clean; rustfmt fixed in 4244c14 (formatting only).
+
+## Redeployment — 2026-10-03 (BeigeCompass, verified source catch-up)
+
+- The existing project-local shadow hook now loads the release binary from frozen
+  source `f820005ee478568ecf7adb2154712bb058c5109a`. This brings the deployed
+  `5f71eac` build forward to the selected-provider configuration repair, bounded
+  provider-specific wire previews, and the smaller dynamic-marker parser scan.
+  `999b431` changes only the tracker ownership record; its production source,
+  dependencies and toolchain are identical to the compiler source.
+- Binary: `~/.local/bin/sr`, SHA256 `7d1abb6b16dbe1ca743641b38cdb25bbe16fbfad44077372bab0a88995c6085e`; size `23504360` bytes, mode
+  `0755`. Deployment completed at `2026-10-03 04:42:09 UTC`. The prior executable,
+  SHA256 `72ddf91fe668074b322c9ad5404007192303013a225bb42c020a0263d17b032f`,
+  is preserved at `~/.local/state/sr/deployments/20261003T044209Z-5f71eac/sr`.
+  Its hash was checked before and after the atomic replacement. Cooperating installers are locked; hashes, inodes and
+  modes are checked again immediately before replacement. This does not claim
+  compare-and-swap against noncooperating external editors.
+- Build: DSR `0.2.1` with private configuration/state, run `9d6099ef-873b-4f0a-ab8d-dea8514b8216`, delegates
+  compilation through required-remote RCH on `ovh-b`:
+  `cargo build --locked --release --target x86_64-unknown-linux-gnu --bin sr --jobs 4`.
+  RCH source is exactly `f820005`, with no working-tree overlay, fingerprint
+  `fe0d5151031be8fda7951fe7fe1f42f7ce344018fdb3ed21e6ada866b230b195`.
+  The actual native ELF, archived executable and installed bytes agree.
+  The worker's pinned `nightly-2026-08-31` reports Rust `1.100.0-nightly`,
+  commit `90850177249efe0321573c569aec5d12b257f8d6`, LLVM `23.1.0`.
+  Default features are empty; `Cargo.lock`, toolchain and `LICENSE` are unchanged.
+  This is a private Linux x86-64 native deployment, not a portable release,
+  advisory promotion, other-platform qualification or new tag. DSR's ordinary
+  `publishable` metadata is not one of those acceptance claims.
+- Failed build-wrapper attempts remain recorded: one RCH argument rejection
+  before compilation, and two packaging failures after successful remote native
+  builds because DSR expected a target-triple subdirectory. A boolean opt-out
+  was ineffective with the installed tooling. The final wrapper passes the
+  target explicitly to remote Cargo and retains architecture validation.
+  Unsupported DSR option attempts exited before build admission. No local
+  Cargo fallback, global build configuration change or GitHub Actions was used.
+- Verification: `/scratch/tmp/sr-shadow-candidate-0ukvc9eb/report.json` records 20 positive/adversarial comparison records
+  from 32 actual CLI executions, using bounded synthetic input, credential-free
+  environments, offline mode and private HOME/ledgers. Explicit resolution,
+  missing requirements, offline misses, dry-run, strict parsing and provider
+  selection behaved as declared before execution. A positive shadow hook
+  produced empty stdout/stderr and exactly one explicit turn with zero emissions;
+  malformed and unsupported input remained quiet on stdout with sanitized stderr.
+  Malformed inactive Cloudflare environment blocks the old TypeSafe build but
+  permits the new explicit decision; selected malformed Cloudflare still refuses.
+  `/scratch/tmp/sr-shadow-candidate-jxqchks4/report.json` checks the installed path against the preserved old
+  executable. These are actual binary/input-contract checks, not real Claude
+  delivery, organic traffic, live provider success, performance or quality proof.
+- The maintainer's actual roster output matched byte for byte before installation:
+  47,722 bytes, SHA256
+  `1e62f8e16e819057666683eed1213793db43cfd70052d96be9e7dc562cb80523`.
+  There is no latency claim from this single pair. Source-level acceptance already
+  passed on the same committed production bytes: full remote default-feature
+  suite 1,546 passed, zero failed, ten pre-existing ignored entries; all-target
+  check and pinned strict Clippy passed. Those are the October 1 receipts, not
+  newly executed full-suite results for this deployment.
+- Rollback repair: the prior credential-loading shell command did not match the
+  installer's managed command; an actual project-local uninstall preview refused
+  it with exit 2. The installer correctly protects modified entries. Reconciled
+  only `hooks.UserPromptSubmit[0].hooks[0].command` to
+  `/home/ubuntu/.local/libexec/skillranker/sr hook claude`, with a private wrapper
+  (SHA256 `fbf531ecefed9d4e49ac9c799f732951b7f9276baf24443c4af472b3aecdc965`):
+
+  ```sh
+  #!/bin/sh
+  set +x
+  set -a
+  . /data/projects/skillranker/.env
+  set +a
+  exec /home/ubuntu/.local/bin/sr "$@"
+  ```
+
+  The wrapper's parent is owner-only (`0700`); `.env` ownership and `0600`
+  were checked without printing its value. It uses the same credential file
+  and executable as before. Original settings bytes are preserved at
+  `~/.local/state/sr/deployments/20261003T044209Z-5f71eac/claude-settings.local.before-wrapper.json`.
+  All other project bytes, the four-second timeout, trusted config and global
+  settings are unchanged; global settings have no `sr` hook.
+  Consent stays repository-scoped, mode stays shadow and raw capture stays off.
+  Eight actual isolated installer cases passed: install/uninstall and repeats,
+  unrelated-field preservation, modified-command and malformed-file refusal,
+  and owner-only backups. The actual wrapper also passed 20 offline comparison
+  records (`/scratch/tmp/sr-shadow-candidate-x1c3o1d9/report.json`). Live install
+  preview reports already installed, and live uninstall preview succeeds without
+  modifying settings. No live uninstall was applied. See §6 for exact commands.
+- The shared allowance remains disabled. The original pre-registration's
+  statement that allowance tooling was absent describes September 21; tooling
+  now exists but no cap has been configured here. No new public request, budget
+  change or expansion of network authorization occurred during this deployment.
+- Read-only before/after stats: all counts and outcome states are unchanged;
+  the query end timestamp advances with the clock. The whole mixed-history
+  ledger contains 170 evaluations, 167 shadow rows, zero emissions and zero
+  independent judgments; 234 provider attempts, 14 unknown-usage attempts and
+  2,394,033 known tokens. Entry counters retain 312 entries, 135 recorded,
+  154 non-turn deliveries and 23 unrecorded (an upper bound, not proven outages).
+  Private smoke rows do not enter that store. No new qualified organic turn on
+  this binary is claimed. Earlier revisions, out-of-scope history and unfinished
+  rows cannot be pooled into a revision-qualified passing cohort.
+- `sr-1uf4` remains open: at least 500 representative real invocations with
+  revision/harness/model/policy/population identity, cold/warm/cache/outage strata,
+  all-invocation fallback and latency denominators, memory and known/unknown
+  usage are still required. Independent relevance labels, prospective controlled
+  outcomes and advisory promotion retain their separate gates. This deployment
+  enables ordinary existing shadow traffic to exercise verified source.
