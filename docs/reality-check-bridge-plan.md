@@ -1496,7 +1496,7 @@ voice; this document records delivery status separately.
    it cannot certify this later transport build. The newer spike document's
    response/latency assertion lacks a source-bound execution receipt.
 
-2. **Cross-process leases do not deliver cross-process responses.**
+2. **Historical defect: cross-process leases did not deliver cross-process responses.**
    `SingleFlightCoordinator::coordinate_request` takes `MemoryResponseCache`;
    SQLite contains lease metadata only. The competing-process test accepts
    `FollowerResolution::LeaderFailed` and checks its child's exit code, without
@@ -1508,7 +1508,12 @@ voice; this document records delivery status separately.
    requirements to `.5.20`; the separate namespace repair retains its owner.
    Acceptance needs real processes receiving the same validated wide and rerank
    responses, one owner, fresh reacquisition, publication-race tests, protected
-   bounded storage and truthful unknown-usage accounting.
+   bounded storage and truthful unknown-usage accounting. The production pipeline
+   now uses the qualified `CacheStore` for both responses and leases. Under
+   `sr-shnb`, the unused standalone coordinator/backends are retired inside
+   retained files; their useful contracts map to actual production tests in
+   [coordination-leases.md](coordination-leases.md). This historical wrapper
+   description is not the current architecture or a current acceptance receipt.
 
 3. **Native context acceptance exceeds the parser's behavior.**
    `context::jsonl::native_text` accepts string content only. An array of text or

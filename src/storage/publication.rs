@@ -84,15 +84,13 @@ impl CacheStore {
                     || check_work(clock, &child),
                 )?;
                 if let Some((_, leader)) = &fence {
-                    // None means no helper-table body: both production response
-                    // rows have already been written in this same transaction.
+                    // Both production response rows and completion share this transaction.
                     let outcome = SqliteLeaseCoordinator::complete_in_transaction(
                         &tx,
                         leader.key,
                         leader.owner_token,
                         leader.fencing_generation,
                         cache_wall_clock_ms(),
-                        None,
                     )
                     .map_err(coordination_error)?;
                     if outcome != PublishOutcome::Published {
@@ -327,7 +325,6 @@ mod tests {
             crate::cache::OwnerToken::from_bytes([1; 16]),
             crate::cache::FencingGeneration::initial(),
             1_000,
-            None,
         )
         .unwrap();
         assert!(matches!(outcome, PublishOutcome::Superseded { .. }));

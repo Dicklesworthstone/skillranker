@@ -1,6 +1,6 @@
 # Qualified cache storage foundation
 
-`skillranker::storage` is a Linux library boundary for opening an explicitly
+`skillranker::storage` is a Linux and macOS library boundary for opening an explicitly
 selected disposable cache, fencing generation changes, and holding the
 persistent exact response cache that `sr rank` uses: an owner-only fingerprint
 key and generation-stamped validated responses. It does not initialize an
@@ -84,17 +84,22 @@ omits it.
 
 Production lease acquisition, settlement reads, completion, and response writes
 use the same qualified `cache.sqlite3`. They do not create `leases.sqlite3` or
-use the helper coordinator's alternate response schema. Lease rows contain
+use an alternate response schema. The retired standalone coordinator/cache
+backends have no runtime or test implementation. The retained lease primitives
+accept only the qualified store's existing transaction. Lease rows contain
 only bounded ownership metadata and share the cache's page and sidecar quota.
 
 `record_response_fenced` checks the supplied cache path, store incarnation and
 generation, current lease owner and fencing generation, completion status, and
 expiry inside the same `BEGIN IMMEDIATE` that inserts the response. Expiry is
 checked again before commit. A successor cannot acquire between validation and
-publication. No database transaction spans provider work. Completion is a later
-metadata transaction; neither this design nor stdout delivery claims exactly-once
-publication. Optional recording or completion failures retain a valid answer with
-warnings; confirmed supersession withholds it.
+publication. The rank pipeline uses `publish_evaluation` to replace the complete
+wide/rerank pair and complete its lease in one transaction. A failed second row
+or completion rolls back the pair. The separate `complete_lease` API changes
+metadata only and cannot write bodies. No database transaction spans provider
+work. Database commit and stdout delivery remain separate effects; neither
+claims exactly-once delivery. Optional recording or completion failures retain
+a valid answer with warnings; confirmed supersession withholds it.
 
 Older stores are preserved and refused, with no hook-time migration. Old cache
 and lease files are not removed. Upgrading does not coordinate concurrent old
@@ -115,8 +120,9 @@ Linux ext4, Btrfs, XFS and tmpfs filesystem identifiers are admitted; network,
 FUSE and unknown filesystems are refused. The type is checked for a new
 directory's parent before creation and for the final store. This whitelist is a
 conservative admission policy, not proof of every underlying storage device's
-durability. Other operating systems are currently unqualified and do not export
-the module. tmpfs caches disappear on reboot.
+durability. macOS admits APFS through its platform adapter; current native
+qualification remains tracked separately in `sr-roadmap-l1i.5.23`. Other
+operating systems do not export the module. tmpfs caches disappear on reboot.
 
 Held directory/main descriptors and identity rechecks detect ordinary replacement.
 SQLite additionally uses `SQLITE_OPEN_NOFOLLOW`. SQLite still opens a pathname:

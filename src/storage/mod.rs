@@ -915,7 +915,6 @@ impl CacheStore {
                 leader.owner_token,
                 leader.fencing_generation,
                 cache_wall_clock_ms(),
-                None,
             )
             .map_err(coordination_error)
         })

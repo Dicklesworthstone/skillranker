@@ -1,61 +1,77 @@
-# Exact-Response Sharing with Fenced Bounded Leases
+# Exact response sharing with fenced leases
 
-Implementation documentation for boundary `sr-roadmap-l1i.5.10`.
+The rank pipeline owns single-flight selection and follower waiting.
+`CacheStore` provides the only persistent response and lease boundary:
+the qualified, owner-only `cache.sqlite3`. The transaction primitives in
+`src/cache/coordination.rs` accept that store's existing connection; they
+cannot open another database or store response bodies.
 
-## Architectural Overview
+The unused `SingleFlightCoordinator`, `MemoryCoordinator`,
+`SqliteResponseCache`, standalone SQLite opener and alternate
+`sr_response_cache` writer were retired under `sr-shnb`. Their source and
+test files are retained with production primitives and production-store tests.
+No old store is deleted or silently migrated.
 
-SkillRanker coordinates concurrent provider requests across processes and threads using single-flight coordination with fenced, bounded leases.
+## Production flow
 
 ```text
-Incoming Stage Request (Key, Namespace, RequestFingerprint)
-  -> CoordinationKey::compute(key, namespace, request_fingerprint)
-       -> Cache Hit?
-            YES -> Return Cached Response (new_requests: 0, new_tokens: 0)
-            NO  -> Acquire Lease in Coordinator (Memory or SQLite)
-                     Leading  -> Execute Provider Call (Attempt Owner)
-                                 -> Complete with Fencing Generation Check
-                                      Published  -> Put in Response Cache
-                                      Superseded -> Drop Result (Quiet Fallback)
-                     Following -> Bounded Wait within Invocation Deadline
-                                 -> Leader Completed -> Read from Cache (0 new requests/tokens)
-                                 -> Deadline Exceeded -> Quiet Fallback
+exact session/request namespace
+  -> complete, coherent cache pair?
+       yes -> revalidate current local eligibility and publication policy
+       no  -> acquire bounded lease in cache.sqlite3
+                leader   -> provider wide/rerank outside any transaction
+                            -> validate and revalidate
+                            -> publish response pair + completion in one transaction
+                follower -> bounded settlement reads + exact cache-pair lookup
+                            -> revalidate its own eligibility and publication policy
 ```
 
-## Lease & Fencing Invariants
+A cache-missing completed lease can be reacquired with a new fencing generation.
+A concurrent refresh follows the active owner rather than preempting it.
+A follower reaching its work deadline sends no provider attempt and returns
+unavailable. Optional storage failures have distinct warnings; they do not
+establish that an active leader exists.
 
-1. **Coordination Key Isolation**:
-   - `CoordinationKey` is a keyed BLAKE3 digest binding the local secret `CacheKey`, `CacheNamespace` (harness, workspace, session, branch, epoch, key generation), and the canonical `RequestFingerprint`.
-   - Distinct turns with identical prompts and contexts in the same session share the single-flight lease.
-   - Different sessions, branches, or event namespaces produce distinct coordination keys and never coalesce or block each other.
-2. **Lease Leadership & Monotonic Fencing**:
-   - The winner of a lease receives a unique 16-byte `OwnerToken` and `FencingGeneration(1)`.
-   - If an active leader stalls past `lease_ttl_ms` without completing, a successor process acquires the lease with an incremented fencing generation (`generation + 1`).
-   - If the old leader eventually finishes after lease expiration or successor acquisition, its publication attempt is strictly rejected with `PublishOutcome::Superseded`.
-   - Superseded results are silently dropped as quiet fallback, guaranteeing that obsolete provider responses can never overwrite newer state.
-3. **Follower Deadline Bounding**:
-   - Follower processes wait only within their remaining invocation deadline.
-   - If the leader does not complete before the deadline expires, the follower exits with `FollowerResolution::DeadlineExceeded` (quiet fallback), ensuring no hook or process hangs indefinitely.
-4. **Short SQLite Transactions**:
-   - In SQLite-backed coordination (`SqliteLeaseCoordinator`), atomic transactions (`BEGIN IMMEDIATE ... COMMIT`) are used only for short lease acquisitions and completions (< 1ms).
-   - Write locks are **never** held across network HTTP requests or follower wait loops.
-5. **Zero Hidden Response Bodies in Coordination State**:
-   - The SQLite table `sr_coordination_leases` strictly stores:
-     `coordination_key (BLOB[32])`, `owner_token (BLOB[16])`, `fencing_generation (INTEGER)`, `acquired_at_unix_ms (INTEGER)`, `expires_at_unix_ms (INTEGER)`, `attempt_id (TEXT)`, `is_completed (INTEGER)`.
-   - Zero response bodies or advice texts are stored in coordination state.
-   - When `--no-cache` is enabled, cross-process response sharing is disabled; followers cannot read response bodies, enforcing that coordination state is not an unauthorized secondary response store.
-6. **Usage Accounting & Identity Separation**:
-   - Only the leader process records newly incurred provider attempts and debits usage (`new_requests = 1`, `new_tokens = usage.total_tokens()`).
-   - Followers and cache consumers incur `new_requests = 0` and `new_tokens = 0`, with zero duplicate attempt debits.
-   - Missing or unknown owner usage remains 0 tokens and is never fabricated.
-   - Distinct turns sharing a response keep separate invocation identities, event keys, eligibility evaluations, decision fingerprints, and exposure records.
+## Invariants
 
-## Verification
+- A keyed BLAKE3 coordination key binds the full request namespace and fingerprint.
+  Equal redacted text alone does not permit sharing across sessions or branches.
+- Ownership requires the random owner token, fencing generation, current store
+  incarnation/generation, an uncompleted lease and exclusive expiry. Expired,
+  superseded or already completed owners cannot replace the authoritative pair.
+- Lease rows contain bounded ownership metadata only. Response bodies live in
+  `sr_cache_response`; there is no hidden alternate response store.
+- `publish_evaluation` writes both stages and lease completion in one short
+  `BEGIN IMMEDIATE` transaction. A failed row or completion rolls the mutation
+  back. Network work and follower waiting never hold a write transaction.
+- `--no-cache`, `--no-persist` and dry-run disable cache access before opening
+  storage. Response sharing is unavailable without the exact response cache.
+- Only the owner incurs each provider attempt. Consumers report zero *new*
+  provider usage. An owner's missing response or missing usage is unknown,
+  never an invented zero-token success. Decisions and exposure records remain
+  local to each consumer.
+- SQLite busy waits and follower polling share the invocation's remaining
+  deadline. Lease timestamps and generations are checked before mutation;
+  clock reversal, malformed metadata and exhausted generations fail closed.
+- Database commit and stdout are separate effects. These contracts do not
+  claim exactly-once delivery or qualify a later executable/platform revision.
 
-The contract is verified in `tests/coordination_contract.rs` (7 tests, 0 failures):
-- `real_competing_processes_and_single_flight`: verifies concurrent OS subprocesses (`std::process::Command`) competing for a SQLite lease, where leader completes and follower observes completion with 0 new requests/tokens.
-- `lease_expiry_and_reacquisition_with_fencing_bump`: verifies that an expired lease bumps `FencingGeneration` from 1 to 2 on reacquisition.
-- `old_owner_late_completion_rejected_after_expiry`: verifies that an old leader completing after expiration is rejected with `PublishOutcome::Superseded`.
-- `follower_deadline_causes_quiet_fallback`: verifies that a follower with a tight deadline returns `DeadlineExceeded` without hanging.
-- `different_session_and_event_isolation`: verifies distinct sessions obtain independent coordination keys and leadership without crosstalk.
-- `no_hidden_response_body_in_coordination_store`: inspects SQLite schema via `PRAGMA table_info` and verifies `--no-cache` policy refuses body sharing.
-- `missing_owner_usage_remains_unknown_no_duplicate_attempt_charges`: verifies follower usage accounting and absence of duplicate charges.
+## Coverage after retirement
+
+| Retired harness contract | Production coverage |
+| --- | --- |
+| Competing processes; both stages; owner-only attempts; subsequent offline reuse | `tests/real_rank_coordination.rs::ordinary_two_consumer_success_incurs_one_pair_and_subsequent_exact_offline_reuse`; `tests/coordination_contract.rs::qualified_store_delivers_both_stages_across_processes` |
+| Follower deadline; optional acquisition/completion contention | Follower, unacquirable-lease and busy-completion cases in `tests/real_rank_coordination.rs` |
+| Cache loss; forced refresh follows an active owner | Completed-lease/absent-pair case in `tests/real_rank_coordination.rs`; qualified refresh case in `tests/coordination_contract.rs` |
+| Stalled/expired owner cannot overwrite successor; store mismatch | `tests/cache_publication_fence.rs`; stale-owner CLI case in `tests/real_rank_coordination.rs`; wrong-store case in `tests/cache_atomic_publication.rs` |
+| Body-before-completion, single-use completion, failed write rollback | Pair/reopen, completed-publisher and second-row failure cases in `tests/cache_atomic_publication.rs`; completion/rollback/reopen unit tests |
+| Namespace isolation; metadata contains no bodies | Namespace and metadata cases in `tests/coordination_contract.rs`; `tests/cache_namespace_isolation.rs` |
+| Current exclusions; offline exact hit/miss; disabled persistence; stale entries | `tests/cache_policy_revocation.rs`; live exclusion, offline pair, disabled persistence and late-rerank cases in `tests/rank_acceptance.rs` |
+| Expiry boundary, clock reversal, overflow and malformed metadata | `src/cache/coordination/integrity_tests.rs` exercises the production transaction primitives with controlled timestamps and deliberately permissive malformed-row fixtures |
+| Engine, private paths, bounded locks, cancellation and quota | `tests/storage_contract.rs` exercises the production opener |
+
+Storage fixture bytes prove storage behavior, not Jev answer validity or relevance.
+The real CLI tests use an independent loopback TLS fixture with synthetic
+answers; public provider and native platform qualification remain separate gates.
+These references map coverage; executed results require a source-bound receipt.
+See [storage foundation](storage-foundation.md) for schema, quotas and publication.

@@ -1,28 +1,13 @@
-//! Acceptance tests for cache isolation, invalidation, and concurrent ownership (sr-roadmap-l1i.5.20).
-//!
-//! Validates:
-//! 1. Stale policy authority withheld on exact hit: Effective exclusion policy change
-//!    withholds cached skill from actionable recommendation; unchanged twin succeeds.
-//! 2. Multi-process follower withholds stale authority: Follower process receiving
-//!    shared response withholds excluded skill under its current local policy.
-//! 3. Network-only revocation preserves valid local cache hit: Revoking network consent
-//!    before publication allows valid local output when no wire requests are needed.
-//! 4. Network-only revocation on shared response: Fully received shared response
-//!    publishes valid output even if network consent is subsequently revoked.
-//! 5. Negative network control: Cache miss under revoked network consent refuses
-//!    with typed error, incurring zero network attempts.
-//! 6. No-cache isolation: Coordination without cache forbids cross-process body sharing.
-//! 7. No-persist isolation: In-memory coordination creates zero disk files or mutations.
-//! 8. Stale/expired entries cannot authorize actionable output.
-
-#![cfg(unix)]
+//! Cache policy regressions with production SQLite storage and pure eligibility.
+//! MemoryResponseCache remains a useful pure cache fixture; the retired
+//! SingleFlightCoordinator and its alternate response store are not reproduced.
+//! Actual CLI sharing, offline output, provider attempts and live policy changes
+//! are covered by real_rank_coordination and rank_acceptance.
 
 use skillranker::cache::{
     CacheKey, CacheLookupQuery, CacheLookupResult, CacheNamespace, CachedResponseEntry,
-    CandidateDigest, CoordinateRequestQuery, CoordinationKey, CoordinationPolicy,
-    DEFAULT_CACHE_TTL_SECS, DEFAULT_LEASE_TTL_MS, LeaseAcquisition, LeaseCoordinator,
-    MemoryResponseCache, PublishOutcome, RequestFingerprint, RequestFingerprintInput, RequestStage,
-    SingleFlightCoordinator, SqliteResponseCache, compute_request_fingerprint,
+    CandidateDigest, DEFAULT_CACHE_TTL_SECS, MemoryResponseCache, RequestFingerprint,
+    RequestFingerprintInput, RequestStage, compute_request_fingerprint,
 };
 use skillranker::context::PrivateText;
 use skillranker::effects::{EffectGate, Scope};
@@ -35,6 +20,8 @@ use skillranker::roster::{
     DisplayName, InvocationName, InvocationRestrictions, LoadTarget, LocalPath, SkillRecord,
     UsageKind, Visibility,
 };
+use skillranker::runtime::ProcessInvocation;
+use skillranker::storage::{CACHE_FILE, CacheAccess, CacheLocation, CacheOpen, CacheStore};
 use std::collections::BTreeSet;
 use std::fs::DirBuilder;
 use std::os::unix::fs::DirBuilderExt;
@@ -252,426 +239,164 @@ fn exact_hit_consumer_withholds_stale_exclusion_authority() {
     assert!(admission_b.verdict.is_none());
 }
 
-#[test]
-fn two_process_follower_withholds_stale_exclusion_authority() {
-    let tree = private_tree("two-proc-stale");
-    let db_path = tree.join("coordination.sqlite3");
-    let key = test_key();
-    let ns = test_namespace("sess-follower-stale");
-
-    let (rec1, bind1, _rec2, _bind2) = sample_candidates();
-    let candidate_digests = vec![CandidateDigest {
-        skill_id: bind1.id.clone(),
-        content_hash: rec1.source_content.clone(),
-        excerpt_hash: None,
-    }];
-    let fp = sample_request_fingerprint(&key, &ns, &candidate_digests);
-    let coord_key = CoordinationKey::compute(&key, &ns, &fp);
-
-    let policy = CoordinationPolicy::default();
-    let coordinator = SingleFlightCoordinator::new(policy, Some(&db_path)).unwrap();
-    let cache = SqliteResponseCache::open(&db_path).unwrap();
-
-    let t0 = 1_000_000u64;
-
-    // Leader acquires lease
-    let acq = coordinator.acquire(coord_key, t0, &policy).unwrap();
-    let leader = match acq {
-        LeaseAcquisition::Leading(l) => l,
-        other => panic!("expected leading, got {other:?}"),
-    };
-
-    // Leader saves response to cache
-    let entry = CachedResponseEntry {
-        stage: RequestStage::Wide,
-        request_fingerprint: fp,
-        response_bytes: b"{\"choice\":\"cargo-test\"}".to_vec(),
-        received_at_unix_ms: t0 + 50,
-        ttl_seconds: DEFAULT_CACHE_TTL_SECS,
-        model: "jev-model-1".to_string(),
-        model_revision: Some("r1".to_string()),
-        original_usage: Usage {
-            input_tokens: 120,
-            output_tokens: 40,
-        },
-        attempt_id: Some(leader.attempt_id.clone()),
-    };
-    cache.put(&key, &ns, entry).unwrap();
-
-    // Leader publishes completion
-    let outcome = coordinator
-        .complete(
-            coord_key,
-            leader.owner_token,
-            leader.fencing_generation,
-            t0 + 60,
+fn qualified_store(path: &Path, gate: EffectGate) -> CacheOpen {
+    let invocation = ProcessInvocation::enter().unwrap();
+    let cx = invocation.request_cx().unwrap();
+    let result = gate
+        .open_cache(
+            &invocation,
+            &cx,
+            CacheAccess::Initialize,
+            CacheLocation::Directory(path.to_owned()),
         )
         .unwrap();
-    assert_eq!(outcome, PublishOutcome::Published);
-
-    // Follower arrives and queries
-    let query = CoordinateRequestQuery {
-        key: &key,
-        namespace: &ns,
-        stage: RequestStage::Wide,
-        request_fingerprint: &fp,
-        deadline_unix_ms: t0 + 5000,
-        active_model: "jev-model-1",
-        active_revision: Some("r1"),
-    };
-
-    let follower_res = coordinator
-        .coordinate_request(
-            &query,
-            &cache,
-            || t0 + 100,
-            |_att| panic!("follower must not invoke provider"),
-        )
-        .unwrap();
-
-    assert!(follower_res.served_from_cache);
-    assert_eq!(follower_res.new_requests, 0);
-    assert_eq!(follower_res.new_tokens, 0);
-
-    // Follower validates against local policy where "cargo-test" is excluded
-    let adv1 = AdvisorySkill {
-        record: &rec1,
-        binding: &bind1,
-    };
-    let mut follower_exclusions = BTreeSet::new();
-    follower_exclusions.insert(&bind1.id);
-
-    let empty_loaded = LoadedState {
-        branch: None,
-        records: &[],
-    };
-    let follower_adm = admit(&[adv1], &follower_exclusions, empty_loaded);
-    assert_eq!(
-        follower_adm.verdict,
-        Some(Verdict::Abstain(AbstainReason::Excluded)),
-        "follower must withhold stale cached authority when locally excluded"
-    );
-
-    // Follower twin without exclusions admits the skill
-    let empty_exclusions = BTreeSet::new();
-    let twin_adm = admit(&[adv1], &empty_exclusions, empty_loaded);
-    assert_eq!(twin_adm.admitted.len(), 1);
-    assert!(twin_adm.verdict.is_none());
+    assert!(invocation.shutdown());
+    result
 }
 
-#[test]
-fn exact_hit_network_only_revocation_preserves_valid_local_result() {
-    let tree = private_tree("net-rev-exact");
-    let db_path = tree.join("cache.sqlite3");
-    let key = test_key();
-    let ns = test_namespace("sess-net-rev-exact");
-    let cache = SqliteResponseCache::open(&db_path).unwrap();
+fn ready(path: &Path, gate: EffectGate) -> CacheStore {
+    let CacheOpen::Ready(store) = qualified_store(path, gate) else {
+        panic!("cache unavailable");
+    };
+    *store
+}
 
-    let (rec1, bind1, _, _) = sample_candidates();
-    let candidate_digests = vec![CandidateDigest {
-        skill_id: bind1.id.clone(),
-        content_hash: rec1.source_content.clone(),
-        excerpt_hash: None,
-    }];
-    let fp = sample_request_fingerprint(&key, &ns, &candidate_digests);
-    let t0 = 1_000_000u64;
-
-    // Cache populated when network was initially allowed
-    let entry = CachedResponseEntry {
+fn stored_entry(fp: RequestFingerprint) -> CachedResponseEntry {
+    CachedResponseEntry {
         stage: RequestStage::Wide,
         request_fingerprint: fp,
-        response_bytes: b"{\"choice\":\"cargo-test\"}".to_vec(),
-        received_at_unix_ms: t0,
+        // Storage fixture, not a validated provider answer or a ranking decision.
+        response_bytes: b"synthetic-wide-storage-body".to_vec(),
+        received_at_unix_ms: u64::try_from(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis(),
+        )
+        .unwrap(),
         ttl_seconds: DEFAULT_CACHE_TTL_SECS,
-        model: "jev-model-1".to_string(),
-        model_revision: Some("r1".to_string()),
+        model: "jev-model-1".into(),
+        model_revision: Some("r1".into()),
         original_usage: Usage {
             input_tokens: 80,
             output_tokens: 25,
         },
-        attempt_id: Some("att-prior-01".to_string()),
-    };
-    cache.put(&key, &ns, entry).unwrap();
+        attempt_id: Some("synthetic-prior-attempt".into()),
+    }
+}
 
-    // Now network consent is REVOKED (offline = true, allow_network = false)
-    let revoked_flags = EffectFlags {
-        offline: true,
-        allow_network: false,
-        dry_run: false,
-        no_cache: false,
-        no_ledger: true,
-        no_persist: false,
-        save_case: false,
+fn seed(path: &Path, fp: RequestFingerprint) {
+    let gate = EffectGate::new(EffectFlags::default(), Scope::Rank).unwrap();
+    let store = ready(path, gate);
+    let invocation = ProcessInvocation::enter().unwrap();
+    let cx = invocation.request_cx().unwrap();
+    let entry = stored_entry(fp);
+    let now = entry.received_at_unix_ms;
+    let store = store
+        .record_response(&invocation, &cx, [7; 32], entry, now)
+        .unwrap();
+    assert!(invocation.shutdown());
+    drop(store);
+}
+
+fn lookup(path: &Path, gate: EffectGate, fp: RequestFingerprint) -> Option<CachedResponseEntry> {
+    let store = ready(path, gate);
+    let invocation = ProcessInvocation::enter().unwrap();
+    let cx = invocation.request_cx().unwrap();
+    let (_, entry) = store
+        .response(&invocation, &cx, [7; 32], RequestStage::Wide, fp)
+        .unwrap();
+    assert!(invocation.shutdown());
+    entry
+}
+
+#[test]
+fn qualified_store_consumers_withhold_stale_exclusion_authority() {
+    let path = private_tree("qualified-exclusions");
+    let fp = RequestFingerprint::from_bytes([45; 32]);
+    seed(&path, fp);
+    let gate = EffectGate::new(EffectFlags::default(), Scope::Rank).unwrap();
+    let (record, binding, _, _) = sample_candidates();
+    let candidate = AdvisorySkill {
+        record: &record,
+        binding: &binding,
     };
-    let gate = EffectGate::new(revoked_flags, Scope::Rank).unwrap();
-    assert!(!gate.source_policy().allow_network);
+    let loaded = LoadedState {
+        branch: None,
+        records: &[],
+    };
+    let excluded = BTreeSet::from([&binding.id]);
+    // Independently reopened consumers get the same response, while local
+    // eligibility must be re-evaluated by each consumer. No model is called.
+    let changed = lookup(&path, gate, fp).unwrap();
+    let unchanged = lookup(&path, gate, fp).unwrap();
+    assert_eq!(changed.response_bytes, unchanged.response_bytes);
+    assert_eq!(changed.original_usage, unchanged.original_usage);
     assert_eq!(
-        gate.policy().network_block(),
+        admit(&[candidate], &excluded, loaded).verdict,
+        Some(Verdict::Abstain(AbstainReason::Excluded))
+    );
+    let eligible = admit(&[candidate], &BTreeSet::new(), loaded);
+    assert_eq!(eligible.admitted.len(), 1);
+    assert!(eligible.verdict.is_none());
+}
+
+#[test]
+fn qualified_cache_network_revocation_preserves_exact_local_hit_and_exposes_miss() {
+    let path = private_tree("qualified-offline");
+    let fp = RequestFingerprint::from_bytes([46; 32]);
+    seed(&path, fp);
+    let revoked = EffectGate::new(
+        EffectFlags {
+            offline: true,
+            no_ledger: true,
+            ..EffectFlags::default()
+        },
+        Scope::Rank,
+    )
+    .unwrap();
+    assert_eq!(
+        revoked.policy().network_block(),
         Some(skillranker::privacy::NetworkBlock::Offline)
     );
-
-    // Because response is already cached and valid, local cache lookup succeeds
-    let lookup = cache
-        .get(&CacheLookupQuery {
-            key: &key,
-            namespace: &ns,
-            stage: RequestStage::Wide,
-            fingerprint: &fp,
-            now_unix_ms: t0 + 500,
-            active_model: "jev-model-1",
-            active_revision: Some("r1"),
-        })
-        .unwrap();
-
-    assert!(lookup.fresh_entry().is_some());
-    let fresh = lookup.fresh_entry().unwrap();
-    assert_eq!(fresh.response_bytes, b"{\"choice\":\"cargo-test\"}");
-
-    // Local result is valid with zero new network requests
-    assert!(matches!(lookup, CacheLookupResult::Hit { .. }));
-
-    // Negative control: A cache MISS under revoked network consent cannot call provider
-    let miss_fp = RequestFingerprint::from_bytes([99u8; 32]);
-    let miss_lookup = cache
-        .get(&CacheLookupQuery {
-            key: &key,
-            namespace: &ns,
-            stage: RequestStage::Wide,
-            fingerprint: &miss_fp,
-            now_unix_ms: t0 + 500,
-            active_model: "jev-model-1",
-            active_revision: Some("r1"),
-        })
-        .unwrap();
-    assert!(matches!(miss_lookup, CacheLookupResult::Miss));
-    // Since gate forbids network, no HTTP call is allowed:
-    assert!(
-        !gate.source_policy().allow_network,
-        "network remains forbidden on miss"
-    );
-}
-
-#[test]
-fn shared_response_network_only_revocation_preserves_valid_local_result() {
-    let tree = private_tree("net-rev-shared");
-    let db_path = tree.join("coordination.sqlite3");
-    let key = test_key();
-    let ns = test_namespace("sess-net-rev-shared");
-
-    let (rec1, bind1, _, _) = sample_candidates();
-    let candidate_digests = vec![CandidateDigest {
-        skill_id: bind1.id.clone(),
-        content_hash: rec1.source_content.clone(),
-        excerpt_hash: None,
-    }];
-    let fp = sample_request_fingerprint(&key, &ns, &candidate_digests);
-    let coord_key = CoordinationKey::compute(&key, &ns, &fp);
-
-    let policy = CoordinationPolicy::default();
-    let coordinator = SingleFlightCoordinator::new(policy, Some(&db_path)).unwrap();
-    let cache = SqliteResponseCache::open(&db_path).unwrap();
-
-    let t0 = 1_000_000u64;
-
-    // Leader completes provider call
-    let acq = coordinator.acquire(coord_key, t0, &policy).unwrap();
-    let leader = match acq {
-        LeaseAcquisition::Leading(l) => l,
-        other => panic!("expected leading, got {other:?}"),
-    };
-
-    let entry = CachedResponseEntry {
-        stage: RequestStage::Wide,
-        request_fingerprint: fp,
-        response_bytes: b"{\"choice\":\"cargo-test\"}".to_vec(),
-        received_at_unix_ms: t0 + 10,
-        ttl_seconds: DEFAULT_CACHE_TTL_SECS,
-        model: "jev-model-1".to_string(),
-        model_revision: Some("r1".to_string()),
-        original_usage: Usage {
-            input_tokens: 50,
-            output_tokens: 15,
-        },
-        attempt_id: Some(leader.attempt_id.clone()),
-    };
-    cache.put(&key, &ns, entry).unwrap();
-    coordinator
-        .complete(
-            coord_key,
-            leader.owner_token,
-            leader.fencing_generation,
-            t0 + 20,
-        )
-        .unwrap();
-
-    // Follower's network consent is revoked
-    let follower_flags = EffectFlags {
-        offline: true,
-        allow_network: false,
-        dry_run: false,
-        no_cache: false,
-        no_ledger: true,
-        no_persist: false,
-        save_case: false,
-    };
-    let follower_gate = EffectGate::new(follower_flags, Scope::Rank).unwrap();
-    assert!(!follower_gate.source_policy().allow_network);
-
-    // Follower receives the completed response locally with 0 new wire calls
-    let query = CoordinateRequestQuery {
-        key: &key,
-        namespace: &ns,
-        stage: RequestStage::Wide,
-        request_fingerprint: &fp,
-        deadline_unix_ms: t0 + 2000,
-        active_model: "jev-model-1",
-        active_revision: Some("r1"),
-    };
-
-    let follower_res = coordinator
-        .coordinate_request(
-            &query,
-            &cache,
-            || t0 + 30,
-            |_att| panic!("no provider call allowed under revoked network consent"),
-        )
-        .unwrap();
-
-    assert!(follower_res.served_from_cache);
-    assert_eq!(follower_res.new_requests, 0);
-    assert_eq!(follower_res.new_tokens, 0);
+    let fresh = lookup(&path, revoked, fp).unwrap();
+    assert_eq!(fresh.response_bytes, stored_entry(fp).response_bytes);
+    assert_eq!(fresh.original_usage, stored_entry(fp).original_usage);
+    assert!(lookup(&path, revoked, RequestFingerprint::from_bytes([99; 32])).is_none());
     assert_eq!(
-        follower_res.entry.response_bytes,
-        b"{\"choice\":\"cargo-test\"}"
+        revoked.policy().network_block(),
+        Some(skillranker::privacy::NetworkBlock::Offline)
     );
+    // This proves storage access under the effective offline gate. Complete
+    // offline ranking and zero wire calls are exercised in rank_acceptance.
 }
 
 #[test]
-fn no_cache_forbids_cross_process_body_sharing() {
-    let tree = private_tree("no-cache-iso");
-    let db_path = tree.join("coordination.sqlite3");
-    let key = test_key();
-    let ns = test_namespace("sess-no-cache-iso");
-    let fp = RequestFingerprint::from_bytes([11u8; 32]);
-    let coord_key = CoordinationKey::compute(&key, &ns, &fp);
-
-    let no_cache_policy = CoordinationPolicy {
-        cache_enabled: false,
-        cross_process_allowed: true,
-        lease_ttl_ms: DEFAULT_LEASE_TTL_MS,
-    };
-    let coordinator = SingleFlightCoordinator::new(no_cache_policy, Some(&db_path)).unwrap();
-
-    let t0 = 1_000_000u64;
-    let acq = coordinator
-        .acquire(coord_key, t0, &no_cache_policy)
-        .unwrap();
-    let leader = match acq {
-        LeaseAcquisition::Leading(l) => l,
-        other => panic!("expected leading, got {other:?}"),
-    };
-
-    // Completing lease with cache_enabled=false succeeds for lease metadata
-    let outcome = coordinator
-        .complete(
-            coord_key,
-            leader.owner_token,
-            leader.fencing_generation,
-            t0 + 50,
-        )
-        .unwrap();
-    assert_eq!(outcome, PublishOutcome::Published);
-
-    // Follower attempting to retrieve body fails because no-cache forbids body storage/sharing
-    let empty_cache = MemoryResponseCache::new();
-    let query = CoordinateRequestQuery {
-        key: &key,
-        namespace: &ns,
-        stage: RequestStage::Wide,
-        request_fingerprint: &fp,
-        deadline_unix_ms: t0 + 1000,
-        active_model: "jev-model-1",
-        active_revision: None,
-    };
-
-    let err = coordinator
-        .coordinate_request(
-            &query,
-            &empty_cache,
-            || t0 + 60,
-            |_att| panic!("no provider invocation on completed lease"),
-        )
-        .unwrap_err();
-
-    assert!(
-        err.to_string().contains("cache disabled"),
-        "must reject body retrieval when cache is disabled: {err}"
-    );
-}
-
-#[test]
-fn no_persist_guarantees_zero_disk_mutation() {
-    let tree = private_tree("no-persist-iso");
-    // No SQLite database path is supplied (in-memory coordination)
-    let policy = CoordinationPolicy::default();
-    let coordinator = SingleFlightCoordinator::new(policy, None).unwrap();
-    let cache = MemoryResponseCache::new();
-
-    let key = test_key();
-    let ns = test_namespace("sess-no-persist-iso");
-    let fp = RequestFingerprint::from_bytes([22u8; 32]);
-
-    let t0 = 1_000_000u64;
-    let query = CoordinateRequestQuery {
-        key: &key,
-        namespace: &ns,
-        stage: RequestStage::Wide,
-        request_fingerprint: &fp,
-        deadline_unix_ms: t0 + 2000,
-        active_model: "jev-model-1",
-        active_revision: None,
-    };
-
-    let res = coordinator
-        .coordinate_request(
-            &query,
-            &cache,
-            || t0,
-            |attempt_id| {
-                let entry = CachedResponseEntry {
-                    stage: RequestStage::Wide,
-                    request_fingerprint: fp,
-                    response_bytes: b"{\"mem\":true}".to_vec(),
-                    received_at_unix_ms: t0,
-                    ttl_seconds: DEFAULT_CACHE_TTL_SECS,
-                    model: "jev-model-1".to_string(),
-                    model_revision: None,
-                    original_usage: Usage {
-                        input_tokens: 10,
-                        output_tokens: 5,
-                    },
-                    attempt_id: Some(attempt_id.to_string()),
-                };
-                Ok((
-                    entry,
-                    Usage {
-                        input_tokens: 10,
-                        output_tokens: 5,
-                    },
-                ))
-            },
-        )
-        .unwrap();
-
-    assert!(!res.is_follower);
-    assert_eq!(res.entry.response_bytes, b"{\"mem\":true}");
-
-    // Verify zero files exist in tree
-    let entries: Vec<_> = std::fs::read_dir(&tree).unwrap().collect();
-    assert!(
-        entries.is_empty(),
-        "no-persist must leave directory completely untouched"
-    );
+fn disabled_cache_and_persistence_do_not_open_the_production_store() {
+    for flags in [
+        EffectFlags {
+            no_cache: true,
+            ..EffectFlags::default()
+        },
+        EffectFlags {
+            no_persist: true,
+            ..EffectFlags::default()
+        },
+        EffectFlags {
+            dry_run: true,
+            ..EffectFlags::default()
+        },
+    ] {
+        let path = private_tree("disabled-production");
+        let gate = EffectGate::new(flags, Scope::Rank).unwrap();
+        assert!(matches!(qualified_store(&path, gate), CacheOpen::Disabled));
+        assert!(std::fs::read_dir(&path).unwrap().next().is_none());
+    }
+    // Allowed twin must initialize a real, qualified cache at the same boundary.
+    let path = private_tree("enabled-production");
+    let gate = EffectGate::new(EffectFlags::default(), Scope::Rank).unwrap();
+    assert!(matches!(qualified_store(&path, gate), CacheOpen::Ready(_)));
+    assert!(path.join(CACHE_FILE).is_file());
 }
 
 #[test]

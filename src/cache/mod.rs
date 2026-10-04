@@ -8,12 +8,11 @@ pub mod coordination;
 pub mod fingerprint;
 pub mod response;
 
+pub(crate) use coordination::SqliteLeaseCoordinator;
 pub use coordination::{
-    CoordinateRequestQuery, CoordinatedResponse, CoordinationError, CoordinationKey,
-    CoordinationPolicy, DEFAULT_LEASE_TTL_MS, FencingGeneration, FollowerContext,
-    FollowerResolution, LeaderContext, LeaseAcquisition, LeaseCoordinator, LeaseRecord,
-    MemoryCoordinator, OwnerToken, PublishOutcome, SingleFlightCoordinator, SqliteLeaseCoordinator,
-    SqliteResponseCache,
+    CoordinationError, CoordinationKey, CoordinationPolicy, DEFAULT_LEASE_TTL_MS,
+    FencingGeneration, FollowerContext, LeaderContext, LeaseAcquisition, LeaseRecord, OwnerToken,
+    PublishOutcome,
 };
 pub use fingerprint::{
     CacheKey, CacheNamespace, CandidateDigest, DecisionFingerprint, DecisionFingerprintInput,
