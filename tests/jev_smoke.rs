@@ -482,7 +482,7 @@ fn unauthorized_attempt_refused_without_network() {
 }
 
 /// Production builders over an authorized synthetic roster, never local skills.
-fn capacity_requests() -> [Request; 2] {
+fn capacity_requests(model: &str) -> [Request; 2] {
     use skillranker::authorized_read::{AuthorizedRoot, AuthorizedRoots};
     use skillranker::context::RenderedContextPayload;
     use skillranker::identity::{LogicalSkillKey, SourceId};
@@ -574,9 +574,8 @@ fn capacity_requests() -> [Request; 2] {
                 .take(12_000)
                 .collect(),
     };
-    let wide = skillranker::jev::wide::build(&roster, &ids, &state, DEFAULT_MODEL, true).unwrap();
-    let rerank =
-        skillranker::jev::rerank::build(&roster, &ids[..32], &state, DEFAULT_MODEL).unwrap();
+    let wide = skillranker::jev::wide::build(&roster, &ids, &state, model, true).unwrap();
+    let rerank = skillranker::jev::rerank::build(&roster, &ids[..32], &state, model).unwrap();
     let requests = [wide.request().clone(), rerank.request().clone()];
     run.finish();
     requests
@@ -584,8 +583,19 @@ fn capacity_requests() -> [Request; 2] {
 
 #[test]
 fn capacity_shapes_use_production_builders_and_stay_bounded() {
-    let requests = capacity_requests();
-    let independently_located = capacity_requests();
+    check_capacity_shapes(
+        DEFAULT_MODEL,
+        skillranker::jev::codec::RequestFormat::TypeSafe,
+    );
+    check_capacity_shapes(
+        skillranker::jev::cloudflare_codec::CLOUDFLARE_JEV_MODEL,
+        skillranker::jev::codec::RequestFormat::Cloudflare,
+    );
+}
+
+fn check_capacity_shapes(model: &str, format: skillranker::jev::codec::RequestFormat) {
+    let requests = capacity_requests(model);
+    let independently_located = capacity_requests(model);
     for (a, b) in requests.iter().zip(&independently_located) {
         assert_eq!(
             a.to_json().unwrap(),
@@ -595,7 +605,7 @@ fn capacity_shapes_use_production_builders_and_stay_bounded() {
     }
     for (request, questions, options) in [(&requests[0], 6, 255), (&requests[1], 33, 33)] {
         assert_eq!(request.questions().len(), questions);
-        let bytes = request.to_json().unwrap();
+        let bytes = request.to_wire_json(format).unwrap();
         assert!(bytes.len() <= MAX_REQUEST_BYTES);
         assert!(
             bytes.len() > 40_000,
@@ -621,6 +631,139 @@ fn budgeted_live_capacity_shapes() {
         std::env::var_os("TYPESAFE_API_KEY")
     }).unwrap_or_else(|_| panic!("capacity probe requires SKILLRANKER_CAPACITY_CONSENT=1 and an exported TYPESAFE_API_KEY"));
     run_capacity_shapes(api_key, true);
+}
+
+fn live_cloudflare_credentials(
+    consent: Option<OsString>,
+    read_account: impl FnOnce() -> Option<OsString>,
+    read_token: impl FnOnce() -> Option<OsString>,
+) -> Result<(String, String), &'static str> {
+    if !matches!(
+        consent.as_deref().and_then(|value| value.to_str()),
+        Some("1" | "true")
+    ) {
+        return Err("explicit SKILLRANKER_CLOUDFLARE_CAPACITY_CONSENT=1 is required");
+    }
+    let account = read_account()
+        .and_then(|value| value.into_string().ok())
+        .filter(|value| !value.trim().is_empty())
+        .ok_or("export a nonempty Unicode CLOUDFLARE_ACCOUNT_ID explicitly")?;
+    let token = read_token()
+        .and_then(|value| value.into_string().ok())
+        .filter(|value| !value.trim().is_empty())
+        .ok_or("export a nonempty Unicode CLOUDFLARE_API_TOKEN explicitly")?;
+    Ok((account, token))
+}
+
+#[test]
+fn cloudflare_capacity_consent_precedes_selected_credential_lookup() {
+    for consent in [
+        None,
+        Some("0".into()),
+        Some("false".into()),
+        Some(" 1".into()),
+    ] {
+        assert!(
+            live_cloudflare_credentials(
+                consent,
+                || panic!("account lookup before consent"),
+                || panic!("token lookup before consent"),
+            )
+            .is_err()
+        );
+    }
+    for consent in ["1", "true"] {
+        assert_eq!(
+            live_cloudflare_credentials(
+                Some(consent.into()),
+                || Some("0123456789abcdef0123456789abcdef".into()),
+                || Some("synthetic-cloudflare-token".into()),
+            ),
+            Ok((
+                "0123456789abcdef0123456789abcdef".into(),
+                "synthetic-cloudflare-token".into(),
+            ))
+        );
+    }
+}
+
+#[test]
+fn selected_cloudflare_capacity_probe_cannot_pass_without_its_prerequisites() {
+    for (consent, account, token) in [
+        (
+            None,
+            Some("0123456789abcdef0123456789abcdef"),
+            Some("synthetic-token-canary"),
+        ),
+        (
+            Some("false"),
+            Some("0123456789abcdef0123456789abcdef"),
+            Some("synthetic-token-canary"),
+        ),
+        (Some("1"), None, Some("synthetic-token-canary")),
+        (Some("1"), Some("0123456789abcdef0123456789abcdef"), None),
+        (
+            Some("1"),
+            Some("invalid-account"),
+            Some("synthetic-token-canary"),
+        ),
+    ] {
+        let mut child = Command::new(std::env::current_exe().unwrap());
+        child.env_clear().args([
+            "--ignored",
+            "--exact",
+            "budgeted_live_cloudflare_capacity_shapes",
+            "--nocapture",
+        ]);
+        // A TypeSafe key must never satisfy the selected provider's prerequisite.
+        child.env("TYPESAFE_API_KEY", "synthetic-typesafe-canary");
+        for (name, value) in [
+            ("SKILLRANKER_CLOUDFLARE_CAPACITY_CONSENT", consent),
+            ("CLOUDFLARE_ACCOUNT_ID", account),
+            ("CLOUDFLARE_API_TOKEN", token),
+        ] {
+            if let Some(value) = value {
+                child.env(name, value);
+            }
+        }
+        let output = child
+            .output()
+            .expect("launch actual Cloudflare probe executable");
+        assert!(
+            !output.status.success(),
+            "unexecuted capacity must not pass"
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("Cloudflare capacity prerequisites"));
+        for bytes in [&output.stdout, &output.stderr] {
+            let text = String::from_utf8_lossy(bytes);
+            assert!(!text.contains("synthetic-token-canary"));
+            assert!(!text.contains("synthetic-typesafe-canary"));
+            assert!(!text.contains("synthetic-capacity-attempt"));
+        }
+    }
+}
+
+#[test]
+#[ignore = "two live paid Cloudflare requests: explicit capacity consent and selected credentials required"]
+fn budgeted_live_cloudflare_capacity_shapes() {
+    let (account, token) = live_cloudflare_credentials(
+        std::env::var_os("SKILLRANKER_CLOUDFLARE_CAPACITY_CONSENT"),
+        || std::env::var_os("CLOUDFLARE_ACCOUNT_ID"),
+        || std::env::var_os("CLOUDFLARE_API_TOKEN"),
+    )
+    .unwrap_or_else(|error| panic!("Cloudflare capacity prerequisites: {error}"));
+    let (client, credential) = JevClient::cloudflare_with_environment_token(&account, token)
+        .unwrap_or_else(|_| {
+            panic!("Cloudflare capacity prerequisites: invalid selected configuration")
+        });
+    run_provider_capacity_shapes(
+        client,
+        credential,
+        skillranker::jev::cloudflare_codec::CLOUDFLARE_JEV_MODEL,
+        skillranker::jev::codec::RequestFormat::Cloudflare,
+        true,
+    );
 }
 
 #[test]
@@ -686,13 +829,30 @@ fn standalone_rerank_evaluation_preserves_production_ordering_and_one_attempt_ca
 // The independent rerank uses the same fixed synthetic shortlist. It cannot
 // establish that production wide selected that shortlist or passed its gate.
 fn run_capacity_shapes(api_key: String, include_wide: bool) {
-    let requests = capacity_requests();
-    let attempt_count = if include_wide { 2 } else { 1 };
     let endpoint = EndpointConfig::production();
     let origin = endpoint.origin().clone();
     let key = resolve_credential(&origin, &api_key);
     let client = JevClient::new(endpoint).unwrap();
+    run_provider_capacity_shapes(
+        client,
+        key,
+        DEFAULT_MODEL,
+        skillranker::jev::codec::RequestFormat::TypeSafe,
+        include_wide,
+    );
+}
+
+fn run_provider_capacity_shapes(
+    client: JevClient,
+    key: OriginScopedCredential,
+    model: &str,
+    format: skillranker::jev::codec::RequestFormat,
+    include_wide: bool,
+) {
     let run = TestContext::new(30_000, 500);
+    let requests = capacity_requests(model);
+    let attempt_count = if include_wide { 2 } else { 1 };
+    let origin = client.origin().clone();
     let mut admission = AttemptAdmission::new(
         AttemptBudget::new(attempt_count, attempt_count).unwrap(),
         run.clock,
@@ -704,10 +864,10 @@ fn run_capacity_shapes(api_key: String, include_wide: bool) {
         .zip([RankingStage::Wide, RankingStage::Rerank])
         .skip(usize::from(!include_wide))
     {
-        let bytes = request.to_json().unwrap();
+        let bytes = request.to_wire_json(format).unwrap();
         eprintln!(
             "{}",
-            json!({"kind":"synthetic-capacity-attempt", "stage":stage.as_str(), "request_bytes":bytes.len(), "request_blake3":blake3::hash(&bytes).to_hex().to_string(), "questions":request.questions().len(), "requested_model":DEFAULT_MODEL})
+            json!({"kind":"synthetic-capacity-attempt", "stage":stage.as_str(), "request_bytes":bytes.len(), "request_blake3":blake3::hash(&bytes).to_hex().to_string(), "questions":request.questions().len(), "requested_model":model})
         );
         let admission_stage = capacity_admission_stage(include_wide, stage);
         let permit = admission.admit(admission_stage, &origin).unwrap();
@@ -737,6 +897,10 @@ fn run_capacity_shapes(api_key: String, include_wide: bool) {
                         .record_discard(&permit.discard_before_send("local refusal"))
                         .unwrap();
                 }
+                eprintln!(
+                    "{}",
+                    json!({"kind":"synthetic-capacity-failure", "stage":stage.as_str(), "elapsed_ms":started.elapsed().as_millis(), "admitted_attempts":admission.receipt().admitted_attempts, "sent_attempts":admission.receipt().sent_attempts, "usage_unknown":error.http_attempt_started})
+                );
                 run.finish();
                 panic!(
                     "capacity stage {stage} failed: {:?}; http_attempt_started={}; usage_unknown={}",
@@ -745,13 +909,17 @@ fn run_capacity_shapes(api_key: String, include_wide: bool) {
             }
         };
         assert_eq!(response.answers.len(), request.questions().len());
-        let bytes = request.to_json().unwrap();
+        let bytes = request.to_wire_json(format).unwrap();
         eprintln!(
             "{}",
-            json!({"kind":"synthetic-capacity-stage", "stage":stage.as_str(), "request_bytes":bytes.len(), "request_blake3":blake3::hash(&bytes).to_hex().to_string(), "questions":request.questions().len(), "returned_model_blake3":blake3::hash(response.returned_model.as_bytes()).to_hex().to_string(), "input_tokens":response.usage.input_tokens, "output_tokens":response.usage.output_tokens, "elapsed_ms":started.elapsed().as_millis()})
+            json!({"kind":"synthetic-capacity-stage", "stage":stage.as_str(), "request_bytes":bytes.len(), "request_blake3":blake3::hash(&bytes).to_hex().to_string(), "questions":request.questions().len(), "returned_model":response.returned_model, "returned_model_blake3":blake3::hash(response.returned_model.as_bytes()).to_hex().to_string(), "input_tokens":response.usage.input_tokens, "output_tokens":response.usage.output_tokens, "elapsed_ms":started.elapsed().as_millis()})
         );
     }
     assert_eq!(admission.receipt().sent_attempts, attempt_count);
+    eprintln!(
+        "{}",
+        json!({"kind":"synthetic-capacity-complete", "admitted_attempts":admission.receipt().admitted_attempts, "sent_attempts":admission.receipt().sent_attempts})
+    );
     run.finish();
 }
 
@@ -850,7 +1018,7 @@ fn budgeted_live_distribution_diagnostic() {
         std::env::var_os("TYPESAFE_API_KEY")
     })
     .unwrap_or_else(|_| panic!("diagnostic probe requires SKILLRANKER_DIAGNOSTIC_CONSENT=1 and an exported TYPESAFE_API_KEY"));
-    let [request, _] = capacity_requests();
+    let [request, _] = capacity_requests(DEFAULT_MODEL);
     let endpoint = EndpointConfig::production();
     let key = resolve_credential(endpoint.origin(), &api_key);
     let http = HttpClient::builder()

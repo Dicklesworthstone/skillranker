@@ -126,5 +126,66 @@ The [current reality check](reality-check-bridge-plan.md) separates these gates.
 `sr-roadmap-l1i.5.30` owns final native wire-byte preview correctness;
 `sr-roadmap-l1i.2.14` owns provider-specific qualification. Public checks require
 separate explicit consent, synthetic or consented inputs, and attempt/runtime
-caps. No public Cloudflare request or quality acceptance is claimed here.
+caps. The dated qualification attempt below is separate from quality acceptance.
 PR #8 remains closed; the integration is committed to main.
+
+## October 4 public qualification attempt
+
+The existing production-builder capacity probe now covers the native Cloudflare
+envelope as well as TypeSafe. Wide contains 254 synthetic skills plus `__none__`;
+rerank contains 32 synthetic candidates, their detailed fits, and `__none__`.
+Both shapes include a 12,000-character synthetic task. The ordinary local test
+checks the final wire-byte bounds and path-independent request identity for both
+providers. These synthetic checks do not establish relevance or hook latency.
+
+The ignored `budgeted_live_cloudflare_capacity_shapes` test requires
+`SKILLRANKER_CLOUDFLARE_CAPACITY_CONSENT=1` before reading the explicitly exported
+`CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN`. A TypeSafe credential cannot
+satisfy these prerequisites. The probe uses the production Asupersync client,
+verified public TLS roots and fixed Cloudflare origin, at most two HTTP attempts,
+no retries, and a 30-second budget with cleanup reserved. Compile without provider
+credentials on the build worker; run the retrieved, hash-verified test executable
+on the credential host. Never forward credentials through RCH. Missing consent,
+missing credentials and invalid selected configuration fail the explicitly
+selected test rather than becoming a skipped success.
+
+On October 4, explicit authorization to complete `sr-roadmap-l1i.2.14` as part of
+the remaining-task work authorized one bounded synthetic qualification run. The
+remote-built Linux x86-64 test executable had SHA-256
+`609e33e7ab25e5d99881cccd2ce9f9d155126b8ae3d48956bf3bf105b3094d13`.
+Its source was `0a99ada94e40d377f495691750405c1b26ae788b` plus the single owned
+`tests/jev_smoke.rs` overlay, RCH fingerprint
+`217f9971757df22d556e4607e9ab8efea67f6c715744fd7c6a9acde23aa519b3`, using
+locked dependencies and `nightly-2026-08-31`.
+
+The public wide request used `typesafe/jev`, six questions and 61,041 native wire
+bytes, with BLAKE3
+`4189923ea76402f998eeca951bbfb8e15b03d218c4545f0fa9072a7dc78c7a89`.
+Cloudflare returned HTTP 401 after 114 ms of the client attempt; the complete test
+process took 411.477 ms and exited 101. One attempt was admitted and sent. Its
+usage remains unknown; no returned model or validated response is available.
+Rerank did not start. The run stopped without retrying or falling back to
+TypeSafe, and no personal transcript, hook setting or production ledger was used.
+
+The optional provider therefore remains **unqualified**. HTTP 401 establishes an
+authentication refusal for this selected setup; it does not identify the precise
+credential/account defect or establish a capacity limit. Refresh the trusted
+credential setup before a separately capped run. A successful maximum-shape
+receipt, provider-specific quality, representative availability and warm-hook
+latency remain distinct gates; this failed attempt closes none of them.
+
+On the same frozen source, the default-feature locked Linux x86-64 suite passed
+1,548 tests with zero failures and 11 ignored entries. The ignored count includes
+the new paid Cloudflare probe; its separately executed public failure above is
+not a passing test. All-target `cargo check`, strict all-target Clippy on the
+pinned nightly, formatting and documentation consistency also passed. Three
+credential-free controls were re-executed locally against the retrieved binary
+in a fresh solo review. That review was not independent verification.
+The test-source SHA-256 was
+`98065add796a78e0cf5f1441bc6f0cf9d86e0798e862a190d09a2246ee21825d`;
+the unchanged `Cargo.lock` SHA-256 was
+`fb5ede7791d786efb342afb33dacf073f303b7d91ce08ee1ad8e4009ec4032ea`.
+UBS scanned the changed Rust test file and reported 19 critical panic-macro
+findings, all test assertions or explicit failing prerequisite diagnostics.
+They were reviewed without suppressing the category. These local results support
+the implemented contract; they do not change the failed public disposition.
