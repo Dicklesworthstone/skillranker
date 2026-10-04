@@ -189,3 +189,52 @@ UBS scanned the changed Rust test file and reported 19 critical panic-macro
 findings, all test assertions or explicit failing prerequisite diagnostics.
 They were reviewed without suppressing the category. These local results support
 the implemented contract; they do not change the failed public disposition.
+
+## October 4 credential repair and second attempt
+
+Following explicit operator instruction to use `cf`, the maintainer setup now
+has a protected, single-account API token with only Workers AI Read and Write
+permissions. It expires on January 2, 2027. The ignored local environment file
+remains owner-only; unrelated TypeSafe settings were preserved. Credentials and
+account identifiers were not printed or forwarded to the build worker.
+`cf ai models list` succeeded with this token. `cf auth whoami` also probes user
+and account metadata endpoints outside these permissions, so its `tokenValid`
+field cannot qualify or disqualify this narrowly scoped AI credential.
+
+The second explicitly capped production-client run used the full-gated test
+executable with SHA-256
+`0a2d769f99efcccbeed303f7adaa968c273c7fdfa72171a6cb5e8612f00967f4`.
+It was built from `a2a371af` plus frozen RCH source overlay
+`391bd0a9809aa38bdca07574c8d696228efaa1dbe47507a6962b5b7104c2140f`.
+All 408 tracked non-Beads files were compared with published revision
+`e5b8258083f4355e10e9fa3f51925b7503d513a6` and were identical to that build's
+source. Remote and retrieved executable hashes matched. A redundant rebuild
+was terminated by SIGTERM after source synchronization; it supplies no test
+proof. The existing full suite on the verified source passed 1,528 tests with
+zero failures and 11 declared ignores after retirement of 20 duplicate
+coordinator-layer tests. The public probe is a separate failing execution.
+
+The same 61,041-byte, six-question maximum wide request and wire digest above
+returned HTTP 402 after 3,442 ms of the client attempt. The complete process
+took 3,886.940 ms and exited 101. Exactly one attempt was admitted and sent;
+usage remains unknown, no returned model or validated answer is available,
+and rerank did not start. There was no retry, TypeSafe fallback, personal
+transcript, hook configuration change or production ledger effect.
+
+The account's Workers Paid subscription was independently read using the saved
+`cf` login. A paid Workers subscription therefore does not explain away this
+failure. Cloudflare lists Jev as a
+[third-party model](https://developers.cloudflare.com/ai/models/typesafe/jev/),
+and [Unified Billing](https://developers.cloudflare.com/ai-gateway/features/unified-billing/)
+requires prepaid inference credits. Insufficient credit or another billing
+entitlement is the next setup issue to resolve; HTTP 402 alone does not prove
+the precise cause. The billing-credit read was forbidden to the current login,
+so no balance is asserted. The native model catalog returned no matching entry
+and the schema endpoint returned 404; neither is evidence of a successfully
+served Jev request. No new subscription or credit purchase was made.
+
+The optional provider remains **unqualified** and `sr-roadmap-l1i.2.14` remains
+open. Resolve billing access and entitlement before another separately capped
+maximum-shape run. Authentication, billing readiness, actual provider capacity,
+representative availability, judged quality and warm latency retain separate
+dispositions.
