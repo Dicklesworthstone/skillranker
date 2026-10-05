@@ -372,6 +372,9 @@ def check_case(
     require(isinstance(case.get("constructed"), bool), f"{case_id}.constructed must be bool")
     require(isinstance(case.get("overflow"), bool), f"{case_id}.overflow must be bool")
     require_str(case.get("consent_reference"), f"{case_id}.consent_reference")
+    # A moment/case ID is not the session's identity: one session can supply
+    # several differently named cases, including diagnostic siblings.
+    session_id = require_str(case.get("session_id"), f"{case_id}.session_id")
 
     roster = case.get("roster")
     require(isinstance(roster, dict), f"{case_id} is missing its roster manifest")
@@ -385,8 +388,15 @@ def check_case(
         skill_id = require_str(skill.get("skill_id"), f"{case_id} roster skill_id")
         require(skill_id not in roster_ids, f"{case_id} roster repeats {skill_id}")
         roster_ids.add(skill_id)
-        if skill.get("manual_only") is True:
+        manual = skill.get("manual_only", False)
+        require(isinstance(manual, bool), f"{case_id} roster manual_only must be bool")
+        if manual:
             manual_only.add(skill_id)
+
+    require(
+        not case["overflow"] or len(roster_ids - manual_only) > 254,
+        f"{case_id} overflow roster must contain more than 254 nonmanual skills",
+    )
 
     acceptable = case.get("acceptable_additional_invocations_y")
     require(isinstance(acceptable, list), f"{case_id}.acceptable_additional_invocations_y")
@@ -455,7 +465,8 @@ def check_case(
             f"{case_id} was adjudicated by the selector itself",
         )
         require(
-            case_id not in adjudicators[adjudicator],
+            session_id not in adjudicators[adjudicator]
+            and case_id not in adjudicators[adjudicator],
             f"{case_id} was adjudicated by {adjudicator}, who is forbidden from judging it",
         )
         require(

@@ -162,6 +162,15 @@ they participated in). An adjudicator is **not independent** of a case if
 they produced the session, produced or saw the selector's output for it, or
 have a stake in the selector's measured performance on it.
 
+Each case must carry a non-empty opaque `session_id`, shared by all moments
+from that session. This local corpus identity is distinct from `case_id` and
+must match the adjudicator registry's `forbidden_sessions` entries; changing a
+moment's case ID cannot remove a session conflict. The validator also preserves
+the older case-ID exclusions conservatively. Missing or malformed session IDs
+fail validation rather than being guessed. Older corpus files without this
+field require a provenance-backed import before they can pass the current
+validator; historical receipts remain evidence of their stated earlier revision.
+
 ### 4.2 Double judgment
 
 A declared fraction of cases (pilot: at least 40%; full corpus: at least 15%)
@@ -250,6 +259,11 @@ is the corpus's definition of done. It fails on:
   attestation, or consent reference;
 - an adjudicator identity matching the selector identity or an adjudicator
   judging a session they produced;
+- a missing or malformed opaque session identity;
+- an `overflow: true` record with at most 254 distinct nonmanual roster skills,
+  including diagnostic siblings and no-match cases; `manual_only`, when present,
+  must be a boolean. This is a necessary size check against the declared roster,
+  not independent proof of historical visibility or all runtime eligibility;
 - a near-miss case with an empty acceptable set or no named near-miss skill;
 - labels or near-miss IDs absent from the case's roster, or naming a
   manual-only skill as acceptable;

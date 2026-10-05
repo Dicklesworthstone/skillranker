@@ -60,6 +60,7 @@ def base_case(case_id, split, kind="positive_advisory", family=None):
     return {
         "schema_version": "skillranker.adjudicated_case.v1",
         "case_id": case_id,
+        "session_id": f"session-{case_id}",
         "family_id": family or f"fam-{case_id}",
         "split": split,
         "primary_family_case": True,
@@ -91,6 +92,15 @@ def base_case(case_id, split, kind="positive_advisory", family=None):
             }
         ],
     }
+
+
+def make_overflow(case):
+    case["overflow"] = True
+    case["roster"]["skills"].extend(
+        {"skill_id": f"overflow-{index}", "invocation_name": f"overflow-{index}",
+         "usage_kind": "workflow"}
+        for index in range(253)
+    )
 
 
 def valid_corpus():
@@ -154,7 +164,8 @@ class CorpusValidatorTest(unittest.TestCase):
         for index in range(12):
             sibling = base_case(f"variant-{index}", "training", kind, cases[0]["family_id"])
             sibling["primary_family_case"] = False
-            sibling["overflow"] = overflow
+            if overflow:
+                make_overflow(sibling)
             if kind == "no_match_advisory":
                 sibling["acceptable_additional_invocations_y"] = []
             if kind == "near_miss_advisory":
@@ -163,7 +174,8 @@ class CorpusValidatorTest(unittest.TestCase):
         self.assert_fails_with(manifest, cases, f"stratum {stratum}")
 
         independent = base_case("independent-primary", "holdout", kind)
-        independent["overflow"] = overflow
+        if overflow:
+            make_overflow(independent)
         if kind == "no_match_advisory":
             independent["acceptable_additional_invocations_y"] = []
         if kind == "near_miss_advisory":
@@ -196,7 +208,7 @@ class CorpusValidatorTest(unittest.TestCase):
             kind = ("positive_advisory", "no_match_advisory", "near_miss_advisory")[index % 3]
             sibling = base_case(f"mixed-{index}", "training", kind, cases[0]["family_id"])
             sibling["primary_family_case"] = False
-            sibling["overflow"] = True
+            make_overflow(sibling)
             if kind == "no_match_advisory":
                 sibling["acceptable_additional_invocations_y"] = []
             if kind == "near_miss_advisory":
@@ -439,6 +451,77 @@ else:
         manifest, cases = valid_corpus()
         cases[0]["adjudications"][0]["adjudicator"] = "adj-2"
         self.assert_fails_with(manifest, cases, "forbidden")
+
+    def test_session_independence_survives_different_case_ids(self):
+        manifest, cases = valid_corpus()
+        cases[0]["session_id"] = "shared-session"
+        manifest["adjudicators"][0]["forbidden_sessions"] = ["shared-session"]
+        self.assert_fails_with(manifest, cases, "forbidden")
+        cases[0]["session_id"] = "unrelated-session"
+        result = self.run_validator(manifest, cases)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_session_conflict_on_diagnostic_sibling_also_refuses(self):
+        manifest, cases = valid_corpus()
+        sibling = base_case("other-moment", "training", family=cases[0]["family_id"])
+        sibling["primary_family_case"] = False
+        sibling["session_id"] = "participated-session"
+        self.append_frozen_case(manifest, cases, sibling)
+        manifest["adjudicators"][0]["forbidden_sessions"] = ["participated-session"]
+        self.assert_fails_with(manifest, cases, "forbidden")
+        sibling["adjudications"][0]["adjudicator"] = "adj-2"
+        result = self.run_validator(manifest, cases)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_missing_or_invalid_session_identity_cannot_evade_independence(self):
+        for value in (None, "", False, [], {}):
+            with self.subTest(value=value):
+                manifest, cases = valid_corpus()
+                cases[0]["session_id"] = value
+                self.assert_fails_with(manifest, cases, "session_id")
+        manifest, cases = valid_corpus()
+        del cases[0]["session_id"]
+        self.assert_fails_with(manifest, cases, "session_id")
+        self.assertEqual(self.run_validator(*valid_corpus()).returncode, 0)
+
+    def test_overflow_requires_more_than_254_nonmanual_skills(self):
+        manifest, cases = valid_corpus()
+        case = cases[0]
+        case["overflow"] = True
+        manifest["strata_minimums"]["overflow_positive"] = 1
+        self.assert_fails_with(manifest, cases, "overflow roster")
+        make_overflow(case)  # 255 nonmanual skills, plus one manual-only skill.
+        removed = case["roster"]["skills"].pop()
+        self.assertEqual(len(case["roster"]["skills"]), 255)
+        self.assert_fails_with(manifest, cases, "overflow roster")
+        case["roster"]["skills"].append(removed)
+        result = self.run_validator(manifest, cases)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["strata"]["overflow_positive"], 1)
+
+    def test_false_overflow_on_variants_and_no_match_cases_also_refuses(self):
+        manifest, cases = valid_corpus()
+        for target in (cases[0], cases[1]):
+            with self.subTest(kind=target["case_kind"]):
+                target["overflow"] = True
+                self.assert_fails_with(manifest, cases, "overflow roster")
+                make_overflow(target)
+                self.assertEqual(self.run_validator(manifest, cases).returncode, 0)
+        sibling = base_case("false-overflow-sibling", "training", family=cases[0]["family_id"])
+        sibling["primary_family_case"] = False
+        sibling["overflow"] = True
+        self.append_frozen_case(manifest, cases, sibling)
+        self.assert_fails_with(manifest, cases, "overflow roster")
+        make_overflow(sibling)
+        self.assertEqual(self.run_validator(manifest, cases).returncode, 0)
+
+    def test_manual_only_must_be_boolean_before_eligibility_count(self):
+        for value in ("true", 1, [], None):
+            with self.subTest(value=value):
+                manifest, cases = valid_corpus()
+                cases[0]["roster"]["skills"][2]["manual_only"] = value
+                self.assert_fails_with(manifest, cases, "manual_only")
+        self.assertEqual(self.run_validator(*valid_corpus()).returncode, 0)
 
     def test_missing_blindness_attestation_fails(self):
         manifest, cases = valid_corpus()
