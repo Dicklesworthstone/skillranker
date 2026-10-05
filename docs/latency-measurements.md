@@ -476,3 +476,51 @@ panic, 499 warnings and 322 informational findings. All reported sections were
 reviewed; no production defect or suppression was introduced. Its Cargo phases
 were not evaluated in the staged shadow workspace; the separately executed
 source-bound default/check/Clippy gates above supply that evidence.
+
+
+### Fresh published-revision acceptance and installation
+
+Source `bc46ad19619a63b2b4bfa1313e885fb18d057dce` is published on both main and
+master. Ordinary DSR run `d4a34261-b308-4bf0-a935-7ea3c2934737` rebuilt that
+revision in 117.392 seconds; its artifact is byte-identical to the final
+measured executable above. All 407 canonical inputs match locally and on the
+worker after the build. A premature snapshot before guarded compiler sync
+found only the old latency document and failed; it is retained as a failed
+snapshot, not claimed as compilation provenance. Fresh exact-revision RCH
+blocking, Git-overlap and roster-resolution suites passed 36 tests, zero
+failures and zero ignores, with all 407 inputs matched before and after.
+
+A fresh solo acceptance pass repeated the same 30-pair procedure with the
+published artifact, retaining all 180 new outcomes. Both pages and every
+paired outcome agree, both caches have 30 confirmed hits, explicit traces
+have zero Git invocations, and there are no timeouts. The same four synthetic
+loopback TLS attempts and drained diagnostics are separate from real traffic.
+Host load was 60.00/47.57/56.82 → 61.44/51.72/57.51 on 128 CPUs.
+
+| Path | p50 wall ms, before → after | p95 wall ms | p99 wall ms | Peak RSS MiB |
+|---|---:|---:|---:|---:|
+| Stateless offline miss | 373.525 → 373.938 | 547.587 → 525.373 | 557.185 → 603.461 | 14.078 → 14.863 |
+| Explicit local request | 454.472 → 419.532 | 687.893 → 606.240 | 1050.385 → 664.367 | 16.074 → 16.996 |
+| Exact cached rank | 451.309 → 438.437 | 752.775 → 731.279 | 842.996 → 749.765 | 17.133 → 17.719 |
+
+The fresh miss median worsens by 0.413 ms and p99 by 46.276 ms; explicit and
+cache medians improve about 8% and 3%. Total child user/system CPU seconds
+increase: miss 4.27/8.48 → 4.89/9.11, explicit 4.75/8.53 → 5.53/8.60 and
+cache 5.92/9.21 → 7.03/10.37. Peak RSS rises in all three paths. This supports
+a bounded local improvement with cost and scheduling tradeoffs, never uniform
+or general performance. Report: the same private root's
+`paired-published-read-release/report.json`.
+
+After those checks, the exact published artifact was installed atomically at
+`~/.local/bin/sr`, with the previous executable backed up privately, expected
+hash/inode/size/mtime/owner checks, file and directory fsync, and preserved
+uid/gid 1000/1000 and mode 0755. The trusted wrapper is unchanged. Version,
+capabilities and stats checks exit zero; capabilities match the prior binary.
+Pre/post stats both have 170 evaluated turns, 167 shadow rows and zero
+independent judgments or emitted suggestions. Those retained rows are not
+new-revision evidence and cannot satisfy a 500-turn prospective gate.
+
+The original overlap/concurrent-read implementation and executed synthetic
+unchanged-outcome/measured-improvement acceptance are complete. Review and
+fresh re-execution were solo; there was no independent verifier. Separate
+quality, organic rollout, public-provider and platform gates remain open.
