@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::Path;
 
 /// Bounded replay error kinds. Safe diagnostics contain no private text or credentials.
@@ -260,6 +260,65 @@ pub struct ReplayOutcome {
     pub explanation: Option<String>,
 }
 
+/// Count encoded bytes before growing the buffer, including JSON escaping.
+/// Geometric growth stays within the cap; an oversized case is never exported
+/// from its incomplete prefix.
+struct CaseWriter {
+    bytes: Vec<u8>,
+    max_bytes: usize,
+    oversized: Option<usize>,
+    allocation_failed: bool,
+}
+
+impl CaseWriter {
+    fn new(max_bytes: usize) -> Self {
+        Self {
+            bytes: Vec::new(),
+            max_bytes,
+            oversized: None,
+            allocation_failed: false,
+        }
+    }
+}
+
+impl Write for CaseWriter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        let next_len = self.bytes.len().saturating_add(bytes.len());
+        if next_len > self.max_bytes {
+            self.oversized = Some(next_len);
+            return Err(std::io::Error::other(
+                "case serialization exceeds its byte cap",
+            ));
+        }
+        if next_len > self.bytes.capacity() {
+            let capacity = self
+                .bytes
+                .capacity()
+                .saturating_mul(2)
+                .max(4096)
+                .max(next_len)
+                .min(self.max_bytes);
+            if self
+                .bytes
+                .try_reserve_exact(capacity - self.bytes.len())
+                .is_err()
+            {
+                self.allocation_failed = true;
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::OutOfMemory,
+                    "case serialization allocation unavailable",
+                ));
+            }
+        }
+        self.bytes.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
 impl ReplayCase {
     /// Parse and validate a replay case from raw bytes.
     pub fn from_json_bytes(bytes: &[u8]) -> Result<Self, ReplayError> {
@@ -384,9 +443,23 @@ impl ReplayCase {
 
     /// Save the replay case to the given path using atomic no-clobber export.
     pub fn save_to_file(&self, path: &Path) -> Result<(), ReplayError> {
-        let content = serde_json::to_string_pretty(self)
-            .map_err(|e| ReplayError::InvalidJson(e.to_string()))?;
-        export_private_atomic(path, content.as_bytes(), ExportConfig::for_case())?;
+        let mut writer = CaseWriter::new(DEFAULT_MAX_CASE_BYTES);
+        serde_json::to_writer_pretty(&mut writer, self).map_err(|error| {
+            if let Some(len) = writer.oversized {
+                ReplayError::OversizedCase {
+                    len,
+                    max: writer.max_bytes,
+                }
+            } else if writer.allocation_failed {
+                ReplayError::Io(std::io::Error::new(
+                    std::io::ErrorKind::OutOfMemory,
+                    "case serialization allocation unavailable",
+                ))
+            } else {
+                ReplayError::InvalidJson(error.to_string())
+            }
+        })?;
+        export_private_atomic(path, &writer.bytes, ExportConfig::for_case())?;
         Ok(())
     }
 
@@ -1105,4 +1178,27 @@ fn parse_bounded_json(bytes: &[u8], _max_depth: usize) -> Result<Value, ReplayEr
                 ReplayError::InvalidJson(msg)
             }
         })
+}
+
+#[cfg(test)]
+mod case_serialization_tests {
+    use super::CaseWriter;
+
+    #[test]
+    fn escaped_json_must_fit_before_buffer_growth_and_keeps_a_success_counterpart() {
+        let input = "\"".repeat(10);
+        let expected = b"\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\"";
+        assert!(input.len() < 16);
+        assert!(expected.len() > 16);
+        let mut too_small = CaseWriter::new(16);
+        assert!(serde_json::to_writer_pretty(&mut too_small, &input).is_err());
+        assert!(too_small.oversized.is_some_and(|len| len > 16));
+        assert!(too_small.bytes.len() <= 16);
+        assert!(too_small.bytes.capacity() <= 16);
+
+        let mut enough = CaseWriter::new(expected.len());
+        serde_json::to_writer_pretty(&mut enough, &input).unwrap();
+        assert_eq!(enough.bytes, expected);
+        assert!(enough.bytes.capacity() <= expected.len());
+    }
 }

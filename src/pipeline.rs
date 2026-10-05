@@ -670,7 +670,7 @@ async fn execute_pipeline_supplied(
             let local_evidence = capture
                 .local_evidence
                 .unwrap_or_else(|| CapturedLocalEvidence {
-                    as_of_unix_ms: clock.now().as_millis(),
+                    as_of_unix_ms: wall_clock_ms(),
                     active_snoozes: Vec::new(),
                     loaded_references: Vec::new(),
                     scoring_profile: CapturedScoringProfile {
@@ -703,8 +703,26 @@ async fn execute_pipeline_supplied(
             case.validate().map_err(|err| {
                 failure(err.kind(), format!("Replay case validation failed: {err}"))
             })?;
-            case.save_to_file(save_path)
-                .map_err(|err| failure(err.kind(), err.to_string()))?;
+            // Serialization and durable export consume the same invocation
+            // deadline. The leaf drains even when late; its completed file may
+            // remain, but a late completion cannot become a successful result.
+            let destination = save_path.clone();
+            run_blocking_leaf(
+                invocation,
+                cx,
+                BlockingLeafKind::Filesystem,
+                false,
+                move || case.save_to_file(&destination),
+            )
+            .map_err(|err| {
+                failure(
+                    ErrorKind::Timeout,
+                    format!("Case export did not complete within the invocation: {err}"),
+                )
+            })?
+            .value
+            .map_err(|err| failure(err.kind(), err.to_string()))?;
+            doc.record_elapsed(clock.now().as_millis());
         }
         Ok(doc)
     });
@@ -1691,6 +1709,10 @@ async fn rank_once(
                 })?;
             }
             if let Some(capture) = &mut progress.capture {
+                // Explicit resolution reads the full local request before
+                // redaction. Capture must redact it before summary truncation.
+                let captured_text =
+                    capture_prose(normalized_context.current_request.text.as_str())?;
                 let mut candidate_options = Vec::with_capacity(skills.len());
                 for s in &skills {
                     let sk = roster.skills().iter().find(|sk| sk.record().id == s.id);
@@ -1701,7 +1723,7 @@ async fn rank_once(
                             rec.source_content.as_str().to_string(),
                             rec.source.as_str().to_string(),
                             rec.usage_kind.as_str().to_string(),
-                            Some(rec.description_full.as_str().to_string()),
+                            Some(capture_prose(rec.description_full.as_str())?),
                             Some(visibility_label(&rec.visibility).to_owned()),
                         )
                     } else {
@@ -1730,10 +1752,7 @@ async fn rank_once(
                     model: Some(effective.model().as_str().to_string()),
                     stages_recorded: Vec::new(),
                     prompt_summary: Some(
-                        normalized_context
-                            .current_request
-                            .text
-                            .as_str()
+                        captured_text
                             .lines()
                             .next()
                             .unwrap_or("")
@@ -1743,14 +1762,12 @@ async fn rank_once(
                     ),
                 });
                 capture.captured_request = Some(CapturedRequest {
-                    context_text: Some(
-                        normalized_context.current_request.text.as_str().to_string(),
-                    ),
+                    context_text: Some(captured_text),
                     current_constraints: Vec::new(),
                     candidate_options,
                 });
                 capture.local_evidence = Some(CapturedLocalEvidence {
-                    as_of_unix_ms: clock.now().as_millis(),
+                    as_of_unix_ms: wall_clock_ms(),
                     active_snoozes: Vec::new(),
                     loaded_references: Vec::new(),
                     scoring_profile: CapturedScoringProfile {
@@ -2383,7 +2400,7 @@ async fn rank_once(
                 content_hash: s.record.source_content.as_str().to_string(),
                 source: s.record.source.as_str().to_string(),
                 usage_kind: s.record.usage_kind.as_str().to_string(),
-                description: Some(s.record.description_full.as_str().to_string()),
+                description: Some(capture_prose(s.record.description_full.as_str())?),
                 excerpt: None,
             });
         }
@@ -2409,7 +2426,7 @@ async fn rank_once(
             candidate_options,
         });
         capture.local_evidence = Some(CapturedLocalEvidence {
-            as_of_unix_ms: clock.now().as_millis(),
+            as_of_unix_ms: wall_clock_ms(),
             active_snoozes: snoozed_skills
                 .iter()
                 .map(|id| id.as_str().to_owned())
@@ -3677,6 +3694,20 @@ fn wall_clock_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+}
+
+/// Retained case prose uses the same bounded redaction as provider fields.
+/// Failure reveals neither the original field nor matched secret text.
+fn capture_prose(text: &str) -> Result<String, PipelineFailure> {
+    Redactor::default()
+        .redact_field(text)
+        .map(|field| field.into_string())
+        .map_err(|_| {
+            failure(
+                ErrorKind::UnsupportedInput,
+                "Case prose could not be safely redacted",
+            )
+        })
 }
 
 fn shortlist_digests(shortlisted: &[wide::Shortlisted<'_>]) -> Vec<CandidateDigest> {

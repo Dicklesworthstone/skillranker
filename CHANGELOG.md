@@ -4,6 +4,16 @@
 
 ### Fixed
 
+- `sr rank --save-case` redacts explicit request text and candidate descriptions
+  before retaining them, including before truncating the prompt summary. Both
+  explicit and provider-backed cases record wall-clock milliseconds in
+  `local_evidence.as_of_unix_ms`; they previously recorded process elapsed time.
+  Serialization and export use the invocation's completion checks, withholding
+  late success, and reported latency includes export work. Serialized bytes,
+  including JSON escaping, are capped before growing the capture buffer.
+- `sr rank` preserves measured and unknown provider usage when work or cleanup
+  exceeds the deadline. Existing failures keep their complete receipts; late
+  successful decisions become timeouts without suggestions.
 - `sr rank` reads configured `roster.roots` as `sr roster` does. Their
   skills can be suggested or requested, are reported as unverified, and rank
   below Claude's own directories. Previously a configured skill was listed

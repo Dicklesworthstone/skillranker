@@ -49,8 +49,16 @@ use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdout, Command, Output, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
+
+fn unix_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64
+}
 
 fn temp_workspace(name: &str) -> PathBuf {
     let root = Path::new("/tmp").join(format!(
@@ -332,6 +340,7 @@ fn save_case_cli_explicit_resolution_roundtrip_to_replay() {
     write_context_file(&root, "s1", "Review rust test triage");
 
     let case_path = root.join("workspace/case.json");
+    let before_capture = unix_ms();
     let output = run_sr(
         &root,
         &[
@@ -364,6 +373,7 @@ fn save_case_cli_explicit_resolution_roundtrip_to_replay() {
     // 2. Inspect case content
     let raw_case = fs::read_to_string(&case_path).unwrap();
     let case: ReplayCase = serde_json::from_str(&raw_case).unwrap();
+    assert!((before_capture..=unix_ms()).contains(&case.local_evidence.as_of_unix_ms));
     assert_eq!(case.schema_version, 1);
     assert_eq!(case.manifest.evidence_origin, "recorded");
     assert_eq!(case.historical_decision["decision"], "explicit");
@@ -387,6 +397,75 @@ fn save_case_cli_explicit_resolution_roundtrip_to_replay() {
     assert_eq!(replay_val["kind"], "replay");
     assert_eq!(replay_val["historical"]["decision"], "explicit");
     assert_eq!(replay_val["recomputed"]["decision"], "explicit");
+}
+
+#[test]
+fn save_case_cli_redacts_explicit_prose_before_summary_truncation() {
+    let root = temp_workspace("explicit-redaction");
+    let canary = "sk-aB7cD8eF9gH0jK1mN2pQ3rS4tU5vW6xY";
+    write_skill(
+        &root,
+        "alpha",
+        &format!("Review rust tests. API key {canary}"),
+    );
+    // The summary cutoff splits this token in the original unredacted input.
+    let request = format!("Review rust tests. {}{canary}", " ".repeat(85));
+    write_context_file(&root, "s1", &request);
+    let output = run_sr(
+        &root,
+        &[
+            "rank",
+            "--context",
+            "context.json",
+            "--require-skill",
+            "alpha",
+            "--save-case",
+            "case.json",
+            "--offline",
+            "--json",
+        ],
+    );
+    assert_eq!(output.status.code(), Some(0));
+    let raw = fs::read_to_string(root.join("workspace/case.json")).unwrap();
+    assert!(!raw.contains(canary));
+    assert!(
+        !raw.contains(&canary[..12]),
+        "summary must not retain a token prefix"
+    );
+    let case = ReplayCase::from_json_bytes(raw.as_bytes()).unwrap();
+    assert!(
+        case.captured_request
+            .context_text
+            .as_ref()
+            .unwrap()
+            .contains("[REDACTED]")
+    );
+    assert!(
+        case.captured_request
+            .context_text
+            .as_ref()
+            .unwrap()
+            .contains("Review rust tests.")
+    );
+    assert!(
+        case.manifest
+            .prompt_summary
+            .as_ref()
+            .unwrap()
+            .contains("[REDACTED]")
+    );
+    assert!(
+        case.captured_request.candidate_options[0]
+            .description
+            .as_ref()
+            .unwrap()
+            .contains("[REDACTED]")
+    );
+    let replay = run_sr(&root, &["replay", "case.json", "--json"]);
+    assert_eq!(replay.status.code(), Some(0));
+    let doc: Value = serde_json::from_slice(&replay.stdout).unwrap();
+    assert_eq!(doc["recomputed"]["decision"], "explicit");
+    assert_eq!(doc["historical"]["usage"]["http_attempts"], 0);
 }
 
 #[test]
@@ -541,7 +620,12 @@ fn make_pipeline_args(root: &Path, save_case: Option<PathBuf>) -> RankArgs {
 #[test]
 fn save_case_pipeline_inference_roundtrip_to_replay() {
     let root = temp_workspace("inference-roundtrip");
-    write_skill(&root, "alpha", "Runs and repairs failing rust tests.");
+    let canary = "sk-aB7cD8eF9gH0jK1mN2pQ3rS4tU5vW6xY";
+    write_skill(
+        &root,
+        "alpha",
+        &format!("Runs and repairs failing rust tests. API key {canary}"),
+    );
     write_skill(&root, "beta", "Drafts release notes from git history.");
     write_context_file(&root, "s1", "Failing rust test triage needed");
     fs::write(
@@ -554,6 +638,7 @@ fn save_case_pipeline_inference_roundtrip_to_replay() {
     let case_path = root.join("workspace/inference_case.json");
     let args = make_pipeline_args(&root, Some(case_path.clone()));
 
+    let before_capture = unix_ms();
     let outcome = rank_with_args(Some(&provider), args, 5000);
     let doc = outcome.expect("pipeline execution must succeed");
     assert_eq!(doc["decision"], "ranked");
@@ -572,7 +657,15 @@ fn save_case_pipeline_inference_roundtrip_to_replay() {
     assert_eq!(mode, 0o600, "case file must be 0600 owner-only");
 
     // Parse case and verify recorded stages
-    let case: ReplayCase = serde_json::from_str(&fs::read_to_string(&case_path).unwrap()).unwrap();
+    let raw = fs::read_to_string(&case_path).unwrap();
+    assert!(!raw.contains(canary));
+    let case: ReplayCase = serde_json::from_str(&raw).unwrap();
+    assert!((before_capture..=unix_ms()).contains(&case.local_evidence.as_of_unix_ms));
+    assert!(case.captured_request.candidate_options.iter().any(|c| {
+        c.description
+            .as_ref()
+            .is_some_and(|d| d.contains("[REDACTED]"))
+    }));
     assert_eq!(case.manifest.stages_recorded, vec!["wide", "rerank"]);
     assert!(case.recorded_responses.wide.is_some());
     assert!(case.recorded_responses.rerank.is_some());
@@ -610,6 +703,7 @@ fn save_case_pipeline_low_need_roundtrip_to_replay() {
     let case_path = root.join("workspace/low_need_case.json");
     let args = make_pipeline_args(&root, Some(case_path.clone()));
 
+    let before_capture = unix_ms();
     let outcome = rank_with_args(Some(&provider), args, 5000);
     let doc = outcome.expect("pipeline execution must succeed with abstain");
     assert_eq!(doc["decision"], "abstain");
@@ -624,6 +718,7 @@ fn save_case_pipeline_low_need_roundtrip_to_replay() {
     // Verify case file written
     assert!(case_path.exists());
     let case: ReplayCase = serde_json::from_str(&fs::read_to_string(&case_path).unwrap()).unwrap();
+    assert!((before_capture..=unix_ms()).contains(&case.local_evidence.as_of_unix_ms));
     assert_eq!(case.manifest.stages_recorded, vec!["wide"]);
     assert!(case.recorded_responses.wide.is_some());
     assert!(case.recorded_responses.rerank.is_none());
