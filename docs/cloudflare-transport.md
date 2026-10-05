@@ -238,3 +238,24 @@ open. Resolve billing access and entitlement before another separately capped
 maximum-shape run. Authentication, billing readiness, actual provider capacity,
 representative availability, judged quality and warm latency retain separate
 dispositions.
+
+
+## October 5 read-only billing-access diagnostic
+
+The requested `cf` CLI exposes `accounts billing getCredits` as a GET of the
+selected account's credit balance and eligibility. Its earlier saved-login read
+returned HTTP 403; no balance was obtained. A fresh attempt used a reviewed
+policy for a separate, one-hour, single-account token with only Billing Read.
+The token-creation preview succeeded, but the actual creation request returned
+HTTP 403, API error 9109: unauthorized to access the requested resource.
+No credential was returned, and the subsequent credit-balance query did not run.
+The rejected creation is not evidence that Billing Read is unsupported or that
+the account has zero credits.
+
+The production environment file's complete hash is unchanged. Its AI credential
+was not widened or replaced. No inference request, credit purchase, subscription
+change, billing write or production ledger update occurred. Further diagnosis
+needs authorized billing-read access. The existing HTTP 402 Jev disposition and
+all original positive provider-qualification requirements remain unresolved.
+Private command/preview/error receipts are retained at
+`/scratch/tmp/skillranker-cf-billing-read-lwaqci08`.
