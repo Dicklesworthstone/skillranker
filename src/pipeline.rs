@@ -1530,7 +1530,26 @@ async fn rank_once(
         configured: effective.roster_roots(),
         harness: &normalized_context.harness,
     };
-    let roster = roster_source.load(cx, clock)?;
+    // Local explicit resolution never needs a Git probe. The anchor already
+    // parsed the full current prompt and active history before redaction.
+    let needs_explicit = !explicit_directives.is_empty()
+        || anchor_res.anchor().is_some_and(|anchor| {
+            anchor.directives.iter().any(|directive| {
+                directive.kind == crate::context::anchor::AnchorDirectiveKind::Require
+            })
+        });
+    let tool_roots: Vec<PathBuf> = TRUSTED_TOOL_ROOTS.iter().map(PathBuf::from).collect();
+    let (roster, captured_signals) = if needs_explicit {
+        (roster_source.load_async(cx, clock).await?, None)
+    } else {
+        let (loaded, signals) = crate::blocking::join_owned(
+            roster_source.load_async(cx, clock),
+            crate::context::signals::collect(cx, clock, &args.workspace, &tool_roots),
+        )
+        .await;
+        // Both operations have drained before propagating a roster error.
+        (loaded?, Some(signals))
+    };
 
     let (warnings, warnings_omitted) =
         roster_warnings(&roster, progress.evaluated.source_warning.as_ref());
@@ -1603,7 +1622,7 @@ async fn rank_once(
                     "Configuration became invalid before publication",
                 ));
             }
-            roster_source.validate(&dependencies, cx, clock)?;
+            roster_source.validate(&dependencies, cx, clock).await?;
             let event_id_str = normalized_context
                 .current_request
                 .event_id
@@ -2005,7 +2024,8 @@ async fn rank_once(
                     &snooze_check,
                     cx,
                     clock,
-                )?;
+                )
+                .await?;
                 return Ok(doc);
             }
             Verdict::Unavailable(reason) => {
@@ -2175,7 +2195,8 @@ async fn rank_once(
             &snooze_check,
             cx,
             clock,
-        )?;
+        )
+        .await?;
         return Ok(doc);
     }
 
@@ -2199,8 +2220,10 @@ async fn rank_once(
     // fixed root-owned system directories (never PATH or repository-supplied
     // roots) and bounded repository-relative dirty paths from the safe Git
     // helper. Rendering redacts them and the profile may omit them.
-    let tool_roots: Vec<PathBuf> = TRUSTED_TOOL_ROOTS.iter().map(PathBuf::from).collect();
-    let signals = crate::context::signals::collect(cx, clock, &args.workspace, &tool_roots).await;
+    let signals = match captured_signals {
+        Some(signals) => signals,
+        None => crate::context::signals::collect(cx, clock, &args.workspace, &tool_roots).await,
+    };
     let render_opts = RenderContextOptions {
         no_tools: effective.no_tools(),
         context_profile: effective.context_profile(),
@@ -2972,7 +2995,8 @@ async fn rank_once(
                 &snooze_check,
                 cx,
                 clock,
-            )?;
+            )
+            .await?;
             return Ok(doc);
         }
         WideDecision::Shortlist(list) => list.clone(),
@@ -3265,7 +3289,8 @@ async fn rank_once(
                     &snooze_check,
                     cx,
                     clock,
-                )?;
+                )
+                .await?;
                 return Ok(doc);
             }
             Verdict::Unavailable(reason) => {
@@ -3463,7 +3488,8 @@ async fn rank_once(
         &snooze_check,
         cx,
         clock,
-    )?;
+    )
+    .await?;
     Ok(doc)
 }
 
@@ -3490,7 +3516,7 @@ fn current_snooze_scope(context: &NormalizedContext) -> Option<crate::snooze::Sn
 }
 
 #[allow(clippy::too_many_arguments)]
-fn validate_advisory_publication(
+async fn validate_advisory_publication(
     source: &roster::Source<'_>,
     dependencies: &crate::roster::revalidation::Dependencies,
     config_files: &ConfigFiles,
@@ -3500,7 +3526,7 @@ fn validate_advisory_publication(
     cx: &Cx,
     clock: &EntryClock,
 ) -> Result<(), PipelineFailure> {
-    source.validate(dependencies, cx, clock)?;
+    source.validate(dependencies, cx, clock).await?;
     // A snooze applied while this ranking ran withholds it: advice computed
     // without that mute is stale. An expiry only relaxes the controls, and a
     // decision made under the stricter ones stays publishable.

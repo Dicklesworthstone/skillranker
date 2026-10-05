@@ -201,3 +201,178 @@ binary SHA256
 `403466dfd99e80e673f24629309499afdac9f184a9463ff626738aeb9b557d05`.
 Report: `/scratch/tmp/sr-w4in-measure-zmrxa8bw/report.json`; harness:
 `/scratch/tmp/skillranker-w4in-minimal-measure.py`.
+
+## 2026-10-05, two-worker read/hash/parse experiment rejected
+
+This experiment moved bounded file reads, hashing and metadata parsing to two
+owned Asupersync workers, retained sequential quota/authority merging, and
+overlapped Git signals with discovery. It is not shipped. Its focused behavior
+checks passed, but the complete paired comparison did not meet the original
+`sr-w4in` acceptance criteria.
+
+The clean baseline is `f951fb42038b888c4b312a17cd6a76e8dc6d27e8`; the experiment
+is that revision plus the retained seven-path patch with SHA256
+`2f693669cf92a103bacc901a608e74f5b7ab2619e8c6afb32e61a4b1ef0d9a2b`.
+Both executables used the pinned compiler, default features, explicit Linux
+x86_64 target and unoptimized development profile, with only debug symbols
+stripped. Their SHA256 values are:
+
+- Baseline: `2b4ce0c28c36ec166374783f17d7559fa363eac5ec3f50d9a3d5014ff626f660`.
+- Experiment: `2ef3233f6b59dbc78a611edbf639467566d6211cc4cfd8a38d40ea7439e9b508`.
+
+Normal RCH source-content receipts verified the frozen source and lockfile,
+including all 407 selected tracked non-Beads files. The existing credential
+filter excludes `.env.example`; it was not weakened. Baseline focused checks
+had 104 passes and one existing ignore; the experiment had 112 passes and the
+same ignore, with eight additional focused tests. These results establish
+those executed behaviors, not performance or full-suite qualification.
+
+The native comparison used 30 alternating pairs for each path (180 samples)
+on `threadripperje`, with the same synthetic 205-file/4,812,565-byte roster,
+an actual private Git index with dirty tracked `Cargo.toml`, and separate
+private XDG state. Both loopback TLS fills returned ranked decisions; the
+four HTTP attempts used only a synthetic key and the checked-in local CA.
+There were no public-provider calls or organic hook observations. Host load
+was 121.65 before and 115.17 after on 128 CPUs; it varied during the run.
+
+All process exits are included in the percentiles:
+
+| Path | Baseline p50 / p95 / p99 | Experiment p50 / p95 / p99 | Peak RSS, baseline / experiment |
+| --- | ---: | ---: | ---: |
+| Offline miss | 2118 / 3463 / 3655 ms | 2168 / 4112 / 4442 ms | 31.22 / 30.95 MiB |
+| Explicit request | 2247 / 3369 / 4356 ms | 2174 / 3401 / 3464 ms | 33.50 / 32.20 MiB |
+| Offline cache replay attempts | 2382 / 3856 / 4802 ms | 2011 / 3413 / 3455 ms | 33.12 / 34.41 MiB |
+
+The baseline miss path returned 30 exit-11 misses; the experiment returned
+27 misses and three exit-6 timeouts. Explicit resolution had 30 successes
+before and 28 successes plus two timeouts after. Cache replay had only 22/30
+confirmed hits before (eight misses) and 17/30 after (eleven misses and two
+timeouts). The cache row therefore is not an exact-cache-hit latency claim.
+User/system CPU totals across the 30 runs were 34.67/24.48 versus 38.18/23.55
+seconds for misses, 35.54/23.72 versus 41.73/22.72 for explicit resolution,
+and 41.42/24.98 versus 38.80/21.69 for cache replay.
+
+Both roster pages were byte-identical, but full paired outcomes differed.
+The traced explicit baseline succeeded and the experiment timed out; neither
+started Git. The complete report has `valid=false`. Faster medians in some
+rows do not compensate for added timeouts, fewer confirmed hits, or differing
+outcomes. The seven experimental paths were restored after exact ownership
+and hash checks. No deadline, quota, assertion or publication reread was
+relaxed, and no release, usefulness or phase gate is claimed.
+
+Retained report, source hashes, patch, checksums and focused receipts:
+`/scratch/tmp/skillranker-w4in-read-parse-s7vmxexo/paired-debug/report.json`
+and its parent directory. The original `sr-w4in` remains unfinished.
+
+## Git/discovery overlap: qualified development comparison, 2026-10-05
+
+A smaller variant keeps the original sequential roster resolver and all its
+resolution tests, while running it in one invocation-owned blocking leaf and
+polling bounded Git collection concurrently. Explicit requests perform no Git
+probe. The whole roster is still reopened before advisory publication. It
+delivers no concurrent skill-file reads and cannot close the original `sr-w4in`
+scope by itself.
+
+Both binaries use pinned nightly-2026-08-31, the native
+`x86_64-unknown-linux-gnu` target, default features and the unoptimized development
+profile. Debug symbols were stripped into separate retained executables. The
+baseline is `f951fb42038b888c4b312a17cd6a76e8dc6d27e8`; the five-path candidate is
+frozen by `overlap-v3-source.json`. This is a development comparison, not
+optimized-release, organic-hook, live-provider or usefulness qualification.
+
+Thirty alternating pairs per path retain all 180 outcomes, child CPU and peak
+RSS. The synthetic 205-file roster contains 4,812,565 bytes; the private real Git
+index contains a tracked dirty Cargo.toml. Shared host load was
+22.59/26.30/58.09 before and 24.76/26.01/55.20 after, on 128 CPUs.
+
+| Path | p50 wall ms, before → after | p95 wall ms | p99 wall ms | Peak RSS MiB |
+|---|---:|---:|---:|---:|
+| Stateless offline miss | 348.663 → 320.833 | 430.254 → 450.377 | 549.12 → 485.982 | 30.684 → 32.09 |
+| Explicit local request | 432.082 → 395.204 | 582.213 → 546.666 | 637.903 → 547.275 | 32.742 → 33.82 |
+| Exact cached rank | 570.724 → 505.666 | 696.612 → 699.897 | 818.111 → 752.747 | 32.723 → 34.527 |
+
+Both roster pages are byte-identical and all paired JSON outcomes agree,
+excluding only measured elapsed time and cache age. Each miss cohort contains
+30 exit-11 outcomes; each explicit cohort contains 30 successes. Each cache
+cohort contains 30 successes and 30 confirmed exact hits. Both traced explicit
+requests succeed with zero Git subprocesses. The loopback TLS peer is synthetic:
+four HTTP attempts fill two private caches; no public inference or production
+ledger rows are used.
+
+The median improvement is about 8–11%, but miss and cache p95 worsen, and peak
+RSS rises about 1–2 MiB. Total child user/system CPU seconds for the thirty runs
+are miss 7.41/2.56 → 7.60/2.60, explicit 8.76/3.68 → 8.85/2.93, and cache
+12.07/4.76 → 11.84/4.38. Do not infer a uniform tail-latency improvement.
+
+Focused source-content RCH qualification executed 242 passes, zero failures and
+one existing ignore across seven suites; receipt
+`a81fb635e5d56b02538067871e5dbddf5888e00b28461fca9f735484b073836b`
+binds all five Rust paths, Cargo.lock and 407 tracked non-Beads inputs. Ordinary
+guarded canonical-source RCH then executed the full default suite: 1,530 passes,
+zero failures and 11 existing ignores across 148 suites. All-target check and
+strict Clippy also passed, with all 407 inputs verified before and after.
+
+A temporary production mutation running the filesystem callback on the executor
+compiled and caused the unchanged real-Git overlap test to fail at its two-second
+wait; restoring the exact candidate bytes made the same test pass. The earlier
+offline dependency-fetch failure and critical-memory admission refusal executed
+no tests and remain separate failed attempts. Differential UBS returned exit 1
+with two critical unchanged test-fixture panics; its findings were reviewed, not
+claimed as a clean scan.
+
+Private source manifests, paired samples, failed attempts and terminal receipts:
+`/scratch/tmp/skillranker-w4in-read-parse-s7vmxexo`. The retained candidate patch
+SHA-256 is `d49ec6808782a1b391560f8250566e2e645896dc676551916fb8f78c8ad2cf70`.
+
+### Optimized counterpart and disposition
+
+The same procedure then executed 180 native optimized-release samples: thirty
+alternating pairs per path, the same compiler/target/default features, the same
+205-file fixture and actual private Git index. Shared host load was
+30.91/33.57/56.08 before and 28.27/32.74/55.21 after, on 128 CPUs. These samples
+are separate from the development cohort and from the rejected larger prototype.
+
+| Path | p50 wall ms, before → after | p95 wall ms | p99 wall ms | Peak RSS MiB |
+|---|---:|---:|---:|---:|
+| Stateless offline miss | 85.791 → 76.347 | 164.787 → 115.209 | 166.204 → 127.909 | 14.215 → 14.152 |
+| Explicit local request | 87.664 → 91.259 | 210.472 → 158.059 | 213.749 → 162.026 | 15.168 → 17.148 |
+| Exact cached rank | 127.713 → 122.078 | 265.78 → 277.341 | 282.287 → 284.587 | 16.117 → 17.133 |
+
+Both roster pages and every paired full outcome agree; only elapsed time and
+cache age are excluded from JSON equality. Both miss cohorts contain 30 exit-11
+outcomes. Both explicit cohorts and both cache cohorts contain 30 successes,
+and each cache cohort has 30 confirmed hits. Explicit process traces succeed
+with zero Git invocations. The bounded loopback TLS peer again makes four
+synthetic HTTP attempts; its five diagnostic records drain without errors.
+There are no new public-provider or organic-hook observations.
+
+Total child user/system CPU seconds across thirty runs are miss
+0.99/1.41 → 1.00/1.33, explicit 1.05/1.56 → 1.09/1.38, and cache
+1.67/2.32 → 1.68/2.35. Miss median improves about 11% and cache median about 4%.
+Explicit median worsens by 3.595 ms; cache p95/p99 worsen by 11.561/2.300 ms.
+Explicit/cache peak RSS rises by about 1–2 MiB. This supports keeping the
+smaller overlap change with these tradeoffs, not a uniform latency or memory
+improvement. The 100 ms cache p95 target is not established by this cohort.
+
+DSR orchestrated both ordinary private builds through guarded RCH on native
+Linux worker vmi1264463. Compiled input proof uses separately verified canonical
+source hashes rather than DSR's staged-source metadata: baseline inputs match
+before/after, and candidate inputs match during compilation and after. The
+baseline build's first attempt fails with OS ENOENT before compact_str's compiler
+process starts; its cached source directory is missing while compiler and project
+inputs remain intact. Ordinary DSR resume succeeds without a pressure override,
+global cache edit or peer cleanup. No failed attempt is a passing build cell.
+
+The retained baseline executable is 23,458,048 bytes, SHA-256
+`e72e7d96f9dfd866c0bb505cf0cb9143b5687d62cc314293ea9fe4fb3d3146c0`;
+the candidate is 23,645,720 bytes, SHA-256
+`0d1427ff5cf240a509b31620f0609c79e26f1987aa84a46937b8ea9f4fe438d3`.
+Both match their DSR manifest checksums and native ELF machine 62. Baseline DSR
+run `18d2ca5d-b185-4224-a532-de5a8d9b22f6` succeeds on attempt two; candidate run
+`0f62dedf-d77e-40fc-9e0a-b710c12afc12` succeeds on attempt one. These are local
+measurement artifacts, not public release or cross-platform qualification.
+
+The original `sr-w4in` remains incomplete: concurrent skill-file reads and the
+original task's full acceptance still need their own implementation and evidence.
+No relevance, controlled-harm, live-provider, actual-hook, or broader performance
+gate is closed by these synthetic comparisons.

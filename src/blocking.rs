@@ -15,6 +15,37 @@ use crate::runtime::{EntryClock, ProcessInvocation, RuntimeError, admit_publicat
 use asupersync::Cx;
 use std::time::Duration;
 
+/// Poll two invocation-owned operations together and drain both, even when
+/// one returns an error. No spawned future can outlive this join.
+pub async fn join_owned<A: std::future::Future, B: std::future::Future>(
+    first: A,
+    second: B,
+) -> (A::Output, B::Output) {
+    use std::task::Poll;
+    let mut first = std::pin::pin!(first);
+    let mut second = std::pin::pin!(second);
+    let mut first_result = None;
+    let mut second_result = None;
+    std::future::poll_fn(|task| {
+        if first_result.is_none()
+            && let Poll::Ready(value) = first.as_mut().poll(task)
+        {
+            first_result = Some(value);
+        }
+        if second_result.is_none()
+            && let Poll::Ready(value) = second.as_mut().poll(task)
+        {
+            second_result = Some(value);
+        }
+        if first_result.is_some() && second_result.is_some() {
+            Poll::Ready((first_result.take().unwrap(), second_result.take().unwrap()))
+        } else {
+            Poll::Pending
+        }
+    })
+    .await
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BlockingLeafKind {
     Filesystem,
@@ -109,24 +140,41 @@ where
     F: FnOnce() -> T + Send + 'static,
     T: Send + 'static,
 {
+    invocation
+        .runtime()
+        .block_on(run_blocking_leaf_async(clock, cx, kind, uninterruptible, f))
+}
+
+/// Async counterpart: leave the executor available for owned subprocess I/O.
+/// The closure is not interruptible; join it before checking publication.
+pub async fn run_blocking_leaf_async<F, T>(
+    clock: EntryClock,
+    cx: &Cx,
+    kind: BlockingLeafKind,
+    uninterruptible: bool,
+    f: F,
+) -> Result<BlockingOutcome<T>, RuntimeError>
+where
+    F: FnOnce() -> T + Send + 'static,
+    T: Send + 'static,
+{
     admit_blocking_leaf(&clock, kind, uninterruptible)?;
-    invocation.runtime().block_on(async {
-        let mut handle = cx
-            .spawn_blocking(move |_child| f())
-            .map_err(|_| RuntimeError::BlockingPoolUnavailable)?;
-        let joined = handle.join(cx).await;
-        let completed_at = clock.now();
-        match joined {
-            Ok(value) => {
-                admit_blocking_publication(&clock, completed_at, cx)?;
-                Ok(BlockingOutcome {
-                    completed_at,
-                    value,
-                })
+    let mut handle = cx
+        .spawn_blocking(move |_child| {
+            let value = f();
+            BlockingOutcome {
+                completed_at: clock.now(),
+                value,
             }
-            Err(_) => Err(RuntimeError::Cancelled),
+        })
+        .map_err(|_| RuntimeError::BlockingPoolUnavailable)?;
+    match handle.join(cx).await {
+        Ok(outcome) => {
+            admit_blocking_publication(&clock, outcome.completed_at, cx)?;
+            Ok(outcome)
         }
-    })
+        Err(_) => Err(RuntimeError::Cancelled),
+    }
 }
 
 /// Remaining work window, for SQLite busy waits and similar bounded leaves.

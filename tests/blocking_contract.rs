@@ -161,3 +161,35 @@ fn busy_wait_cap_stays_inside_the_work_window() {
     assert!(wait <= Duration::from_millis(25));
     assert!(wait > Duration::from_millis(0));
 }
+
+#[test]
+fn an_error_from_one_owned_future_still_drains_the_other_leaf() {
+    use skillranker::blocking::{join_owned, run_blocking_leaf_async};
+    let invocation = ProcessInvocation::enter().unwrap();
+    let cx = invocation.request_cx().unwrap();
+    let finished = Arc::new(AtomicBool::new(false));
+    let completed = Arc::clone(&finished);
+    let (started_tx, mut started_rx) = asupersync::channel::oneshot::channel();
+    let (failed, leaf) = invocation.runtime().block_on(join_owned(
+        async {
+            started_rx.recv(&cx).await.unwrap();
+            Err::<(), _>("first operation failed")
+        },
+        run_blocking_leaf_async(
+            invocation.clock(),
+            &cx,
+            BlockingLeafKind::Filesystem,
+            false,
+            move || {
+                started_tx.send_blocking(()).unwrap();
+                thread::sleep(Duration::from_millis(20));
+                completed.store(true, Ordering::SeqCst);
+                8_u8
+            },
+        ),
+    ));
+    assert_eq!(failed, Err("first operation failed"));
+    assert_eq!(leaf.unwrap().value, 8);
+    assert!(finished.load(Ordering::SeqCst));
+    assert!(invocation.shutdown());
+}

@@ -25,6 +25,54 @@ pub(super) struct Source<'a> {
 }
 
 impl Source<'_> {
+    /// Run the unchanged sequential resolver in one invocation-owned leaf so
+    /// independent Git process I/O can progress on the executor.
+    pub(super) async fn load_async(
+        &self,
+        cx: &Cx,
+        clock: &EntryClock,
+    ) -> Result<ResolvedRoster, PipelineFailure> {
+        let workspace = self.workspace.to_owned();
+        let home = self.home.map(Path::to_owned);
+        let manifest = self.manifest.map(Path::to_owned);
+        let configured = self.configured.to_vec();
+        let harness = self.harness.clone();
+        let work_cx = cx.clone();
+        let work_clock = *clock;
+        crate::blocking::run_blocking_leaf_async(
+            *clock,
+            cx,
+            crate::blocking::BlockingLeafKind::Filesystem,
+            false,
+            move || {
+                Source {
+                    workspace: &workspace,
+                    home: home.as_deref(),
+                    manifest: manifest.as_deref(),
+                    configured: &configured,
+                    harness: &harness,
+                }
+                .load(&work_cx, &work_clock)
+            },
+        )
+        .await
+        .map_err(|error| match error {
+            crate::runtime::RuntimeError::Cancelled => failure(
+                ErrorKind::UnusableRoster,
+                "Failed to resolve roster: Cancelled",
+            ),
+            crate::runtime::RuntimeError::Deadline(_)
+            | crate::runtime::RuntimeError::LateResultSuppressed => {
+                validation_error(RevalidationError::Deadline)
+            }
+            _ => failure(
+                ErrorKind::UnusableRoster,
+                "Roster blocking pool unavailable",
+            ),
+        })?
+        .value
+    }
+
     pub(super) fn load(
         &self,
         cx: &Cx,
@@ -82,7 +130,7 @@ impl Source<'_> {
         }
     }
 
-    pub(super) fn validate(
+    pub(super) async fn validate(
         &self,
         captured: &Dependencies,
         cx: &Cx,
@@ -90,7 +138,7 @@ impl Source<'_> {
     ) -> Result<(), PipelineFailure> {
         // Re-open both the manifest and adapter roots; old open descriptors
         // cannot establish that a replacement still has the same authority.
-        let fresh = self.load(cx, clock)?;
+        let fresh = self.load_async(cx, clock).await?;
         revalidate(captured, &fresh, clock).map_err(validation_error)?;
         Ok(())
     }
@@ -245,11 +293,10 @@ mod tests {
         }
 
         fn validate(&self, manifest: bool, captured: &Dependencies) -> Result<(), PipelineFailure> {
-            self.source(manifest).validate(
-                captured,
-                &self.invocation.request_cx().unwrap(),
-                &self.clock,
-            )
+            let cx = self.invocation.request_cx().unwrap();
+            self.invocation
+                .runtime()
+                .block_on(self.source(manifest).validate(captured, &cx, &self.clock))
         }
     }
 
@@ -329,9 +376,11 @@ mod tests {
         )
         .unwrap();
         std::thread::sleep(std::time::Duration::from_millis(5));
+        let cx = f.invocation.request_cx().unwrap();
         let failure = f
-            .source(false)
-            .validate(&captured, &f.invocation.request_cx().unwrap(), &expired)
+            .invocation
+            .runtime()
+            .block_on(f.source(false).validate(&captured, &cx, &expired))
             .unwrap_err();
         assert_eq!((failure.0, failure.1), (6, "timeout"));
     }

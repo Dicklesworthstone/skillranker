@@ -192,3 +192,43 @@ fn slow_version_probe_is_omitted_within_stage_budget() {
     assert!(result.dirty_paths.is_none());
     assert!(start.elapsed() < std::time::Duration::from_secs(2));
 }
+
+#[test]
+fn actual_git_finishes_while_an_owned_filesystem_leaf_waits() {
+    use skillranker::blocking::{BlockingLeafKind, join_owned, run_blocking_leaf_async};
+    use std::sync::mpsc;
+    use std::time::Duration;
+    let dir = temp();
+    git(&dir, &["init", "-q"]);
+    git(&dir, &["config", "user.email", "synthetic@example.invalid"]);
+    git(&dir, &["config", "user.name", "Synthetic"]);
+    std::fs::write(dir.join("Cargo.toml"), "initial\n").unwrap();
+    git(&dir, &["add", "Cargo.toml"]);
+    git(&dir, &["commit", "-qm", "fixture"]);
+    std::fs::write(dir.join("Cargo.toml"), "dirty\n").unwrap();
+    let roots = [git_path().parent().unwrap().to_path_buf()];
+    let invocation = ProcessInvocation::enter().unwrap();
+    let clock = invocation.clock();
+    let cx = invocation.request_cx().unwrap();
+    let (started_tx, mut started_rx) = asupersync::channel::oneshot::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let (leaf, signals) = invocation.runtime().block_on(join_owned(
+        run_blocking_leaf_async(clock, &cx, BlockingLeafKind::Filesystem, false, move || {
+            started_tx.send_blocking(()).unwrap();
+            release_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("Git must progress while discovery waits");
+            42
+        }),
+        async {
+            started_rx.recv(&cx).await.unwrap();
+            let signals = collect(&cx, &clock, &dir, &roots).await;
+            release_tx.send(()).unwrap();
+            signals
+        },
+    ));
+    assert_eq!(leaf.unwrap().value, 42);
+    assert_eq!(signals.git_omission, None);
+    assert_eq!(signals.dirty_paths.unwrap().paths[0].as_str(), "Cargo.toml");
+    assert!(invocation.shutdown());
+}
