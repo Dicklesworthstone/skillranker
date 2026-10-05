@@ -436,67 +436,323 @@ pub fn resolve_claude_plan(
     cx: &Cx,
     clock: &EntryClock,
 ) -> Result<ResolvedRoster, ResolutionError> {
-    budget(cx, clock)?;
-    if plan.harness().as_str() != "claude_code" {
-        return Err(ResolutionError::InvalidBinding);
-    }
-    let discovery =
-        plan.discover_with_checkpoint(DiscoveryLimits::defaults(), || budget(cx, clock))?;
-    budget(cx, clock)?;
-    let roots = AuthorizedRoots::new(
-        plan.roots()
-            .iter()
-            .filter_map(|r| r.root())
-            .map(|r| r.try_clone())
-            .collect::<Result<_, _>>()
-            .map_err(|_| ResolutionError::Read)?,
-    );
-    let mut entries = Vec::new();
-    let mut diagnostics = Vec::new();
-    let mut total = 0usize;
-    let mut withheld_names = BTreeSet::new();
-    // Metadata-only rejections do not consume the content-read allowance, but
-    // their names still participate in safety. Never treat a rejected personal
-    // override as absence and promote a project definition of the same name.
-    for (offset, rejected) in discovery.rejected_candidates().iter().enumerate() {
+    let mut prepared = PreparedResolution::new(plan, cx, clock)?;
+    for index in 0..prepared.discovery.candidates().len() {
         budget(cx, clock)?;
-        let index = discovery.candidates().len() + offset;
-        let Some(invocation) = claude_invocation(rejected.kind(), rejected.relative()) else {
-            diagnostics.push((index, ResolutionError::UnsupportedLayout));
-            continue;
-        };
-        let problem = match rejected.problem() {
-            CandidateProblem::Oversized => ResolutionError::Oversized,
-            CandidateProblem::NotRegularFile => ResolutionError::Read,
-        };
-        diagnostics.push((index, problem));
-        withheld_names.insert(invocation.as_str().to_owned());
-    }
-    for (index, candidate) in discovery.candidates().iter().enumerate() {
-        budget(cx, clock)?;
-        let Some(invocation) = claude_invocation(candidate.kind(), candidate.relative()) else {
-            diagnostics.push((index, ResolutionError::UnsupportedLayout));
-            // The verified direct-layout contract gives this path no callable
-            // name. It cannot shadow a supported binding. Keep the exclusion
-            // visible without revoking authority from unrelated skills.
-            continue;
-        };
-        let remaining = DISCOVERY_PARSED_BYTES.max().saturating_sub(total);
-        if remaining == 0 {
-            diagnostics.push((index, ResolutionError::Limit));
-            withheld_names.insert(invocation.as_str().to_owned());
-            continue;
+        let candidate = prepared.discovery.candidates()[index].clone();
+        if let Some(limit) = prepared.read_limit(index, &candidate)? {
+            let read = prepared
+                .roots
+                .read_absolute(candidate.path().as_path(), limit);
+            prepared.consume(index, &candidate, read, overrides, cx, clock)?;
         }
-        let limit = ResourceLimit::try_new(
+    }
+    prepared.finish(plan, cx, clock)
+}
+
+/// Owned discovery and bounded parallel reads on the invocation's Asupersync
+/// blocking pool. Aggregation uses the same sequential byte accounting and
+/// collision policy as `resolve_claude_plan`.
+pub async fn resolve_claude_plan_concurrent(
+    plan: DiscoveryPlan,
+    overrides: BTreeMap<String, InvocationRestrictions>,
+    cx: &Cx,
+    clock: EntryClock,
+) -> Result<ResolvedRoster, ResolutionError> {
+    use crate::blocking::{BlockingLeafKind, run_blocking_batch, run_blocking_leaf_async};
+    let work_cx = cx.clone();
+    let (plan, mut prepared) =
+        run_blocking_leaf_async(clock, cx, BlockingLeafKind::Filesystem, false, move || {
+            PreparedResolution::new(&plan, &work_cx, &clock).map(|prepared| (plan, prepared))
+        })
+        .await
+        .map_err(blocking_error)?
+        .value?;
+    let overrides = std::sync::Arc::new(overrides);
+    let mut next = 0;
+    while next < prepared.discovery.candidates().len() {
+        budget(cx, &clock)?;
+        let remaining = DISCOVERY_PARSED_BYTES.max().saturating_sub(prepared.total);
+        if remaining == 0 {
+            // No bytes remain. Classify the rest without submitting empty jobs.
+            let remaining_candidates = prepared.discovery.candidates()[next..].to_vec();
+            for (offset, candidate) in remaining_candidates.iter().enumerate() {
+                budget(cx, &clock)?;
+                prepared.read_limit(next + offset, candidate)?;
+            }
+            break;
+        }
+        // Reserve worst-case bytes, not stale discovered sizes. Two workers
+        // read, hash and parse contiguous portions of this bounded prefix.
+        // Only the ordered merge consumes the shared allowance and authority.
+        // Read bytes plus prior consumed bytes never exceed the shared budget.
+        let count = (remaining / SKILL_FILE_BYTES.max()).max(1);
+        let end = next
+            .saturating_add(count)
+            .min(prepared.discovery.candidates().len());
+        let candidates = prepared.discovery.candidates()[next..end].to_vec();
+        let first = next;
+        next = end;
+        let limit = if remaining == 0 {
+            None
+        } else {
+            Some(
+                ResourceLimit::try_new(
+                    "roster_read",
+                    LimitUnit::Bytes,
+                    remaining.min(SKILL_FILE_BYTES.max()),
+                )
+                .map_err(|_| ResolutionError::Limit)?,
+            )
+        };
+        let chunk_size = candidates.len().div_ceil(2);
+        let leaves = candidates
+            .chunks(chunk_size)
+            .map(|chunk| {
+                let roots = std::sync::Arc::clone(&prepared.roots);
+                let overrides = std::sync::Arc::clone(&overrides);
+                let candidates = chunk.to_vec();
+                let work_cx = cx.clone();
+                move || {
+                    let mut reads = Vec::with_capacity(candidates.len());
+                    for candidate in candidates {
+                        budget(&work_cx, &clock)?;
+                        reads.push(
+                            limit
+                                .filter(|_| {
+                                    claude_invocation(candidate.kind(), candidate.relative())
+                                        .is_some()
+                                })
+                                .map(|limit| {
+                                    roots.read_absolute(candidate.path().as_path(), limit).map(
+                                        |read| parse_discovered_read(&candidate, read, &overrides),
+                                    )
+                                }),
+                        );
+                    }
+                    Ok::<_, ResolutionError>(reads)
+                }
+            })
+            .collect();
+        let outcomes = run_blocking_batch(clock, cx, BlockingLeafKind::Filesystem, false, leaves)
+            .await
+            .map_err(blocking_error)?;
+        let mut reads = Vec::with_capacity(candidates.len());
+        for outcome in outcomes {
+            reads.extend(outcome.value?);
+        }
+        for (offset, (candidate, read)) in candidates.iter().zip(reads).enumerate() {
+            budget(cx, &clock)?;
+            let index = first + offset;
+            // Classify in the original order, including unsupported layouts,
+            // so the diagnostics and bounded warning selection stay identical.
+            if prepared.read_limit(index, candidate)?.is_some() {
+                let read = read.ok_or(ResolutionError::Read)?;
+                prepared.consume_parsed(index, candidate, read, cx, &clock)?;
+            }
+        }
+    }
+    let work_cx = cx.clone();
+    run_blocking_leaf_async(clock, cx, BlockingLeafKind::Filesystem, false, move || {
+        prepared.finish(&plan, &work_cx, &clock)
+    })
+    .await
+    .map_err(blocking_error)?
+    .value
+}
+
+fn blocking_error(error: crate::runtime::RuntimeError) -> ResolutionError {
+    match error {
+        crate::runtime::RuntimeError::Cancelled => ResolutionError::Cancelled,
+        crate::runtime::RuntimeError::Deadline(_)
+        | crate::runtime::RuntimeError::LateResultSuppressed => ResolutionError::Deadline,
+        _ => ResolutionError::Read,
+    }
+}
+
+/// Parsing is independent of byte-budget and shadowing decisions. Keep the
+/// successful read length even when identity or metadata is rejected: the
+/// original sequential resolver charges those bytes too.
+struct ParsedRead {
+    len: usize,
+    outcome: Result<SkillEntry, ParsedReadError>,
+}
+
+enum ParsedReadError {
+    Changed,
+    InvalidKey(ResolutionError),
+    Entry(ResolutionError),
+}
+
+fn parse_discovered_read(
+    candidate: &super::discovery::Candidate,
+    read: BoundedRead,
+    overrides: &BTreeMap<String, InvocationRestrictions>,
+) -> ParsedRead {
+    let len = read.len();
+    let outcome =
+        if read.identity() != candidate.identity() {
+            Err(ParsedReadError::Changed)
+        } else {
+            let Some(invocation) = claude_invocation(candidate.kind(), candidate.relative()) else {
+                return ParsedRead {
+                    len,
+                    outcome: Err(ParsedReadError::InvalidKey(ResolutionError::InvalidBinding)),
+                };
+            };
+            match path_logical_key(candidate.path().as_path()) {
+                Err(error) => Err(ParsedReadError::InvalidKey(error)),
+                Ok(logical_key) => {
+                    let restrictions = overrides.get(invocation.as_str()).copied().unwrap_or(
+                        InvocationRestrictions {
+                            agent_invocable: true,
+                            user_invocable: true,
+                        },
+                    );
+                    let spec = BindingSpec {
+                        source: candidate.source().clone(),
+                        logical_key,
+                        invocation,
+                        priority: Some(candidate.priority()),
+                        visibility: candidate.visibility().clone(),
+                        restrictions,
+                    };
+                    SkillEntry::from_read(spec, read).map_err(ParsedReadError::Entry)
+                }
+            }
+        };
+    ParsedRead { len, outcome }
+}
+
+struct PreparedResolution {
+    discovery: super::discovery::Discovery,
+    roots: std::sync::Arc<AuthorizedRoots>,
+    entries: Vec<SkillEntry>,
+    diagnostics: Vec<(usize, ResolutionError)>,
+    total: usize,
+    withheld_names: BTreeSet<String>,
+}
+
+impl PreparedResolution {
+    fn new(plan: &DiscoveryPlan, cx: &Cx, clock: &EntryClock) -> Result<Self, ResolutionError> {
+        budget(cx, clock)?;
+        if plan.harness().as_str() != "claude_code" {
+            return Err(ResolutionError::InvalidBinding);
+        }
+        let discovery =
+            plan.discover_with_checkpoint(DiscoveryLimits::defaults(), || budget(cx, clock))?;
+        budget(cx, clock)?;
+        let roots = std::sync::Arc::new(AuthorizedRoots::new(
+            plan.roots()
+                .iter()
+                .filter_map(|r| r.root())
+                .map(|r| r.try_clone())
+                .collect::<Result<_, _>>()
+                .map_err(|_| ResolutionError::Read)?,
+        ));
+        let entries = Vec::new();
+        let mut diagnostics = Vec::new();
+        let total = 0usize;
+        let mut withheld_names = BTreeSet::new();
+        // Metadata-only rejections do not consume the content-read allowance, but
+        // their names still participate in safety. Never treat a rejected personal
+        // override as absence and promote a project definition of the same name.
+        for (offset, rejected) in discovery.rejected_candidates().iter().enumerate() {
+            budget(cx, clock)?;
+            let index = discovery.candidates().len() + offset;
+            let Some(invocation) = claude_invocation(rejected.kind(), rejected.relative()) else {
+                diagnostics.push((index, ResolutionError::UnsupportedLayout));
+                continue;
+            };
+            let problem = match rejected.problem() {
+                CandidateProblem::Oversized => ResolutionError::Oversized,
+                CandidateProblem::NotRegularFile => ResolutionError::Read,
+            };
+            diagnostics.push((index, problem));
+            withheld_names.insert(invocation.as_str().to_owned());
+        }
+        Ok(Self {
+            discovery,
+            roots,
+            entries,
+            diagnostics,
+            total,
+            withheld_names,
+        })
+    }
+
+    fn read_limit(
+        &mut self,
+        index: usize,
+        candidate: &super::discovery::Candidate,
+    ) -> Result<Option<ResourceLimit>, ResolutionError> {
+        let Some(invocation) = claude_invocation(candidate.kind(), candidate.relative()) else {
+            self.diagnostics
+                .push((index, ResolutionError::UnsupportedLayout));
+            return Ok(None);
+        };
+        let remaining = DISCOVERY_PARSED_BYTES.max().saturating_sub(self.total);
+        if remaining == 0 {
+            self.diagnostics.push((index, ResolutionError::Limit));
+            self.withheld_names.insert(invocation.as_str().to_owned());
+            return Ok(None);
+        }
+        ResourceLimit::try_new(
             "roster_read",
             LimitUnit::Bytes,
             remaining.min(SKILL_FILE_BYTES.max()),
         )
-        .map_err(|_| ResolutionError::Limit)?;
-        let read = match roots.read_absolute(candidate.path().as_path(), limit) {
+        .map(Some)
+        .map_err(|_| ResolutionError::Limit)
+    }
+
+    fn consume_parsed(
+        &mut self,
+        index: usize,
+        candidate: &super::discovery::Candidate,
+        result: Result<ParsedRead, crate::authorized_read::ReadError>,
+        cx: &Cx,
+        clock: &EntryClock,
+    ) -> Result<(), ResolutionError> {
+        let invocation = claude_invocation(candidate.kind(), candidate.relative())
+            .ok_or(ResolutionError::InvalidBinding)?;
+        let error = match result {
+            Err(crate::authorized_read::ReadError::TooLarge { .. }) => ResolutionError::Oversized,
+            Err(_) => ResolutionError::Read,
+            Ok(parsed) => {
+                self.total += parsed.len;
+                budget(cx, clock)?;
+                match parsed.outcome {
+                    Err(ParsedReadError::Changed) => ResolutionError::ChangedFile,
+                    Err(ParsedReadError::InvalidKey(error)) => return Err(error),
+                    Err(ParsedReadError::Entry(error)) => error,
+                    Ok(entry) => {
+                        self.entries.push(entry);
+                        return Ok(());
+                    }
+                }
+            }
+        };
+        self.diagnostics.push((index, error));
+        self.withheld_names.insert(invocation.as_str().to_owned());
+        Ok(())
+    }
+
+    fn consume(
+        &mut self,
+        index: usize,
+        candidate: &super::discovery::Candidate,
+        result: Result<BoundedRead, crate::authorized_read::ReadError>,
+        overrides: &BTreeMap<String, InvocationRestrictions>,
+        cx: &Cx,
+        clock: &EntryClock,
+    ) -> Result<(), ResolutionError> {
+        let invocation = claude_invocation(candidate.kind(), candidate.relative())
+            .ok_or(ResolutionError::InvalidBinding)?;
+        let read = match result {
             Ok(read) => read,
             Err(error) => {
-                diagnostics.push((
+                self.diagnostics.push((
                     index,
                     match error {
                         crate::authorized_read::ReadError::TooLarge { .. } => {
@@ -505,16 +761,16 @@ pub fn resolve_claude_plan(
                         _ => ResolutionError::Read,
                     },
                 ));
-                withheld_names.insert(invocation.as_str().to_owned());
-                continue;
+                self.withheld_names.insert(invocation.as_str().to_owned());
+                return Ok(());
             }
         };
-        total += read.len();
+        self.total += read.len();
         budget(cx, clock)?;
         if read.identity() != candidate.identity() {
-            diagnostics.push((index, ResolutionError::ChangedFile));
-            withheld_names.insert(invocation.as_str().to_owned());
-            continue;
+            self.diagnostics.push((index, ResolutionError::ChangedFile));
+            self.withheld_names.insert(invocation.as_str().to_owned());
+            return Ok(());
         }
         let logical_key = path_logical_key(candidate.path().as_path())?;
         let restrictions =
@@ -534,52 +790,68 @@ pub fn resolve_claude_plan(
             restrictions,
         };
         match SkillEntry::from_read(spec, read) {
-            Ok(entry) => entries.push(entry),
+            Ok(entry) => self.entries.push(entry),
             Err(error) => {
-                diagnostics.push((index, error));
-                withheld_names.insert(invocation.as_str().to_owned());
+                self.diagnostics.push((index, error));
+                self.withheld_names.insert(invocation.as_str().to_owned());
             }
         }
+        Ok(())
     }
-    // Partial discovery is not proof of a complete roster, but neither is it
-    // proof that every observed name has an unknown competitor. Verify each
-    // name's exact direct-layout slot in every supported root before retaining
-    // its authority. This never admits a skipped file or follows directory links.
-    let discovery_needs_proof = discovery.diagnostics().iter().any(|d| {
-        !matches!(
-            d,
-            Diagnostic::RootMissing(_) | Diagnostic::SourceNotEnumerated(_)
-        )
-    });
-    if discovery_needs_proof {
-        let proof = discovery_scope::prove_names(plan, &entries, &withheld_names, cx, clock)?;
-        if !proof.limited.is_empty() {
-            for (index, candidate) in discovery.candidates().iter().enumerate() {
-                budget(cx, clock)?;
-                if claude_invocation(candidate.kind(), candidate.relative())
-                    .is_some_and(|name| proof.limited.contains(name.as_str()))
-                {
-                    diagnostics.push((index, ResolutionError::Limit));
+
+    fn finish(
+        self,
+        plan: &DiscoveryPlan,
+        cx: &Cx,
+        clock: &EntryClock,
+    ) -> Result<ResolvedRoster, ResolutionError> {
+        let Self {
+            discovery,
+            mut entries,
+            mut diagnostics,
+            mut withheld_names,
+            ..
+        } = self;
+        // Partial discovery is not proof of a complete roster, but neither is it
+        // proof that every observed name has an unknown competitor. Verify each
+        // name's exact direct-layout slot in every supported root before retaining
+        // its authority. This never admits a skipped file or follows directory links.
+        let discovery_needs_proof = discovery.diagnostics().iter().any(|d| {
+            !matches!(
+                d,
+                Diagnostic::RootMissing(_) | Diagnostic::SourceNotEnumerated(_)
+            )
+        });
+        if discovery_needs_proof {
+            let proof = discovery_scope::prove_names(plan, &entries, &withheld_names, cx, clock)?;
+            if !proof.limited.is_empty() {
+                for (index, candidate) in discovery.candidates().iter().enumerate() {
+                    budget(cx, clock)?;
+                    if claude_invocation(candidate.kind(), candidate.relative())
+                        .is_some_and(|name| proof.limited.contains(name.as_str()))
+                    {
+                        diagnostics.push((index, ResolutionError::Limit));
+                    }
                 }
             }
+            withheld_names.extend(proof.withheld);
         }
-        withheld_names.extend(proof.withheld);
-    }
-    for entry in &mut entries {
-        if withheld_names.contains(entry.binding.invocation.as_str()) {
-            entry.binding.visibility = Visibility::Unverified;
-            entry.record.visibility = Visibility::Unverified;
+        for entry in &mut entries {
+            if withheld_names.contains(entry.binding.invocation.as_str()) {
+                entry.binding.visibility = Visibility::Unverified;
+                entry.record.visibility = Visibility::Unverified;
+            }
         }
+        let mut roster = ResolvedRoster::resolve(
+            entries,
+            discovery.is_partial() || !diagnostics.is_empty(),
+            cx,
+            clock,
+        )?;
+        roster.diagnostics = diagnostics;
+        roster.sources = discovery.diagnostics().to_vec();
+        Ok(roster)
     }
-    let mut roster = ResolvedRoster::resolve(
-        entries,
-        discovery.is_partial() || !diagnostics.is_empty(),
-        cx,
-        clock,
-    )?;
-    roster.diagnostics = diagnostics;
-    roster.sources = discovery.diagnostics().to_vec();
-    Ok(roster)
 }
 
 /// Request-local map. Select eligible *binding* IDs, not display names or paths.

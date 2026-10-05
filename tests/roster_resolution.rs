@@ -723,3 +723,157 @@ fn roster_aggregate_limits_are_enforced_before_alias_deduplication() {
     );
     assert!(runtime.shutdown());
 }
+
+fn listing_bytes(roster: &ResolvedRoster) -> Vec<u8> {
+    use skillranker::roster::inspect::{listing, page};
+    let listing = listing(roster);
+    let mut pages = Vec::new();
+    let mut cursor = None;
+    loop {
+        let page = page(&listing, cursor.as_deref(), 128).unwrap();
+        cursor = page.next_cursor.clone();
+        pages.push(page.to_json());
+        if cursor.is_none() {
+            break;
+        }
+    }
+    serde_json::to_vec(&pages).unwrap()
+}
+
+fn compare_concurrent(
+    root: &Path,
+    home: &Path,
+    overrides: BTreeMap<String, InvocationRestrictions>,
+) -> ResolvedRoster {
+    let (clock, runtime, cx) = invocation();
+    let baseline = resolve_claude_plan(
+        &claude_code_plan(root, Some(home), verified()).unwrap(),
+        &overrides,
+        &cx,
+        &clock,
+    )
+    .unwrap();
+    let concurrent = runtime
+        .runtime()
+        .block_on(resolve_claude_plan_concurrent(
+            claude_code_plan(root, Some(home), verified()).unwrap(),
+            overrides,
+            &cx,
+            clock,
+        ))
+        .unwrap();
+    assert_eq!(listing_bytes(&baseline), listing_bytes(&concurrent));
+    assert_eq!(baseline.diagnostics(), concurrent.diagnostics());
+    assert_eq!(
+        baseline.source_diagnostics(),
+        concurrent.source_diagnostics()
+    );
+    assert!(runtime.shutdown());
+    concurrent
+}
+
+#[test]
+fn concurrent_real_rosters_preserve_listing_at_choice_and_batch_boundaries() {
+    for count in [0, 1, 3, 4, 5, 205, 254, 255] {
+        let root = tree();
+        let home = tree();
+        for index in 0..count {
+            write(
+                &root,
+                &format!(".claude/skills/skill-{index:03}/SKILL.md"),
+                &format!(
+                    "---\nname: Skill {index}\ndescription: Explain Rust Unicode λ {index}\n---\nBody {index}\n"
+                ),
+            );
+        }
+        let roster = compare_concurrent(&root, &home, BTreeMap::new());
+        assert_eq!(roster.skills().len(), count);
+        assert_eq!(roster.advisory().count(), count);
+    }
+}
+
+#[test]
+fn concurrent_rejections_and_aliases_preserve_safe_shadowing_and_positives() {
+    use std::os::unix::fs::symlink;
+    let root = tree();
+    let home = tree();
+    let outside = tree();
+    for name in ["good", "malformed", "large", "escape", "manual", "alias"] {
+        write(
+            &root,
+            &format!(".claude/skills/{name}/SKILL.md"),
+            "---\ndescription: Valid project definition\n---\nbody",
+        );
+    }
+    write(
+        &home,
+        ".claude/skills/malformed/SKILL.md",
+        "---\nname: First\nname: Duplicate\n---\nbody",
+    );
+    write(
+        &home,
+        ".claude/skills/large/SKILL.md",
+        &"x".repeat(SKILL_FILE_BYTES.max() + 1),
+    );
+    // Unsupported layouts and malformed direct files must retain their
+    // sequential diagnostic order even when prefetched in the same batch.
+    write(&home, ".claude/skills/SKILL.md", "unsupported root file");
+    write(
+        &home,
+        ".claude/skills/malformed/nested/SKILL.md",
+        "unsupported nested file",
+    );
+    write(
+        &home,
+        ".claude/skills/manual/SKILL.md",
+        "---\ndescription: Manual only\ndisable-model-invocation: true\n---\nbody",
+    );
+    let target = write(&outside, "SKILL.md", "---\ndescription: Outside\n---\nbody");
+    fs::create_dir_all(home.join(".claude/skills/escape")).unwrap();
+    symlink(target, home.join(".claude/skills/escape/SKILL.md")).unwrap();
+    fs::create_dir_all(home.join(".claude/skills/alias")).unwrap();
+    symlink(
+        root.join(".claude/skills/good/SKILL.md"),
+        home.join(".claude/skills/alias/SKILL.md"),
+    )
+    .unwrap();
+    let roster = compare_concurrent(&root, &home, BTreeMap::from([("good".into(), ALLOW)]));
+    assert!(roster.is_partial());
+    for name in ["malformed", "large", "escape"] {
+        assert_eq!(roster.exact_name(name), ExactResolution::Unverified);
+    }
+    assert!(matches!(
+        roster.exact_name("manual"),
+        ExactResolution::Resolved {
+            kind: InvocationKind::ManualOnly,
+            ..
+        }
+    ));
+    assert!(matches!(
+        roster.exact_name("good"),
+        ExactResolution::Resolved {
+            kind: InvocationKind::Agent,
+            ..
+        }
+    ));
+    assert!(
+        roster.advisory().count() > 0,
+        "valid siblings remain usable"
+    );
+}
+
+#[test]
+fn concurrent_shared_byte_ceiling_preserves_sequential_coverage() {
+    let root = tree();
+    let home = tree();
+    for index in 0..129 {
+        write(
+            &root,
+            &format!(".claude/skills/large-{index:03}/SKILL.md"),
+            &"x".repeat(SKILL_FILE_BYTES.max()),
+        );
+    }
+    let roster = compare_concurrent(&root, &home, BTreeMap::new());
+    assert_eq!(roster.skills().len(), 128);
+    assert!(roster.is_partial());
+}

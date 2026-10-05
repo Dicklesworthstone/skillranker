@@ -15,6 +15,9 @@ use crate::runtime::{EntryClock, ProcessInvocation, RuntimeError, admit_publicat
 use asupersync::Cx;
 use std::time::Duration;
 
+/// Maximum filesystem leaves admitted together by roster discovery.
+pub const MAX_BLOCKING_BATCH: usize = 4;
+
 /// Poll two invocation-owned operations together and drain both, even when
 /// one returns an error. No spawned future can outlive this join.
 pub async fn join_owned<A: std::future::Future, B: std::future::Future>(
@@ -146,7 +149,6 @@ where
 }
 
 /// Async counterpart: leave the executor available for owned subprocess I/O.
-/// The closure is not interruptible; join it before checking publication.
 pub async fn run_blocking_leaf_async<F, T>(
     clock: EntryClock,
     cx: &Cx,
@@ -158,22 +160,65 @@ where
     F: FnOnce() -> T + Send + 'static,
     T: Send + 'static,
 {
-    admit_blocking_leaf(&clock, kind, uninterruptible)?;
-    let mut handle = cx
-        .spawn_blocking(move |_child| {
-            let value = f();
+    let mut outcomes = run_blocking_batch(clock, cx, kind, uninterruptible, vec![f]).await?;
+    Ok(outcomes.remove(0))
+}
+
+/// Admit at most four leaves, retaining input order. Every admitted handle is
+/// joined before returning, including admission failure and cancellation. A
+/// blocking closure is not interruptible; late values remain unpublishable.
+pub async fn run_blocking_batch<F, T>(
+    clock: EntryClock,
+    cx: &Cx,
+    kind: BlockingLeafKind,
+    uninterruptible: bool,
+    leaves: Vec<F>,
+) -> Result<Vec<BlockingOutcome<T>>, RuntimeError>
+where
+    F: FnOnce() -> T + Send + 'static,
+    T: Send + 'static,
+{
+    if leaves.len() > MAX_BLOCKING_BATCH {
+        return Err(RuntimeError::UnboundedLeaf);
+    }
+    let mut handles = Vec::with_capacity(leaves.len());
+    let mut error = None;
+    for leaf in leaves {
+        if let Err(e) = admit_blocking_leaf(&clock, kind, uninterruptible) {
+            error = Some(e);
+            break;
+        }
+        match cx.spawn_blocking(move |_child| {
+            let value = leaf();
             BlockingOutcome {
                 completed_at: clock.now(),
                 value,
             }
-        })
-        .map_err(|_| RuntimeError::BlockingPoolUnavailable)?;
-    match handle.join(cx).await {
-        Ok(outcome) => {
-            admit_blocking_publication(&clock, outcome.completed_at, cx)?;
-            Ok(outcome)
+        }) {
+            Ok(handle) => handles.push(handle),
+            Err(_) => {
+                error = Some(RuntimeError::BlockingPoolUnavailable);
+                break;
+            }
         }
-        Err(_) => Err(RuntimeError::Cancelled),
+    }
+    let mut outcomes = Vec::with_capacity(handles.len());
+    for mut handle in handles {
+        match handle.join(cx).await {
+            Ok(outcome) => {
+                if let Err(e) = admit_blocking_publication(&clock, outcome.completed_at, cx) {
+                    error.get_or_insert(e);
+                }
+                outcomes.push(outcome);
+            }
+            Err(_) => {
+                error.get_or_insert(RuntimeError::Cancelled);
+            }
+        }
+    }
+    match error {
+        Some(error) => Err(error),
+        None => Ok(outcomes),
     }
 }
 

@@ -5,9 +5,11 @@ use crate::identity::SkillId;
 use crate::output::ErrorKind;
 use crate::privacy::SkillRoot;
 use crate::roster::Visibility;
-use crate::roster::discovery::claude_code_plan_with_roots;
+use crate::roster::discovery::{DiscoveryPlan, claude_code_plan_with_roots};
 use crate::roster::import::{ImportError, import_authorized, read_roster_file};
-use crate::roster::resolution::{ResolutionError, ResolvedRoster, resolve_claude_plan};
+use crate::roster::resolution::{
+    ResolutionError, ResolvedRoster, resolve_claude_plan, resolve_claude_plan_concurrent,
+};
 use crate::roster::revalidation::{Dependencies, RevalidationError, capture, revalidate};
 use crate::runtime::EntryClock;
 use asupersync::Cx;
@@ -25,13 +27,15 @@ pub(super) struct Source<'a> {
 }
 
 impl Source<'_> {
-    /// Run the unchanged sequential resolver in one invocation-owned leaf so
-    /// independent Git process I/O can progress on the executor.
-    pub(super) async fn load_async(
+    pub(super) async fn load_concurrent(
         &self,
         cx: &Cx,
         clock: &EntryClock,
     ) -> Result<ResolvedRoster, PipelineFailure> {
+        enum Prepared {
+            Manifest(ResolvedRoster),
+            Discovery(DiscoveryPlan),
+        }
         let workspace = self.workspace.to_owned();
         let home = self.home.map(Path::to_owned);
         let manifest = self.manifest.map(Path::to_owned);
@@ -39,28 +43,29 @@ impl Source<'_> {
         let harness = self.harness.clone();
         let work_cx = cx.clone();
         let work_clock = *clock;
-        crate::blocking::run_blocking_leaf_async(
+        let prepared = crate::blocking::run_blocking_leaf_async(
             *clock,
             cx,
             crate::blocking::BlockingLeafKind::Filesystem,
             false,
             move || {
-                Source {
+                let source = Source {
                     workspace: &workspace,
                     home: home.as_deref(),
                     manifest: manifest.as_deref(),
                     configured: &configured,
                     harness: &harness,
+                };
+                if source.manifest.is_some() {
+                    source.load(&work_cx, &work_clock).map(Prepared::Manifest)
+                } else {
+                    source.plan(&work_clock).map(Prepared::Discovery)
                 }
-                .load(&work_cx, &work_clock)
             },
         )
         .await
         .map_err(|error| match error {
-            crate::runtime::RuntimeError::Cancelled => failure(
-                ErrorKind::UnusableRoster,
-                "Failed to resolve roster: Cancelled",
-            ),
+            crate::runtime::RuntimeError::Cancelled => resolution_error(ResolutionError::Cancelled),
             crate::runtime::RuntimeError::Deadline(_)
             | crate::runtime::RuntimeError::LateResultSuppressed => {
                 validation_error(RevalidationError::Deadline)
@@ -70,29 +75,28 @@ impl Source<'_> {
                 "Roster blocking pool unavailable",
             ),
         })?
-        .value
+        .value?;
+        match prepared {
+            Prepared::Manifest(roster) => Ok(roster),
+            Prepared::Discovery(plan) => {
+                resolve_claude_plan_concurrent(plan, BTreeMap::new(), cx, *clock)
+                    .await
+                    .map_err(resolution_error)
+            }
+        }
     }
 
-    pub(super) fn load(
-        &self,
-        cx: &Cx,
-        clock: &EntryClock,
-    ) -> Result<ResolvedRoster, PipelineFailure> {
+    fn plan(&self, clock: &EntryClock) -> Result<DiscoveryPlan, PipelineFailure> {
         clock
             .admit_new_work()
             .map_err(|_| validation_error(RevalidationError::Deadline))?;
-        // Another harness's skills are not in Claude's directories: without a
-        // supplied roster, ranking them against Claude's would suggest skills
-        // that session cannot load.
         if self.manifest.is_none() && self.harness.as_str() != crate::adapter::CLAUDE_CODE_ID {
             return Err(failure(
                 ErrorKind::UnusableRoster,
                 "Skill discovery follows Claude Code's layout only; supply --roster for this harness",
             ));
         }
-        // Configured roots take the same provisional label as Claude's own:
-        // they can be suggested, and are always reported as unverified.
-        let plan = claude_code_plan_with_roots(
+        claude_code_plan_with_roots(
             self.workspace,
             self.home,
             Visibility::Verified {
@@ -105,7 +109,18 @@ impl Source<'_> {
                 ErrorKind::UnusableRoster,
                 "Failed to create roster source plan",
             )
-        })?;
+        })
+    }
+
+    pub(super) fn load(
+        &self,
+        cx: &Cx,
+        clock: &EntryClock,
+    ) -> Result<ResolvedRoster, PipelineFailure> {
+        clock
+            .admit_new_work()
+            .map_err(|_| validation_error(RevalidationError::Deadline))?;
+        let plan = self.plan(clock)?;
         let overrides = BTreeMap::new();
         match self.manifest {
             Some(path) => {
@@ -117,20 +132,11 @@ impl Source<'_> {
                 let bytes = read_roster_file(&path).map_err(import_error)?;
                 import_authorized(&bytes, &plan, &overrides, cx, clock).map_err(import_error)
             }
-            None => resolve_claude_plan(&plan, &overrides, cx, clock).map_err(|error| {
-                if error == ResolutionError::Deadline {
-                    validation_error(RevalidationError::Deadline)
-                } else {
-                    failure(
-                        ErrorKind::UnusableRoster,
-                        format!("Failed to resolve roster: {error:?}"),
-                    )
-                }
-            }),
+            None => resolve_claude_plan(&plan, &overrides, cx, clock).map_err(resolution_error),
         }
     }
 
-    pub(super) async fn validate(
+    pub(super) async fn validate_concurrent(
         &self,
         captured: &Dependencies,
         cx: &Cx,
@@ -138,9 +144,20 @@ impl Source<'_> {
     ) -> Result<(), PipelineFailure> {
         // Re-open both the manifest and adapter roots; old open descriptors
         // cannot establish that a replacement still has the same authority.
-        let fresh = self.load_async(cx, clock).await?;
+        let fresh = self.load_concurrent(cx, clock).await?;
         revalidate(captured, &fresh, clock).map_err(validation_error)?;
         Ok(())
+    }
+}
+
+fn resolution_error(error: ResolutionError) -> PipelineFailure {
+    if error == ResolutionError::Deadline {
+        validation_error(RevalidationError::Deadline)
+    } else {
+        failure(
+            ErrorKind::UnusableRoster,
+            format!("Failed to resolve roster: {error:?}"),
+        )
     }
 }
 
@@ -293,10 +310,13 @@ mod tests {
         }
 
         fn validate(&self, manifest: bool, captured: &Dependencies) -> Result<(), PipelineFailure> {
-            let cx = self.invocation.request_cx().unwrap();
             self.invocation
                 .runtime()
-                .block_on(self.source(manifest).validate(captured, &cx, &self.clock))
+                .block_on(self.source(manifest).validate_concurrent(
+                    captured,
+                    &self.invocation.request_cx().unwrap(),
+                    &self.clock,
+                ))
         }
     }
 
@@ -376,11 +396,14 @@ mod tests {
         )
         .unwrap();
         std::thread::sleep(std::time::Duration::from_millis(5));
-        let cx = f.invocation.request_cx().unwrap();
         let failure = f
             .invocation
             .runtime()
-            .block_on(f.source(false).validate(&captured, &cx, &expired))
+            .block_on(f.source(false).validate_concurrent(
+                &captured,
+                &f.invocation.request_cx().unwrap(),
+                &expired,
+            ))
             .unwrap_err();
         assert_eq!((failure.0, failure.1), (6, "timeout"));
     }

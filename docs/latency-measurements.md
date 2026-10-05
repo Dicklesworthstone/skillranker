@@ -376,3 +376,103 @@ The original `sr-w4in` remains incomplete: concurrent skill-file reads and the
 original task's full acceptance still need their own implementation and evidence.
 No relevance, controlled-harm, live-provider, actual-hook, or broader performance
 gate is closed by these synthetic comparisons.
+
+
+## Bounded concurrent read/hash/parse: optimized re-evaluation, 2026-10-05
+
+The earlier two-worker experiment above was rejected using development-profile
+measurements. Re-evaluating its retained implementation in the optimized profile
+produced a useful local improvement. This version completes the concurrent-read
+component alongside the already published Git/discovery overlap. It uses two
+owned workers for bounded read/hash/parse batches and sequentially merges byte
+charges, diagnostics, withheld names and precedence. Initial discovery and the
+whole-roster publication reread remain mandatory; explicit requests start no Git
+process. No deadline, input allowance, ranking policy or provider call count changes.
+
+The installed baseline is `bf61a03e58e14e3f59ad94f9595cbbecd44e7af2`, SHA-256
+`0d1427ff5cf240a509b31620f0609c79e26f1987aa84a46937b8ea9f4fe438d3`.
+The candidate is that base plus the six Rust paths frozen in
+`optimized-read-check/result-shape-frozen-inputs.json`, SHA-256
+`9a9d7d0924eeecd8b46ccc4780779cb3007c4e5fe4175bb4d400cb6c23651d20`,
+24,347,560 bytes. Both use pinned nightly-2026-08-31, default features, the
+native Linux x86_64 target and optimized release profile. DSR run
+`7846b66a-6b27-4aa8-9375-aa054e2af277` completed normally; artifact size and
+checksum match its manifest and native ELF machine 62. Canonical compiler inputs
+are verified separately from ordinary DSR staged-source metadata: all 407
+selected tracked non-Beads files match locally and on the worker after the
+build. There is no during-compilation snapshot for this final build and no
+strict staged-source or public-release claim. The existing credential filter
+still excludes the unchanged `.env.example`.
+
+The same predeclared procedure retains 30 alternating pairs per path, all 180
+samples and their failures, CPU and peak RSS. It uses a warm synthetic
+205-file/4,812,565-byte roster on XFS, an actual private Git index with dirty
+tracked Cargo.toml and separate private XDG state. Host load was
+18.06/27.39/66.37 before and 17.46/26.80/65.55 after, on 128 CPUs.
+
+| Path | p50 wall ms, before → after | p95 wall ms | p99 wall ms | Peak RSS MiB |
+|---|---:|---:|---:|---:|
+| Stateless offline miss | 66.694 → 62.498 | 82.359 → 77.488 | 83.373 → 80.410 | 14.133 → 14.977 |
+| Explicit local request | 84.523 → 73.149 | 114.517 → 90.772 | 122.278 → 91.920 | 15.078 → 17.160 |
+| Exact cached rank | 101.884 → 90.758 | 138.909 → 117.255 | 145.357 → 118.355 | 17.133 → 16.965 |
+
+Both roster JSON pages are byte-identical, and every paired full outcome agrees;
+only elapsed time and cache age are normalized. All miss runs exit 11, all
+explicit runs exit zero, and both cache cohorts have 30/30 confirmed hits and
+zero failures. Both explicit process traces exit zero with zero Git invocations.
+Four loopback TLS attempts fill the two private caches using a synthetic key
+and checked-in local CA; five diagnostic records drain without error. No public
+provider, personal transcript or organic hook observation contributes to this
+comparison.
+
+Median wall time improves about 6%, 13% and 11%, respectively. Total child
+user/system CPU seconds across thirty runs increase: miss 0.72/1.15 → 0.85/1.23,
+explicit 0.84/1.23 → 0.94/1.50 and cache 1.19/1.77 → 1.39/1.83. Explicit peak
+RSS rises 2.082 MiB and miss RSS rises 0.844 MiB; cache RSS falls 0.168 MiB.
+The 117.255 ms cache p95 still exceeds the 100 ms target. These bounded local
+measurements do not establish general filesystem/load benefit, live-provider
+latency, hook availability, usefulness or cross-platform qualification.
+
+An earlier optimized run of the retained variant, before the Clippy layout fix,
+also preserved all 180 outcomes and 30/30 cache hits per binary at host load
+125.36 → 78.83. Miss p50 improved 369.717 → 241.637 ms but p95/p99 worsened
+839.406/855.941 → 953.188/1546.971 ms. Explicit p50/p95/p99 improved
+467.923/1490.662/1501.991 → 341.978/911.650/1098.560 ms; cache improved
+268.299/406.720/427.180 → 228.251/299.415/398.942 ms. Peak RSS was
+14.082 → 14.758 / 15.113 → 16.672 / 17.129 → 16.426 MiB; user/system CPU
+seconds were 4.15/8.20 → 4.03/7.24 / 4.30/8.36 → 4.69/7.37 / 3.26/5.02 →
+3.43/4.84. That executable, SHA-256
+`e1c37668c75dc02eb1f573055064fb076505e67f66ae0287239727db18c667fc`, is
+not the final source. Its tail regressions and the failed development cohort
+remain evidence; they are not replaced by the later quieter comparison.
+
+Current source qualification executed 1,537 passes, zero failures and 11
+existing ignores across 148 default suites, plus locked all-target check and
+strict Clippy. All 407 inputs match before and after those ordinary guarded
+RCH runs. Strict Clippy initially rejected the large parsed-result enum; moving
+the result into its containing struct fixed the layout without a heap box,
+suppression, assertion change or policy relaxation. The final default suite,
+check, Clippy and optimized comparison all use that corrected source.
+
+Real temporary-tree controls compare sequential and concurrent listings and
+diagnostics at 0/1/3/4/5/205/254/255 files, malformed metadata, authorized aliases,
+escaping links, manual-only restrictions and the 32 MiB shared byte ceiling.
+A planted production defect moving the batch callback onto the executor compiled
+and caused the unchanged concurrency test to fail at its two-second barrier.
+Exact source restoration then passed all 18 blocking/Git-overlap tests. These
+are actual filesystem/runtime checks; fresh acceptance review is solo, not an
+independent verifier. The historical prompt-moment script was inspected but not
+executed; no historical or organic outcome sweep is claimed.
+
+Private full samples, source hashes, individual logs and failed attempts:
+`/scratch/tmp/skillranker-w4in-read-parse-s7vmxexo/paired-result-release/report.json`
+(final source) and `paired-read-release/report.json` (pre-layout-fix source).
+The original task's acceptance is assessed using the executed synthetic outcome
+sweep and source-bound controls. Separate relevance, controlled-harm, organic
+rollout, native-platform and cache-p95 gates remain open.
+
+Final staged UBS returned exit 1: one critical unchanged `cfg(test)` fixture
+panic, 499 warnings and 322 informational findings. All reported sections were
+reviewed; no production defect or suppression was introduced. Its Cargo phases
+were not evaluated in the staged shadow workspace; the separately executed
+source-bound default/check/Clippy gates above supply that evidence.

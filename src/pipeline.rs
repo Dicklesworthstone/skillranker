@@ -1540,10 +1540,10 @@ async fn rank_once(
         });
     let tool_roots: Vec<PathBuf> = TRUSTED_TOOL_ROOTS.iter().map(PathBuf::from).collect();
     let (roster, captured_signals) = if needs_explicit {
-        (roster_source.load_async(cx, clock).await?, None)
+        (roster_source.load_concurrent(cx, clock).await?, None)
     } else {
         let (loaded, signals) = crate::blocking::join_owned(
-            roster_source.load_async(cx, clock),
+            roster_source.load_concurrent(cx, clock),
             crate::context::signals::collect(cx, clock, &args.workspace, &tool_roots),
         )
         .await;
@@ -1622,7 +1622,9 @@ async fn rank_once(
                     "Configuration became invalid before publication",
                 ));
             }
-            roster_source.validate(&dependencies, cx, clock).await?;
+            roster_source
+                .validate_concurrent(&dependencies, cx, clock)
+                .await?;
             let event_id_str = normalized_context
                 .current_request
                 .event_id
@@ -3526,7 +3528,7 @@ async fn validate_advisory_publication(
     cx: &Cx,
     clock: &EntryClock,
 ) -> Result<(), PipelineFailure> {
-    source.validate(dependencies, cx, clock).await?;
+    source.validate_concurrent(dependencies, cx, clock).await?;
     // A snooze applied while this ranking ran withholds it: advice computed
     // without that mute is stale. An expiry only relaxes the controls, and a
     // decision made under the stricter ones stays publishable.
