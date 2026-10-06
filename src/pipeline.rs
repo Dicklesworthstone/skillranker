@@ -255,7 +255,7 @@ struct LedgerAttemptJournal<'a> {
     location: crate::storage::LedgerLocation,
     owner_event_id: String,
     invocation_token: String,
-    /// One reading of the wall clock at process entry, so that the monotonic instants the
+    /// One reading of the wall clock at invocation entry, so that the monotonic instants the
     /// journal is handed become wall-clock times consistent with each other.
     entry_wall_clock_unix_ms: u64,
     wide_fingerprint: String,
@@ -1408,7 +1408,7 @@ async fn rank_once(
                     mode_channel: mode_channel.to_string(),
                     policy_version: "ranking-v1",
                     event_id: hook_input.prompt_id.as_ref().map_or_else(
-                        || format!("pre-context-invocation-{}", invocation_row_mark()),
+                        || format!("pre-context-invocation-{}", clock.invocation_row_mark()),
                         |id| format!("pre-context-{}", id.as_str()),
                     ),
                     attempts: Vec::new(),
@@ -2874,8 +2874,8 @@ async fn rank_once(
                         None => crate::storage::LedgerLocation::Platform,
                     },
                     owner_event_id: recording.event_id.clone(),
-                    invocation_token: invocation_row_mark().to_string(),
-                    entry_wall_clock_unix_ms: entry_wall_clock_unix_ms(clock),
+                    invocation_token: clock.invocation_row_mark(),
+                    entry_wall_clock_unix_ms: clock.entry_wall_clock_unix_ms(),
                     wide_fingerprint: wide_req_fp.to_hex(),
                     rerank_fingerprint: Arc::clone(&rerank_fingerprint_for_journal),
                 }))
@@ -5217,50 +5217,8 @@ impl AttemptEvidence<'_> {
     }
 }
 
-/// Collect the attempts a session admitted, if it admitted any.
-///
-/// The wall-clock base is derived from one reading minus the elapsed monotonic
-/// time, so every attempt time in this event shares a single conversion.
-/// Distinguishes this invocation's attempt rows from another invocation's under the same
-/// event, and does so identically every time it is asked.
-///
-/// A duplicate delivery is deliberately the *same* event, so the owner alone cannot key an
-/// attempt row; the invocation has to contribute something too. Entry time and process id
-/// together are enough — two deliveries are separate processes, and a shared start
-/// millisecond is still separated by the pid.
-///
-/// It is computed once per process on purpose. The rows for one attempt are written more
-/// than once, first on the sending path and again at settlement, and the entry time these
-/// writers would each derive from the monotonic clock can differ by a millisecond. A token
-/// recomputed per writer would therefore key the same attempt differently and leave two
-/// rows where there was one attempt, which is exactly the double-counting the key exists
-/// to prevent. Nothing in it is private or externally meaningful.
-/// Not a credential, despite the word: it is a row-key discriminator, is derived from the
-/// clock and the process id rather than from any source of randomness, and is neither secret
-/// nor externally meaningful. Named `MARK` here because a static called `TOKEN` built this
-/// way reads — to a human and to `ubs`'s `rust.security.non-crypto-random` rule — like a
-/// session token generated without a CSPRNG, which is a mistake worth not appearing to make.
-fn invocation_row_mark() -> &'static str {
-    static MARK: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    MARK.get_or_init(|| format!("{:x}-{}", wall_clock_ms(), std::process::id()))
-}
-
-/// The wall-clock time this process entered, from one reading, shared by everything that
-/// turns a monotonic instant into a stored timestamp.
-///
-/// An attempt's three timestamps are written by two different callers — the sending path
-/// records when it was admitted and when its request reached the wire, settlement records
-/// when it finished. Each deriving its own base from `wall_clock_ms() - clock.now()` gives
-/// answers that can differ by a millisecond, which is enough to make one attempt's stored
-/// times inconsistent with each other and, in a fast failure, to date its completion before
-/// its send. Taking the base once removes the class of problem rather than the symptom.
-///
-/// The first caller's reading wins, which is also the closest one to actual entry.
-fn entry_wall_clock_unix_ms(clock: &EntryClock) -> u64 {
-    static ENTRY: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
-    *ENTRY.get_or_init(|| wall_clock_ms().saturating_sub(clock.now().as_millis()))
-}
-
+/// Collect admitted attempts using the same entry-clock accounting metadata as
+/// the sending journal, so admission and settlement identify the same rows.
 fn attempt_evidence<'a>(
     session: Option<&'a RetrySession<'_>>,
     wide_fingerprint: &RequestFingerprint,
@@ -5272,13 +5230,13 @@ fn attempt_evidence<'a>(
     if attempts.is_empty() {
         return None;
     }
-    let entry_wall_clock_unix_ms = entry_wall_clock_unix_ms(clock);
+    let entry_wall_clock_unix_ms = clock.entry_wall_clock_unix_ms();
     Some(AttemptEvidence {
         attempts,
         wide_fingerprint: wide_fingerprint.to_hex(),
         rerank_fingerprint: rerank_fingerprint.map(str::to_owned),
         entry_wall_clock_unix_ms,
-        invocation_token: invocation_row_mark().to_string(),
+        invocation_token: clock.invocation_row_mark(),
     })
 }
 

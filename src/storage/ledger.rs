@@ -1506,7 +1506,7 @@ impl NewProviderAttempt {
     /// The row for one attempt this invocation owned.
     ///
     /// `entry_wall_clock_unix_ms` is the wall-clock reading that corresponds to
-    /// process entry, taken once by the caller. Attempt times are monotonic
+    /// invocation entry, taken once by the caller. Attempt times are monotonic
     /// milliseconds since entry, so converting them against a single reading keeps
     /// one attempt's admitted, sent and settled times on the same timeline; a
     /// separate wall-clock sample per transition would not.

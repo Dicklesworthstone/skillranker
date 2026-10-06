@@ -11,7 +11,8 @@ use crate::limits::{
 use asupersync::runtime::{Runtime, RuntimeBuilder};
 use asupersync::{Budget, CancelKind, Cx};
 use std::io::{self, Read};
-use std::time::{Duration, Instant};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RuntimeError {
@@ -52,18 +53,21 @@ impl From<LimitError> for RuntimeError {
     }
 }
 
-/// Clock captured at process entry, before argument parsing or I/O.
+/// Clock captured at invocation entry (process entry for the CLI), before
+/// argument parsing or I/O.
 #[derive(Clone, Copy, Debug)]
 pub struct EntryClock {
     started: Instant,
     deadline: InvocationDeadline,
+    entry_wall_clock_unix_ms: u64,
+    invocation_sequence: u64,
 }
 
 impl EntryClock {
     pub fn capture() -> Result<Self, RuntimeError> {
         let started = Instant::now();
         let deadline = InvocationDeadline::default_from_start(MonotonicMillis::from_millis(0))?;
-        Ok(Self { started, deadline })
+        Ok(Self::from_entry(started, deadline))
     }
 
     pub fn capture_with(
@@ -73,7 +77,39 @@ impl EntryClock {
         let started = Instant::now();
         let deadline =
             InvocationDeadline::new(MonotonicMillis::from_millis(0), total, cleanup_reserve)?;
-        Ok(Self { started, deadline })
+        Ok(Self::from_entry(started, deadline))
+    }
+
+    fn from_entry(started: Instant, deadline: InvocationDeadline) -> Self {
+        static NEXT_INVOCATION: AtomicU64 = AtomicU64::new(0);
+        let wall = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |duration| {
+                u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+            });
+        let elapsed = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        Self {
+            started,
+            deadline,
+            entry_wall_clock_unix_ms: wall.saturating_sub(elapsed),
+            invocation_sequence: NEXT_INVOCATION.fetch_add(1, Ordering::Relaxed),
+        }
+    }
+
+    /// One conversion base for all of this invocation's monotonic attempt times.
+    pub(crate) const fn entry_wall_clock_unix_ms(self) -> u64 {
+        self.entry_wall_clock_unix_ms
+    }
+
+    /// Local row discriminator, not a credential. Separate entry clocks in one
+    /// process need distinct marks; copies and deadline projections retain it.
+    pub(crate) fn invocation_row_mark(self) -> String {
+        format!(
+            "{:x}-{}-{:x}",
+            self.entry_wall_clock_unix_ms,
+            std::process::id(),
+            self.invocation_sequence,
+        )
     }
 
     /// The same entry instant with another total deadline, for a deadline
@@ -85,10 +121,7 @@ impl EntryClock {
             total,
             self.deadline.cleanup_reserve(),
         )?;
-        Ok(Self {
-            started: self.started,
-            deadline,
-        })
+        Ok(Self { deadline, ..self })
     }
 
     /// The same deadline with half of the cleanup reserve returned to work, for recording
@@ -110,10 +143,7 @@ impl EntryClock {
             InvocationDeadline::new(self.deadline.start(), self.deadline.total(), reserve)
         })
         .expect("half of a valid cleanup reserve is a valid cleanup reserve");
-        Self {
-            started: self.started,
-            deadline,
-        }
+        Self { deadline, ..self }
     }
 
     /// [`Self::for_failure_finalization`] for a run that overran its total
@@ -141,10 +171,7 @@ impl EntryClock {
                 InvocationDeadline::new(self.deadline.start(), total, reserve)
             })
             .unwrap_or(self.deadline);
-        Self {
-            started: self.started,
-            deadline,
-        }
+        Self { deadline, ..self }
     }
 
     pub fn now(&self) -> MonotonicMillis {
@@ -213,7 +240,7 @@ pub fn admit_publication(
     Ok(())
 }
 
-/// One process invocation: entry clock plus an owned current-thread runtime.
+/// One invocation: entry clock plus an owned current-thread runtime.
 pub struct ProcessInvocation {
     clock: EntryClock,
     runtime: Runtime,
@@ -616,6 +643,29 @@ mod late_failure_record_tests {
             DurationMillis::new("cleanup", reserve_ms, 60_000).unwrap(),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn clock_projections_preserve_one_invocation_accounting_identity() {
+        let entry = EntryClock::capture().unwrap();
+        let other = clock(3_000, 200);
+        let mark = entry.invocation_row_mark();
+        assert_ne!(mark, other.invocation_row_mark());
+        for projected in [
+            entry,
+            entry
+                .with_total(DurationMillis::new("test", 6_000, 60_000).unwrap())
+                .unwrap(),
+            entry.for_failure_finalization(),
+            entry.for_late_failure_record(300, 600),
+        ] {
+            assert_eq!(projected.started, entry.started);
+            assert_eq!(projected.invocation_row_mark(), mark);
+            assert_eq!(
+                projected.entry_wall_clock_unix_ms(),
+                entry.entry_wall_clock_unix_ms()
+            );
+        }
     }
 
     #[test]
