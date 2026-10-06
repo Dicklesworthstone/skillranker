@@ -208,6 +208,7 @@ struct Progress {
     evaluated: Evaluated,
     metrics: ExecutionMetrics,
     cache_recording_failures: u64,
+    ledger_finalization_unconfirmed: u64,
     /// A single-flight lease this invocation leads; completed on every path.
     lease: Option<(PathBuf, LeaderContext)>,
     capture: Option<CaseCapture>,
@@ -216,6 +217,8 @@ struct Progress {
     /// this its provider cost exists nowhere durable — and a failed attempt is
     /// exactly the cost that no other record accounts for.
     failed_recording: Option<FailureRecording>,
+    /// Prepared outcome, committed after fallible publication/capture work.
+    pending_ledger: Option<PendingLedgerRecording>,
     /// Normalized context bytes supplied in memory instead of the named file.
     supplied_context: Option<Vec<u8>>,
     /// Per-stage answers captured for an evaluation run; `None` otherwise.
@@ -341,6 +344,14 @@ impl crate::jev::admission::AttemptJournal for LedgerAttemptJournal<'_> {
                 .saturating_add(sent_at.as_millis()),
         );
     }
+}
+
+struct PendingLedgerRecording {
+    location: crate::storage::LedgerLocation,
+    event: crate::storage::NewRankingEvent,
+    candidates: Vec<crate::storage::NewRankingCandidate>,
+    snapshot: crate::storage::NewRosterSnapshot,
+    attempts: Vec<crate::storage::NewProviderAttempt>,
 }
 
 struct FailureRecording {
@@ -588,17 +599,7 @@ async fn execute_pipeline_supplied(
     // those runs have finished and must not retain their generated/in-flight row.
     // Recording is optional and best effort; failure to write does not change
     // the error the caller sees. Disabled ledger policy never arms this state.
-    if let Err(error) = result.as_ref()
-        && let Some(recording) = progress.failed_recording.take()
-    {
-        record_failed_attempts(
-            invocation,
-            &recording,
-            error.1,
-            clock.now().as_millis(),
-            &progress.metrics,
-        );
-    }
+    finalize_failed_recording(invocation, &mut progress, result.as_ref().err());
     // Release a led lease on every path. Followers then find the recorded
     // pair, or send themselves when this run recorded nothing.
     let mut completion_superseded = false;
@@ -628,6 +629,7 @@ async fn execute_pipeline_supplied(
         with_storage_warnings(
             doc,
             progress.cache_recording_failures,
+            progress.ledger_finalization_unconfirmed,
             completion_unconfirmed,
             progress.evaluated.store_refused,
             progress.metrics.breaker_process_local,
@@ -741,6 +743,70 @@ async fn execute_pipeline_supplied(
         }
         result => result,
     };
+    // Lease completion, privacy checks and required export can still fail after
+    // rank_once returns. Settle those failures before committing prepared success.
+    finalize_failed_recording(invocation, &mut progress, result.as_ref().err());
+    let result = result.and_then(|mut doc| {
+        if progress.pending_ledger.is_some() {
+            // Validate the only possible metadata change before any success
+            // write. A contract failure must still finalize the pending failure.
+            let recorded_doc = if doc.as_value().get("persistence").is_some() {
+                let mut value = doc.as_value().clone();
+                value["persistence"] = Value::from(
+                    Evaluated {
+                        ledger_recorded: true,
+                        ..progress.evaluated.clone()
+                    }
+                    .persistence(),
+                );
+                OutputDocument::from_value(value).map_err(|_| {
+                    failure(
+                        ErrorKind::OutputLimit,
+                        "Final persistence metadata exceeds the output contract",
+                    )
+                })?
+            } else {
+                doc.clone()
+            };
+            if matches!(
+                doc.kind(),
+                OutputKind::Decision(
+                    crate::output::Decision::Ranked
+                        | crate::output::Decision::Abstain
+                        | crate::output::Decision::Explicit
+                )
+            ) {
+                admit_publication(clock.deadline(), clock.now(), clock.now()).map_err(|error| {
+                    failure(
+                        ErrorKind::Timeout,
+                        format!("Runtime suppressed late result: {error}"),
+                    )
+                })?;
+            }
+            let Some(mut recording) = progress.pending_ledger.take() else {
+                return Ok(doc);
+            };
+            recording.event.elapsed_ms = clock.now().as_millis();
+            progress.evaluated.ledger_recorded = crate::storage::record_ranking_with_attempts(
+                invocation,
+                *clock,
+                cx,
+                crate::storage::LedgerAccess::ExistingOnly,
+                recording.location,
+                &recording.event,
+                &recording.candidates,
+                Some(&recording.snapshot),
+                &recording.attempts,
+            )
+            .unwrap_or(false);
+            if progress.evaluated.ledger_recorded {
+                doc = recorded_doc;
+            }
+            doc.record_elapsed(clock.now().as_millis());
+        }
+        Ok(doc)
+    });
+    finalize_failed_recording(invocation, &mut progress, result.as_ref().err());
     match result {
         Err(failure) => match &progress.admitted {
             Some(admitted) => {
@@ -754,6 +820,7 @@ async fn execute_pipeline_supplied(
                         with_storage_warnings(
                             doc,
                             progress.cache_recording_failures,
+                            progress.ledger_finalization_unconfirmed,
                             completion_unconfirmed,
                             progress.evaluated.store_refused,
                             progress.metrics.breaker_process_local,
@@ -769,11 +836,13 @@ async fn execute_pipeline_supplied(
 fn with_storage_warnings(
     doc: OutputDocument,
     cache_recording_failures: u64,
+    ledger_finalization_unconfirmed: u64,
     completion_unconfirmed: bool,
     store_refused: bool,
     breaker_process_local: bool,
 ) -> Result<OutputDocument, PipelineFailure> {
     if cache_recording_failures == 0
+        && ledger_finalization_unconfirmed == 0
         && !completion_unconfirmed
         && !store_refused
         && !breaker_process_local
@@ -790,6 +859,11 @@ fn with_storage_warnings(
             "cache-recording-unavailable",
             cache_recording_failures,
             "Optional response cache recording was skipped",
+        ),
+        (
+            "ledger-finalization-unconfirmed",
+            ledger_finalization_unconfirmed,
+            "Optional failure ledger finalization could not be confirmed; durable outcome and usage may remain unknown",
         ),
         (
             "coordination-completion-unconfirmed",
@@ -1682,9 +1756,7 @@ async fn rank_once(
                     exclusion_reason: None,
                 })
                 .collect();
-            let recorded = try_record_ledger(
-                invocation,
-                cx,
+            progress.pending_ledger = prepare_ledger_record(
                 &gate,
                 args.ledger_dir.as_deref(),
                 &roster,
@@ -1697,7 +1769,6 @@ async fn rank_once(
                 &explicit_candidates,
                 None,
             );
-            progress.evaluated.ledger_recorded = recorded;
             let mut doc = build_explicit_document(
                 &skills,
                 &normalized_context,
@@ -1995,9 +2066,7 @@ async fn rank_once(
     if let Some(verdict) = admission.verdict {
         match verdict {
             Verdict::Abstain(reason) => {
-                let recorded = try_record_ledger(
-                    invocation,
-                    cx,
+                progress.pending_ledger = prepare_ledger_record(
                     &gate,
                     args.ledger_dir.as_deref(),
                     &roster,
@@ -2010,7 +2079,6 @@ async fn rank_once(
                     &[],
                     None,
                 );
-                progress.evaluated.ledger_recorded = recorded;
                 let mut doc = build_abstain_document(
                     reason.as_str(),
                     &normalized_context,
@@ -2171,9 +2239,7 @@ async fn rank_once(
     };
 
     if candidate_skills.is_empty() {
-        let recorded = try_record_ledger(
-            invocation,
-            cx,
+        progress.pending_ledger = prepare_ledger_record(
             &gate,
             args.ledger_dir.as_deref(),
             &roster,
@@ -2186,7 +2252,6 @@ async fn rank_once(
             &[],
             None,
         );
-        progress.evaluated.ledger_recorded = recorded;
         let mut doc = build_abstain_document(
             "no-shortlist-match",
             &normalized_context,
@@ -3017,9 +3082,7 @@ async fn rank_once(
             if let Some(wide) = pending_wide.take() {
                 publish_evaluation(&mut store, invocation, cx, namespace, wide, None, progress)?;
             }
-            let recorded = try_record_ledger(
-                invocation,
-                cx,
+            progress.pending_ledger = prepare_ledger_record(
                 &gate,
                 args.ledger_dir.as_deref(),
                 &roster,
@@ -3032,7 +3095,6 @@ async fn rank_once(
                 &[],
                 attempt_evidence(session.as_ref(), &wide_req_fp, None, clock).as_ref(),
             );
-            progress.evaluated.ledger_recorded = recorded;
             let mut doc = build_abstain_document(
                 "low-need",
                 &normalized_context,
@@ -3344,9 +3406,7 @@ async fn rank_once(
     if let Some(verdict) = evaluation.verdict {
         match verdict {
             Verdict::Abstain(reason) => {
-                let recorded = try_record_ledger(
-                    invocation,
-                    cx,
+                progress.pending_ledger = prepare_ledger_record(
                     &gate,
                     args.ledger_dir.as_deref(),
                     &roster,
@@ -3365,7 +3425,6 @@ async fn rank_once(
                     )
                     .as_ref(),
                 );
-                progress.evaluated.ledger_recorded = recorded;
                 let mut doc = build_abstain_document(
                     reason.as_str(),
                     &normalized_context,
@@ -3412,9 +3471,7 @@ async fn rank_once(
                 return Ok(doc);
             }
             Verdict::Unavailable(reason) => {
-                let recorded = try_record_ledger(
-                    invocation,
-                    cx,
+                progress.pending_ledger = prepare_ledger_record(
                     &gate,
                     args.ledger_dir.as_deref(),
                     &roster,
@@ -3433,7 +3490,6 @@ async fn rank_once(
                     )
                     .as_ref(),
                 );
-                progress.evaluated.ledger_recorded = recorded;
                 let doc = OutputDocument::failure_with_details(
                     reason.kind(),
                     &format!("Candidate unavailable after rerank: {}", reason.as_str()),
@@ -3537,9 +3593,7 @@ async fn rank_once(
         });
     }
 
-    let recorded = try_record_ledger(
-        invocation,
-        cx,
+    progress.pending_ledger = prepare_ledger_record(
         &gate,
         args.ledger_dir.as_deref(),
         &roster,
@@ -3558,7 +3612,6 @@ async fn rank_once(
         )
         .as_ref(),
     );
-    progress.evaluated.ledger_recorded = recorded;
 
     let mut doc = build_ranked_document(
         &evaluation.eligible,
@@ -5012,13 +5065,53 @@ fn record_inflight_ranking(
 const LATE_FAILURE_RECORD_GRACE_MS: u64 = 300;
 const LATE_FAILURE_RECORD_LIMIT_MS: u64 = 600;
 
+/// Take each failure record once, including local decisions whose deferred
+/// outcome has not yet written an in-flight row. Storage's duplicate-delivery
+/// rules stay intact: a later invocation cannot overwrite a prepared success.
+fn finalize_failed_recording(
+    invocation: &ProcessInvocation,
+    progress: &mut Progress,
+    error: Option<&PipelineFailure>,
+) {
+    let Some(error) = error else { return };
+    if let Some(pending) = progress.pending_ledger.take() {
+        progress.failed_recording = Some(FailureRecording {
+            ledger_dir: match pending.location {
+                crate::storage::LedgerLocation::Platform => None,
+                crate::storage::LedgerLocation::Directory(dir) => Some(dir),
+            },
+            workspace_root: pending.event.workspace_root,
+            session_id: pending.event.session_id,
+            agent_branch: pending.event.agent_branch,
+            mode_channel: pending.event.mode_channel,
+            policy_version: "ranking-v1",
+            event_id: pending.event.event_id,
+            attempts: pending.attempts,
+        });
+    }
+    if let Some(recording) = progress.failed_recording.take()
+        && !matches!(
+            record_failed_attempts(
+                invocation,
+                &recording,
+                error.1,
+                invocation.clock().now().as_millis(),
+                &progress.metrics,
+            ),
+            Ok(true)
+        )
+    {
+        progress.ledger_finalization_unconfirmed += 1;
+    }
+}
+
 fn record_failed_attempts(
     invocation: &ProcessInvocation,
     recording: &FailureRecording,
     reason: &str,
     elapsed_ms: u64,
     metrics: &ExecutionMetrics,
-) {
+) -> Result<bool, crate::storage::StoreError> {
     let event = crate::storage::NewRankingEvent {
         event_id: recording.event_id.clone(),
         verified_delivery_key: None,
@@ -5055,17 +5148,24 @@ fn record_failed_attempts(
             .clock()
             .for_late_failure_record(LATE_FAILURE_RECORD_GRACE_MS, LATE_FAILURE_RECORD_LIMIT_MS)
     };
-    let _ = crate::storage::record_ranking_with_attempts(
+    // Use this clock's remaining work budget rather than an already expired
+    // invocation budget (which becomes an unrelated 100-poll MINIMAL budget).
+    // This does not widen the existing grace or authorize recommendation work.
+    let budget = clock
+        .work_budget()
+        .map_err(crate::storage::StoreError::Runtime)?;
+    let cleanup_cx = invocation.runtime().request_cx_with_budget(budget);
+    crate::storage::record_ranking_with_attempts(
         invocation,
         clock,
-        &invocation.request_cleanup_cx(),
+        &cleanup_cx,
         crate::storage::LedgerAccess::ExistingOnly,
         location,
         &event,
         &[],
         None,
         &recording.attempts,
-    );
+    )
 }
 
 /// What a recorded event needs in order to attribute the provider cost it caused:
@@ -5176,9 +5276,7 @@ fn attempt_evidence<'a>(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn try_record_ledger(
-    invocation: &ProcessInvocation,
-    cx: &Cx,
+fn prepare_ledger_record(
     gate: &EffectGate,
     ledger_dir: Option<&Path>,
     roster: &ResolvedRoster,
@@ -5190,9 +5288,9 @@ fn try_record_ledger(
     metrics: &ExecutionMetrics,
     candidates: &[crate::storage::NewRankingCandidate],
     attempts: Option<&AttemptEvidence<'_>>,
-) -> bool {
+) -> Option<PendingLedgerRecording> {
     if matches!(gate.ledger(), crate::privacy::StoreAccess::Disabled(_)) {
-        return false;
+        return None;
     }
     let snapshot_members: Vec<crate::storage::SnapshotMember> = roster
         .skills()
@@ -5242,7 +5340,7 @@ fn try_record_ledger(
 
     let members_json = match serde_json::to_string(&snapshot_members) {
         Ok(j) => j,
-        Err(_) => return false,
+        Err(_) => return None,
     };
 
     let now_unix_ms = SystemTime::now()
@@ -5324,18 +5422,13 @@ fn try_record_ledger(
         None => crate::storage::LedgerLocation::Platform,
     };
 
-    crate::storage::record_ranking_with_attempts(
-        invocation,
-        invocation.clock(),
-        cx,
-        crate::storage::LedgerAccess::ExistingOnly,
+    Some(PendingLedgerRecording {
         location,
-        &event,
-        candidates,
-        Some(&snapshot),
-        &attempt_rows,
-    )
-    .unwrap_or(false)
+        event,
+        candidates: candidates.to_vec(),
+        snapshot,
+        attempts: attempt_rows,
+    })
 }
 
 fn build_abstain_document(

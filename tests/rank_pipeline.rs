@@ -1214,8 +1214,7 @@ fn assert_withheld_for(preview: skillranker::pipeline::WidePreview) {
     assert!(invocation.shutdown());
 }
 
-#[test]
-fn a_run_that_overruns_its_deadline_records_its_failure_not_in_flight() {
+fn overrun_failure_finalization_fixture(hold_ledger_lock: bool) -> (Value, Vec<String>, u64) {
     // sr-9fzp: the wide send blocks, uncooperatively, past the whole deadline.
     // The run must still finalize its ledger row as a failure instead of
     // leaving it in-flight.
@@ -1266,7 +1265,17 @@ fn a_run_that_overruns_its_deadline_records_its_failure_not_in_flight() {
     sources
         .environment
         .push(("TYPESAFE_API_KEY".into(), "test-api-key-xyz".into()));
-    let stall: ResponseGenerator = Box::new(|_| {
+    let held_connection = Arc::new(Mutex::new(None));
+    let hold = held_connection.clone();
+    let locked_ledger = ledger.clone();
+    let stall: ResponseGenerator = Box::new(move |_| {
+        if hold_ledger_lock {
+            let connection =
+                rusqlite::Connection::open(locked_ledger.join(skillranker::storage::LEDGER_FILE))
+                    .unwrap();
+            connection.execute_batch("BEGIN IMMEDIATE").unwrap();
+            *hold.lock().unwrap() = Some(connection);
+        }
         std::thread::sleep(std::time::Duration::from_millis(3_050));
         Err(TransportError {
             kind: skillranker::jev::client::TransportErrorKind::Deadline,
@@ -1306,7 +1315,12 @@ fn a_run_that_overruns_its_deadline_records_its_failure_not_in_flight() {
         "the run did not overrun its deadline"
     );
     let elapsed_ms = clock.now().as_millis();
-    let failed = outcome.is_err();
+    let doc = outcome
+        .expect("admitted timeout retains its unavailable decision")
+        .as_value()
+        .clone();
+    // Release the planted lock only after production finalization has returned.
+    drop(held_connection.lock().unwrap().take());
     let db = rusqlite::Connection::open(ledger.join(skillranker::storage::LEDGER_FILE)).unwrap();
     let reasons: Vec<String> = db
         .prepare("SELECT reason FROM ranking_events")
@@ -1315,13 +1329,39 @@ fn a_run_that_overruns_its_deadline_records_its_failure_not_in_flight() {
         .unwrap()
         .map(Result::unwrap)
         .collect();
-    assert_eq!(
-        reasons.len(),
-        1,
-        "{reasons:?} after {elapsed_ms} ms (run failed: {failed})"
-    );
+    assert_eq!(doc["decision"], "unavailable");
+    assert_eq!(doc["error"]["kind"], "timeout");
+    assert_eq!(doc["usage"]["http_attempts"], 1);
+    assert_eq!(doc["usage"]["unknown_usage_attempts"], 1);
+    (doc, reasons, elapsed_ms)
+}
+
+#[test]
+fn a_run_that_overruns_its_deadline_records_its_failure_not_in_flight() {
+    let (doc, reasons, elapsed_ms) = overrun_failure_finalization_fixture(false);
+    assert_eq!(reasons.len(), 1, "{reasons:?} after {elapsed_ms} ms");
     assert_eq!(
         reasons[0], "timeout",
         "an overrun run must record its timeout, not stay in-flight"
     );
+    assert!(
+        !doc["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|w| w["kind"] == "ledger-finalization-unconfirmed")
+    );
+}
+
+#[test]
+fn an_unconfirmed_failure_ledger_write_preserves_timeout_and_unknown_usage() {
+    let (doc, reasons, elapsed_ms) = overrun_failure_finalization_fixture(true);
+    assert_eq!(reasons, ["in-flight"], "locked write after {elapsed_ms} ms");
+    let warning = doc["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|w| w["kind"] == "ledger-finalization-unconfirmed")
+        .expect("a real busy SQLite finalization must be visible");
+    assert_eq!(warning["count"], 1);
 }

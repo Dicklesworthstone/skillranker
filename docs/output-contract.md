@@ -27,6 +27,11 @@ kebab-case `reason`, `context_quality`, `quality`, `roster`, stage estimates,
 `skills`, `omitted_rank_mass`, cache/model/usage metadata, persistence status,
 warnings, `warnings_omitted`, and `elapsed_ms`.
 
+If optional failure-ledger recording cannot be confirmed, rank adds
+`ledger-finalization-unconfirmed`. The original failure and incurred usage remain
+visible; the durable ledger outcome or usage may remain unknown. This warning
+does not claim that a late write was rolled back or that an in-flight row was finalized.
+
 | Decision | Skills | Model estimates | Ordinary CLI exit |
 | --- | --- | --- | --- |
 | `ranked` | Nonempty, at most 32, consecutive ranks and distinct stable IDs | Evaluated probabilities, phase, and scores | 0 |
@@ -81,7 +86,10 @@ attempt, and token usage. Default v1 usage permits at most two logical requests
 and four HTTP attempts, with unknown-usage attempts explicitly counted. Returned
 model identities remain separate from the requested alias; a missing immutable
 revision remains null. Persistence is `recorded`, `disabled`, or `unavailable`;
-recorded metadata does not prove harness delivery.
+recorded metadata does not prove harness delivery. A success ledger outcome is
+committed after fallible result preparation and required case export. The captured
+historical document reflects persistence at capture time, before that final
+optional ledger write; this metadata is not part of the scoring parity check.
 
 Those three states describe what actually backed the run. `disabled` means an
 effect flag turned persistence off (`--no-cache`, `--no-ledger`, `--no-persist`
@@ -158,6 +166,13 @@ come from the live local boundary; numeric prior/phase adjustments are frozen ex
 (the current live scorer supplies zero for both). Policy comparisons can change only
 local thresholds/weights/top-K. A missing rerank cannot support a lowered gate, and a
 missing gate heuristic cannot be replaced by the none probability.
+
+Missing candidate fits remain unknown even at a zero fit threshold. Replay uses
+the recorded wide shortlist order for scoring reductions, rather than discovery
+or capture order. Frozen stages must follow wide then rerank, detailed requests
+offer at most 32 real candidates, and selected-probability projections must match
+the full response. Each supplied policy weight is validated independently, even
+when the recorded computation profile is incompatible.
 
 An unkeyed BLAKE3 artifact digest binds these inputs, policy and historical output;
 it detects inconsistency, not trusted authorship, and grants no cache or execution

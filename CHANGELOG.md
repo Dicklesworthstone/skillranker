@@ -4,6 +4,16 @@
 
 ### Fixed
 
+- Replay keeps missing fits unknown, uses only locally admitted shortlisted fits
+  for abstention reasons, and preserves live shortlist order for floating-point
+  reductions. Frozen imports validate stage order, rerank size and chosen
+  probability projections; each local policy weight is checked independently.
+- Success-ledger recording follows fallible result preparation and required case
+  export, so export failure records the unavailable outcome with incurred usage.
+  Failure finalization uses its existing bounded clock budget and reports
+  unconfirmed recording without replacing the original failure or usage.
+- Legacy replay preserves declared roster coverage and retrieval provenance; a
+  captured Quill subset is no longer reported as a complete roster.
 - Private replay capture uses case schema 2 (legacy cases remain readable)
   and retains versioned frozen logical requests, full
   validated responses, final provider wire requests and option maps, complete local binding membership, actual

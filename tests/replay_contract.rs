@@ -607,3 +607,251 @@ fn replay_import_rejects_trailing_json_and_unknown_policy_fields() {
     assert!(ReplayPolicy::from_json_bytes(br#"{"model":"different"}"#).is_err());
     assert!(ReplayPolicy::from_json_bytes(br#"{"gate_threshold":0.3}{}"#).is_err());
 }
+
+#[test]
+fn replay_missing_fits_are_unknown_even_at_zero_threshold() {
+    let mut case = sample_ranked_case();
+    assert_eq!(
+        execute_replay(&case, None).unwrap().run_status,
+        RunStatus::Complete
+    );
+    case.recorded_responses
+        .rerank
+        .as_mut()
+        .unwrap()
+        .fits
+        .clear();
+    for threshold in [0.0, 0.3] {
+        let outcome = execute_replay(
+            &case,
+            Some(&ReplayPolicy {
+                fit_threshold: Some(threshold),
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            outcome.run_status,
+            RunStatus::Partial,
+            "missing fits at {threshold}"
+        );
+        assert!(outcome.recomputed_decision.is_none());
+        assert_eq!(outcome.gate_status, GateStatus::NotEstablished);
+    }
+}
+
+#[test]
+fn replay_policy_rejects_each_invalid_weight_on_its_own() {
+    for bytes in [
+        br#"{"w_fit":4.01}"#.as_slice(),
+        br#"{"w_prior":0.51}"#.as_slice(),
+        br#"{"w_phase":1.01}"#.as_slice(),
+    ] {
+        assert!(ReplayPolicy::from_json_bytes(bytes).is_err());
+    }
+    for bytes in [
+        br#"{"w_fit":4.0}"#.as_slice(),
+        br#"{"w_prior":0.5}"#.as_slice(),
+        br#"{"w_phase":1.0}"#.as_slice(),
+    ] {
+        assert!(ReplayPolicy::from_json_bytes(bytes).is_ok());
+    }
+}
+
+#[test]
+fn replay_scoring_uses_live_shortlist_order_instead_of_capture_order() {
+    use skillranker::identity::SkillId;
+    use skillranker::scoring::{Input, Weights, rank};
+    let mut case = sample_ranked_case();
+    case.manifest.evidence_origin = "synthetic".into();
+    for field in ["total", "eligible", "wide_candidates", "shortlist"] {
+        case.historical_decision["roster"][field] = json!(16);
+    }
+    let template = case.captured_request.candidate_options[0].clone();
+    case.captured_request.candidate_options = (0..16)
+        .map(|index| {
+            let mut candidate = template.clone();
+            candidate.skill_id = format!("s_score{index:02}");
+            candidate.invocation_name = format!("score-{index:02}");
+            candidate
+        })
+        .collect();
+    let ids: Vec<_> = case
+        .captured_request
+        .candidate_options
+        .iter()
+        .map(|c| SkillId::new(&c.skill_id).unwrap())
+        .collect();
+    let raw: Vec<_> = (0..16).map(|i| 1.0 / (i + 1) as f64).collect();
+    let total: f64 = raw.iter().sum();
+    let probabilities: Vec<_> = raw.iter().map(|v| v * 0.999 / total).collect();
+    let fits: Vec<_> = (0..16)
+        .map(|i| 0.31 + (i * 7 % 23) as f64 * 0.028)
+        .collect();
+    let wide = case.recorded_responses.wide.as_mut().unwrap();
+    wide.choice = ids[0].as_str().into();
+    wide.choices_probability = 16.0 * 0.99 / 136.0;
+    wide.distribution = ids
+        .iter()
+        .enumerate()
+        .map(|(i, id)| ChoiceDistributionItem {
+            option_id: id.as_str().into(),
+            probability: (16 - i) as f64 * 0.99 / 136.0,
+        })
+        .chain(std::iter::once(ChoiceDistributionItem {
+            option_id: "__none__".into(),
+            probability: 0.01,
+        }))
+        .collect();
+    let rerank = case.recorded_responses.rerank.as_mut().unwrap();
+    rerank.choice = ids[0].as_str().into();
+    rerank.choices_probability = probabilities[0];
+    rerank.distribution = ids
+        .iter()
+        .enumerate()
+        .map(|(i, id)| ChoiceDistributionItem {
+            option_id: id.as_str().into(),
+            probability: probabilities[i],
+        })
+        .chain(std::iter::once(ChoiceDistributionItem {
+            option_id: "__none__".into(),
+            probability: 0.001,
+        }))
+        .collect();
+    rerank.fits = ids
+        .iter()
+        .enumerate()
+        .map(|(i, id)| CandidateFitItem {
+            skill_id: id.as_str().into(),
+            fit: fits[i],
+        })
+        .collect();
+    let inputs: Vec<_> = ids
+        .iter()
+        .enumerate()
+        .map(|(i, id)| Input {
+            id,
+            rerank: probabilities[i],
+            fit: fits[i],
+            prior_delta: 0.0,
+            phase_match: 0.0,
+        })
+        .collect();
+    let expected = rank(&inputs, Weights::DEFAULT, 5).unwrap();
+    // This permutation changed scores by one ULP in the actual installed CLI.
+    let candidates = case.captured_request.candidate_options.clone();
+    for order in [
+        vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+        vec![15, 3, 2, 12, 8, 9, 13, 11, 7, 10, 1, 4, 6, 0, 5, 14],
+    ] {
+        case.captured_request.candidate_options =
+            order.iter().map(|&i| candidates[i].clone()).collect();
+        let outcome = execute_replay(&case, None).unwrap();
+        let recomputed = &outcome.document.as_value()["recomputed"];
+        assert_eq!(
+            recomputed["omitted_rank_mass"].as_f64().unwrap().to_bits(),
+            expected.omitted_mass.to_bits()
+        );
+        let actual_skills = recomputed["skills"].as_array().unwrap();
+        assert_eq!(actual_skills.len(), expected.returned.len());
+        for (actual, score) in actual_skills.iter().zip(&expected.returned) {
+            assert_eq!(actual["skill_id"], ids[score.index].as_str());
+            assert_eq!(
+                actual["rank_score"].as_f64().unwrap().to_bits(),
+                score.rank_score.to_bits()
+            );
+        }
+    }
+}
+
+#[test]
+fn replay_low_fit_reason_ignores_locally_ineligible_candidates() {
+    let mut case = sample_ranked_case();
+    case.local_evidence.active_snoozes.push("s_triage".into());
+    case.recorded_responses.rerank.as_mut().unwrap().fits[1].fit = 0.1;
+    let outcome = execute_replay(&case, None).unwrap();
+    assert_eq!(
+        outcome.document.as_value()["recomputed"]["reason"],
+        "low-fit"
+    );
+    // Unsnoozing the actually offered useful candidate preserves the success case.
+    case.local_evidence.active_snoozes.clear();
+    assert_eq!(
+        execute_replay(&case, None)
+            .unwrap()
+            .recomputed_decision
+            .as_deref(),
+        Some("ranked")
+    );
+}
+
+#[test]
+fn replay_low_fit_reason_does_not_count_unoffered_zero_fits() {
+    let mut case = sample_ranked_case();
+    let rerank = case.recorded_responses.rerank.as_mut().unwrap();
+    rerank.fits.remove(1);
+    rerank.fits[0].fit = 0.1;
+    rerank.distribution.remove(1);
+    rerank.distribution[0].probability = 0.95;
+    rerank.choices_probability = 0.95;
+    let outcome = execute_replay(&case, None).unwrap();
+    assert_eq!(
+        outcome.document.as_value()["recomputed"]["reason"],
+        "low-fit"
+    );
+    let outcome = execute_replay(
+        &case,
+        Some(&ReplayPolicy {
+            fit_threshold: Some(0.0),
+            ..Default::default()
+        }),
+    )
+    .unwrap();
+    assert_eq!(outcome.recomputed_decision.as_deref(), Some("ranked"));
+    assert_eq!(
+        outcome.document.as_value()["recomputed"]["skills"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn replay_preserves_declared_roster_beyond_the_captured_wide_subset() {
+    for overflow in [false, true] {
+        let mut case = sample_ranked_case();
+        if overflow {
+            case.historical_decision["roster"]["total"] = json!(300);
+            case.historical_decision["roster"]["eligible"] = json!(280);
+            case.historical_decision["roster"]["retrieval"] = json!("quill-bm25");
+        }
+        let roster = case.historical_decision["roster"].clone();
+        let ranked = execute_replay(&case, None).unwrap();
+        assert_eq!(ranked.recomputed_decision.as_deref(), Some("ranked"));
+        assert_eq!(ranked.document.as_value()["recomputed"]["roster"], roster);
+        assert_eq!(ranked.gate_status, GateStatus::NotEstablished);
+        assert_eq!(
+            ranked.document.as_value()["input_completeness"]["visible_roster"],
+            false
+        );
+        for policy in [
+            ReplayPolicy {
+                fit_threshold: Some(1.0),
+                ..Default::default()
+            },
+            ReplayPolicy {
+                gate_threshold: Some(1.0),
+                ..Default::default()
+            },
+        ] {
+            let abstained = execute_replay(&case, Some(&policy)).unwrap();
+            assert_eq!(abstained.recomputed_decision.as_deref(), Some("abstain"));
+            assert_eq!(
+                abstained.document.as_value()["recomputed"]["roster"],
+                roster
+            );
+            assert_eq!(abstained.gate_status, GateStatus::NotEstablished);
+        }
+    }
+}

@@ -677,11 +677,13 @@ impl ReplayPolicy {
                 "fit threshold {fit} out of bounds [0, 1]"
             )));
         }
-        if let (Some(fit), Some(prior), Some(phase)) = (self.w_fit, self.w_prior, self.w_phase) {
-            Weights::new(fit, prior, phase).map_err(|e| {
-                ReplayError::InvalidField(format!("invalid weights combination: {e}"))
-            })?;
-        }
+        // Each override has its own bound, even when the other weights are absent.
+        Weights::new(
+            self.w_fit.unwrap_or(Weights::DEFAULT.fit()),
+            self.w_prior.unwrap_or(Weights::DEFAULT.prior()),
+            self.w_phase.unwrap_or(Weights::DEFAULT.phase()),
+        )
+        .map_err(|e| ReplayError::InvalidField(format!("invalid weights combination: {e}")))?;
         if let Some(k) = self.top_k
             && (k == 0 || k > 32)
         {
@@ -815,6 +817,9 @@ pub fn execute_replay(
     // unvalidated distribution, where a missing `__none__` counts as zero and every
     // candidate would beat none (sr-u66v).
     case.validate()?;
+    if let Some(pol) = policy {
+        pol.validate()?;
+    }
     if let Some(frozen) = &case.frozen_inputs
         && !frozen.computation_compatible()
     {
@@ -841,15 +846,13 @@ pub fn execute_replay(
         .to_string();
 
     // Check policy compatibility
-    if let Some(pol) = policy {
-        pol.validate()?;
-        if case.frozen_inputs.is_none()
-            && (pol.w_prior.is_some_and(|w| w > 0.0) || pol.w_phase.is_some_and(|w| w > 0.0))
-        {
-            return Err(ReplayError::IncompatiblePolicy(
-                "turning on uncaptured prior or phase input is not replayable".into(),
-            ));
-        }
+    if let Some(pol) = policy
+        && case.frozen_inputs.is_none()
+        && (pol.w_prior.is_some_and(|w| w > 0.0) || pol.w_phase.is_some_and(|w| w > 0.0))
+    {
+        return Err(ReplayError::IncompatiblePolicy(
+            "turning on uncaptured prior or phase input is not replayable".into(),
+        ));
     }
 
     // Effective scoring profile
@@ -957,6 +960,18 @@ pub fn execute_replay(
             );
         }
 
+        if rerank.fits.is_empty() {
+            return build_outcome(
+                (case, policy),
+                RunStatus::Partial,
+                GateStatus::NotEstablished,
+                &hist_decision_str,
+                None,
+                None,
+                Some("missing recorded candidate fits; unevaluated fits cannot be replaced with zero".into()),
+            );
+        }
+
         // Step 3: Candidate eligibility on shortlist
         let snoozes: BTreeSet<&str> = case
             .local_evidence
@@ -1000,9 +1015,20 @@ pub fn execute_replay(
             fit: f64,
         }
 
+        let wide_probs_by_id: BTreeMap<&str, f64> = wide
+            .distribution
+            .iter()
+            .map(|d| (d.option_id.as_str(), d.probability))
+            .collect();
         let mut eligible: Vec<EligibleCandidate<'_>> = Vec::new();
+        let mut locally_admitted = 0;
+        let mut any_fitting = false;
         for candidate in &case.captured_request.candidate_options {
             let id = candidate.skill_id.as_str();
+            // Wide candidates outside the detailed Choice were never fitted.
+            let Some(fit) = fits_by_id.get(id).copied() else {
+                continue;
+            };
             let matching_reference = candidate.usage_kind == "reference"
                 && loaded.contains(&(id, candidate.content_hash.as_str()));
             let allowed = case.frozen_inputs.as_ref().map(|f| {
@@ -1016,10 +1042,11 @@ pub fn execute_replay(
             {
                 continue;
             }
-            let fit = fits_by_id.get(id).copied().unwrap_or(0.0);
+            locally_admitted += 1;
             if fit < fit_threshold {
                 continue;
             }
+            any_fitting = true;
             let prob = probs_by_id.get(id).copied().unwrap_or(0.0);
             // Each candidate must individually beat __none__
             if prob <= none_rerank_prob {
@@ -1036,14 +1063,29 @@ pub fn execute_replay(
         }
 
         if eligible.is_empty() {
-            let any_fitting = case.captured_request.candidate_options.iter().any(|c| {
-                fits_by_id
-                    .get(c.skill_id.as_str())
-                    .is_some_and(|fit| *fit >= fit_threshold)
-            });
+            // Frozen eligibility records admission, not the reason for an all-removed
+            // shortlist. Do not borrow that reason from the historical answer to
+            // manufacture parity. Live captures normally stop locally before this.
+            if locally_admitted == 0 && case.frozen_inputs.is_some() {
+                return build_outcome(
+                    (case, policy), RunStatus::Partial, GateStatus::NotEstablished,
+                    &hist_decision_str, None, None,
+                    Some("no locally admitted shortlist candidate; the local exclusion reason was not captured".into()),
+                );
+            }
+            let local_reason = if case.captured_request.candidate_options.iter().any(|c| {
+                fits_by_id.contains_key(c.skill_id.as_str())
+                    && !snoozes.contains(c.skill_id.as_str())
+            }) {
+                "already-loaded"
+            } else {
+                "snoozed"
+            };
             let recomputed = make_recomputed_abstain(
                 case,
-                if any_fitting {
+                if locally_admitted == 0 {
+                    local_reason
+                } else if any_fitting {
                     "no-shortlist-match"
                 } else {
                     "low-fit"
@@ -1062,6 +1104,14 @@ pub fn execute_replay(
         }
 
         // Step 4: Score eligible candidates using rank
+        // The live pipeline retains wide shortlist order through eligibility.
+        // Softmax addition is order-sensitive, so capture/discovery order cannot
+        // replace that order even when the final selected IDs are identical.
+        eligible.sort_by(|a, b| {
+            wide_probs_by_id[b.skill_id]
+                .total_cmp(&wide_probs_by_id[a.skill_id])
+                .then_with(|| a.skill_id.cmp(b.skill_id))
+        });
         let parsed_skill_ids: Vec<SkillId> = eligible
             .iter()
             .map(|c| SkillId::new(c.skill_id).unwrap())
@@ -1089,25 +1139,10 @@ pub fn execute_replay(
         let scored = rank(&scoring_inputs, weights, top_k)
             .map_err(|e| ReplayError::InvalidField(format!("scoring failed: {e}")))?;
 
-        let wide_probs_by_id: BTreeMap<&str, f64> = case
-            .recorded_responses
-            .wide
-            .as_ref()
-            .map(|w| {
-                w.distribution
-                    .iter()
-                    .map(|d| (d.option_id.as_str(), d.probability))
-                    .collect()
-            })
-            .unwrap_or_default();
-
         let mut ranked_skills = Vec::new();
         for (rank_idx, s) in scored.returned.iter().enumerate() {
             let candidate = &eligible[s.index];
-            let wide_prob = wide_probs_by_id
-                .get(candidate.skill_id)
-                .copied()
-                .unwrap_or(candidate.rerank_prob);
+            let wide_prob = wide_probs_by_id[candidate.skill_id];
             ranked_skills.push(json!({
                 "rank": rank_idx + 1,
                 "skill_id": candidate.skill_id,
@@ -1332,17 +1367,9 @@ fn make_recomputed_abstain(case: &ReplayCase, reason: &str) -> Value {
         }
     }
 
-    if case.frozen_inputs.is_none()
-        && let Some(roster) = recomputed.get_mut("roster").and_then(Value::as_object_mut)
-    {
-        roster.insert("wide_candidates".into(), Value::from(0));
-        roster.insert("shortlist".into(), Value::from(0));
-        roster.insert("retrieval".into(), Value::from("not-evaluated"));
-        if let Some(provenance) = roster.get_mut("provenance").and_then(Value::as_object_mut) {
-            provenance.insert("wide_set_id".into(), Value::Null);
-            provenance.insert("rerank_set_id".into(), Value::Null);
-        }
-    }
+    // The captured options can be only a prefiltered subset. Keep the declared
+    // historical roster coverage and retrieval provenance; replay did not run
+    // discovery or retrieval and cannot replace those observations.
     recomputed
 }
 
@@ -1365,7 +1392,6 @@ fn make_recomputed_ranked(
             .and_then(|w| w.gate_score)
             .map_or(Value::Null, Value::from);
     }
-    let returned_count = ranked_skills.len();
     recomputed["skills"] = Value::Array(ranked_skills);
     recomputed["omitted_rank_mass"] = Value::from(omitted_mass);
     recomputed["none_probability"] = Value::from(none_prob);
@@ -1379,29 +1405,8 @@ fn make_recomputed_ranked(
         .as_ref()
         .and_then(|rerank| rerank.stated_confidence)
         .map_or(Value::Null, Value::from);
-    if case.frozen_inputs.is_none()
-        && let Some(roster) = recomputed.get_mut("roster").and_then(Value::as_object_mut)
-    {
-        let wide_count = case.captured_request.candidate_options.len() as u64;
-        let shortlist_count = case
-            .recorded_responses
-            .rerank
-            .as_ref()
-            .map(|r| r.fits.len() as u64)
-            .unwrap_or(returned_count as u64)
-            .max(returned_count as u64);
-
-        let total = wide_count.max(1);
-        let eligible = wide_count.max(1);
-        let wide = wide_count.max(1);
-        let shortlist = shortlist_count.min(wide).max(returned_count as u64);
-
-        roster.insert("total".into(), Value::from(total));
-        roster.insert("eligible".into(), Value::from(eligible));
-        roster.insert("wide_candidates".into(), Value::from(wide));
-        roster.insert("shortlist".into(), Value::from(shortlist));
-        roster.insert("retrieval".into(), Value::from("full"));
-    }
+    // Preserve the historical universe even for legacy captures that only
+    // contain wide options. In particular a Quill subset is not a full roster.
     recomputed
 }
 

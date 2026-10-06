@@ -337,11 +337,11 @@ impl FrozenReplayInputs {
             return Err(invalid("frozen numeric inputs do not cover candidate set"));
         }
         let mut stages = BTreeSet::new();
-        for stage in &self.stages {
+        for (index, stage) in self.stages.iter().enumerate() {
             if !stages.insert(stage.stage.as_str())
-                || !matches!(stage.stage.as_str(), "wide" | "rerank")
+                || stage.stage != if index == 0 { "wide" } else { "rerank" }
             {
-                return Err(invalid("duplicate or unknown frozen stage"));
+                return Err(invalid("duplicate, unknown or out-of-order frozen stage"));
             }
             validate_stage(stage, case, &self.provider)?;
         }
@@ -368,6 +368,9 @@ impl FrozenReplayInputs {
         }
         if stages.contains("rerank") && !stages.contains("wide") {
             return Err(invalid("rerank lacks wide input"));
+        }
+        if stages.contains("rerank") && self.stages[0].response_json.is_none() {
+            return Err(invalid("rerank lacks received wide response"));
         }
         Ok(())
     }
@@ -445,7 +448,13 @@ fn validate_stage(
             return Err(invalid("frozen rerank question set mismatch"));
         }
     }
-    if stage.options.len() > wide::MAX_REAL_OPTIONS
+    let max_options = if stage.stage == "wide" {
+        wide::MAX_REAL_OPTIONS
+    } else {
+        wide::MAX_SIZE
+    };
+    if stage.options.is_empty()
+        || stage.options.len() > max_options
         || stage
             .options
             .windows(2)
@@ -519,7 +528,7 @@ fn validate_stage(
         }
     };
     let normalized = choice.normalized_probabilities();
-    let (distribution, selected, confidence) = if stage.stage == "wide" {
+    let (distribution, selected, selected_probability, confidence) = if stage.stage == "wide" {
         let projected = case
             .recorded_responses
             .wide
@@ -537,7 +546,12 @@ fn validate_stage(
         if projected.gate_score != Some(gate) {
             return Err(invalid("frozen gate projection mismatch"));
         }
-        (&projected.distribution, projected.choice.as_str(), None)
+        (
+            &projected.distribution,
+            projected.choice.as_str(),
+            projected.choices_probability,
+            None,
+        )
     } else {
         let projected = case
             .recorded_responses
@@ -565,10 +579,12 @@ fn validate_stage(
         (
             &projected.distribution,
             projected.choice.as_str(),
+            projected.choices_probability,
             projected.stated_confidence,
         )
     };
     if resolve(choice.choice())? != selected
+        || normalized.get(choice.choice()).copied() != Some(selected_probability)
         || confidence.is_some_and(|c| c != choice.confidence())
         || normalized.len() != distribution.len()
     {
