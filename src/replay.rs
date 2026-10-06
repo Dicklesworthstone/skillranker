@@ -4,6 +4,9 @@
 //! transcript discovery, skill execution, or state writes. Cases and policy overrides
 //! are strictly bounded, owner-only, and validated before evaluation.
 
+pub mod frozen;
+use frozen::FrozenReplayInputs;
+
 use crate::identity::SkillId;
 use crate::limits::{REPLAY_POLICY_BYTES, REPLAY_POLICY_DEPTH};
 use crate::output::{
@@ -17,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::Path;
 
 /// Bounded replay error kinds. Safe diagnostics contain no private text or credentials.
@@ -72,8 +75,8 @@ impl fmt::Display for ReplayError {
                 write!(f, "replay policy exceeds maximum bytes ({len} > {max})")
             }
             Self::ExcessiveDepth => f.write_str("replay input exceeds maximum nesting depth"),
-            Self::InvalidJson(msg) => write!(f, "invalid replay JSON: {msg}"),
-            Self::DuplicateKey(key) => write!(f, "duplicate JSON key in replay input: {key}"),
+            Self::InvalidJson(_) => f.write_str("invalid bounded replay JSON"),
+            Self::DuplicateKey(_) => f.write_str("duplicate JSON key in replay input"),
             Self::UnsupportedVersion(v) => write!(f, "unsupported replay schema version: {v}"),
             Self::InvalidField(msg) => write!(f, "invalid field in replay input: {msg}"),
             Self::OptionMapMismatch(msg) => write!(f, "replay option map mismatch: {msg}"),
@@ -99,9 +102,15 @@ impl From<std::io::Error> for ReplayError {
     }
 }
 
-/// A complete captured replay case.
+/// Current captured case schema; old readers must reject new frozen semantics.
+pub const REPLAY_CASE_SCHEMA_VERSION: u64 = 2;
+
+/// A captured replay case, with explicit missing-input metadata when incomplete.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ReplayCase {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frozen_inputs: Option<FrozenReplayInputs>,
     pub schema_version: u64,
     pub case_id: String,
     pub created_at_unix_ms: u64,
@@ -114,6 +123,7 @@ pub struct ReplayCase {
 
 /// Provenance and stage metadata for the recorded case.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ReplayManifest {
     pub evidence_origin: String,
     pub adapter: String,
@@ -126,6 +136,7 @@ pub struct ReplayManifest {
 
 /// Bounded redacted request inputs.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CapturedRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context_text: Option<String>,
@@ -136,6 +147,7 @@ pub struct CapturedRequest {
 
 /// Candidate skill metadata captured at the time of the decision.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CapturedCandidate {
     pub skill_id: String,
     pub invocation_name: String,
@@ -155,6 +167,7 @@ pub struct CapturedCandidate {
 
 /// Validated recorded provider responses.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RecordedResponses {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub wide: Option<RecordedWideChoice>,
@@ -164,6 +177,7 @@ pub struct RecordedResponses {
 
 /// Recorded wide-choice provider response.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RecordedWideChoice {
     pub choice: String,
     pub choices_probability: f64,
@@ -174,6 +188,7 @@ pub struct RecordedWideChoice {
 
 /// Recorded rerank-choice provider response.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RecordedRerankChoice {
     pub choice: String,
     pub choices_probability: f64,
@@ -190,6 +205,7 @@ pub struct RecordedRerankChoice {
 
 /// One candidate option's probability in a provider distribution.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ChoiceDistributionItem {
     pub option_id: String,
     pub probability: f64,
@@ -197,6 +213,7 @@ pub struct ChoiceDistributionItem {
 
 /// One candidate's fit score from question evaluation.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CandidateFitItem {
     pub skill_id: String,
     pub fit: f64,
@@ -204,6 +221,7 @@ pub struct CandidateFitItem {
 
 /// Local state and evidence frozen at the time of the decision.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CapturedLocalEvidence {
     pub as_of_unix_ms: u64,
     #[serde(default)]
@@ -215,6 +233,7 @@ pub struct CapturedLocalEvidence {
 
 /// Loaded reference record frozen in local evidence.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CapturedLoadedReference {
     pub skill_id: String,
     pub content_hash: String,
@@ -223,6 +242,7 @@ pub struct CapturedLoadedReference {
 
 /// Scoring parameters frozen at decision time.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CapturedScoringProfile {
     pub gate_threshold: f64,
     pub fit_threshold: f64,
@@ -234,6 +254,7 @@ pub struct CapturedScoringProfile {
 
 /// Optional local policy overrides for replay comparison.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ReplayPolicy {
     #[serde(alias = "gate", skip_serializing_if = "Option::is_none")]
     pub gate_threshold: Option<f64>,
@@ -260,6 +281,65 @@ pub struct ReplayOutcome {
     pub explanation: Option<String>,
 }
 
+/// Count encoded bytes before growing the buffer, including JSON escaping.
+/// Geometric growth stays within the cap; an oversized case is never exported
+/// from its incomplete prefix.
+struct CaseWriter {
+    bytes: Vec<u8>,
+    max_bytes: usize,
+    oversized: Option<usize>,
+    allocation_failed: bool,
+}
+
+impl CaseWriter {
+    fn new(max_bytes: usize) -> Self {
+        Self {
+            bytes: Vec::new(),
+            max_bytes,
+            oversized: None,
+            allocation_failed: false,
+        }
+    }
+}
+
+impl Write for CaseWriter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        let next_len = self.bytes.len().saturating_add(bytes.len());
+        if next_len > self.max_bytes {
+            self.oversized = Some(next_len);
+            return Err(std::io::Error::other(
+                "case serialization exceeds its byte cap",
+            ));
+        }
+        if next_len > self.bytes.capacity() {
+            let capacity = self
+                .bytes
+                .capacity()
+                .saturating_mul(2)
+                .max(4096)
+                .max(next_len)
+                .min(self.max_bytes);
+            if self
+                .bytes
+                .try_reserve_exact(capacity - self.bytes.len())
+                .is_err()
+            {
+                self.allocation_failed = true;
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::OutOfMemory,
+                    "case serialization allocation unavailable",
+                ));
+            }
+        }
+        self.bytes.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
 impl ReplayCase {
     /// Parse and validate a replay case from raw bytes.
     pub fn from_json_bytes(bytes: &[u8]) -> Result<Self, ReplayError> {
@@ -283,12 +363,12 @@ impl ReplayCase {
             .get("schema_version")
             .and_then(Value::as_u64)
             .ok_or_else(|| ReplayError::InvalidField("missing schema_version".into()))?;
-        if schema_version != SCHEMA_VERSION {
+        if !matches!(schema_version, 1 | REPLAY_CASE_SCHEMA_VERSION) {
             return Err(ReplayError::UnsupportedVersion(schema_version));
         }
 
         let case: Self = serde_json::from_value(value)
-            .map_err(|e| ReplayError::InvalidField(format!("malformed case schema: {e}")))?;
+            .map_err(|_| ReplayError::InvalidField("malformed case schema".into()))?;
 
         case.validate()?;
         Ok(case)
@@ -296,44 +376,116 @@ impl ReplayCase {
 
     /// Validate invariants: option IDs, distributions, candidate integrity.
     pub fn validate(&self) -> Result<(), ReplayError> {
+        if !matches!(self.schema_version, 1 | REPLAY_CASE_SCHEMA_VERSION) {
+            return Err(ReplayError::UnsupportedVersion(self.schema_version));
+        }
+        if self.schema_version == 1 && self.frozen_inputs.is_some() {
+            return Err(ReplayError::InvalidField(
+                "frozen input semantics require replay case schema 2".into(),
+            ));
+        }
         match self.manifest.evidence_origin.as_str() {
             "recorded" | "synthetic" | "live" => {}
-            other => {
-                return Err(ReplayError::InvalidField(format!(
-                    "unknown evidence origin: {other}"
-                )));
+            _ => {
+                return Err(ReplayError::InvalidField("unknown evidence origin".into()));
             }
         }
 
+        if self.captured_request.candidate_options.len() > 10_000
+            || self
+                .captured_request
+                .context_text
+                .as_ref()
+                .is_some_and(|s| s.len() > crate::limits::NORMALIZED_CONTEXT_JSON_BYTES.max())
+            || self.captured_request.current_constraints.len() > 10_000
+            || self
+                .captured_request
+                .current_constraints
+                .iter()
+                .any(|s| s.len() > crate::limits::NORMALIZED_CONTEXT_JSON_BYTES.max())
+            || self
+                .manifest
+                .prompt_summary
+                .as_ref()
+                .is_some_and(|s| s.chars().count() > 120)
+        {
+            return Err(ReplayError::InvalidField(
+                "captured field exceeds its bound".into(),
+            ));
+        }
+        ReplayPolicy {
+            gate_threshold: Some(self.local_evidence.scoring_profile.gate_threshold),
+            fit_threshold: Some(self.local_evidence.scoring_profile.fit_threshold),
+            w_fit: Some(self.local_evidence.scoring_profile.w_fit),
+            w_prior: Some(self.local_evidence.scoring_profile.w_prior),
+            w_phase: Some(self.local_evidence.scoring_profile.w_phase),
+            top_k: Some(self.local_evidence.scoring_profile.top_k),
+        }
+        .validate()?;
         let mut candidate_ids = BTreeSet::new();
         for candidate in &self.captured_request.candidate_options {
+            SkillId::new(&candidate.skill_id)
+                .map_err(|_| ReplayError::InvalidField("invalid captured skill identity".into()))?;
+            crate::identity::ContentHash::parse(&candidate.content_hash)
+                .map_err(|_| ReplayError::InvalidField("invalid captured content digest".into()))?;
+            if candidate.invocation_name.len() > 512
+                || candidate.source.len() > 512
+                || candidate.usage_kind.len() > 64
+                || candidate
+                    .description
+                    .as_ref()
+                    .is_some_and(|s| s.len() > 256 * 1024)
+                || candidate
+                    .excerpt
+                    .as_ref()
+                    .is_some_and(|s| s.len() > 256 * 1024)
+            {
+                return Err(ReplayError::InvalidField(
+                    "captured candidate field exceeds its bound".into(),
+                ));
+            }
+
             if candidate.skill_id == "__none__" {
                 return Err(ReplayError::InvalidField(
                     "__none__ sentinel cannot be a candidate skill ID".into(),
                 ));
             }
             if !candidate_ids.insert(&candidate.skill_id) {
-                return Err(ReplayError::OptionMapMismatch(format!(
-                    "duplicate candidate skill ID: {}",
-                    candidate.skill_id
-                )));
+                return Err(ReplayError::OptionMapMismatch(
+                    "duplicate candidate skill definition".into(),
+                ));
             }
         }
 
         // Validate wide response if present
         if let Some(wide) = &self.recorded_responses.wide {
+            if !(0.0..=1.0).contains(&wide.choices_probability)
+                || wide.gate_score.is_some_and(|g| !(0.0..=1.0).contains(&g))
+            {
+                return Err(ReplayError::InvalidField(
+                    "invalid recorded wide probability or gate".into(),
+                ));
+            }
             // The wide question offers every candidate.
             validate_distribution(&wide.distribution, &candidate_ids, true, &wide.choice)?;
             if wide.choice != "__none__" && !candidate_ids.contains(&wide.choice) {
-                return Err(ReplayError::OptionMapMismatch(format!(
-                    "wide choice {} not found in candidate options",
-                    wide.choice
-                )));
+                return Err(ReplayError::OptionMapMismatch(
+                    "wide choice is not a captured candidate".into(),
+                ));
             }
         }
 
         // Validate rerank response if present
         if let Some(rerank) = &self.recorded_responses.rerank {
+            if !(0.0..=1.0).contains(&rerank.choices_probability)
+                || rerank
+                    .stated_confidence
+                    .is_some_and(|c| !(0.0..=1.0).contains(&c))
+            {
+                return Err(ReplayError::InvalidField(
+                    "invalid recorded rerank probability or confidence".into(),
+                ));
+            }
             // The rerank offers only the shortlist; its fits name the same set.
             validate_distribution(&rerank.distribution, &candidate_ids, false, &rerank.choice)?;
             if !rerank.fits.is_empty() {
@@ -352,17 +504,21 @@ impl ReplayCase {
                 }
             }
             if rerank.choice != "__none__" && !candidate_ids.contains(&rerank.choice) {
-                return Err(ReplayError::OptionMapMismatch(format!(
-                    "rerank choice {} not found in candidate options",
-                    rerank.choice
-                )));
+                return Err(ReplayError::OptionMapMismatch(
+                    "rerank choice is not a captured candidate".into(),
+                ));
             }
+            let mut fit_ids = BTreeSet::new();
             for fit in &rerank.fits {
+                if !fit_ids.insert(fit.skill_id.as_str()) {
+                    return Err(ReplayError::OptionMapMismatch(
+                        "duplicate skill definition in rerank fits".into(),
+                    ));
+                }
                 if !candidate_ids.contains(&fit.skill_id) {
-                    return Err(ReplayError::OptionMapMismatch(format!(
-                        "fit for unknown skill ID: {}",
-                        fit.skill_id
-                    )));
+                    return Err(ReplayError::OptionMapMismatch(
+                        "fit references an unknown captured skill".into(),
+                    ));
                 }
                 if !(0.0..=1.0).contains(&fit.fit) {
                     return Err(ReplayError::InvalidField(format!(
@@ -373,6 +529,34 @@ impl ReplayCase {
             }
         }
 
+        let mut snoozes = BTreeSet::new();
+        for id in &self.local_evidence.active_snoozes {
+            SkillId::new(id).map_err(|_| {
+                ReplayError::InvalidField("invalid captured snooze identity".into())
+            })?;
+            if !snoozes.insert(id) {
+                return Err(ReplayError::InvalidField(
+                    "duplicate captured snooze definition".into(),
+                ));
+            }
+        }
+        let mut loads = BTreeSet::new();
+        for load in &self.local_evidence.loaded_references {
+            SkillId::new(&load.skill_id)
+                .map_err(|_| ReplayError::InvalidField("invalid captured load identity".into()))?;
+            crate::identity::ContentHash::parse(&load.content_hash)
+                .map_err(|_| ReplayError::InvalidField("invalid captured load digest".into()))?;
+            if !loads.insert((&load.skill_id, &load.content_hash))
+                || !matches!(load.availability.as_str(), "available" | "unknown")
+            {
+                return Err(ReplayError::InvalidField(
+                    "duplicate or invalid captured loaded definition".into(),
+                ));
+            }
+        }
+        if let Some(frozen) = &self.frozen_inputs {
+            frozen.validate(self)?;
+        }
         // Validate historical decision structure
         let hist_bytes = serde_json::to_vec(&self.historical_decision)
             .map_err(|e| ReplayError::InvalidJson(e.to_string()))?;
@@ -384,9 +568,23 @@ impl ReplayCase {
 
     /// Save the replay case to the given path using atomic no-clobber export.
     pub fn save_to_file(&self, path: &Path) -> Result<(), ReplayError> {
-        let content = serde_json::to_string_pretty(self)
-            .map_err(|e| ReplayError::InvalidJson(e.to_string()))?;
-        export_private_atomic(path, content.as_bytes(), ExportConfig::for_case())?;
+        let mut writer = CaseWriter::new(DEFAULT_MAX_CASE_BYTES);
+        serde_json::to_writer_pretty(&mut writer, self).map_err(|error| {
+            if let Some(len) = writer.oversized {
+                ReplayError::OversizedCase {
+                    len,
+                    max: writer.max_bytes,
+                }
+            } else if writer.allocation_failed {
+                ReplayError::Io(std::io::Error::new(
+                    std::io::ErrorKind::OutOfMemory,
+                    "case serialization allocation unavailable",
+                ))
+            } else {
+                ReplayError::InvalidJson(error.to_string())
+            }
+        })?;
+        export_private_atomic(path, &writer.bytes, ExportConfig::for_case())?;
         Ok(())
     }
 
@@ -459,7 +657,7 @@ impl ReplayPolicy {
         }
         let value = parse_bounded_json(bytes, REPLAY_POLICY_DEPTH.max())?;
         let policy: Self = serde_json::from_value(value)
-            .map_err(|e| ReplayError::InvalidField(format!("malformed policy schema: {e}")))?;
+            .map_err(|_| ReplayError::InvalidField("malformed policy schema".into()))?;
         policy.validate()?;
         Ok(policy)
     }
@@ -479,11 +677,13 @@ impl ReplayPolicy {
                 "fit threshold {fit} out of bounds [0, 1]"
             )));
         }
-        if let (Some(fit), Some(prior), Some(phase)) = (self.w_fit, self.w_prior, self.w_phase) {
-            Weights::new(fit, prior, phase).map_err(|e| {
-                ReplayError::InvalidField(format!("invalid weights combination: {e}"))
-            })?;
-        }
+        // Each override has its own bound, even when the other weights are absent.
+        Weights::new(
+            self.w_fit.unwrap_or(Weights::DEFAULT.fit()),
+            self.w_prior.unwrap_or(Weights::DEFAULT.prior()),
+            self.w_phase.unwrap_or(Weights::DEFAULT.phase()),
+        )
+        .map_err(|e| ReplayError::InvalidField(format!("invalid weights combination: {e}")))?;
         if let Some(k) = self.top_k
             && (k == 0 || k > 32)
         {
@@ -538,6 +738,47 @@ pub fn execute_replay_comparison(
             .clone();
         if let Some(comp_rec) = comp_outcome.document.as_value().get("recomputed") {
             envelope.insert("comparison".into(), comp_rec.clone());
+            if let Some(base_rec) = envelope.get("recomputed") {
+                let changes: Vec<&str> = [
+                    "decision",
+                    "reason",
+                    "skills",
+                    "omitted_rank_mass",
+                    "needs_skill",
+                    "phase",
+                    "choice_confidence",
+                    "none_probability",
+                ]
+                .into_iter()
+                .filter(|key| base_rec[*key] != comp_rec[*key])
+                .collect();
+                envelope.insert("comparison_changes".into(), json!(changes));
+            }
+        }
+        let complete = base_outcome.run_status == RunStatus::Complete
+            && comp_outcome.run_status == RunStatus::Complete;
+        if !complete {
+            envelope.insert("run_status".into(), json!("partial"));
+            envelope.insert("gate_status".into(), json!("not-established"));
+            if let Some(c) = envelope
+                .get_mut("completeness")
+                .and_then(Value::as_object_mut)
+            {
+                c.insert("evidence_compatible".into(), json!(false));
+                let comparison = &comp_outcome.document.as_value()["completeness"];
+                let required = c
+                    .get("stages_required")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0)
+                    .max(comparison["stages_required"].as_u64().unwrap_or(0));
+                let completed = c
+                    .get("stages_completed")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0)
+                    .min(comparison["stages_completed"].as_u64().unwrap_or(0));
+                c.insert("stages_required".into(), json!(required));
+                c.insert("stages_completed".into(), json!(completed));
+            }
         }
         let doc_bytes = serde_json::to_vec(&Value::Object(envelope))
             .map_err(|e| ReplayError::InvalidJson(e.to_string()))?;
@@ -552,7 +793,11 @@ pub fn execute_replay_comparison(
             } else {
                 RunStatus::Partial
             },
-            gate_status: base_outcome.gate_status,
+            gate_status: if complete {
+                base_outcome.gate_status
+            } else {
+                GateStatus::NotEstablished
+            },
             historical_decision: base_outcome.historical_decision,
             recomputed_decision: base_outcome.recomputed_decision,
             explanation: base_outcome.explanation,
@@ -572,6 +817,27 @@ pub fn execute_replay(
     // unvalidated distribution, where a missing `__none__` counts as zero and every
     // candidate would beat none (sr-u66v).
     case.validate()?;
+    if let Some(pol) = policy {
+        pol.validate()?;
+    }
+    if let Some(frozen) = &case.frozen_inputs
+        && !frozen.computation_compatible()
+    {
+        return build_outcome(
+            (case, policy),
+            RunStatus::Partial,
+            GateStatus::NotEstablished,
+            case.historical_decision["decision"]
+                .as_str()
+                .unwrap_or("unavailable"),
+            None,
+            None,
+            Some(
+                "exact replay requires the recorded computation and tested numeric/build profile"
+                    .into(),
+            ),
+        );
+    }
     let hist_decision_str = case
         .historical_decision
         .get("decision")
@@ -580,13 +846,13 @@ pub fn execute_replay(
         .to_string();
 
     // Check policy compatibility
-    if let Some(pol) = policy {
-        pol.validate()?;
-        if pol.w_prior.is_some_and(|w| w > 0.0) {
-            return Err(ReplayError::IncompatiblePolicy(
-                "turning on uncaptured prior is not replayable".into(),
-            ));
-        }
+    if let Some(pol) = policy
+        && case.frozen_inputs.is_none()
+        && (pol.w_prior.is_some_and(|w| w > 0.0) || pol.w_phase.is_some_and(|w| w > 0.0))
+    {
+        return Err(ReplayError::IncompatiblePolicy(
+            "turning on uncaptured prior or phase input is not replayable".into(),
+        ));
     }
 
     // Effective scoring profile
@@ -610,7 +876,7 @@ pub fn execute_replay(
         // Explicit resolution bypasses inference and weights
         let recomputed = case.historical_decision.clone();
         return build_outcome(
-            case,
+            (case, policy),
             RunStatus::Complete,
             GateStatus::NotApplicable,
             &hist_decision_str,
@@ -620,30 +886,31 @@ pub fn execute_replay(
         );
     }
 
+    if hist_decision_str == "unavailable" {
+        return build_outcome((case, policy), RunStatus::Complete, GateStatus::NotApplicable,
+            &hist_decision_str, Some("unavailable"), Some(case.historical_decision.clone()),
+            Some("reproduced terminal metadata only; no unobserved provider answer was reconstructed".into()));
+    }
+
     // Step 2: Wide Gate evaluation
     if let Some(wide) = &case.recorded_responses.wide {
-        let gate_score = wide.gate_score.unwrap_or_else(|| {
-            // Default gate heuristic: 1.0 - none Choice probability
-            let none_prob = wide
-                .distribution
-                .iter()
-                .find(|d| d.option_id == "__none__")
-                .map(|d| d.probability)
-                .unwrap_or(0.0);
-            (1.0 - none_prob).clamp(0.0, 1.0)
-        });
+        let Some(gate_score) = wide.gate_score else {
+            return build_outcome(
+                (case, policy),
+                RunStatus::Partial,
+                GateStatus::NotEstablished,
+                &hist_decision_str,
+                None,
+                None,
+                Some("missing recorded wide heuristic; none probability cannot replace it".into()),
+            );
+        };
 
         if gate_score < gate_threshold {
-            let recomputed = make_recomputed_abstain(case, "low-fit");
-            let gate_status = if case.manifest.evidence_origin == "synthetic" {
-                GateStatus::NotApplicable
-            } else if hist_decision_str == "abstain" {
-                GateStatus::Passed
-            } else {
-                GateStatus::NotEstablished
-            };
+            let recomputed = make_recomputed_abstain(case, "low-need");
+            let gate_status = replay_parity_status(case, &recomputed, policy);
             return build_outcome(
-                case,
+                (case, policy),
                 RunStatus::Complete,
                 gate_status,
                 &hist_decision_str,
@@ -660,7 +927,7 @@ pub fn execute_replay(
                 // If historical was low-gate abstention without rerank, and policy lowered the gate,
                 // rerank is missing: report as partial and not estimable.
                 return build_outcome(
-                    case,
+                    (case, policy),
                     RunStatus::Partial,
                     GateStatus::NotEstablished,
                     &hist_decision_str,
@@ -680,7 +947,7 @@ pub fn execute_replay(
         // is either absent or a different quantity wearing the same name.
         if rerank.stated_confidence.is_none() {
             return build_outcome(
-                case,
+                (case, policy),
                 RunStatus::Partial,
                 GateStatus::NotEstablished,
                 &hist_decision_str,
@@ -693,6 +960,18 @@ pub fn execute_replay(
             );
         }
 
+        if rerank.fits.is_empty() {
+            return build_outcome(
+                (case, policy),
+                RunStatus::Partial,
+                GateStatus::NotEstablished,
+                &hist_decision_str,
+                None,
+                None,
+                Some("missing recorded candidate fits; unevaluated fits cannot be replaced with zero".into()),
+            );
+        }
+
         // Step 3: Candidate eligibility on shortlist
         let snoozes: BTreeSet<&str> = case
             .local_evidence
@@ -700,11 +979,12 @@ pub fn execute_replay(
             .iter()
             .map(|s| s.as_str())
             .collect();
-        let loaded: BTreeSet<&str> = case
+        let loaded: BTreeSet<(&str, &str)> = case
             .local_evidence
             .loaded_references
             .iter()
-            .map(|r| r.skill_id.as_str())
+            .filter(|r| r.availability == "available")
+            .map(|r| (r.skill_id.as_str(), r.content_hash.as_str()))
             .collect();
 
         let none_rerank_prob = rerank
@@ -735,16 +1015,38 @@ pub fn execute_replay(
             fit: f64,
         }
 
+        let wide_probs_by_id: BTreeMap<&str, f64> = wide
+            .distribution
+            .iter()
+            .map(|d| (d.option_id.as_str(), d.probability))
+            .collect();
         let mut eligible: Vec<EligibleCandidate<'_>> = Vec::new();
+        let mut locally_admitted = 0;
+        let mut any_fitting = false;
         for candidate in &case.captured_request.candidate_options {
             let id = candidate.skill_id.as_str();
-            if snoozes.contains(id) || loaded.contains(id) {
+            // Wide candidates outside the detailed Choice were never fitted.
+            let Some(fit) = fits_by_id.get(id).copied() else {
+                continue;
+            };
+            let matching_reference = candidate.usage_kind == "reference"
+                && loaded.contains(&(id, candidate.content_hash.as_str()));
+            let allowed = case.frozen_inputs.as_ref().map(|f| {
+                f.visible_roster
+                    .iter()
+                    .find(|m| m.skill_id == id)
+                    .is_some_and(|m| m.pre_fit_eligible)
+            });
+            if allowed == Some(false)
+                || (allowed.is_none() && (snoozes.contains(id) || matching_reference))
+            {
                 continue;
             }
-            let fit = fits_by_id.get(id).copied().unwrap_or(0.0);
+            locally_admitted += 1;
             if fit < fit_threshold {
                 continue;
             }
+            any_fitting = true;
             let prob = probs_by_id.get(id).copied().unwrap_or(0.0);
             // Each candidate must individually beat __none__
             if prob <= none_rerank_prob {
@@ -761,16 +1063,37 @@ pub fn execute_replay(
         }
 
         if eligible.is_empty() {
-            let recomputed = make_recomputed_abstain(case, "no-shortlist-match");
-            let gate_status = if case.manifest.evidence_origin == "synthetic" {
-                GateStatus::NotApplicable
-            } else if hist_decision_str == "abstain" {
-                GateStatus::Passed
+            // Frozen eligibility records admission, not the reason for an all-removed
+            // shortlist. Do not borrow that reason from the historical answer to
+            // manufacture parity. Live captures normally stop locally before this.
+            if locally_admitted == 0 && case.frozen_inputs.is_some() {
+                return build_outcome(
+                    (case, policy), RunStatus::Partial, GateStatus::NotEstablished,
+                    &hist_decision_str, None, None,
+                    Some("no locally admitted shortlist candidate; the local exclusion reason was not captured".into()),
+                );
+            }
+            let local_reason = if case.captured_request.candidate_options.iter().any(|c| {
+                fits_by_id.contains_key(c.skill_id.as_str())
+                    && !snoozes.contains(c.skill_id.as_str())
+            }) {
+                "already-loaded"
             } else {
-                GateStatus::NotEstablished
+                "snoozed"
             };
-            return build_outcome(
+            let recomputed = make_recomputed_abstain(
                 case,
+                if locally_admitted == 0 {
+                    local_reason
+                } else if any_fitting {
+                    "no-shortlist-match"
+                } else {
+                    "low-fit"
+                },
+            );
+            let gate_status = replay_parity_status(case, &recomputed, policy);
+            return build_outcome(
+                (case, policy),
                 RunStatus::Complete,
                 gate_status,
                 &hist_decision_str,
@@ -781,6 +1104,14 @@ pub fn execute_replay(
         }
 
         // Step 4: Score eligible candidates using rank
+        // The live pipeline retains wide shortlist order through eligibility.
+        // Softmax addition is order-sensitive, so capture/discovery order cannot
+        // replace that order even when the final selected IDs are identical.
+        eligible.sort_by(|a, b| {
+            wide_probs_by_id[b.skill_id]
+                .total_cmp(&wide_probs_by_id[a.skill_id])
+                .then_with(|| a.skill_id.cmp(b.skill_id))
+        });
         let parsed_skill_ids: Vec<SkillId> = eligible
             .iter()
             .map(|c| SkillId::new(c.skill_id).unwrap())
@@ -792,33 +1123,26 @@ pub fn execute_replay(
                 id: &parsed_skill_ids[i],
                 rerank: c.rerank_prob,
                 fit: c.fit,
-                prior_delta: 0.0,
-                phase_match: 0.0,
+                prior_delta: case
+                    .frozen_inputs
+                    .as_ref()
+                    .and_then(|f| f.numeric_inputs.iter().find(|n| n.skill_id == c.skill_id))
+                    .map_or(0.0, |n| n.prior_delta),
+                phase_match: case
+                    .frozen_inputs
+                    .as_ref()
+                    .and_then(|f| f.numeric_inputs.iter().find(|n| n.skill_id == c.skill_id))
+                    .map_or(0.0, |n| n.phase_match),
             })
             .collect();
 
         let scored = rank(&scoring_inputs, weights, top_k)
             .map_err(|e| ReplayError::InvalidField(format!("scoring failed: {e}")))?;
 
-        let wide_probs_by_id: BTreeMap<&str, f64> = case
-            .recorded_responses
-            .wide
-            .as_ref()
-            .map(|w| {
-                w.distribution
-                    .iter()
-                    .map(|d| (d.option_id.as_str(), d.probability))
-                    .collect()
-            })
-            .unwrap_or_default();
-
         let mut ranked_skills = Vec::new();
         for (rank_idx, s) in scored.returned.iter().enumerate() {
             let candidate = &eligible[s.index];
-            let wide_prob = wide_probs_by_id
-                .get(candidate.skill_id)
-                .copied()
-                .unwrap_or(candidate.rerank_prob);
+            let wide_prob = wide_probs_by_id[candidate.skill_id];
             ranked_skills.push(json!({
                 "rank": rank_idx + 1,
                 "skill_id": candidate.skill_id,
@@ -844,16 +1168,10 @@ pub fn execute_replay(
         let recomputed =
             make_recomputed_ranked(case, ranked_skills, scored.omitted_mass, none_rerank_prob);
 
-        let gate_status = if case.manifest.evidence_origin == "synthetic" {
-            GateStatus::NotApplicable
-        } else if hist_decision_str == "ranked" {
-            GateStatus::Passed
-        } else {
-            GateStatus::NotEstablished
-        };
+        let gate_status = replay_parity_status(case, &recomputed, policy);
 
         return build_outcome(
-            case,
+            (case, policy),
             RunStatus::Complete,
             gate_status,
             &hist_decision_str,
@@ -863,10 +1181,23 @@ pub fn execute_replay(
         );
     }
 
+    if hist_decision_str == "ranked"
+        || case.recorded_responses.rerank.is_some()
+        || !case.manifest.stages_recorded.is_empty()
+        || case.historical_decision["needs_skill"].is_number()
+        || case
+            .frozen_inputs
+            .as_ref()
+            .is_some_and(|frozen| !frozen.stages.is_empty())
+    {
+        return build_outcome((case, policy), RunStatus::Partial, GateStatus::NotEstablished,
+            &hist_decision_str, None, None, Some("missing recorded wide response; historical metadata does not reconstruct inference".into()));
+    }
+
     // If neither wide nor explicit was captured, replay the historical decision as-is
     let recomputed = case.historical_decision.clone();
     build_outcome(
-        case,
+        (case, policy),
         RunStatus::Complete,
         GateStatus::NotApplicable,
         &hist_decision_str,
@@ -877,7 +1208,7 @@ pub fn execute_replay(
 }
 
 fn build_outcome(
-    case: &ReplayCase,
+    context: (&ReplayCase, Option<&ReplayPolicy>),
     run_status: RunStatus,
     gate_status: GateStatus,
     hist_decision: &str,
@@ -885,12 +1216,41 @@ fn build_outcome(
     recomputed_value: Option<Value>,
     explanation: Option<String>,
 ) -> Result<ReplayOutcome, ReplayError> {
-    let stages_req = case.manifest.stages_recorded.len().max(1);
-    let stages_comp = if run_status == RunStatus::Complete {
-        stages_req
+    let (case, policy) = context;
+    // Count actual received responses independently of input/profile compatibility.
+    // A lowered gate can require a stage that the original invocation never started.
+    let stages_comp = if hist_decision == "unavailable" {
+        // Terminal metadata replay evaluates no provider stages. Availability of
+        // attempted inputs/responses remains visible in input_completeness.
+        0
     } else {
-        case.manifest.stages_recorded.len().saturating_sub(1)
+        usize::from(case.recorded_responses.wide.is_some())
+            + usize::from(case.recorded_responses.rerank.is_some())
     };
+    let mut stages_req = case
+        .frozen_inputs
+        .as_ref()
+        .map_or(0, |f| f.stages.len())
+        .max(stages_comp);
+    let threshold = policy
+        .and_then(|p| p.gate_threshold)
+        .unwrap_or(case.local_evidence.scoring_profile.gate_threshold);
+    if hist_decision == "unavailable" {
+        stages_req = 0;
+    } else if case.recorded_responses.rerank.is_some()
+        || case
+            .recorded_responses
+            .wide
+            .as_ref()
+            .and_then(|w| w.gate_score)
+            .map_or(hist_decision == "ranked", |gate| gate >= threshold)
+    {
+        stages_req = stages_req.max(2);
+    } else if !case.manifest.stages_recorded.is_empty()
+        || case.historical_decision["needs_skill"].is_number()
+    {
+        stages_req = stages_req.max(1);
+    }
 
     let mut envelope = Map::new();
     envelope.insert("schema_version".into(), json!(SCHEMA_VERSION));
@@ -926,9 +1286,27 @@ fn build_outcome(
             // A run that could not recompute did not have compatible evidence.
             // Reporting `true` beside a null recomputation told a reader the
             // artifact was sufficient when it demonstrably was not.
-            "evidence_compatible": run_status == RunStatus::Complete
+            "evidence_compatible": run_status == RunStatus::Complete && case.frozen_inputs.as_ref().is_some_and(FrozenReplayInputs::exact_compatible) && hist_decision != "unavailable"
         }),
     );
+    let frozen = case.frozen_inputs.as_ref();
+    envelope.insert(
+        "input_completeness".into(),
+        json!({
+            "frozen_format": frozen.map(|f| f.format_version),
+            "visible_roster": frozen.is_some_and(|f| f.roster_complete),
+            "local_eligibility": frozen.is_some(),
+            "numeric_inputs": frozen.is_some(),
+            "computation_profile": frozen.is_some_and(FrozenReplayInputs::computation_compatible),
+            "stages": frozen.map(|f| f.stages.iter().map(|s| json!({
+                "stage": s.stage, "request": true, "option_map": true,
+                "response": s.response_json.is_some(), "exact_inputs": !s.privacy_transformed
+            })).collect::<Vec<_>>()).unwrap_or_default()
+        }),
+    );
+    if let Some(note) = &explanation {
+        envelope.insert("replay_note".into(), Value::from(note.clone()));
+    }
     envelope.insert("historical".into(), case.historical_decision.clone());
     if let Some(rec) = recomputed_value {
         envelope.insert("recomputed".into(), rec);
@@ -960,15 +1338,38 @@ fn make_recomputed_abstain(case: &ReplayCase, reason: &str) -> Value {
     recomputed["choice_confidence"] = Value::Null;
     recomputed["none_probability"] = Value::Null;
     recomputed["phase"] = Value::Null;
-    if let Some(roster) = recomputed.get_mut("roster").and_then(Value::as_object_mut) {
-        roster.insert("wide_candidates".into(), Value::from(0));
-        roster.insert("shortlist".into(), Value::from(0));
-        roster.insert("retrieval".into(), Value::from("not-evaluated"));
-        if let Some(provenance) = roster.get_mut("provenance").and_then(Value::as_object_mut) {
-            provenance.insert("wide_set_id".into(), Value::Null);
-            provenance.insert("rerank_set_id".into(), Value::Null);
+    if case.frozen_inputs.is_some() {
+        recomputed["needs_skill"] = case
+            .recorded_responses
+            .wide
+            .as_ref()
+            .and_then(|w| w.gate_score)
+            .map_or(Value::Null, Value::from);
+        // Phase is frozen in the full recorded wide response and historical output.
+        recomputed["phase"] = case
+            .frozen_inputs
+            .as_ref()
+            .and_then(FrozenReplayInputs::phase)
+            .map_or(Value::Null, Value::from);
+        if reason != "low-need" {
+            recomputed["choice_confidence"] = case
+                .recorded_responses
+                .rerank
+                .as_ref()
+                .and_then(|r| r.stated_confidence)
+                .map_or(Value::Null, Value::from);
+            recomputed["none_probability"] = case
+                .recorded_responses
+                .rerank
+                .as_ref()
+                .and_then(|r| r.distribution.iter().find(|d| d.option_id == "__none__"))
+                .map_or(Value::Null, |d| Value::from(d.probability));
         }
     }
+
+    // The captured options can be only a prefiltered subset. Keep the declared
+    // historical roster coverage and retrieval provenance; replay did not run
+    // discovery or retrieval and cannot replace those observations.
     recomputed
 }
 
@@ -982,7 +1383,15 @@ fn make_recomputed_ranked(
     recomputed["event_id"] = Value::from(format!("replay-{}", case.case_id));
     recomputed["decision"] = Value::from("ranked");
     recomputed["reason"] = Value::from("eligible-candidates");
-    let returned_count = ranked_skills.len();
+    if let Some(frozen) = &case.frozen_inputs {
+        recomputed["phase"] = frozen.phase().map_or(Value::Null, Value::from);
+        recomputed["needs_skill"] = case
+            .recorded_responses
+            .wide
+            .as_ref()
+            .and_then(|w| w.gate_score)
+            .map_or(Value::Null, Value::from);
+    }
     recomputed["skills"] = Value::Array(ranked_skills);
     recomputed["omitted_rank_mass"] = Value::from(omitted_mass);
     recomputed["none_probability"] = Value::from(none_prob);
@@ -996,27 +1405,8 @@ fn make_recomputed_ranked(
         .as_ref()
         .and_then(|rerank| rerank.stated_confidence)
         .map_or(Value::Null, Value::from);
-    if let Some(roster) = recomputed.get_mut("roster").and_then(Value::as_object_mut) {
-        let wide_count = case.captured_request.candidate_options.len() as u64;
-        let shortlist_count = case
-            .recorded_responses
-            .rerank
-            .as_ref()
-            .map(|r| r.fits.len() as u64)
-            .unwrap_or(returned_count as u64)
-            .max(returned_count as u64);
-
-        let total = wide_count.max(1);
-        let eligible = wide_count.max(1);
-        let wide = wide_count.max(1);
-        let shortlist = shortlist_count.min(wide).max(returned_count as u64);
-
-        roster.insert("total".into(), Value::from(total));
-        roster.insert("eligible".into(), Value::from(eligible));
-        roster.insert("wide_candidates".into(), Value::from(wide));
-        roster.insert("shortlist".into(), Value::from(shortlist));
-        roster.insert("retrieval".into(), Value::from("full"));
-    }
+    // Preserve the historical universe even for legacy captures that only
+    // contain wide options. In particular a Quill subset is not a full roster.
     recomputed
 }
 
@@ -1043,16 +1433,14 @@ fn validate_distribution(
     let mut seen = BTreeSet::new();
     for item in dist {
         if !seen.insert(&item.option_id) {
-            return Err(ReplayError::OptionMapMismatch(format!(
-                "duplicate option ID in distribution: {}",
-                item.option_id
-            )));
+            return Err(ReplayError::OptionMapMismatch(
+                "duplicate distribution option definition".into(),
+            ));
         }
         if item.option_id != "__none__" && !candidate_ids.contains(&item.option_id) {
-            return Err(ReplayError::OptionMapMismatch(format!(
-                "distribution option ID {} not in candidates",
-                item.option_id
-            )));
+            return Err(ReplayError::OptionMapMismatch(
+                "distribution contains a foreign option".into(),
+            ));
         }
         if !item.probability.is_finite() || item.probability < 0.0 || item.probability > 1.0 {
             return Err(ReplayError::InvalidField(format!(
@@ -1071,10 +1459,10 @@ fn validate_distribution(
             "distribution must include __none__".into(),
         ));
     }
-    if require_all && let Some(missing) = candidate_ids.iter().find(|id| !seen.contains(*id)) {
-        return Err(ReplayError::OptionMapMismatch(format!(
-            "distribution is missing candidate option {missing}"
-        )));
+    if require_all && candidate_ids.iter().any(|id| !seen.contains(id)) {
+        return Err(ReplayError::OptionMapMismatch(
+            "distribution is missing a candidate option".into(),
+        ));
     }
     let tolerance = crate::jev::codec::SUM_TOLERANCE;
     if sum <= 0.0 || (sum - 1.0).abs() > tolerance {
@@ -1083,26 +1471,136 @@ fn validate_distribution(
         )));
     }
     if choice_probability != Some(maximum) {
-        return Err(ReplayError::InvalidField(format!(
-            "choice {choice} is not a maximum-probability option"
-        )));
+        return Err(ReplayError::InvalidField(
+            "choice is not a maximum-probability option".into(),
+        ));
     }
     Ok(())
 }
 
-fn parse_bounded_json(bytes: &[u8], _max_depth: usize) -> Result<Value, ReplayError> {
+fn parse_bounded_json(bytes: &[u8], max_depth: usize) -> Result<Value, ReplayError> {
     use serde::de::DeserializeSeed;
     let mut deserializer = serde_json::Deserializer::from_slice(bytes);
-    crate::output::JsonSeed(0)
+    let value = crate::output::JsonSeed(0)
         .deserialize(&mut deserializer)
-        .map_err(|e| {
-            let msg = e.to_string();
-            if msg.contains("duplicate JSON key") {
-                ReplayError::DuplicateKey(msg)
-            } else if msg.contains("JSON depth limit") {
+        .map_err(|error| {
+            let message = error.to_string();
+            if message.contains("duplicate JSON key") {
+                ReplayError::DuplicateKey("replay definition".into())
+            } else if message.contains("JSON depth limit") {
                 ReplayError::ExcessiveDepth
             } else {
-                ReplayError::InvalidJson(msg)
+                ReplayError::InvalidJson("syntax or value".into())
             }
+        })?;
+    deserializer
+        .end()
+        .map_err(|_| ReplayError::InvalidJson("trailing content".into()))?;
+    fn depth(value: &Value, current: usize, max: usize) -> Result<(), ReplayError> {
+        if current > max {
+            return Err(ReplayError::ExcessiveDepth);
+        }
+        match value {
+            Value::Array(items) => {
+                for item in items {
+                    depth(item, current + 1, max)?;
+                }
+            }
+            Value::Object(items) => {
+                for item in items.values() {
+                    depth(item, current + 1, max)?;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+    depth(&value, 1, max_depth)?;
+    Ok(value)
+}
+
+fn replay_parity_status(
+    case: &ReplayCase,
+    recomputed: &Value,
+    policy: Option<&ReplayPolicy>,
+) -> GateStatus {
+    if case.manifest.evidence_origin == "synthetic" {
+        return GateStatus::NotApplicable;
+    }
+    if policy.is_some()
+        || !case
+            .frozen_inputs
+            .as_ref()
+            .is_some_and(FrozenReplayInputs::exact_compatible)
+    {
+        return GateStatus::NotEstablished;
+    }
+    let keys = [
+        "decision",
+        "reason",
+        "needs_skill",
+        "phase",
+        "none_probability",
+        "choice_confidence",
+        "omitted_rank_mass",
+    ];
+    let equal = keys
+        .iter()
+        .all(|k| recomputed[*k] == case.historical_decision[*k])
+        && replay_skill_values(recomputed) == replay_skill_values(&case.historical_decision);
+    if equal {
+        GateStatus::Passed
+    } else {
+        GateStatus::Failed
+    }
+}
+fn replay_skill_values(value: &Value) -> Vec<Value> {
+    value["skills"]
+        .as_array()
+        .map(|skills| {
+            skills
+                .iter()
+                .map(|skill| {
+                    let mut object = Map::new();
+                    for key in [
+                        "rank",
+                        "skill_id",
+                        "invocation_name",
+                        "content_hash",
+                        "visibility",
+                        "rank_score",
+                        "wide_probability",
+                        "rerank_probability",
+                        "fits",
+                    ] {
+                        object.insert(key.into(), skill.get(key).cloned().unwrap_or(Value::Null));
+                    }
+                    Value::Object(object)
+                })
+                .collect()
         })
+        .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod case_serialization_tests {
+    use super::CaseWriter;
+
+    #[test]
+    fn escaped_json_must_fit_before_buffer_growth_and_keeps_a_success_counterpart() {
+        let input = "\"".repeat(10);
+        let expected = b"\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\"";
+        assert!(input.len() < 16);
+        assert!(expected.len() > 16);
+        let mut too_small = CaseWriter::new(16);
+        assert!(serde_json::to_writer_pretty(&mut too_small, &input).is_err());
+        assert!(too_small.oversized.is_some_and(|len| len > 16));
+        assert!(too_small.bytes.len() <= 16);
+        assert!(too_small.bytes.capacity() <= 16);
+
+        let mut enough = CaseWriter::new(expected.len());
+        serde_json::to_writer_pretty(&mut enough, &input).unwrap();
+        assert_eq!(enough.bytes, expected);
+        assert!(enough.bytes.capacity() <= expected.len());
+    }
 }

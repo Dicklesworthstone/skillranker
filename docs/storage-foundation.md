@@ -124,6 +124,21 @@ durability. macOS admits APFS through its platform adapter; current native
 qualification remains tracked separately in `sr-roadmap-l1i.5.23`. Other
 operating systems do not export the module. tmpfs caches disappear on reboot.
 
+The October 6, 2026 requalification attempt at source `aeeac47` did not run
+native tests. The existing Mac dispatcher reached its ARM64 worker over its
+configured LAN SSH route, and the worker's pinned `nightly-2026-08-31` inventory
+was restored without changing the toolchain. An isolated source workspace was
+placed on APFS. However, released RCH `2.1.16` (`4b2f1fa398ec`) refused the
+`storage_contract`, `export_contract`, and `ledger_fencing_contract` invocation
+before compilation: its source lock requires GNU `flock --no-fork`, which the
+worker's macOS `flock 0.4.0` does not implement. RCH's native lock fix exists in
+upstream commit `30f413465748b79af07a94c9e0f23a85a6b6be4b`, but the latest
+published release checked on that date predates it. Source locks and required
+remote execution were preserved; no local compilation fallback was used.
+This attempt establishes neither current native behavior nor a linked macOS
+SQLite engine identity. Both available Macs are ARM64; physical Intel
+qualification and the original release matrix remain unmet on `.5.23`.
+
 Held directory/main descriptors and identity rechecks detect ordinary replacement.
 SQLite additionally uses `SQLITE_OPEN_NOFOLLOW`. SQLite still opens a pathname:
 this boundary does not isolate an attacker with the same effective UID, root, or

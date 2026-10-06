@@ -1161,8 +1161,64 @@ fn finish_invocation<T>(
     }
 }
 
+/// Drain the owned runtime before publication, retaining the accounting from a
+/// completed ranking even when cleanup exceeds its deadline. A bounded failure
+/// receipt may still be emitted; a late successful decision must lose its advice.
+fn finish_rank_invocation(
+    invocation: crate::runtime::ProcessInvocation,
+    outcome: Result<OutputDocument, Failure>,
+) -> Result<OutputDocument, Failure> {
+    let clock = invocation.clock();
+    match (outcome, finish_invocation(invocation, Ok(()))) {
+        (outcome, Ok(())) => outcome,
+        (Err(_), Err(failure)) => Err(failure),
+        (Ok(document), Err(failure)) => {
+            rank_failure_receipt(document, failure, clock.now().as_millis())
+        }
+    }
+}
+
+fn rank_failure_receipt(
+    mut document: OutputDocument,
+    failure: Failure,
+    elapsed_ms: u64,
+) -> Result<OutputDocument, Failure> {
+    match document.kind() {
+        crate::output::OutputKind::Decision(crate::output::Decision::Unavailable) => {
+            // Keep the original failure and measured/unknown usage.
+        }
+        crate::output::OutputKind::Decision(_) => {
+            let mut value = document.as_value().clone();
+            value["decision"] = serde_json::json!("unavailable");
+            value["reason"] = serde_json::json!("timeout");
+            value["skills"] = serde_json::json!([]);
+            for field in [
+                "needs_skill",
+                "choice_confidence",
+                "none_probability",
+                "phase",
+                "omitted_rank_mass",
+            ] {
+                value[field] = serde_json::Value::Null;
+            }
+            value["error"] = OutputDocument::failure_with_details(
+                crate::output::ErrorKind::Timeout,
+                &failure.2,
+                "Retry when local work and cleanup can finish within the deadline.",
+                false,
+            )
+            .as_value()["error"]
+                .clone();
+            document = OutputDocument::from_value(value).map_err(|_| failure)?;
+        }
+        _ => return Err(failure),
+    }
+    document.record_elapsed(elapsed_ms);
+    Ok(document)
+}
+
 /// The work cutoff prevents late advice, not a bounded error receipt. Runtime
-/// shutdown still has to finish before the total deadline in finish_invocation.
+/// cleanup can replace successful advice with a timeout while retaining usage.
 /// In particular, a follower can spend its work budget waiting for its leader;
 /// do not replace that unavailable document and its usage with a preflight error.
 fn validate_rank_completion(
@@ -4274,8 +4330,11 @@ fn rank_command(
     // reserved cleanup window. Do not reclassify timely work as late merely
     // because its successful cleanup entered that window.
     let completed_in_time = timely(clock);
-    let output_doc = finish_invocation(invocation, outcome)?;
-    validate_rank_completion(completed_in_time, &output_doc)?;
+    let output_doc = finish_rank_invocation(invocation, outcome)?;
+    let output_doc = match validate_rank_completion(completed_in_time, &output_doc) {
+        Ok(()) => output_doc,
+        Err(failure) => rank_failure_receipt(output_doc, failure, clock.now().as_millis())?,
+    };
 
     // An unavailable decision, or a dry-run preview of one, exits with its
     // error category; the full document is still the JSON output.
@@ -5520,6 +5579,120 @@ mod invocation_cleanup_tests {
             let expected = outcome.clone();
             assert_eq!(finish_invocation(invocation, outcome), expected);
         }
+    }
+
+    fn expired_invocation() -> ProcessInvocation {
+        let clock = EntryClock::capture_with(
+            DurationMillis::new("test_total", 100, 3_000).unwrap(),
+            DurationMillis::new("test_cleanup", 20, 3_000).unwrap(),
+        )
+        .unwrap();
+        let invocation = ProcessInvocation::from_clock(clock).unwrap();
+        std::thread::sleep(Duration::from_millis(120));
+        invocation
+    }
+
+    #[test]
+    fn late_rank_cleanup_withholds_advice_and_preserves_measured_and_unknown_usage() {
+        for fixture in [
+            include_str!("../tests/fixtures/output-ranked.v1.json"),
+            include_str!("../tests/fixtures/output-explicit.v1.json"),
+            include_str!("../tests/fixtures/output-abstain.v1.json"),
+        ] {
+            let mut value: serde_json::Value = serde_json::from_str(fixture).unwrap();
+            if value["decision"] == "ranked" {
+                value["usage"]["http_attempts"] = serde_json::json!(3);
+                value["usage"]["unknown_usage_attempts"] = serde_json::json!(1);
+            }
+            let original = value.clone();
+            let document = OutputDocument::from_value(value).unwrap();
+            let result = finish_rank_invocation(expired_invocation(), Ok(document)).unwrap();
+            let result = result.as_value();
+            assert_eq!(result["decision"], "unavailable");
+            assert_eq!(result["error"]["kind"], "timeout");
+            assert_eq!(result["error"]["code"], 6);
+            assert_eq!(result["skills"], serde_json::json!([]));
+            for field in ["usage", "model", "roster", "cache", "persistence"] {
+                assert_eq!(result[field], original[field], "{field}");
+            }
+            for field in [
+                "needs_skill",
+                "choice_confidence",
+                "none_probability",
+                "phase",
+                "omitted_rank_mass",
+            ] {
+                assert!(result[field].is_null(), "{field}");
+            }
+        }
+    }
+
+    #[test]
+    fn late_rank_cleanup_preserves_the_original_failure_receipt() {
+        let ranked = OutputDocument::from_value(
+            serde_json::from_str(include_str!("../tests/fixtures/output-ranked.v1.json")).unwrap(),
+        )
+        .unwrap();
+        let mut unavailable = finish_rank_invocation(expired_invocation(), Ok(ranked)).unwrap();
+        unavailable.record_elapsed(0);
+        let original = unavailable.as_value().clone();
+        let result = finish_rank_invocation(expired_invocation(), Ok(unavailable)).unwrap();
+        for (field, value) in original.as_object().unwrap() {
+            if field != "elapsed_ms" {
+                assert_eq!(&result.as_value()[field], value, "{field}");
+            }
+        }
+        assert!(result.as_value()["elapsed_ms"].as_u64().unwrap() >= 100);
+    }
+
+    #[test]
+    fn late_rank_cleanup_cannot_publish_a_successful_artifact() {
+        let document = OutputDocument::from_value(
+            serde_json::from_str(include_str!("../tests/fixtures/output-preview.v1.json")).unwrap(),
+        )
+        .unwrap();
+        let result = finish_rank_invocation(expired_invocation(), Ok(document));
+        assert!(matches!(result, Err((6, "timeout", _))), "{result:?}");
+    }
+
+    #[test]
+    fn timely_rank_cleanup_preserves_the_entire_document() {
+        let document = OutputDocument::from_value(
+            serde_json::from_str(include_str!("../tests/fixtures/output-ranked.v1.json")).unwrap(),
+        )
+        .unwrap();
+        let original = document.as_value().clone();
+        let result =
+            finish_rank_invocation(ProcessInvocation::enter().unwrap(), Ok(document)).unwrap();
+        assert_eq!(result.as_value(), &original);
+    }
+
+    #[test]
+    fn a_late_work_cutoff_keeps_usage_when_cleanup_is_timely() {
+        let clock = EntryClock::capture_with(
+            DurationMillis::new("test_total", 1_000, 3_000).unwrap(),
+            DurationMillis::new("test_cleanup", 900, 3_000).unwrap(),
+        )
+        .unwrap();
+        let invocation = ProcessInvocation::from_clock(clock).unwrap();
+        let mut value: serde_json::Value =
+            serde_json::from_str(include_str!("../tests/fixtures/output-ranked.v1.json")).unwrap();
+        value["usage"]["http_attempts"] = serde_json::json!(3);
+        value["usage"]["unknown_usage_attempts"] = serde_json::json!(1);
+        let usage = value["usage"].clone();
+        let document = OutputDocument::from_value(value).unwrap();
+        std::thread::sleep(Duration::from_millis(150));
+        let completed_in_time = timely(&clock);
+        let document = finish_rank_invocation(invocation, Ok(document)).unwrap();
+        // The result was still actionable after timely cleanup; only the work
+        // cutoff withholds it here, matching rank_command's publication path.
+        assert_eq!(document.as_value()["decision"], "ranked");
+        let failure = validate_rank_completion(completed_in_time, &document).unwrap_err();
+        let result = rank_failure_receipt(document, failure, clock.now().as_millis()).unwrap();
+        assert_eq!(result.as_value()["decision"], "unavailable");
+        assert_eq!(result.as_value()["error"]["kind"], "timeout");
+        assert_eq!(result.as_value()["skills"], serde_json::json!([]));
+        assert_eq!(result.as_value()["usage"], usage);
     }
 }
 

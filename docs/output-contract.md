@@ -27,6 +27,14 @@ kebab-case `reason`, `context_quality`, `quality`, `roster`, stage estimates,
 `skills`, `omitted_rank_mass`, cache/model/usage metadata, persistence status,
 warnings, `warnings_omitted`, and `elapsed_ms`.
 
+If optional ledger recording cannot be confirmed, rank adds
+`ledger-finalization-unconfirmed`, including when the ranking itself succeeds.
+The decision or original failure and incurred usage remain visible; the durable
+ledger outcome or usage may remain unknown. This warning
+does not claim that a late write was rolled back or that an in-flight row was finalized.
+Failure recording remains bounded: a run that returns after its permitted
+recording work window can retain an in-flight row with an unconfirmed warning.
+
 | Decision | Skills | Model estimates | Ordinary CLI exit |
 | --- | --- | --- | --- |
 | `ranked` | Nonempty, at most 32, consecutive ranks and distinct stable IDs | Evaluated probabilities, phase, and scores | 0 |
@@ -81,7 +89,10 @@ attempt, and token usage. Default v1 usage permits at most two logical requests
 and four HTTP attempts, with unknown-usage attempts explicitly counted. Returned
 model identities remain separate from the requested alias; a missing immutable
 revision remains null. Persistence is `recorded`, `disabled`, or `unavailable`;
-recorded metadata does not prove harness delivery.
+recorded metadata does not prove harness delivery. A success ledger outcome is
+committed after fallible result preparation and required case export. The captured
+historical document reflects persistence at capture time, before that final
+optional ledger write; this metadata is not part of the scoring parity check.
 
 Those three states describe what actually backed the run. `disabled` means an
 effect flag turned persistence off (`--no-cache`, `--no-ledger`, `--no-persist`
@@ -144,6 +155,54 @@ replay carry a `historical` decision, optionally with a `recomputed` decision;
 a missing historical decision is representable only in a partial run. Historical
 decisions are validated as inert data, including unavailable/error decisions.
 Demo evidence is synthetic and has `gate_status: not-applicable`.
+
+New private replay cases use case `schema_version: 2` and may contain
+`frozen_inputs` format 1; missing groups remain explicit. Older binaries reject
+case schema 2 instead of silently ignoring its frozen semantics. This is separate
+from the replay output envelope, whose schema remains 1. Legacy case schema 1
+is accepted only without frozen inputs and cannot establish exact parity. The new
+frozen inputs retain canonical logical request JSON and the final provider wire
+request JSON (with format/version), the complete validated logical
+response including raw probabilities/usage, and ordered option-to-skill/content maps
+for each attempted stage. The visible binding roster and pre-fit eligibility verdicts
+come from the live local boundary; numeric prior/phase adjustments are frozen explicitly
+(the current live scorer supplies zero for both). Policy comparisons can change only
+local thresholds/weights/top-K. A missing rerank cannot support a lowered gate, and a
+missing gate heuristic cannot be replaced by the none probability.
+
+Missing candidate fits remain unknown even at a zero fit threshold. Replay uses
+the recorded wide shortlist order for scoring reductions, rather than discovery
+or capture order. Frozen stages must follow wide then rerank, detailed requests
+offer at most 32 real candidates, and selected-probability projections must match
+the full response. Each supplied policy weight is validated independently, even
+when the recorded computation profile is incompatible.
+
+An unkeyed BLAKE3 artifact digest binds these inputs, policy and historical output;
+it detects inconsistency, not trusted authorship, and grants no cache or execution
+permission. Validation also checks projections against the full request/response,
+so recomputing that digest cannot conceal duplicate definitions or mismatched maps/fits.
+Per-field limits still apply within the 16 MiB case and nesting-64 envelope.
+Case and local policy schemas reject unknown keys and trailing JSON; policy files
+also enforce their own nesting bound. Import diagnostics never echo private keys
+or rejected string values.
+
+Replay's `input_completeness` records roster, eligibility, numeric/profile and per-stage
+request/map/response availability. Extra retained-data redaction is declared and removes
+exact-input compatibility. Unavailable outcomes reproduce sanitized terminal metadata
+only, with zero recomputed stages and without claiming an unobserved response.
+Recorded response availability remains separate in `input_completeness`. Stage
+counts use the actual available responses and the selected policy's requirements;
+a missing heuristic/profile is an input gap, not an invented missing response.
+Legacy cases have unknown frozen inputs.
+`replay_note` explains missing/incompatible evidence, and `comparison_changes` names
+output fields changed by a completed local policy comparison. These are observed
+recomputation differences, never evidence of causal task improvement.
+Only complete recorded cases whose decision and numeric outputs actually match under
+the same tested source/dependency/target/build (including actual compiler version and Cargo controls) and native-f64 probe profile can pass the
+parity gate. Different profiles report incompatible exact replay; no cross-platform
+floating-point tolerance has been qualified. A parity gate is not a usefulness gate.
+Invocation IDs, local load paths, elapsed time and newly incurred usage are outside the
+numeric comparison; replay remains non-actionable and does not incur new inference.
 
 `completeness` records `cases_requested`, `cases_completed`, `stages_required`,
 `stages_completed`, and `evidence_compatible`. Counts are unsigned and bounded

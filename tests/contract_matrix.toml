@@ -1409,7 +1409,8 @@ member_beads = ["sr-roadmap-l1i.6.16"]
 phase = "P5"
 title = "Replay and compare supported local policies without ambient effects"
 unit_property_tests = [
-    "tests/replay_contract.rs::replay_executes_identical_ranked_decision"
+    "tests/save_case_contract.rs::save_case_pipeline_inference_roundtrip_to_replay",
+    "tests/replay_contract.rs::replay_case_validates_and_roundtrips"
 ]
 e2e_suite = "replay"
 e2e_cases = ["replay-matches-original"]

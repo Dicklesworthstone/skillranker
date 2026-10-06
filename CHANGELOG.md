@@ -4,6 +4,40 @@
 
 ### Fixed
 
+- Successful ranking also reports unconfirmed optional ledger finalization when
+  storage is busy or unavailable, preserving advice and measured provider usage.
+- Replay keeps missing fits unknown, uses only locally admitted shortlisted fits
+  for abstention reasons, and preserves live shortlist order for floating-point
+  reductions. Frozen imports validate stage order, rerank size and chosen
+  probability projections; each local policy weight is checked independently.
+- Success-ledger recording follows fallible result preparation and required case
+  export, so export failure records the unavailable outcome with incurred usage.
+  Failure finalization uses its existing bounded clock budget and reports
+  unconfirmed recording without replacing the original failure or usage.
+- Legacy replay preserves declared roster coverage and retrieval provenance; a
+  captured Quill subset is no longer reported as a complete roster.
+- Private replay capture uses case schema 2 (legacy cases remain readable)
+  and retains versioned frozen logical requests, full
+  validated responses, final provider wire requests and option maps, complete local binding membership, actual
+  eligibility verdicts and numeric adjustments. Replay checks artifact consistency
+  and the computation/numeric profile before claiming exact parity. Legacy inputs,
+  additional redaction, missing gates/stages and incompatible profiles are explicit.
+- JSON import preserves floating-point bits through serialization/deserialization,
+  including gate values that otherwise changed by one ULP and invalidated a case.
+- Replay rejects duplicate fit definitions and preserves workflow/unknown-kind
+  eligibility. Legacy loaded-reference suppression requires an available matching
+  revision. A partial policy comparison now reports partial status in its JSON
+  envelope; a matching decision label alone no longer passes the parity gate.
+- `sr rank --save-case` redacts explicit request text and candidate descriptions
+  before retaining them, including before truncating the prompt summary. Both
+  explicit and provider-backed cases record wall-clock milliseconds in
+  `local_evidence.as_of_unix_ms`; they previously recorded process elapsed time.
+  Serialization and export use the invocation's completion checks, withholding
+  late success, and reported latency includes export work. Serialized bytes,
+  including JSON escaping, are capped before growing the capture buffer.
+- `sr rank` preserves measured and unknown provider usage when work or cleanup
+  exceeds the deadline. Existing failures keep their complete receipts; late
+  successful decisions become timeouts without suggestions.
 - `sr rank` reads configured `roster.roots` as `sr roster` does. Their
   skills can be suggested or requested, are reported as unverified, and rank
   below Claude's own directories. Previously a configured skill was listed

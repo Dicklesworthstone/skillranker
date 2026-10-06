@@ -87,6 +87,7 @@ fn case_with_confidence(stated: Option<f64>, visibility: Option<&str>) -> Replay
         v
     };
     ReplayCase {
+        frozen_inputs: None,
         schema_version: SCHEMA_VERSION,
         case_id: "case-confidence".into(),
         created_at_unix_ms: 1_700_000_000,
