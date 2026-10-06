@@ -145,6 +145,47 @@ a missing historical decision is representable only in a partial run. Historical
 decisions are validated as inert data, including unavailable/error decisions.
 Demo evidence is synthetic and has `gate_status: not-applicable`.
 
+New private replay cases use case `schema_version: 2` and may contain
+`frozen_inputs` format 1; missing groups remain explicit. Older binaries reject
+case schema 2 instead of silently ignoring its frozen semantics. This is separate
+from the replay output envelope, whose schema remains 1. Legacy case schema 1
+is accepted only without frozen inputs and cannot establish exact parity. The new
+frozen inputs retain canonical logical request JSON and the final provider wire
+request JSON (with format/version), the complete validated logical
+response including raw probabilities/usage, and ordered option-to-skill/content maps
+for each attempted stage. The visible binding roster and pre-fit eligibility verdicts
+come from the live local boundary; numeric prior/phase adjustments are frozen explicitly
+(the current live scorer supplies zero for both). Policy comparisons can change only
+local thresholds/weights/top-K. A missing rerank cannot support a lowered gate, and a
+missing gate heuristic cannot be replaced by the none probability.
+
+An unkeyed BLAKE3 artifact digest binds these inputs, policy and historical output;
+it detects inconsistency, not trusted authorship, and grants no cache or execution
+permission. Validation also checks projections against the full request/response,
+so recomputing that digest cannot conceal duplicate definitions or mismatched maps/fits.
+Per-field limits still apply within the 16 MiB case and nesting-64 envelope.
+Case and local policy schemas reject unknown keys and trailing JSON; policy files
+also enforce their own nesting bound. Import diagnostics never echo private keys
+or rejected string values.
+
+Replay's `input_completeness` records roster, eligibility, numeric/profile and per-stage
+request/map/response availability. Extra retained-data redaction is declared and removes
+exact-input compatibility. Unavailable outcomes reproduce sanitized terminal metadata
+only, with zero recomputed stages and without claiming an unobserved response.
+Recorded response availability remains separate in `input_completeness`. Stage
+counts use the actual available responses and the selected policy's requirements;
+a missing heuristic/profile is an input gap, not an invented missing response.
+Legacy cases have unknown frozen inputs.
+`replay_note` explains missing/incompatible evidence, and `comparison_changes` names
+output fields changed by a completed local policy comparison. These are observed
+recomputation differences, never evidence of causal task improvement.
+Only complete recorded cases whose decision and numeric outputs actually match under
+the same tested source/dependency/target/build (including actual compiler version and Cargo controls) and native-f64 probe profile can pass the
+parity gate. Different profiles report incompatible exact replay; no cross-platform
+floating-point tolerance has been qualified. A parity gate is not a usefulness gate.
+Invocation IDs, local load paths, elapsed time and newly incurred usage are outside the
+numeric comparison; replay remains non-actionable and does not incur new inference.
+
 `completeness` records `cases_requested`, `cases_completed`, `stages_required`,
 `stages_completed`, and `evidence_compatible`. Counts are unsigned and bounded
 (10,000 cases and 20,000 stages), and completed counts cannot exceed requested

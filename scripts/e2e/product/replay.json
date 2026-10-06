@@ -19,7 +19,8 @@
     "replay_case_completeness",
     "replay_cli_contract",
     "replay_contract",
-    "stats_value_report_contract"
+    "stats_value_report_contract",
+    "save_case_contract"
   ],
   "cases": [
     {
@@ -178,7 +179,7 @@
         "faithful_replay"
       ],
       "tests": [
-        "replay_contract::replay_executes_identical_ranked_decision",
+        "replay_contract::legacy_replay_recomputes_ranked_without_claiming_exact_input_parity",
         "replay_contract::replay_recomputes_with_policy_overrides",
         "replay_contract::replay_case_validates_and_roundtrips",
         "replay_contract::replay_save_and_load_enforces_owner_only_and_no_clobber",
@@ -187,7 +188,10 @@
         "replay_case_completeness::a_case_without_a_recorded_confidence_declines_to_recompute",
         "replay_case_completeness::a_replayed_recommendation_keeps_its_visibility_caveat",
         "replay_case_completeness::a_replay_states_no_filesystem_path_it_never_recorded",
-        "replay_case_completeness::a_case_without_visibility_omits_it_rather_than_inventing_one"
+        "replay_case_completeness::a_case_without_visibility_omits_it_rather_than_inventing_one",
+        "save_case_contract::save_case_pipeline_inference_roundtrip_to_replay",
+        "save_case_contract::save_case_pipeline_low_need_roundtrip_to_replay",
+        "save_case_contract::save_case_partial_roster_cannot_pass_exact_parity_gate"
       ]
     },
     {
@@ -201,7 +205,11 @@
         "replay_cli_contract::replay_rejects_incompatible_policy_with_uncaptured_prior",
         "replay_cli_contract::replay_low_gate_lowering_without_rerank_reports_partial_and_not_established",
         "replay_contract::replay_rejects_uncaptured_prior_policy",
-        "replay_contract::replay_low_gate_abstention_without_rerank_is_complete"
+        "replay_contract::replay_low_gate_abstention_without_rerank_is_complete",
+        "replay_contract::replay_import_diagnostics_never_echo_private_values_or_keys",
+        "replay_contract::replay_import_rejects_trailing_json_and_unknown_policy_fields",
+        "replay_contract::replay_rejects_identical_and_conflicting_duplicate_fit_definitions",
+        "replay_contract::missing_wide_cannot_replay_an_inferred_abstention_as_local_metadata"
       ]
     },
     {

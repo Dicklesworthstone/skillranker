@@ -37,6 +37,17 @@ Behavior that must match the registry:
 - `sr --help` names every implemented command and no planned one.
 - `rank --save-case FILE` is implemented as explicit private case capture.
   Its conflicts with `--dry-run` and `--no-persist` are reported before capture.
+  New cases use `schemas.replay_case = 2`; old binaries reject them instead
+  of ignoring frozen semantics. Cases include versioned frozen inputs: canonical logical Jev requests, validated
+  full responses, option/content maps, local membership/eligibility, and the actual
+  numeric scoring adjustments. `schemas.frozen_replay_inputs` and
+  `schemas.replay_computation` identify those contracts. Capture is opt-in and
+  private; replay never imports its answers into the live cache.
+- Replay reports input/stage completeness and checks the recorded computation,
+  target, dependency, build and numeric probe profile before exact recomputation.
+  A different profile is partial/incompatible. Legacy cases can still perform
+  limited local recomputation, but cannot establish exact-input compatibility or
+  a passed parity gate. These checks do not establish usefulness or phase acceptance.
 - Bare `sr` is `sr rank`. Flags given without a subcommand are rank flags.
 
 ## Verification

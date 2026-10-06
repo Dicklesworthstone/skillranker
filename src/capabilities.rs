@@ -155,6 +155,9 @@ pub fn registry() -> Value {
             "retrieval": crate::roster::retrieval::RETRIEVAL_SCHEMA,
             "wide_questions": crate::jev::wide::WIDE_POLICY_VERSION,
             "rerank_questions": crate::jev::rerank::RERANK_POLICY_VERSION,
+            "replay_case": crate::replay::REPLAY_CASE_SCHEMA_VERSION,
+            "frozen_replay_inputs": crate::replay::frozen::FORMAT_VERSION,
+            "replay_computation": crate::replay::frozen::COMPUTATION_VERSION,
         },
         "features": {
             // Reserved boundary: no TUI implementation ships in any build yet.

@@ -51,6 +51,7 @@ use crate::privacy::redaction::Redactor;
 use crate::privacy::{
     NetworkConsent, ProviderAdmissionRefusal, StoreAccess, admit_provider_attempt,
 };
+use crate::replay::frozen::{FrozenMember, FrozenReplayInputs, FrozenScoreInput, FrozenStage};
 use crate::replay::{
     CandidateFitItem, CapturedCandidate, CapturedLoadedReference, CapturedLocalEvidence,
     CapturedRequest, CapturedScoringProfile, ChoiceDistributionItem, RecordedRerankChoice,
@@ -191,6 +192,7 @@ fn read_input_file(
 
 #[derive(Default)]
 struct CaseCapture {
+    frozen_inputs: Option<FrozenReplayInputs>,
     manifest: Option<ReplayManifest>,
     captured_request: Option<CapturedRequest>,
     recorded_responses: RecordedResponses,
@@ -687,8 +689,9 @@ async fn execute_pipeline_supplied(
                 .as_ref()
                 .map(|a| format!("case-{}", a.event_id))
                 .unwrap_or_else(|| format!("case-{}", clock.now().as_millis()));
-            let case = ReplayCase {
-                schema_version: SCHEMA_VERSION,
+            let mut case = ReplayCase {
+                frozen_inputs: capture.frozen_inputs,
+                schema_version: crate::replay::REPLAY_CASE_SCHEMA_VERSION,
                 case_id,
                 created_at_unix_ms: SystemTime::now()
                     .duration_since(UNIX_EPOCH)
@@ -700,6 +703,10 @@ async fn execute_pipeline_supplied(
                 local_evidence,
                 historical_decision: doc.as_value().clone(),
             };
+            FrozenReplayInputs::redact_history(&mut case)
+                .map_err(|err| failure(err.kind(), format!("Replay privacy failed: {err}")))?;
+            FrozenReplayInputs::seal(&mut case)
+                .map_err(|err| failure(err.kind(), format!("Replay digest failed: {err}")))?;
             case.validate().map_err(|err| {
                 failure(err.kind(), format!("Replay case validation failed: {err}"))
             })?;
@@ -1746,6 +1753,10 @@ async fn rank_once(
                         excerpt: None,
                     });
                 }
+                let mut frozen = FrozenReplayInputs::new("local");
+                frozen.roster_complete = !roster.is_partial();
+                frozen.visible_roster = frozen_members(&roster, &BTreeSet::new());
+                capture.frozen_inputs = Some(frozen);
                 capture.manifest = Some(ReplayManifest {
                     evidence_origin: "recorded".to_string(),
                     adapter: normalized_context.harness.as_str().to_string(),
@@ -2059,6 +2070,15 @@ async fn rank_once(
         }
     }
 
+    let frozen_admitted: BTreeSet<SkillId> = if progress.capture.is_some() {
+        admission
+            .admitted
+            .iter()
+            .map(|s| s.binding.id.clone())
+            .collect()
+    } else {
+        BTreeSet::new()
+    };
     let eligible_count = admission.admitted.len();
     progress.evaluated.eligible = eligible_count;
 
@@ -2404,6 +2424,24 @@ async fn rank_once(
                 excerpt: None,
             });
         }
+        let admitted: BTreeSet<&SkillId> = frozen_admitted.iter().collect();
+        let mut frozen = FrozenReplayInputs::new(match effective.provider() {
+            crate::config::Provider::TypeSafe => "typesafe",
+            crate::config::Provider::Cloudflare => "cloudflare",
+        });
+        frozen.roster_complete = !roster.is_partial();
+        frozen.visible_roster = frozen_members(&roster, &admitted);
+        // The live scorer's disabled-learning/phase policy actually supplies zeros.
+        // Record them explicitly, including candidates a local threshold change could admit.
+        frozen.numeric_inputs = candidate_skills
+            .iter()
+            .map(|s| FrozenScoreInput {
+                skill_id: s.binding.id.as_str().into(),
+                prior_delta: 0.0,
+                phase_match: 0.0,
+            })
+            .collect();
+        capture.frozen_inputs = Some(frozen);
         capture.manifest = Some(ReplayManifest {
             evidence_origin: "recorded".to_string(),
             adapter: normalized_context.harness.as_str().to_string(),
@@ -2431,16 +2469,15 @@ async fn rank_once(
                 .iter()
                 .map(|id| id.as_str().to_owned())
                 .collect(),
-            loaded_references: loaded_records
+            loaded_references: admission
+                .removed
                 .iter()
-                .map(|r| CapturedLoadedReference {
-                    skill_id: r.skill_id.as_str().to_string(),
-                    content_hash: r
-                        .source_content
-                        .as_ref()
-                        .map(|h| h.as_str().to_string())
-                        .unwrap_or_else(|| "0".repeat(64)),
-                    availability: "available".to_string(),
+                .filter(|(_, why)| *why == crate::eligibility::Exclusion::AlreadyLoaded)
+                .filter_map(|(id, _)| initial_advisory.iter().find(|s| s.binding.id == *id))
+                .map(|s| CapturedLoadedReference {
+                    skill_id: s.binding.id.as_str().into(),
+                    content_hash: s.record.source_content.as_str().into(),
+                    availability: "available".into(),
                 })
                 .collect(),
             scoring_profile: CapturedScoringProfile {
@@ -2471,6 +2508,22 @@ async fn rank_once(
         false, // include_stuck
     )
     .map_err(|e| failure(e.kind(), format!("Wide build failed: {e:?}")))?;
+
+    if let Some(frozen) = progress
+        .capture
+        .as_mut()
+        .and_then(|c| c.frozen_inputs.as_mut())
+    {
+        frozen.stages.push(
+            FrozenStage::capture(
+                "wide",
+                wide_builder.request(),
+                wide_builder.options(),
+                &frozen.provider,
+            )
+            .map_err(|err| failure(err.kind(), format!("Wide capture failed: {err}")))?,
+        );
+    }
 
     // Final provider bytes include the native wrapper's size and nesting.
     // Logical builder bytes remain the canonical cache/replay identity below.
@@ -2914,6 +2967,13 @@ async fn rank_once(
         if let Some(manifest) = &mut capture.manifest {
             manifest.stages_recorded.push("wide".to_string());
         }
+        if let Some(frozen) = &mut capture.frozen_inputs
+            && let Some(stage) = frozen.stages.iter_mut().find(|s| s.stage == "wide")
+        {
+            stage
+                .record_response(&wide_response)
+                .map_err(|err| failure(err.kind(), format!("Response capture failed: {err}")))?;
+        }
         if let Some(crate::jev::codec::Answer::Choice(which)) =
             wide_response.answers.get(wide::WHICH)
         {
@@ -3039,6 +3099,22 @@ async fn rank_once(
         effective.model().as_str(),
     )
     .map_err(|e| failure(e.kind(), format!("Rerank build failed: {e:?}")))?;
+
+    if let Some(frozen) = progress
+        .capture
+        .as_mut()
+        .and_then(|c| c.frozen_inputs.as_mut())
+    {
+        frozen.stages.push(
+            FrozenStage::capture(
+                "rerank",
+                rerank_builder.request(),
+                rerank_builder.options(),
+                &frozen.provider,
+            )
+            .map_err(|err| failure(err.kind(), format!("Rerank capture failed: {err}")))?,
+        );
+    }
 
     // A cached wide answer arrives with its cached rerank answer. Otherwise
     // rerank pairs with the wide answer this session produced; a wide answer
@@ -3180,6 +3256,13 @@ async fn rank_once(
         if let Some(manifest) = &mut capture.manifest {
             manifest.stages_recorded.push("rerank".to_string());
         }
+        if let Some(frozen) = &mut capture.frozen_inputs
+            && let Some(stage) = frozen.stages.iter_mut().find(|s| s.stage == "rerank")
+        {
+            stage
+                .record_response(&rerank_response)
+                .map_err(|err| failure(err.kind(), format!("Response capture failed: {err}")))?;
+        }
         if let Some(crate::jev::codec::Answer::Choice(choice)) =
             rerank_response.answers.get(rerank::RERANK)
         {
@@ -3232,6 +3315,22 @@ async fn rank_once(
     // 13. Local Eligibility & Fit Filtering after Rerank
     let shortlisted_advisory: Vec<AdvisorySkill> = shortlisted.iter().map(|s| s.skill).collect();
     let raw_estimates = rerank_outcome.estimates();
+    if let Some(frozen) = progress
+        .capture
+        .as_mut()
+        .and_then(|c| c.frozen_inputs.as_mut())
+    {
+        let admitted = admit(&shortlisted_advisory, &excluded_refs, loaded_state);
+        let eligible: BTreeSet<&SkillId> =
+            admitted.admitted.iter().map(|s| &s.binding.id).collect();
+        let shortlist: BTreeSet<&SkillId> =
+            shortlisted_advisory.iter().map(|s| &s.binding.id).collect();
+        for member in &mut frozen.visible_roster {
+            if shortlist.iter().any(|id| id.as_str() == member.skill_id) {
+                member.pre_fit_eligible = eligible.iter().any(|id| id.as_str() == member.skill_id);
+            }
+        }
+    }
 
     let evaluation = after_rerank(
         &shortlisted_advisory,
@@ -6091,6 +6190,21 @@ fn compute_stage_trace(
     }
 
     entries
+}
+
+fn frozen_members(roster: &ResolvedRoster, admitted: &BTreeSet<&SkillId>) -> Vec<FrozenMember> {
+    roster
+        .skills()
+        .iter()
+        .flat_map(|s| {
+            s.bindings().iter().map(move |binding| FrozenMember {
+                skill_id: binding.id.as_str().into(),
+                content_hash: s.record().source_content.as_str().into(),
+                visibility: visibility_label(&binding.visibility).into(),
+                pre_fit_eligible: admitted.contains(&binding.id),
+            })
+        })
+        .collect()
 }
 
 #[cfg(test)]

@@ -4,6 +4,18 @@
 
 ### Fixed
 
+- Private replay capture uses case schema 2 (legacy cases remain readable)
+  and retains versioned frozen logical requests, full
+  validated responses, final provider wire requests and option maps, complete local binding membership, actual
+  eligibility verdicts and numeric adjustments. Replay checks artifact consistency
+  and the computation/numeric profile before claiming exact parity. Legacy inputs,
+  additional redaction, missing gates/stages and incompatible profiles are explicit.
+- JSON import preserves floating-point bits through serialization/deserialization,
+  including gate values that otherwise changed by one ULP and invalidated a case.
+- Replay rejects duplicate fit definitions and preserves workflow/unknown-kind
+  eligibility. Legacy loaded-reference suppression requires an available matching
+  revision. A partial policy comparison now reports partial status in its JSON
+  envelope; a matching decision label alone no longer passes the parity gate.
 - `sr rank --save-case` redacts explicit request text and candidate descriptions
   before retaining them, including before truncating the prompt summary. Both
   explicit and provider-backed cases record wall-clock milliseconds in

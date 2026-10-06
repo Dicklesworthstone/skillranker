@@ -74,6 +74,7 @@ fn abstain_decision_fixture(reason: &str) -> Value {
 
 fn sample_ranked_case() -> ReplayCase {
     ReplayCase {
+        frozen_inputs: None,
         schema_version: SCHEMA_VERSION,
         case_id: "case-cli-test-001".into(),
         created_at_unix_ms: 1726700000000,
@@ -313,7 +314,7 @@ fn replay_runs_recorded_case_with_json_envelope() {
     assert_eq!(val["kind"], "replay");
     assert_eq!(val["actionable"], false);
     assert_eq!(val["run_status"], "complete");
-    assert_eq!(val["gate_status"], "passed");
+    assert_eq!(val["gate_status"], "not-established");
     assert_eq!(val["historical"]["decision"], "ranked");
     assert_eq!(val["recomputed"]["decision"], "ranked");
 }
@@ -330,7 +331,7 @@ fn replay_renders_table_format() {
     let text = String::from_utf8(output.stdout).unwrap();
     assert!(text.contains("ARTIFACT: REPLAY"));
     assert!(text.contains("Run Status:  complete"));
-    assert!(text.contains("Gate Status: passed"));
+    assert!(text.contains("Gate Status: not-established"));
 }
 
 #[test]
@@ -444,12 +445,12 @@ fn replay_low_gate_lowering_without_rerank_reports_partial_and_not_established()
     let case_path = root.join("workspace/case.json");
     write_case_file(&case_path, &case);
 
-    // 1. Default policy replay: reproduces historical abstention as complete + passed gate
+    // 1. Default policy replay: reproduces historical abstention as complete with unknown exact-input evidence
     let output = run_sr(&root, &["replay", "case.json", "--json"]);
     assert_eq!(output.status.code(), Some(0));
     let val: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(val["run_status"], "complete");
-    assert_eq!(val["gate_status"], "passed");
+    assert_eq!(val["gate_status"], "not-established");
     assert_eq!(val["historical"]["decision"], "abstain");
     assert_eq!(val["recomputed"]["decision"], "abstain");
 
@@ -472,6 +473,8 @@ fn replay_low_gate_lowering_without_rerank_reports_partial_and_not_established()
     assert_eq!(val["run_status"], "partial");
     assert_eq!(val["gate_status"], "not-established");
     assert!(val.get("recomputed").is_none());
+    assert_eq!(val["completeness"]["stages_required"], 2);
+    assert_eq!(val["completeness"]["stages_completed"], 1);
 }
 
 #[test]

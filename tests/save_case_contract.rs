@@ -37,9 +37,11 @@ use skillranker::jev::client::{JevClient, JevTransport};
 use skillranker::jev::endpoint::EndpointConfig;
 use skillranker::limits::DurationMillis;
 use skillranker::output::OutputKind;
+use skillranker::output::{GateStatus, RunStatus};
 use skillranker::pipeline::{RankArgs, execute_pipeline};
 use skillranker::privacy::EffectFlags;
-use skillranker::replay::ReplayCase;
+use skillranker::replay::frozen::FrozenReplayInputs;
+use skillranker::replay::{ReplayCase, ReplayPolicy, execute_replay};
 use skillranker::roster::LocalPath;
 use skillranker::runtime::{EntryClock, ProcessInvocation};
 use std::ffi::OsString;
@@ -374,7 +376,7 @@ fn save_case_cli_explicit_resolution_roundtrip_to_replay() {
     let raw_case = fs::read_to_string(&case_path).unwrap();
     let case: ReplayCase = serde_json::from_str(&raw_case).unwrap();
     assert!((before_capture..=unix_ms()).contains(&case.local_evidence.as_of_unix_ms));
-    assert_eq!(case.schema_version, 1);
+    assert_eq!(case.schema_version, 2);
     assert_eq!(case.manifest.evidence_origin, "recorded");
     assert_eq!(case.historical_decision["decision"], "explicit");
     assert!(
@@ -636,7 +638,8 @@ fn save_case_pipeline_inference_roundtrip_to_replay() {
 
     let provider = Provider::start(&root, "useful");
     let case_path = root.join("workspace/inference_case.json");
-    let args = make_pipeline_args(&root, Some(case_path.clone()));
+    let mut args = make_pipeline_args(&root, Some(case_path.clone()));
+    args.roster_file = Some(write_authorized_roster(&root, &["alpha", "beta"]));
 
     let before_capture = unix_ms();
     let outcome = rank_with_args(Some(&provider), args, 5000);
@@ -671,6 +674,43 @@ fn save_case_pipeline_inference_roundtrip_to_replay() {
     assert!(case.recorded_responses.rerank.is_some());
     assert!(!case.captured_request.candidate_options.is_empty());
     assert_eq!(case.historical_decision["decision"], "ranked");
+    let frozen = case.frozen_inputs.as_ref().expect("actual frozen inputs");
+    assert!(frozen.exact_compatible());
+    assert_eq!(frozen.stages.len(), 2);
+    assert_eq!(frozen.stages[0].stage, "wide");
+    assert_eq!(frozen.stages[1].stage, "rerank");
+    assert!(
+        frozen
+            .numeric_inputs
+            .iter()
+            .all(|n| n.prior_delta == 0.0 && n.phase_match == 0.0)
+    );
+    assert!(
+        frozen
+            .stages
+            .iter()
+            .all(|s| s.response_json.is_some() && !s.request_json.contains(canary))
+    );
+    for (stage, observed) in frozen.stages.iter().zip(&served) {
+        assert_eq!(
+            stage.wire_request_json,
+            observed["body"].as_str().unwrap(),
+            "actual provider request bytes"
+        );
+    }
+    assert_frozen_artifact_controls(&case);
+    // Neither source paths nor ambient policy may be consulted during replay.
+    fs::write(
+        root.join("workspace/context.json"),
+        b"invalid ambient context",
+    )
+    .unwrap();
+    fs::write(
+        root.join("workspace/.claude/skills/alpha/SKILL.md"),
+        b"changed source",
+    )
+    .unwrap();
+    fs::write(root.join("config/config.toml"), b"invalid ambient policy").unwrap();
 
     // Replay the saved case with sr replay
     let replay_output = run_sr(&root, &["replay", "inference_case.json", "--json"]);
@@ -686,6 +726,35 @@ fn save_case_pipeline_inference_roundtrip_to_replay() {
     assert_eq!(replay_val["gate_status"], "passed");
     assert_eq!(replay_val["historical"]["decision"], "ranked");
     assert_eq!(replay_val["recomputed"]["decision"], "ranked");
+    for field in [
+        "needs_skill",
+        "phase",
+        "none_probability",
+        "choice_confidence",
+        "omitted_rank_mass",
+    ] {
+        assert_eq!(
+            replay_val["recomputed"][field], replay_val["historical"][field],
+            "{field}"
+        );
+    }
+    for (historical, replayed) in replay_val["historical"]["skills"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .zip(replay_val["recomputed"]["skills"].as_array().unwrap())
+    {
+        for field in [
+            "skill_id",
+            "content_hash",
+            "rank_score",
+            "wide_probability",
+            "rerank_probability",
+            "fits",
+        ] {
+            assert_eq!(historical[field], replayed[field], "{field}");
+        }
+    }
 }
 
 #[test]
@@ -701,7 +770,8 @@ fn save_case_pipeline_low_need_roundtrip_to_replay() {
 
     let provider = Provider::start(&root, "low-need");
     let case_path = root.join("workspace/low_need_case.json");
-    let args = make_pipeline_args(&root, Some(case_path.clone()));
+    let mut args = make_pipeline_args(&root, Some(case_path.clone()));
+    args.roster_file = Some(write_authorized_roster(&root, &["alpha"]));
 
     let before_capture = unix_ms();
     let outcome = rank_with_args(Some(&provider), args, 5000);
@@ -737,6 +807,44 @@ fn save_case_pipeline_low_need_roundtrip_to_replay() {
     assert_eq!(replay_val["kind"], "replay");
     assert_eq!(replay_val["historical"]["decision"], "abstain");
     assert_eq!(replay_val["recomputed"]["decision"], "abstain");
+    assert_eq!(replay_val["gate_status"], "passed");
+    assert_eq!(replay_val["recomputed"]["reason"], "low-need");
+    let comparison = skillranker::replay::execute_replay_comparison(
+        &case,
+        None,
+        Some(&ReplayPolicy {
+            gate_threshold: Some(0.0),
+            ..Default::default()
+        }),
+    )
+    .unwrap();
+    assert_eq!(comparison.run_status, RunStatus::Partial);
+    assert_eq!(comparison.document.as_value()["run_status"], "partial");
+    assert_eq!(
+        comparison.document.as_value()["completeness"]["evidence_compatible"],
+        false
+    );
+
+    // A captured request remains an attempted inference even if its response
+    // and historical gate were lost. It cannot turn into a local abstention.
+    let mut missing = case.clone();
+    missing.recorded_responses.wide = None;
+    missing.manifest.stages_recorded.clear();
+    missing.frozen_inputs.as_mut().unwrap().stages[0].response_json = None;
+    missing.historical_decision["needs_skill"] = Value::Null;
+    skillranker::replay::frozen::FrozenReplayInputs::seal(&mut missing).unwrap();
+    missing.validate().unwrap();
+    let replayed = execute_replay(&missing, None).unwrap();
+    assert_eq!(replayed.run_status, RunStatus::Partial);
+    assert!(replayed.recomputed_decision.is_none());
+    assert_eq!(
+        replayed.document.as_value()["completeness"]["stages_required"],
+        1
+    );
+    assert_eq!(
+        replayed.document.as_value()["completeness"]["stages_completed"],
+        0
+    );
 }
 
 #[test]
@@ -799,4 +907,142 @@ fn save_case_pipeline_export_failure_preserves_incurred_usage() {
 
     // Ensure pre-existing file was not clobbered
     assert_eq!(fs::read(&case_path).unwrap(), b"original-content");
+}
+
+fn assert_frozen_artifact_controls(case: &ReplayCase) {
+    case.validate().expect("actual successful capture");
+    let exact = execute_replay(case, None).unwrap();
+    assert_eq!(
+        exact.gate_status,
+        GateStatus::Passed,
+        "{}",
+        exact.document.as_value()
+    );
+    let mut corrupt = case.clone();
+    corrupt.captured_request.candidate_options[0].content_hash = "9".repeat(64);
+    assert!(corrupt.validate().is_err(), "unresealed tamper");
+    for mutation in 0..7 {
+        let mut corrupt = case.clone();
+        let frozen = corrupt.frozen_inputs.as_mut().unwrap();
+        match mutation {
+            0 => {
+                let duplicate = frozen.stages[0].options[0].clone();
+                frozen.stages[0].options.push(duplicate);
+            }
+            1 => frozen.visible_roster.push(frozen.visible_roster[0].clone()),
+            2 => frozen.numeric_inputs.push(frozen.numeric_inputs[0].clone()),
+            3 => corrupt.recorded_responses.rerank.as_mut().unwrap().fits[0].fit = 0.01,
+            4 => {
+                let response = frozen.stages[0].response_json.as_mut().unwrap();
+                *response = response.replacen('{', "{\"model\":\"duplicate\",", 1);
+            }
+            5 => frozen.stages[0].options[0].content_hash = "9".repeat(64),
+            _ => {
+                frozen.stages[0].wire_request_json =
+                    frozen.stages[0]
+                        .wire_request_json
+                        .replacen("jev-latest", "jev-other", 1)
+            }
+        }
+        FrozenReplayInputs::seal(&mut corrupt).unwrap();
+        assert!(
+            corrupt.validate().is_err(),
+            "resealed inconsistent input {mutation}"
+        );
+    }
+    let mut incompatible = case.clone();
+    incompatible
+        .frozen_inputs
+        .as_mut()
+        .unwrap()
+        .numeric_profile
+        .backend = "different-f64-backend".into();
+    FrozenReplayInputs::seal(&mut incompatible).unwrap();
+    let outcome = execute_replay(&incompatible, None).unwrap();
+    assert_eq!(outcome.run_status, RunStatus::Partial);
+    assert_eq!(outcome.gate_status, GateStatus::NotEstablished);
+    assert!(outcome.recomputed_decision.is_none());
+    let mut redacted = case.clone();
+    let canary = "sk-aB7cD8eF9gH0jK1mN2pQ3rS4tU5vW6xY";
+    redacted.historical_decision["model"]["wide_returned"] = json!(canary);
+    FrozenReplayInputs::redact_history(&mut redacted).unwrap();
+    FrozenReplayInputs::seal(&mut redacted).unwrap();
+    assert!(!serde_json::to_string(&redacted).unwrap().contains(canary));
+    assert!(redacted.frozen_inputs.as_ref().unwrap().privacy_transformed);
+    assert_eq!(
+        execute_replay(&redacted, None).unwrap().gate_status,
+        GateStatus::NotEstablished
+    );
+    let mut transformed = case.clone();
+    transformed
+        .frozen_inputs
+        .as_mut()
+        .unwrap()
+        .privacy_transformed = true;
+    FrozenReplayInputs::seal(&mut transformed).unwrap();
+    let outcome = execute_replay(&transformed, None).unwrap();
+    assert_eq!(outcome.gate_status, GateStatus::NotEstablished);
+    assert_eq!(
+        outcome.document.as_value()["completeness"]["evidence_compatible"],
+        false
+    );
+    let outcome = execute_replay(
+        case,
+        Some(&ReplayPolicy {
+            w_prior: Some(0.2),
+            w_phase: Some(0.5),
+            ..Default::default()
+        }),
+    )
+    .unwrap();
+    assert_eq!(
+        outcome.recomputed_decision.as_deref(),
+        Some("ranked"),
+        "captured actual zero adjustments permit a local weight change"
+    );
+}
+
+fn write_authorized_roster(root: &Path, names: &[&str]) -> PathBuf {
+    let path = root.join("workspace/roster.json");
+    let skills: Vec<_> = names
+        .iter()
+        .map(|name| json!({"source":"claude_code.project", "path":format!("{name}/SKILL.md")}))
+        .collect();
+    fs::write(&path, serde_json::to_vec(&json!({"schema":"sr.roster.v1", "harness":"claude_code", "mode":"authorized_files", "skills":skills})).unwrap()).unwrap();
+    path
+}
+
+#[test]
+fn save_case_partial_roster_cannot_pass_exact_parity_gate() {
+    let root = temp_workspace("partial-capture");
+    write_skill(&root, "alpha", "Repairs failing rust tests.");
+    write_skill(&root, "bad", "Malformed metadata");
+    fs::write(
+        root.join("workspace/.claude/skills/bad/SKILL.md"),
+        b"---\nname: bad\ndescription: [unterminated\n---\n",
+    )
+    .unwrap();
+    write_context_file(&root, "partial-session", "Triage failing rust tests");
+    let provider = Provider::start(&root, "useful");
+    let path = root.join("workspace/partial.json");
+    let doc = rank_with_args(
+        Some(&provider),
+        make_pipeline_args(&root, Some(path.clone())),
+        5000,
+    )
+    .unwrap();
+    assert_eq!(provider.finish().len(), 2);
+    assert_eq!(doc["roster"]["partial"], true);
+    let case = ReplayCase::load_from_file(&path).unwrap();
+    let outcome = execute_replay(&case, None).unwrap();
+    assert_eq!(outcome.run_status, RunStatus::Complete);
+    assert_eq!(outcome.gate_status, GateStatus::NotEstablished);
+    assert_eq!(
+        outcome.document.as_value()["input_completeness"]["computation_profile"],
+        true
+    );
+    assert_eq!(
+        outcome.document.as_value()["completeness"]["evidence_compatible"],
+        false
+    );
 }
