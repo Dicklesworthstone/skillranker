@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Successful ranking also reports unconfirmed optional ledger finalization when
+  storage is busy or unavailable, preserving advice and measured provider usage.
 - Replay keeps missing fits unknown, uses only locally admitted shortlisted fits
   for abstention reasons, and preserves live shortlist order for floating-point
   reductions. Frozen imports validate stage order, rerank size and chosen

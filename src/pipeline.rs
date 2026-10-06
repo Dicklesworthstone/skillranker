@@ -801,6 +801,12 @@ async fn execute_pipeline_supplied(
             .unwrap_or(false);
             if progress.evaluated.ledger_recorded {
                 doc = recorded_doc;
+            } else {
+                // Warnings were assembled before this final optional write.
+                // A valid decision must still expose an unconfirmed outcome,
+                // without repeating warnings already attached above.
+                progress.ledger_finalization_unconfirmed += 1;
+                doc = with_storage_warnings(doc, 0, 1, false, false, false)?;
             }
             doc.record_elapsed(clock.now().as_millis());
         }
@@ -863,7 +869,7 @@ fn with_storage_warnings(
         (
             "ledger-finalization-unconfirmed",
             ledger_finalization_unconfirmed,
-            "Optional failure ledger finalization could not be confirmed; durable outcome and usage may remain unknown",
+            "Optional ledger finalization could not be confirmed; durable outcome and usage may remain unknown",
         ),
         (
             "coordination-completion-unconfirmed",
@@ -5138,8 +5144,9 @@ fn record_failed_attempts(
     // write too and drop the failure from the availability denominator. Record it inside
     // the cleanup reserve on a cleanup context instead (sr-73b6). A run whose work
     // overran the whole deadline has missed that window as well; it gets a short grace
-    // for this row alone, inside the hook's outer timeout, so it is recorded as its
-    // failure rather than left in-flight (sr-9fzp).
+    // for this row alone, inside the hook's outer timeout (sr-9fzp). If even that
+    // bounded work window has passed, recording is refused and the caller exposes
+    // the unconfirmed outcome; it cannot promise to finalize an arbitrarily late run.
     let finalization = invocation.clock().for_failure_finalization();
     let clock = if finalization.admit_new_work().is_ok() {
         finalization

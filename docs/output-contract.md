@@ -27,10 +27,13 @@ kebab-case `reason`, `context_quality`, `quality`, `roster`, stage estimates,
 `skills`, `omitted_rank_mass`, cache/model/usage metadata, persistence status,
 warnings, `warnings_omitted`, and `elapsed_ms`.
 
-If optional failure-ledger recording cannot be confirmed, rank adds
-`ledger-finalization-unconfirmed`. The original failure and incurred usage remain
-visible; the durable ledger outcome or usage may remain unknown. This warning
+If optional ledger recording cannot be confirmed, rank adds
+`ledger-finalization-unconfirmed`, including when the ranking itself succeeds.
+The decision or original failure and incurred usage remain visible; the durable
+ledger outcome or usage may remain unknown. This warning
 does not claim that a late write was rolled back or that an in-flight row was finalized.
+Failure recording remains bounded: a run that returns after its permitted
+recording work window can retain an in-flight row with an unconfirmed warning.
 
 | Decision | Skills | Model estimates | Ordinary CLI exit |
 | --- | --- | --- | --- |

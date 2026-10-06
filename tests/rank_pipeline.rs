@@ -215,6 +215,14 @@ fn test_explicit_directive_bypasses_inference() {
     assert_eq!(skills[0]["invocation_name"], "rust_testing");
     assert_eq!(val["usage"]["requests"], 0);
     assert_eq!(val["usage"]["http_attempts"], 0);
+    assert!(
+        !val["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|w| w["kind"] == "ledger-finalization-unconfirmed"),
+        "disabled ledger recording is not a failed write"
+    );
 }
 
 #[test]
@@ -1214,7 +1222,10 @@ fn assert_withheld_for(preview: skillranker::pipeline::WidePreview) {
     assert!(invocation.shutdown());
 }
 
-fn overrun_failure_finalization_fixture(hold_ledger_lock: bool) -> (Value, Vec<String>, u64) {
+fn overrun_failure_finalization_fixture(
+    hold_ledger_lock: bool,
+    past_deadline_ms: u64,
+) -> (Value, Vec<String>, u64) {
     // sr-9fzp: the wide send blocks, uncooperatively, past the whole deadline.
     // The run must still finalize its ledger row as a failure instead of
     // leaving it in-flight.
@@ -1276,7 +1287,14 @@ fn overrun_failure_finalization_fixture(hold_ledger_lock: bool) -> (Value, Vec<S
             connection.execute_batch("BEGIN IMMEDIATE").unwrap();
             *hold.lock().unwrap() = Some(connection);
         }
-        std::thread::sleep(std::time::Duration::from_millis(3_050));
+        // The overrun is relative to process entry, matching the production
+        // deadline. Sleeping 3,050ms from this send adds variable startup time
+        // and can accidentally move the ordinary case beyond the bounded
+        // failure-recording window. Test that later boundary separately.
+        let wake_at_ms = clock.deadline().expires_at().as_millis() + past_deadline_ms;
+        std::thread::sleep(std::time::Duration::from_millis(
+            wake_at_ms.saturating_sub(clock.now().as_millis()),
+        ));
         Err(TransportError {
             kind: skillranker::jev::client::TransportErrorKind::Deadline,
             http_attempt_started: true,
@@ -1338,11 +1356,11 @@ fn overrun_failure_finalization_fixture(hold_ledger_lock: bool) -> (Value, Vec<S
 
 #[test]
 fn a_run_that_overruns_its_deadline_records_its_failure_not_in_flight() {
-    let (doc, reasons, elapsed_ms) = overrun_failure_finalization_fixture(false);
+    let (doc, reasons, elapsed_ms) = overrun_failure_finalization_fixture(false, 50);
     assert_eq!(reasons.len(), 1, "{reasons:?} after {elapsed_ms} ms");
     assert_eq!(
         reasons[0], "timeout",
-        "an overrun run must record its timeout, not stay in-flight"
+        "an overrun run must record its timeout, not stay in-flight; elapsed={elapsed_ms}ms, document={doc}"
     );
     assert!(
         !doc["warnings"]
@@ -1355,7 +1373,7 @@ fn a_run_that_overruns_its_deadline_records_its_failure_not_in_flight() {
 
 #[test]
 fn an_unconfirmed_failure_ledger_write_preserves_timeout_and_unknown_usage() {
-    let (doc, reasons, elapsed_ms) = overrun_failure_finalization_fixture(true);
+    let (doc, reasons, elapsed_ms) = overrun_failure_finalization_fixture(true, 50);
     assert_eq!(reasons, ["in-flight"], "locked write after {elapsed_ms} ms");
     let warning = doc["warnings"]
         .as_array()
@@ -1364,4 +1382,212 @@ fn an_unconfirmed_failure_ledger_write_preserves_timeout_and_unknown_usage() {
         .find(|w| w["kind"] == "ledger-finalization-unconfirmed")
         .expect("a real busy SQLite finalization must be visible");
     assert_eq!(warning["count"], 1);
+}
+
+#[test]
+fn a_run_past_the_failure_recording_window_preserves_unknown_ledger_outcome() {
+    let (doc, reasons, elapsed_ms) = overrun_failure_finalization_fixture(false, 650);
+    assert!(elapsed_ms >= 3_650);
+    assert_eq!(reasons, ["in-flight"]);
+    let warnings: Vec<_> = doc["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|w| w["kind"] == "ledger-finalization-unconfirmed")
+        .collect();
+    assert_eq!(warnings.len(), 1, "{doc}");
+    assert_eq!(warnings[0]["count"], 1);
+}
+
+fn successful_ledger_finalization_fixture(
+    low_gate: bool,
+    hold_lock: bool,
+    initialize_ledger: bool,
+) -> (Value, Option<String>) {
+    let (_root, workspace) = create_test_env();
+    for name in ["skill_a", "skill_b"] {
+        create_skill(
+            &workspace.join(".claude/skills"),
+            name,
+            "Refactor Rust",
+            "Review Rust code.",
+        );
+    }
+    let context = create_context_file(&workspace, "Help me refactor the pipeline");
+    let ledger = support::private_store_dir("successful-finalization");
+    if initialize_ledger {
+        let setup = ProcessInvocation::from_clock(test_clock()).unwrap();
+        skillranker::storage::init_ledger(
+            &setup,
+            &setup.request_cx().unwrap(),
+            skillranker::storage::LedgerLocation::Directory(ledger.clone()),
+        )
+        .unwrap();
+        assert!(setup.shutdown());
+    }
+
+    // Acquire a real SQLite writer lock only after the final request reaches
+    // the transport, so the in-flight event and attempt journal already exist.
+    let held = Arc::new(Mutex::new(None));
+    let generators: Vec<ResponseGenerator> = (0..if low_gate { 1 } else { 2 }).map(|stage| {
+        let held = held.clone();
+        let ledger = ledger.clone();
+        Box::new(move |request: &Request| {
+            if hold_lock && (low_gate || stage == 1) {
+                let connection = rusqlite::Connection::open(ledger.join(skillranker::storage::LEDGER_FILE)).unwrap();
+                connection.execute_batch("BEGIN IMMEDIATE").unwrap();
+                *held.lock().unwrap() = Some(connection);
+            }
+            let key = if stage == 0 { "which" } else { "rerank" };
+            let skillranker::jev::codec::Question::Choice { criteria, .. } = &request.questions()[key] else {
+                panic!("expected choice question");
+            };
+            let skills: Vec<_> = criteria.keys().filter(|key| *key != "__none__").collect();
+            assert_eq!(skills.len(), 2);
+            let probabilities = json!({"__none__": 0.1, (skills[0]): 0.6, (skills[1]): 0.3});
+            let mut answers = serde_json::Map::new();
+            answers.insert(key.into(), json!({"type":"choice", "choice":skills[0], "probabilities":probabilities, "confidence":0.8}));
+            if stage == 0 {
+                let gate = if low_gate { 0.05 } else { 0.9 };
+                answers.insert("gate::specialized_method".into(), json!({"type":"noul", "noul":gate}));
+                answers.insert("gate::material_help".into(), json!({"type":"noul", "noul":gate}));
+                answers.insert("gate::context_suffices".into(), json!({"type":"noul", "noul":1.0-gate}));
+                let probabilities: serde_json::Map<String, Value> = ["planning", "implementing", "debugging", "testing", "reviewing", "releasing", "conversing", "other"].into_iter().map(|phase| (phase.into(), json!(0.125))).collect();
+                answers.insert("phase".into(), json!({"type":"choice", "choice":"implementing", "probabilities":probabilities, "confidence":0.5}));
+            } else {
+                for skill in skills {
+                    answers.insert(format!("fits::{skill}"), json!({"type":"noul", "noul":0.8}));
+                }
+            }
+            request.decode_response(&serde_json::to_vec(&json!({"model":"jev-test", "answers":answers, "usage":{"input_tokens":100,"output_tokens":25}})).unwrap()).map_err(wrap_codec_err)
+        }) as ResponseGenerator
+    }).collect();
+    let transport = DynamicMockTransport::new(generators);
+    let invocation = ProcessInvocation::from_clock(test_clock()).unwrap();
+    let cx = invocation.request_cx().unwrap();
+    let mut sources = ConfigSources::default();
+    sources
+        .environment
+        .push(("TYPESAFE_API_KEY".into(), "test-api-key-xyz".into()));
+    let args = RankArgs {
+        workspace,
+        user_config_root: None,
+        home: None,
+        cache_dir: None,
+        ledger_dir: Some(ledger.clone()),
+        sources,
+        gate: EffectGate::new(
+            EffectFlags {
+                allow_network: true,
+                no_cache: true,
+                ..Default::default()
+            },
+            Scope::Rank,
+        )
+        .unwrap(),
+        source_options: SourceOptions {
+            context: Some(LocalPath::new(context)),
+            ..Default::default()
+        },
+        require_skills: Vec::new(),
+        shortlist_ids: Vec::new(),
+        roster_file: None,
+        explain: false,
+        why_not: None,
+        cursor: None,
+        output_json: true,
+        output_table: false,
+        dry_run: false,
+        save_case: None,
+    };
+    let document = invocation
+        .runtime()
+        .block_on(execute_pipeline(&invocation, &cx, args, Some(&transport)))
+        .unwrap();
+    assert_eq!(document.exit_code(), skillranker::output::CliExit::Success);
+    assert!(invocation.shutdown());
+    drop(held.lock().unwrap().take());
+    let file = ledger.join(skillranker::storage::LEDGER_FILE);
+    let reason = if initialize_ledger {
+        let db = rusqlite::Connection::open(file).unwrap();
+        Some(
+            db.query_row("SELECT reason FROM ranking_events", [], |row| row.get(0))
+                .unwrap(),
+        )
+    } else {
+        assert!(
+            !file.exists(),
+            "optional recording must not initialize a ledger"
+        );
+        None
+    };
+    (document.as_value().clone(), reason)
+}
+
+#[test]
+fn successful_rankings_report_unconfirmed_ledger_finalization() {
+    for low_gate in [false, true] {
+        let (healthy, healthy_reason) =
+            successful_ledger_finalization_fixture(low_gate, false, true);
+        let (locked, locked_reason) = successful_ledger_finalization_fixture(low_gate, true, true);
+        let decision = if low_gate { "abstain" } else { "ranked" };
+        assert_eq!(healthy["decision"], decision);
+        assert_eq!(locked["decision"], decision);
+        assert!(healthy_reason.is_some());
+        assert_ne!(healthy_reason.as_deref(), Some("in-flight"));
+        assert_eq!(locked_reason.as_deref(), Some("in-flight"));
+        assert_eq!(locked["usage"], healthy["usage"]);
+        assert_eq!(
+            locked["usage"]["http_attempts"],
+            if low_gate { 1 } else { 2 }
+        );
+        assert_eq!(
+            locked["usage"]["input_tokens"],
+            if low_gate { 100 } else { 200 }
+        );
+        assert_eq!(
+            locked["usage"]["output_tokens"],
+            if low_gate { 25 } else { 50 }
+        );
+        assert_eq!(locked["usage"]["unknown_usage_attempts"], 0);
+        let warnings: Vec<_> = locked["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|w| w["kind"] == "ledger-finalization-unconfirmed")
+            .collect();
+        assert_eq!(warnings.len(), 1, "{locked}");
+        assert_eq!(warnings[0]["count"], 1);
+        assert!(
+            !healthy["warnings"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|w| w["kind"] == "ledger-finalization-unconfirmed")
+        );
+    }
+}
+
+#[test]
+fn successful_rankings_report_missing_ledger_without_initializing_it() {
+    for low_gate in [false, true] {
+        let (document, reason) = successful_ledger_finalization_fixture(low_gate, false, false);
+        assert_eq!(
+            document["decision"],
+            if low_gate { "abstain" } else { "ranked" }
+        );
+        assert!(reason.is_none());
+        assert_eq!(
+            document["usage"]["http_attempts"],
+            if low_gate { 1 } else { 2 }
+        );
+        let warnings: Vec<_> = document["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|w| w["kind"] == "ledger-finalization-unconfirmed")
+            .collect();
+        assert_eq!(warnings.len(), 1, "{document}");
+        assert_eq!(warnings[0]["count"], 1);
+    }
 }
