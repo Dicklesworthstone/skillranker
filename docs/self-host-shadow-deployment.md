@@ -805,3 +805,56 @@ the confirmation to look for.
   population, strata, fallback/latency/memory and known/unknown usage evidence.
   Relevance, paired outcomes, native platform and original `sr-9fzp` gates remain
   separate. Ordinary future traffic can now exercise the current fixes.
+
+## Redeployment — 2026-10-07 (BeigeCompass, observation boundary repair)
+
+- Installed source `06bfabd3e221f33e251477b48165724087684efe` at
+  `2026-10-07 21:28:52 UTC`. The installed CLI now includes the shared
+  configuration validation, bounded regular-file reading, configured roots and
+  harness-specific inventory policy for `observe` (`sr-roadmap-l1i.6.31`).
+- Executable SHA256:
+  `069f8d8b69c27d9dc35d66edf91d08c9fd5eeb4ca85d3e8a4e1c7ce6ce3bd4aa`,
+  25,144,192 bytes, mode `0755`. The preceding `fe399ab` executable remains at
+  `~/.local/state/sr/deployments/20261007T212852Z-fe399ab/sr`, SHA256
+  `7e230d0c8d2a791c60e440232ece235fc647df0966ed476cea8df0d185b1b15d`.
+  Cooperating lock, identity rechecks, atomic replacement and file/directory
+  fsync passed; concurrent noncooperating editors still lack a CAS guarantee.
+- DSR run `b43ce784-6288-4861-932d-c4108b7b2626` passed in 279.897 seconds
+  through mandatory remote RCH on `vmi1264463`, using the same pinned native
+  release command and one build job as the preceding receipt. All 285 compiler
+  and test inputs match committed `06bfabd`, the worker and the final qualified
+  source manifest. Only tracker ownership changed during compilation. ELF64
+  x86-64 qualification passed. Archive SHA256
+  `39abdd2429a65d68ea7e34f62772b00e088c8e2f96191b41d73e90a830d6c607`
+  contains exactly the identical executable and verbatim `LICENSE`.
+- Native observation controls used synthetic bounded events, isolated HOME and
+  actual SQLite. The original executable reproduced the declared defects in
+  21 controls/38 CLI executions; the candidate and fresh installed executable
+  each passed the repaired expectations for the same 21 controls/38 executions.
+  Positive controls include two configured loads with exact skill IDs and
+  idempotency, explicit inventory replacement, valid Claude input and safe
+  aliases. Invalid configuration and escaping/nonregular input cannot advance
+  cursors; the original FIFO control was killed and reaped by its supervisor.
+- Candidate and installed-path CLI/hook comparisons each passed 28 records;
+  the actual wrapper passed 29. Eight isolated installer controls passed for
+  each of the original, candidate and installed executables. Live install and
+  uninstall previews are byte-identical before/after; wrapper, settings, trusted
+  configuration, consent and four-second hook timeout are unchanged. No credential
+  file was edited; owner-only credential permissions were rechecked.
+- Retained validation failures: `budget status` is unsupported (corrected to
+  `budget --json`); one post-install comparison named a nonexistent backup;
+  another inherited the Python driver's stdin and correctly received input-mode
+  refusals on both executables. The corrected comparison derives the backup
+  from its receipt and supplies empty stdin. Expectations, product code and
+  existing tests were not relaxed. CASS timed out after six seconds, limiting
+  historical coverage.
+- The prior same-input source suite passed 1,592 tests, with zero failures and
+  eleven existing opt-in ignores, plus all-target check and strict Clippy. Those
+  checks were not rerun for this executable-only deployment. Fresh native
+  verification is author-only, not independent review or real Claude delivery.
+  No provider requests or organic cohort traffic were generated. Raw receipts:
+  `/scratch/tmp/skillranker-observe-native-20261007-f0d9bruf`.
+- `sr-1uf4` retains its original 500-invocation and cohort requirements and stays
+  open. Independent relevance/paired-outcome gates and the original `sr-9fzp`
+  timeout cause remain unresolved. This receipt qualifies a private native Linux
+  deployment, without advisory promotion or other-platform qualification.
