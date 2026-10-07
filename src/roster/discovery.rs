@@ -804,14 +804,44 @@ pub fn claude_code_plan_with_roots(
     visibility: Visibility,
     configured: &[crate::privacy::SkillRoot],
 ) -> Result<DiscoveryPlan, DiscoveryError> {
-    use crate::privacy::SkillRoot;
     // At most 32 roots in each of the trusted-user and project layers.
     if configured.len() > 64 {
         return Err(DiscoveryError::InvalidRootPath);
     }
     let mut plan = claude_code_plan(workspace, user_home, visibility.clone())?;
+    append_configured_roots(&mut plan, workspace, visibility, configured)?;
+    Ok(plan)
+}
+
+/// Inspect only explicitly configured direct-layout roots for the supplied
+/// harness. This does not add Claude's roots or assert a native load contract.
+/// The rest of the harness inventory is unknown, so coverage stays partial.
+pub fn configured_roots_plan(
+    workspace: &Path,
+    harness: &HarnessId,
+    visibility: Visibility,
+    configured: &[crate::privacy::SkillRoot],
+) -> Result<DiscoveryPlan, DiscoveryError> {
+    let mut plan = DiscoveryPlan::new(harness.clone());
+    plan.note_unenumerated(
+        SourceId::new("configured.harness-inventory").map_err(DiscoveryError::Identity)?,
+    );
+    append_configured_roots(&mut plan, workspace, visibility, configured)?;
+    Ok(plan)
+}
+
+fn append_configured_roots(
+    plan: &mut DiscoveryPlan,
+    workspace: &Path,
+    visibility: Visibility,
+    configured: &[crate::privacy::SkillRoot],
+) -> Result<(), DiscoveryError> {
+    use crate::privacy::SkillRoot;
+    if configured.len() > 64 {
+        return Err(DiscoveryError::InvalidRootPath);
+    }
     if configured.is_empty() {
-        return Ok(plan);
+        return Ok(());
     }
     let workspace_root =
         AuthorizedRoot::open_absolute(workspace).map_err(|_| DiscoveryError::InvalidRootPath)?;
@@ -866,7 +896,7 @@ pub fn claude_code_plan_with_roots(
             }),
         }
     }
-    Ok(plan)
+    Ok(())
 }
 
 #[cfg(test)]

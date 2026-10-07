@@ -32,6 +32,28 @@ of implying a complete inventory of what Claude can load.
 
 A partial pass can never support a global "no skill exists" claim.
 
+## Configured roots for normalized contexts
+
+`configured_roots_plan` keeps the normalized context's actual harness and opens
+only effective `roster.roots`. It does not inherit `.claude/skills`, Codex roots,
+or another harness's implicit inventory. The shared root-opening boundary keeps
+project-relative paths inside the workspace, permits trusted absolute roots,
+deduplicates directory aliases, and retains the existing file/count/byte bounds.
+
+Configured files use `<skill-name>/SKILL.md`. Their local names can be resolved
+and suggested, but all configured roots have equal priority: distinct same-name
+files are ambiguous, with no guessed shadowing rule. Rank uses the internal
+`configured-direct-layout-unverified` label for this local layout and reports
+`visibility: unverified` with a loading/precedence caveat. It does not claim a
+verified native harness adapter. The rest of the harness inventory is declared
+unenumerated, so coverage stays partial. Publication reopens exactly the same
+configured scope and revalidates membership, content, restrictions and policy.
+
+Claude sessions retain their documented roots and existing lower-priority
+configured extensions. An explicit roster still replaces discovery and retains
+its existing import/authorization contract. Other normalized harnesses without
+configured roots continue to require an explicit inventory.
+
 ## Bounded, descriptor-based enumeration
 
 Every directory is listed through its own descriptor, and children are opened

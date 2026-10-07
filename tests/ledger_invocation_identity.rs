@@ -119,12 +119,16 @@ impl Fixture {
     }
 
     fn rank(&self, event: &str) -> Value {
+        self.rank_for_harness(event, "claude_code")
+    }
+
+    fn rank_for_harness(&self, event: &str, harness: &str) -> Value {
         let workspace = self.root.join("workspace");
         let context = workspace.join("context.json");
         fs::write(
             &context,
             json!({
-                "schema_version": 1, "harness": "claude_code", "producer_id": "invocation-test",
+                "schema_version": 1, "harness": harness, "producer_id": "invocation-test",
                 "workspace_root": workspace, "session_id": "session", "agent_id": null,
                 "branch_id": null, "context_epoch": null,
                 "current_request": {"event_id": event, "text": "Diagnose our failing Rust tests",
@@ -223,6 +227,40 @@ impl Fixture {
         assert!(self.provider.wait().unwrap().success());
         served
     }
+}
+
+#[test]
+fn normalized_configured_roots_rank_through_real_tls_and_record_the_actual_harness() {
+    let f = Fixture::new("useful");
+    fs::create_dir_all(f.root.join("workspace/.sr")).unwrap();
+    // Selecting this directory explicitly does not claim a native Claude event.
+    fs::write(
+        f.root.join("workspace/.sr/config.toml"),
+        "[roster]\nroots=['.claude/skills']\n",
+    )
+    .unwrap();
+    let doc = f.rank_for_harness("normalized-request", "normalized");
+    assert_eq!(doc["decision"], "ranked");
+    assert_eq!(doc["harness"], "normalized");
+    assert!(
+        doc["skills"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|s| s["visibility"] == "unverified")
+    );
+    assert_eq!(doc["usage"]["http_attempts"], 2);
+    let db = f.database();
+    let (harness, attempts): (String, i64) = db
+        .query_row(
+            "SELECT s.adapter, (SELECT count(*) FROM provider_attempts) FROM ranking_events e JOIN roster_snapshots s ON s.snapshot_id = e.snapshot_id",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(harness, "normalized");
+    assert_eq!(attempts, 2);
+    assert_eq!(f.finish().len(), 2);
 }
 
 impl Drop for Fixture {

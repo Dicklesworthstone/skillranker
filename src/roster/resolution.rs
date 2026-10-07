@@ -636,7 +636,14 @@ struct PreparedResolution {
 impl PreparedResolution {
     fn new(plan: &DiscoveryPlan, cx: &Cx, clock: &EntryClock) -> Result<Self, ResolutionError> {
         budget(cx, clock)?;
-        if plan.harness().as_str() != "claude_code" {
+        // The direct file layout also supports explicitly configured roots.
+        // It never authorizes implicit roots from an unsupported harness.
+        if plan.harness().as_str() != "claude_code"
+            && plan
+                .roots()
+                .iter()
+                .any(|root| !root.spec().source().as_str().starts_with("configured."))
+        {
             return Err(ResolutionError::InvalidBinding);
         }
         let discovery =

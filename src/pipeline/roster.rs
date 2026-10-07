@@ -1,11 +1,13 @@
 //! Reload the same selected inventory at capture and publication boundaries.
-use super::{PROVISIONAL_CLAUDE_CONTRACT, PipelineFailure, failure};
+use super::{
+    PROVISIONAL_CLAUDE_CONTRACT, PROVISIONAL_CONFIGURED_CONTRACT, PipelineFailure, failure,
+};
 use crate::identity::HarnessId;
 use crate::identity::SkillId;
 use crate::output::ErrorKind;
 use crate::privacy::SkillRoot;
 use crate::roster::Visibility;
-use crate::roster::discovery::{DiscoveryPlan, claude_code_plan_with_roots};
+use crate::roster::discovery::{DiscoveryPlan, claude_code_plan_with_roots, configured_roots_plan};
 use crate::roster::import::{ImportError, import_authorized, read_roster_file};
 use crate::roster::resolution::{
     ResolutionError, ResolvedRoster, resolve_claude_plan, resolve_claude_plan_concurrent,
@@ -22,7 +24,7 @@ pub(super) struct Source<'a> {
     pub manifest: Option<&'a Path>,
     /// Effective `roster.roots`, inspected like `sr roster` does.
     pub configured: &'a [SkillRoot],
-    /// The session's harness. Discovery follows Claude's layout only.
+    /// The session's actual harness. Other harnesses use configured roots only.
     pub harness: &'a HarnessId,
 }
 
@@ -91,10 +93,26 @@ impl Source<'_> {
             .admit_new_work()
             .map_err(|_| validation_error(RevalidationError::Deadline))?;
         if self.manifest.is_none() && self.harness.as_str() != crate::adapter::CLAUDE_CODE_ID {
-            return Err(failure(
-                ErrorKind::UnusableRoster,
-                "Skill discovery follows Claude Code's layout only; supply --roster for this harness",
-            ));
+            if self.configured.is_empty() {
+                return Err(failure(
+                    ErrorKind::UnusableRoster,
+                    "No inventory adapter for this harness; configure roster.roots or supply --roster",
+                ));
+            }
+            return configured_roots_plan(
+                self.workspace,
+                self.harness,
+                Visibility::Verified {
+                    contract_version: PROVISIONAL_CONFIGURED_CONTRACT.into(),
+                },
+                self.configured,
+            )
+            .map_err(|_| {
+                failure(
+                    ErrorKind::UnusableRoster,
+                    "Failed to create roster source plan",
+                )
+            });
         }
         claude_code_plan_with_roots(
             self.workspace,
@@ -406,5 +424,52 @@ mod tests {
             ))
             .unwrap_err();
         assert_eq!((failure.0, failure.1), (6, "timeout"));
+    }
+
+    #[test]
+    fn configured_scope_revalidates_without_importing_another_harness_inventory() {
+        let mut f = Fixture::new();
+        f.harness = HarnessId::new("normalized").unwrap();
+        fs::create_dir_all(f.root.join("custom/alpha")).unwrap();
+        fs::write(
+            f.root.join("custom/alpha/SKILL.md"),
+            "---\nname: alpha\ndescription: Review Rust tests\n---\nReview tests.\n",
+        )
+        .unwrap();
+        let configured = [SkillRoot::WorkspaceRelative(
+            crate::privacy::WorkspaceRelativeRoot::parse("custom").unwrap(),
+        )];
+        let source = Source {
+            configured: &configured,
+            ..f.source(false)
+        };
+        let cx = f.invocation.request_cx().unwrap();
+        let roster = source.load(&cx, &f.clock).unwrap();
+        assert_eq!(source.plan(&f.clock).unwrap().harness(), &f.harness);
+        assert_eq!(roster.skills().len(), 1);
+        assert!(
+            roster.is_partial(),
+            "the undeclared harness inventory stays unknown"
+        );
+        let id = match roster.exact_name("alpha") {
+            ExactResolution::Resolved { id, .. } => id,
+            other => panic!("configured alpha must resolve: {other:?}"),
+        };
+        let captured = capture_dependencies(&roster, [id], &f.clock).unwrap();
+        let validate = || {
+            f.invocation
+                .runtime()
+                .block_on(source.validate_concurrent(&captured, &cx, &f.clock))
+        };
+        assert_eq!(validate(), Ok(()));
+        f.skill("gamma", "", "Outside the selected roots.");
+        assert_eq!(validate(), Ok(()));
+        fs::create_dir_all(f.root.join("custom/beta")).unwrap();
+        fs::write(
+            f.root.join("custom/beta/SKILL.md"),
+            "---\nname: beta\ndescription: Added candidate\n---\nNew candidate.\n",
+        )
+        .unwrap();
+        assert_eq!(validate().unwrap_err().1, "roster-changed");
     }
 }

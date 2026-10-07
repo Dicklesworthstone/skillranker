@@ -86,16 +86,21 @@ fn failure(kind: ErrorKind, message: impl Into<String>) -> PipelineFailure {
 pub use crate::jev::client::JevTransport;
 
 /// The provisional contract rank resolves Claude skills under: the documented
-/// project-over-personal precedence, not yet verified by conformance evidence.
+/// personal-over-project precedence, not yet verified by conformance evidence.
 pub(crate) const PROVISIONAL_CLAUDE_CONTRACT: &str = "claude-code-documented-unverified";
 
+/// Configured direct file names can be resolved locally, while the supplied
+/// harness's loading/precedence contract remains unverified. All roots tie.
+pub(crate) const PROVISIONAL_CONFIGURED_CONTRACT: &str = "configured-direct-layout-unverified";
+
 /// How a result's visibility is labeled: "unverified" for the provisional
-/// Claude contract (and any unverified binding), "verified" only for a
+/// Claude/configured contract (and any unverified binding), "verified" only for a
 /// contract backed by evidence.
 fn visibility_label(visibility: &Visibility) -> &'static str {
     match visibility {
         Visibility::Verified { contract_version }
-            if contract_version != PROVISIONAL_CLAUDE_CONTRACT =>
+            if contract_version != PROVISIONAL_CLAUDE_CONTRACT
+                && contract_version != PROVISIONAL_CONFIGURED_CONTRACT =>
         {
             "verified"
         }
@@ -1624,10 +1629,10 @@ async fn rank_once(
         evaluation_hash: None,
     };
 
-    // 4. Discover Roster. Claude's documented precedence (project skills over
-    // personal ones) resolves collisions, but no conformance evidence verifies
-    // it yet. Rank uses it under an explicit provisional label and says so in
-    // every result; withheld, ambiguous and shadowed names stay excluded.
+    // 4. Discover the selected roster. Claude's documented personal-over-project
+    // precedence and configured-only direct layouts carry provisional labels,
+    // not conformance claims. Other harnesses never inherit Claude's inventory.
+    // Withheld, ambiguous and shadowed names stay excluded.
     let roster_source = roster::Source {
         workspace: &args.workspace,
         home: args.home.as_deref(),
@@ -3776,7 +3781,7 @@ fn roster_warnings(roster: &ResolvedRoster, source: Option<&Value>) -> (Vec<Valu
         json!({
             "kind": "unverified-visibility",
             "count": provisional,
-            "message": "Claude's skill precedence is not yet conformance-verified; confirm a suggested skill loads before relying on it",
+            "message": "Skill loading and name precedence are not conformance-verified; confirm a suggested skill loads before relying on it",
         })
     });
     // The session-selection disclosure and the provisional precedence caveat
