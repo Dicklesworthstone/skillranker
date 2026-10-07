@@ -2010,11 +2010,39 @@ fn observe_command(clock: &EntryClock, matches: &clap::ArgMatches) -> Result<Str
         ));
     }
 
-    let invocation = crate::runtime::ProcessInvocation::from_clock(*clock)
+    let workspace = std::env::current_dir().map_err(|_| invalid("Workspace is unavailable"))?;
+    let mut sources = ConfigSources::default();
+    environment_sources(&mut sources)?;
+    let config = ConfigFiles::new(workspace.clone(), user_config_root()?).load(clock, sources)?;
+    let clock = DurationMillis::new(
+        "observation_timeout",
+        config.effective().timeout_ms(),
+        60_000,
+    )
+    .map_err(crate::runtime::RuntimeError::Deadline)
+    .and_then(|total| clock.with_total(total))
+    .map_err(|_| invalid("Invalid observation deadline"))?;
+    timely(&clock)?;
+    let invocation = crate::runtime::ProcessInvocation::from_clock(clock)
         .map_err(|_| (6u8, "timeout", "Local runtime unavailable".into()))?;
-    let cx = invocation
+    let outcome = invocation
         .request_cx()
-        .map_err(|_| (6u8, "timeout", "Local runtime unavailable".into()))?;
+        .map_err(|_| (6u8, "timeout", "Local runtime unavailable".into()))
+        .and_then(|cx| observe_owned(&clock, &invocation, &cx, matches, workspace, &config));
+    finish_invocation(invocation, outcome)
+}
+
+fn observe_owned(
+    clock: &EntryClock,
+    invocation: &crate::runtime::ProcessInvocation,
+    cx: &asupersync::Cx,
+    matches: &clap::ArgMatches,
+    workspace: PathBuf,
+    config: &ResolvedConfig,
+) -> Result<String, Failure> {
+    let context_file = matches.get_one::<String>("context");
+    let transcript_file = matches.get_one::<String>("transcript");
+    let harness_opt = matches.get_one::<String>("harness");
 
     let location = if let Some(dir) = matches.get_one::<String>("dir") {
         crate::storage::LedgerLocation::Directory(PathBuf::from(dir))
@@ -2022,7 +2050,6 @@ fn observe_command(clock: &EntryClock, matches: &clap::ArgMatches) -> Result<Str
         crate::storage::LedgerLocation::Platform
     };
 
-    let workspace = std::env::current_dir().map_err(|_| invalid("Workspace is unavailable"))?;
     let workspace_id = crate::identity::WorkspaceId::new(workspace.to_string_lossy().as_ref())
         .map_err(|_| invalid("Invalid workspace root path"))?;
 
@@ -2031,20 +2058,28 @@ fn observe_command(clock: &EntryClock, matches: &clap::ArgMatches) -> Result<Str
     let mut unread_backlog = false;
     let (normalized_context, bytes_scanned) = if let Some(context_path) = context_file {
         let path = PathBuf::from(context_path);
-        let bytes = std::fs::read(&path).map_err(|e| {
+        let input_workspace = workspace.clone();
+        let bytes = crate::blocking::run_blocking_leaf(
+            invocation,
+            cx,
+            crate::blocking::BlockingLeafKind::Filesystem,
+            false,
+            move || {
+                crate::pipeline::read_input_file(
+                    &input_workspace,
+                    &path,
+                    crate::limits::NORMALIZED_CONTEXT_JSON_BYTES,
+                )
+            },
+        )
+        .map_err(|_| {
             (
-                7u8,
-                "malformed-input",
-                format!("Failed to read context file: {e}"),
+                6u8,
+                "timeout",
+                "Normalized context read exceeded the observation work deadline".into(),
             )
-        })?;
-        if bytes.len() > crate::limits::NORMALIZED_CONTEXT_JSON_BYTES.max() {
-            return Err((
-                7u8,
-                "oversized-input",
-                "Normalized context exceeds 1 MiB limit".into(),
-            ));
-        }
+        })?
+        .value?;
         let bytes_len = bytes.len() as u64;
         let ctx = crate::context::parse_normalized_context(&bytes).map_err(|e| {
             (
@@ -2074,8 +2109,8 @@ fn observe_command(clock: &EntryClock, matches: &clap::ArgMatches) -> Result<Str
             let absolute = transcript_path.clone();
             let ws = workspace.clone();
             crate::blocking::run_blocking_leaf(
-                &invocation,
-                &cx,
+                invocation,
+                cx,
                 crate::blocking::BlockingLeafKind::Filesystem,
                 false,
                 move || crate::context::discovery::transcript_session(&absolute, &ws),
@@ -2109,8 +2144,8 @@ fn observe_command(clock: &EntryClock, matches: &clap::ArgMatches) -> Result<Str
                 session_id.as_str()
             );
             let stored = crate::storage::get_session_cursor(
-                &invocation,
-                &cx,
+                invocation,
+                cx,
                 crate::storage::LedgerAccess::ExistingOnly,
                 location.clone(),
                 workspace.to_string_lossy().as_ref(),
@@ -2132,8 +2167,8 @@ fn observe_command(clock: &EntryClock, matches: &clap::ArgMatches) -> Result<Str
             })
         });
         let snapshot = crate::context::jsonl::snapshot_jsonl(
-            &invocation,
-            &cx,
+            invocation,
+            cx,
             &transcript_path,
             resume.as_ref(),
             crate::context::jsonl::CursorKind::Observation,
@@ -2221,14 +2256,36 @@ fn observe_command(clock: &EntryClock, matches: &clap::ArgMatches) -> Result<Str
     let home = std::env::var_os("HOME")
         .filter(|p| !p.is_empty())
         .map(PathBuf::from);
-    let plan = crate::roster::discovery::claude_code_plan_with_roots(
-        &workspace,
-        home.as_deref(),
-        crate::roster::Visibility::Verified {
-            contract_version: crate::pipeline::PROVISIONAL_CLAUDE_CONTRACT.into(),
-        },
-        &[],
-    )
+    let roster_file = matches.get_one::<String>("roster");
+    let plan = if roster_file.is_none()
+        && normalized_context.harness.as_str() != crate::adapter::CLAUDE_CODE_ID
+    {
+        if config.effective().roster_roots().is_empty() {
+            return Err((
+                5u8,
+                "unusable-roster",
+                "No inventory adapter for this harness; configure roster.roots or supply --roster"
+                    .into(),
+            ));
+        }
+        crate::roster::discovery::configured_roots_plan(
+            &workspace,
+            &normalized_context.harness,
+            crate::roster::Visibility::Verified {
+                contract_version: crate::pipeline::PROVISIONAL_CONFIGURED_CONTRACT.into(),
+            },
+            config.effective().roster_roots(),
+        )
+    } else {
+        crate::roster::discovery::claude_code_plan_with_roots(
+            &workspace,
+            home.as_deref(),
+            crate::roster::Visibility::Verified {
+                contract_version: crate::pipeline::PROVISIONAL_CLAUDE_CONTRACT.into(),
+            },
+            config.effective().roster_roots(),
+        )
+    }
     .map_err(|_| {
         (
             5u8,
@@ -2237,7 +2294,7 @@ fn observe_command(clock: &EntryClock, matches: &clap::ArgMatches) -> Result<Str
         )
     })?;
     let overrides = std::collections::BTreeMap::new();
-    let roster = match matches.get_one::<String>("roster") {
+    let roster = match roster_file {
         Some(roster_path) => {
             let path = PathBuf::from(roster_path);
             let path = if path.is_absolute() {
@@ -2252,8 +2309,8 @@ fn observe_command(clock: &EntryClock, matches: &clap::ArgMatches) -> Result<Str
                     format!("Failed to read roster file: {e:?}"),
                 )
             })?;
-            crate::roster::import::import_authorized(&bytes, &plan, &overrides, &cx, clock)
-                .map_err(|e| match e {
+            crate::roster::import::import_authorized(&bytes, &plan, &overrides, cx, clock).map_err(
+                |e| match e {
                     crate::roster::import::ImportError::Deadline
                     | crate::roster::import::ImportError::Cancelled
                     | crate::roster::import::ImportError::Resolution(
@@ -2265,9 +2322,10 @@ fn observe_command(clock: &EntryClock, matches: &clap::ArgMatches) -> Result<Str
                         "malformed-input",
                         format!("Failed to import roster: {e:?}"),
                     ),
-                })?
+                },
+            )?
         }
-        None => crate::roster::resolution::resolve_claude_plan(&plan, &overrides, &cx, clock)
+        None => crate::roster::resolution::resolve_claude_plan(&plan, &overrides, cx, clock)
             .map_err(|error| match error {
                 crate::roster::resolution::ResolutionError::Deadline
                 | crate::roster::resolution::ResolutionError::Cancelled => observe_roster_timeout(),
@@ -2291,8 +2349,8 @@ fn observe_command(clock: &EntryClock, matches: &clap::ArgMatches) -> Result<Str
     };
 
     let existing_cursor = crate::storage::get_session_cursor(
-        &invocation,
-        &cx,
+        invocation,
+        cx,
         crate::storage::LedgerAccess::ExistingOnly,
         location.clone(),
         workspace.to_string_lossy().as_ref(),
@@ -2419,8 +2477,8 @@ fn observe_command(clock: &EntryClock, matches: &clap::ArgMatches) -> Result<Str
     };
 
     crate::storage::record_observations_with_cursor(
-        &invocation,
-        &cx,
+        invocation,
+        cx,
         crate::storage::LedgerAccess::ExistingOnly,
         location,
         &new_observations,
@@ -2477,7 +2535,7 @@ fn observe_command(clock: &EntryClock, matches: &clap::ArgMatches) -> Result<Str
         )
     };
 
-    finish_invocation(invocation, Ok(out))
+    Ok(out)
 }
 
 fn stats_command(clock: &EntryClock, matches: &clap::ArgMatches) -> Result<String, Failure> {

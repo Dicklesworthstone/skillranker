@@ -162,7 +162,7 @@ pub struct ExecutionMetrics {
 /// Read one explicitly selected input file: a bounded regular file under its
 /// own directory, resolved against the workspace when relative. Devices, FIFOs
 /// and symlinks leaving that directory are refused; errors name no path.
-fn read_input_file(
+pub(crate) fn read_input_file(
     workspace: &Path,
     path: &Path,
     limit: crate::limits::ResourceLimit,

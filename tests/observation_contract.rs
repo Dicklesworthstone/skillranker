@@ -68,6 +68,402 @@ fn temp_private_dir(prefix: &str) -> PathBuf {
     dir
 }
 
+/// Actual CLI and SQLite controls isolated from maintainer configuration.
+struct ObserveBoundaryFixture {
+    root: PathBuf,
+}
+
+impl ObserveBoundaryFixture {
+    fn new() -> Self {
+        let root = temp_private_dir("observe-boundary");
+        for dir in ["workspace/.sr", "home/.config/sr", "ledger"] {
+            fs::DirBuilder::new()
+                .mode(0o700)
+                .recursive(true)
+                .create(root.join(dir))
+                .unwrap();
+        }
+        let fixture = Self { root };
+        let init = fixture
+            .command()
+            .args(["ledger", "init", "--dir"])
+            .arg(fixture.root.join("ledger"))
+            .arg("--json")
+            .output()
+            .unwrap();
+        assert!(
+            init.status.success(),
+            "{}",
+            String::from_utf8_lossy(&init.stderr)
+        );
+        fixture.context(&[]);
+        fixture
+    }
+
+    fn command(&self) -> std::process::Command {
+        let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_sr"));
+        command
+            .env_clear()
+            .env("HOME", self.root.join("home"))
+            .env("XDG_CONFIG_HOME", self.root.join("home/.config"))
+            .current_dir(self.root.join("workspace"));
+        command
+    }
+
+    fn context(&self, skills: &[&str]) {
+        let mut events = vec![serde_json::json!({"event_id":"request", "branch_id":"main",
+            "role":"user", "kind":"message", "text":"Review the code"})];
+        events.extend(skills.iter().enumerate().map(|(index, skill)| {
+            let parent = if index == 0 { "request".to_owned() } else { format!("load-{}", index - 1) };
+            serde_json::json!({"event_id":format!("load-{index}"), "parent_id":parent, "branch_id":"main",
+                "role":"tool", "kind":"tool_invocation", "text":"",
+                "tool":{"call_id":format!("call-{index}"), "name":skill,
+                    "status":"succeeded", "arguments":"{}", "result":"Skill loaded"}})
+        }));
+        fs::write(
+            self.root.join("workspace/context.json"),
+            serde_json::json!({
+                "schema_version":1, "harness":"claude_code",
+                "workspace_root":self.root.join("workspace"), "session_id":"observe-boundary",
+                "branch_id":"main", "context_epoch":"epoch-0",
+                "current_request":{"event_id":"request", "text":"Review the code",
+                    "attachments_omitted":false, "essential_attachment_missing":false},
+                "events":events, "explicit_skill_references":[], "supplied_loads":[]
+            })
+            .to_string(),
+        )
+        .unwrap();
+    }
+
+    fn observe(&self, path: &str, environment: &[(&str, &str)]) -> std::process::Output {
+        let mut command = self.command();
+        command
+            .args(["observe", "--context", path, "--dir"])
+            .arg(self.root.join("ledger"))
+            .arg("--json");
+        for (key, value) in environment {
+            command.env(key, value);
+        }
+        command.output().unwrap()
+    }
+
+    fn counts(&self) -> (i64, i64) {
+        let connection = Connection::open(self.root.join("ledger").join(LEDGER_FILE)).unwrap();
+        connection.query_row(
+            "SELECT (SELECT count(*) FROM observations), (SELECT count(*) FROM session_cursors)",
+            [], |row| Ok((row.get(0)?, row.get(1)?)),
+        ).unwrap()
+    }
+
+    fn skill(&self, root: &str, name: &str) {
+        let dir = self.root.join(root).join(name);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("SKILL.md"), format!(
+            "---\nname: {name}\ndescription: Review code carefully\n---\nInspect the implementation.\n"
+        )).unwrap();
+    }
+}
+
+#[test]
+fn observe_boundary_invalid_configuration_cannot_advance_the_cursor() {
+    let mut results = Vec::new();
+    for (config, environment) in [
+        ("", vec![("SR_UNKNOWN_OBSERVE_SETTING", "1")]),
+        ("", vec![("SR_TIMEOUT_MS", "200")]),
+        ("[network]\nenabled=true\n", vec![]),
+        ("[ranking]\ntop=2\ntop=3\n", vec![]),
+        ("[roster\n", vec![]),
+        ("[roster]\nroots=['../external']\n", vec![]),
+    ] {
+        let fixture = ObserveBoundaryFixture::new();
+        fs::write(fixture.root.join("workspace/.sr/config.toml"), config).unwrap();
+        let output = fixture.observe("context.json", &environment);
+        results.push((output, fixture.counts()));
+    }
+    for (output, counts) in results {
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "stdout={} stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(counts, (0, 0));
+    }
+    let fixture = ObserveBoundaryFixture::new();
+    let output = fixture.observe("context.json", &[]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(fixture.counts(), (0, 1));
+}
+
+#[test]
+fn observe_boundary_configured_roots_record_successful_loads_idempotently() {
+    let fixture = ObserveBoundaryFixture::new();
+    fixture.skill("workspace/custom", "project-review");
+    fixture.skill("external", "personal-review");
+    fs::write(
+        fixture.root.join("workspace/.sr/config.toml"),
+        "[roster]\nroots=['custom']\n",
+    )
+    .unwrap();
+    fs::write(
+        fixture.root.join("home/.config/sr/config.toml"),
+        format!(
+            "[roster]\nroots=['{}']\n",
+            fixture.root.join("external").display()
+        ),
+    )
+    .unwrap();
+    fixture.context(&["project-review", "personal-review"]);
+    for generation in 1..=2 {
+        let output = fixture.observe("context.json", &[]);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(value["observations_recorded"], 2);
+        assert_eq!(value["cursor_generation"], generation);
+        assert_eq!(fixture.counts(), (2, 1));
+    }
+    let connection = Connection::open(fixture.root.join("ledger").join(LEDGER_FILE)).unwrap();
+    let loaded: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM observations WHERE evidence_state='loaded'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(loaded, 2);
+}
+
+#[test]
+fn observe_boundary_other_harness_requires_its_own_inventory() {
+    let fixture = ObserveBoundaryFixture::new();
+    fixture.skill("workspace/.claude/skills", "claude-only");
+    fixture.context(&["claude-only"]);
+    let path = fixture.root.join("workspace/context.json");
+    let mut context: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    context["harness"] = serde_json::json!("external-harness");
+    fs::write(&path, context.to_string()).unwrap();
+    let output = fixture.observe("context.json", &[]);
+    assert_eq!(output.status.code(), Some(5));
+    assert_eq!(fixture.counts(), (0, 0));
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["error"]["kind"], "unusable-roster");
+
+    context["harness"] = serde_json::json!("claude_code");
+    fs::write(&path, context.to_string()).unwrap();
+    assert!(fixture.observe("context.json", &[]).status.success());
+    assert_eq!(fixture.counts(), (1, 1));
+}
+
+#[test]
+fn observe_boundary_other_harness_uses_only_configured_inventory() {
+    let fixture = ObserveBoundaryFixture::new();
+    fixture.skill("workspace/.claude/skills", "claude-only");
+    fixture.skill("workspace/custom", "configured-only");
+    fs::write(
+        fixture.root.join("workspace/.sr/config.toml"),
+        "[roster]\nroots=['custom']\n",
+    )
+    .unwrap();
+    fixture.context(&["claude-only", "configured-only"]);
+    let path = fixture.root.join("workspace/context.json");
+    let mut context: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    context["harness"] = serde_json::json!("external-harness");
+    fs::write(&path, context.to_string()).unwrap();
+    let listing = fixture
+        .command()
+        .args(["roster", "--json"])
+        .output()
+        .unwrap();
+    assert!(listing.status.success());
+    let listing: serde_json::Value = serde_json::from_slice(&listing.stdout).unwrap();
+    let expected = listing["records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|record| record["name"] == "configured-only")
+        .unwrap();
+    assert!(
+        expected["source"]
+            .as_str()
+            .unwrap()
+            .starts_with("configured.")
+    );
+    for _ in 0..2 {
+        let output = fixture.observe("context.json", &[]);
+        assert!(
+            output.status.success(),
+            "stdout: {}; stderr: {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(fixture.counts(), (1, 1));
+        let connection = Connection::open(fixture.root.join("ledger").join(LEDGER_FILE)).unwrap();
+        let actual: String = connection
+            .query_row("SELECT skill_id FROM observations", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(actual, expected["skill_id"].as_str().unwrap());
+    }
+}
+
+#[test]
+fn observe_boundary_refuses_escaping_symlinks_before_storage() {
+    let fixture = ObserveBoundaryFixture::new();
+    fs::copy(
+        fixture.root.join("workspace/context.json"),
+        fixture.root.join("outside.json"),
+    )
+    .unwrap();
+    std::os::unix::fs::symlink(
+        fixture.root.join("outside.json"),
+        fixture.root.join("workspace/escape.json"),
+    )
+    .unwrap();
+    let output = fixture.observe("escape.json", &[]);
+    assert_eq!(output.status.code(), Some(7));
+    assert_eq!(fixture.counts(), (0, 0));
+    std::os::unix::fs::symlink("context.json", fixture.root.join("workspace/alias.json")).unwrap();
+    assert!(fixture.observe("alias.json", &[]).status.success());
+    assert_eq!(fixture.counts(), (0, 1));
+    let output = fixture.observe("context.json", &[]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(fixture.counts(), (0, 1));
+}
+
+#[test]
+fn observe_boundary_refuses_oversized_regular_files_before_storage() {
+    let fixture = ObserveBoundaryFixture::new();
+    let file = fs::File::create(fixture.root.join("workspace/oversized.json")).unwrap();
+    file.set_len((skillranker::limits::NORMALIZED_CONTEXT_JSON_BYTES.max() + 1) as u64)
+        .unwrap();
+    let output = fixture.observe("oversized.json", &[]);
+    assert_eq!(output.status.code(), Some(7));
+    assert_eq!(fixture.counts(), (0, 0));
+    assert!(fixture.observe("context.json", &[]).status.success());
+    assert_eq!(fixture.counts(), (0, 1));
+}
+
+#[test]
+fn observe_boundary_explicit_inventory_replaces_configured_discovery() {
+    use std::os::unix::ffi::OsStrExt;
+    let fixture = ObserveBoundaryFixture::new();
+    fixture.skill("workspace/custom", "chosen");
+    fixture.skill("workspace/custom", "omitted");
+    fixture.context(&["chosen", "omitted"]);
+    fs::write(
+        fixture.root.join("workspace/.sr/config.toml"),
+        "[roster]\nroots=['custom']\n",
+    )
+    .unwrap();
+    let declared = fixture.root.join("workspace/custom");
+    let source = format!(
+        "configured.{}",
+        blake3::hash(declared.as_os_str().as_bytes()).to_hex()
+    );
+    fs::write(
+        fixture.root.join("workspace/roster.json"),
+        serde_json::json!({
+            "schema":"sr.roster.v1", "harness":"claude_code", "mode":"authorized_files",
+            "skills":[{"source":source, "path":"chosen/SKILL.md"}]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let output = fixture
+        .command()
+        .args([
+            "observe",
+            "--context",
+            "context.json",
+            "--roster",
+            "roster.json",
+            "--dir",
+        ])
+        .arg(fixture.root.join("ledger"))
+        .arg("--json")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stdout: {}; stderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["observations_recorded"], 1);
+    assert_eq!(fixture.counts(), (1, 1));
+}
+
+#[test]
+fn observe_boundary_refuses_fifo_and_device_inputs_without_blocking() {
+    use std::process::Stdio;
+    use std::time::{Duration, Instant};
+    let fixture = ObserveBoundaryFixture::new();
+    let fifo = fixture.root.join("workspace/input.fifo");
+    nix::unistd::mkfifo(
+        &fifo,
+        nix::sys::stat::Mode::S_IRUSR | nix::sys::stat::Mode::S_IWUSR,
+    )
+    .unwrap();
+    let mut results = Vec::new();
+    for path in [fifo.as_path(), Path::new("/dev/null")] {
+        let mut child = fixture
+            .command()
+            .args(["observe", "--context"])
+            .arg(path)
+            .arg("--dir")
+            .arg(fixture.root.join("ledger"))
+            .arg("--json")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let started = Instant::now();
+        let mut timed_out = false;
+        while child.try_wait().unwrap().is_none() {
+            if started.elapsed() >= Duration::from_secs(4) {
+                child.kill().unwrap();
+                timed_out = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        // Always reap this exact owned child, including the planted stall.
+        results.push((timed_out, child.wait_with_output().unwrap()));
+    }
+    let counts = fixture.counts();
+    // Check the ordinary positive too, even when the old FIFO path stalls.
+    let positive = fixture.observe("context.json", &[]);
+    assert!(
+        positive.status.success(),
+        "{}",
+        String::from_utf8_lossy(&positive.stderr)
+    );
+    assert_eq!(fixture.counts(), (0, 1));
+    assert_eq!(counts, (0, 0));
+    for (timed_out, output) in results {
+        assert!(
+            !timed_out,
+            "nonregular input stalled until the supervisor killed and reaped it"
+        );
+        assert_eq!(output.status.code(), Some(7));
+        let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(value["error"]["kind"], "unsupported-input");
+    }
+}
+
 fn init_test_ledger(dir: &Path) {
     let (inv, cx) = test_invocation();
     init_ledger(&inv, &cx, LedgerLocation::Directory(dir.to_path_buf())).expect("init ledger");

@@ -53,3 +53,34 @@ This contract ensures that tool evidence is extracted safely, bounds are enforce
 - Implementation: [`src/context/tool.rs`](../src/context/tool.rs)
 - Unit & Contract Tests: [`tests/context_contract.rs::tool_associations`](../tests/context_contract.rs)
 - Contract Boundary: `p3_tool_associations` (Assertion ID: `tool_association_exact`)
+
+## 4. Explicit observation command boundary
+
+`sr observe` validates the shared configuration registry before reading its
+selected source or accessing the ledger. Unknown `SR_*` variables, malformed or
+duplicate configuration, forbidden project settings, and invalid deadlines are
+errors. The configured deadline starts at process entry and retains the output
+and cleanup reserve. Observation remains a local operation and does not call Jev.
+
+Discovery includes configured project and trusted-user skill roots, using the
+same authorization and precedence rules as ranking. An explicit `--roster`
+replaces discovery; its file-backed records still require authorization through
+that plan. Adding a root never adds a skill omitted from an explicit inventory.
+For normalized input naming another harness without an explicit roster, only
+configured roots are inspected. Claude's inventory is not borrowed; absent
+configured roots, observation fails with `unusable-roster` before ledger access.
+Configured roots do not establish a native integration or complete inventory.
+
+Normalized `--context` input uses ranking's descriptor-based, bounded regular-file
+reader. The 1 MiB limit applies during reading, rather than after an unbounded
+allocation. Devices, FIFOs, and symlinks escaping the input's authorized directory
+are refused; a symlink to a regular file inside that directory remains readable.
+Input refusals do not advance observation cursors or write observations. Both
+successful and failed observation operations enter the owned runtime's bounded
+shutdown path before returning. Incomplete or late cleanup is reported as a
+timeout.
+
+These boundary checks preserve the existing source namespaces, atomic cursor
+generation check, load deduplication, and distinction between observed loads and
+independent usefulness judgments. Real CLI and SQLite controls live in
+[`tests/observation_contract.rs`](../tests/observation_contract.rs).
