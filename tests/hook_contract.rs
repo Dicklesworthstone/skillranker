@@ -143,6 +143,45 @@ impl HookFixture {
             .stderr(Stdio::piped());
         cmd.output().expect("binary execution")
     }
+
+    fn run_held_open_hook(&self, args: &[&str], environment: &[(&str, &str)]) -> Output {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_sr"))
+            .env_clear()
+            .env("HOME", self.home())
+            .env("XDG_CONFIG_HOME", self.home().join(".config"))
+            .envs(environment.iter().copied())
+            .current_dir(self.workspace())
+            .args(["hook", "claude", "--dir"])
+            .arg(self.ledger_dir())
+            .arg("--offline")
+            .args(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn held-open hook");
+        // Retain the writer throughout wait: EOF cannot masquerade as a timeout.
+        let held_open = child.stdin.take().expect("piped hook stdin");
+        let out = child.wait_with_output().expect("wait for held-open hook");
+        drop(held_open);
+        out
+    }
+}
+
+fn assert_stdin_deadline(out: &Output, elapsed: std::time::Duration) {
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("Hook stdin reached the ranking deadline"),
+        "{stderr}"
+    );
+    assert!(
+        elapsed >= std::time::Duration::from_millis(500),
+        "stdin returned before the valid 1000ms budget's work deadline"
+    );
+    assert!(
+        elapsed < std::time::Duration::from_secs(4),
+        "owned hook input must terminate within its outer timeout"
+    );
 }
 
 fn user_event(id: &str, parent: Option<&str>, session: &str, text: &str) -> serde_json::Value {
@@ -589,11 +628,13 @@ fn quiet_on_failure() {
 #[test]
 fn stdin_deadline_enforced() {
     let fixture = HookFixture::new();
-
-    // Pass empty stdin
-    let out = fixture.run_hook(b"", &["--timeout-ms", "50"]);
+    // The old 50ms fixture was below the 201ms minimum and closed stdin.
+    // Use a valid budget and keep stdin open to exercise the actual read timer.
+    let started = std::time::Instant::now();
+    let out = fixture.run_held_open_hook(&["--timeout-ms", "1000"], &[]);
     assert_eq!(out.status.code(), Some(0), "empty stdin must return exit 0");
     assert!(out.stdout.is_empty(), "empty stdin must emit zero stdout");
+    assert_stdin_deadline(&out, started.elapsed());
 }
 
 #[test]
@@ -798,23 +839,12 @@ fn hook_invocations_are_counted_at_entry_even_when_no_row_is_recorded() {
     // 1. A payload that never parses: no turn identity, no row, one entry.
     let out = fixture.run_hook(b"{\"hook_event_name\": \"UserPromptSubmit\"", &["--shadow"]);
     assert_eq!((out.status.code(), out.stdout.len()), (Some(0), 0));
-    // 2. An invocation starved past its own deadline while stdin stays open.
-    let mut child = Command::new(env!("CARGO_BIN_EXE_sr"))
-        .env_clear()
-        .env("HOME", fixture.home())
-        .env("XDG_CONFIG_HOME", fixture.home().join(".config"))
-        .current_dir(fixture.workspace())
-        .args(["hook", "claude", "--dir", dir, "--offline", "--shadow"])
-        .args(["--timeout-ms", "50"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    let held_open = child.stdin.take();
-    let out = child.wait_with_output().unwrap();
-    drop(held_open);
+    // 2. A valid invocation reaches its stdin deadline while the pipe stays open.
+    // 50ms was an invalid deadline, so it did not test the stdin timer.
+    let started = std::time::Instant::now();
+    let out = fixture.run_held_open_hook(&["--shadow", "--timeout-ms", "1000"], &[]);
     assert_eq!((out.status.code(), out.stdout.len()), (Some(0), 0));
+    assert_stdin_deadline(&out, started.elapsed());
     // 3. A turn that fails before context capture still records its row.
     let out = fixture.run_hook(&payload, &["--shadow"]);
     assert_eq!(out.status.code(), Some(0));
@@ -1115,4 +1145,145 @@ fn pre_context_hook_failures_are_recorded_once_per_turn() {
         json!([{"reason": "missing-session", "count": 2}]),
         "{report}"
     );
+}
+
+// Preflight must validate invocation authority before any counter mutation.
+fn initialized_counter_fixture() -> HookFixture {
+    let fixture = HookFixture::new();
+    let init = fixture.run_cli(&[
+        "ledger",
+        "init",
+        "--dir",
+        fixture.ledger_dir().to_str().unwrap(),
+    ]);
+    assert_eq!(
+        init.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&init.stderr)
+    );
+    // Valid arguments and a malformed payload are a genuine counted hook entry.
+    let out = fixture.run_hook(b"{", &["--shadow"]);
+    assert_eq!((out.status.code(), out.stdout.len()), (Some(0), 0));
+    assert_eq!(hook_counter_bytes(&fixture).len(), 54);
+    fixture
+}
+
+fn hook_counter_bytes(fixture: &HookFixture) -> Vec<u8> {
+    fs::read(
+        fixture
+            .ledger_dir()
+            .join(skillranker::storage::hook_entries::HOOK_ENTRIES_FILE),
+    )
+    .unwrap()
+}
+
+fn assert_hook_preflight_refusal(fixture: &HookFixture, flags: &[&str]) {
+    let before = hook_counter_bytes(fixture);
+    let out = fixture.run_hook(b"{", flags);
+    assert_eq!((out.status.code(), out.stdout.len()), (Some(0), 0));
+    assert!(!out.stderr.is_empty(), "refusal must diagnose on stderr");
+    assert_eq!(
+        hook_counter_bytes(fixture),
+        before,
+        "invalid hook invocation wrote state: {flags:?}; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let conn =
+        rusqlite::Connection::open(fixture.ledger_dir().join(skillranker::storage::LEDGER_FILE))
+            .unwrap();
+    let rows: i64 = conn
+        .query_row("SELECT count(*) FROM ranking_events", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(
+        rows, 0,
+        "preflight/malformed input must not record ranking rows"
+    );
+}
+
+#[test]
+fn invalid_hook_arguments_never_append_invocation_counts() {
+    let fixture = initialized_counter_fixture();
+    for flags in [
+        &["--bogus-preflight-flag"][..],
+        &["--allow-network"][..], // fixture explicitly supplies --offline
+        &["--shadow", "--shadow"][..],
+        &["--timeout-ms"][..],
+    ] {
+        assert_hook_preflight_refusal(&fixture, flags);
+    }
+    for flags in [&["--help"][..], &["--no-ledger"][..], &["--no-persist"][..]] {
+        let before = hook_counter_bytes(&fixture);
+        let out = fixture.run_hook(b"{", flags);
+        assert_eq!(out.status.code(), Some(0));
+        assert_eq!(hook_counter_bytes(&fixture), before, "{flags:?}");
+    }
+}
+
+#[test]
+fn invalid_hook_deadlines_never_append_invocation_counts() {
+    let fixture = initialized_counter_fixture();
+    for value in [
+        "not-a-number",
+        "0",
+        "50",
+        "200",
+        "60001",
+        "18446744073709551616",
+    ] {
+        assert_hook_preflight_refusal(&fixture, &["--timeout-ms", value]);
+    }
+    // A registry-valid larger budget still clamps to the installed outer budget.
+    let before = hook_counter_bytes(&fixture).len();
+    let out = fixture.run_hook(b"{", &["--timeout-ms", "60000"]);
+    assert_eq!((out.status.code(), out.stdout.len()), (Some(0), 0));
+    assert_eq!(hook_counter_bytes(&fixture).len(), before + 54);
+    assert!(String::from_utf8_lossy(&out.stderr).contains("clamped to installed budget"));
+}
+
+#[test]
+fn invalid_hook_configuration_never_append_invocation_counts() {
+    let fixture = initialized_counter_fixture();
+    fs::create_dir_all(fixture.workspace().join(".sr")).unwrap();
+    for config in [
+        "[ranking]\ntop=0\n",
+        "[network]\nenabled=true\n",
+        "[ranking]\ntop=5\ntop=6\n",
+    ] {
+        fs::write(fixture.workspace().join(".sr/config.toml"), config).unwrap();
+        assert_hook_preflight_refusal(&fixture, &["--shadow"]);
+    }
+    // Repairing an owned configuration restores valid pre-stdin counting.
+    fs::write(
+        fixture.workspace().join(".sr/config.toml"),
+        "[ranking]\ntop=5\n",
+    )
+    .unwrap();
+    let before = hook_counter_bytes(&fixture).len();
+    let out = fixture.run_hook(b"{", &["--shadow"]);
+    assert_eq!((out.status.code(), out.stdout.len()), (Some(0), 0));
+    assert_eq!(hook_counter_bytes(&fixture).len(), before + 54);
+}
+
+#[test]
+fn valid_hook_cli_deadline_overrides_environment_before_held_open_stdin() {
+    let fixture = initialized_counter_fixture();
+    let before = hook_counter_bytes(&fixture).len();
+    let started = std::time::Instant::now();
+    let out = fixture.run_held_open_hook(
+        &["--shadow", "--timeout-ms", "1000"],
+        &[("SR_TIMEOUT_MS", "60000")],
+    );
+    assert_eq!((out.status.code(), out.stdout.len()), (Some(0), 0));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("Hook stdin reached the ranking deadline"),
+        "{stderr}"
+    );
+    assert!(
+        !stderr.contains("clamped"),
+        "CLI must override the environment: {stderr}"
+    );
+    assert_stdin_deadline(&out, started.elapsed());
+    assert_eq!(hook_counter_bytes(&fixture).len(), before + 54);
 }

@@ -948,9 +948,6 @@ pub fn run(clock: EntryClock) -> u8 {
     let args: Vec<OsString> = std::env::args_os().collect();
     let is_hook_claude = is_hook_claude_invocation(&args);
     let is_help = args.iter().any(|arg| arg == "--help" || arg == "-h");
-    if is_hook_claude && !is_help {
-        count_hook_entry(&args);
-    }
     let wants_json = args.iter().any(|arg| arg == "--json") || !io::stdout().is_terminal();
     // Only a ranking publishes its decision. Other commands can echo an
     // event ID (snooze, feedback, replay) without exposing any advice.
@@ -1066,19 +1063,17 @@ fn storage_failure(
     }
 }
 
-/// Count a hook invocation beside the ledger before stdin is read, so a turn
+/// Count a validated hook invocation beside the ledger before stdin is read, so a turn
 /// that never records a row still reaches the denominator (sr-01h3). The same
 /// flags that keep the hook out of the ledger keep it out of the counter, and
 /// every failure is silent.
-fn count_hook_entry(args: &[OsString]) {
-    if args
-        .iter()
-        .any(|arg| arg == "--no-ledger" || arg == "--no-persist")
-    {
+fn count_hook_entry(m: &clap::ArgMatches) {
+    if m.get_flag("no-ledger") || m.get_flag("no-persist") {
         return;
     }
+    let dir = m.get_one::<String>("dir").map(PathBuf::from);
     crate::storage::hook_entries::record_hook_invocation(
-        try_extract_dir(args).as_deref(),
+        dir.as_deref(),
         crate::storage::hook_entries::HookCounter::Entries,
     );
 }
@@ -4471,6 +4466,16 @@ fn hook_claude_command(clock: &EntryClock, m: &clap::ArgMatches) -> Result<Strin
             .cli
             .push(("hook.mode".into(), RawValue::String("shadow".into())));
     }
+    if let Some(timeout) = m.get_one::<String>("timeout-ms") {
+        let value = timeout
+            .parse()
+            .map(RawValue::Integer)
+            .map_err(|_| invalid("CLI timeout must be an integer"))?;
+        sources.cli.push((
+            crate::config::SettingKey::RankingTimeoutMs.path().into(),
+            value,
+        ));
+    }
 
     let workspace = if let Some(w) = m.get_one::<String>("workspace") {
         PathBuf::from(w)
@@ -4514,16 +4519,13 @@ fn hook_claude_command(clock: &EntryClock, m: &clap::ArgMatches) -> Result<Strin
         save_case: None,
     };
 
-    let timeout_ms = m
-        .get_one::<String>("timeout-ms")
-        .and_then(|s| s.parse::<u64>().ok())
-        .unwrap_or_else(|| {
-            ConfigFiles::new(args.workspace.clone(), args.user_config_root.clone())
-                .load(clock, args.sources.clone())
-                .map_or(clock.deadline().total().as_millis(), |resolved| {
-                    resolved.effective().timeout_ms()
-                })
-        });
+    // Validate every configuration layer, including the CLI deadline, before
+    // recording operational metadata. Keep the CLI override in the sources
+    // used by the pipeline and publication revalidation as well.
+    let timeout_ms = ConfigFiles::new(args.workspace.clone(), args.user_config_root.clone())
+        .load(clock, args.sources.clone())?
+        .effective()
+        .timeout_ms();
     // Clamp the internal deadline below the installed outer timeout: the
     // harness kills the process at the entry's timeout, and the internal
     // deadline must never exceed that installed budget. Derived from the
@@ -4550,6 +4552,7 @@ fn hook_claude_command(clock: &EntryClock, m: &clap::ArgMatches) -> Result<Strin
         .map_err(crate::runtime::RuntimeError::from)
         .and_then(|total| clock.with_total(total))
         .map_err(|_| invalid("Invalid ranking deadline"))?;
+    count_hook_entry(m);
     timely(clock)?;
     let invocation = crate::runtime::ProcessInvocation::from_clock(*clock)
         .map_err(|_| (6u8, "timeout", "Local runtime unavailable".into()))?;

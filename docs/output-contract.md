@@ -324,11 +324,13 @@ record no row: one whose payload never parses (it has no turn identity), and one
 starved past its own total deadline (there is no time left to write without risking
 the harness's outer timeout).
 
-Those are measured rather than declared. Before it reads stdin, `sr hook claude`
+Those are measured rather than declared. After validating arguments, configuration
+and the deadline, and before it reads stdin, `sr hook claude`
 appends one fixed-size record (a Unix time and a random token; no content or
 identity) to an owner-only counter beside an existing ledger. It does not count under
-`--no-ledger` or `--no-persist`, or where no ledger exists. It never blocks and fails
-silently, and it stops appending at 1 MiB. `hook_entries` then compares
+`--no-ledger` or `--no-persist`, for help or invalid invocation configuration, or
+where no ledger exists. Counter failures are silent, and it stops appending at
+1 MiB. `hook_entries` then compares
 `counted_at_entry` with the hook-channel turns (`shadow`, `advisory-hook`)
 `recorded` over one span. `non_turn_deliveries` counts invocations that were a
 background-task notification Claude delivered inside a turn already under way: the
