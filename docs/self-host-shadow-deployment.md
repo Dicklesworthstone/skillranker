@@ -724,3 +724,84 @@ the confirmation to look for.
   usage are still required. Independent relevance labels, prospective controlled
   outcomes and advisory promotion retain their separate gates. This deployment
   enables ordinary existing shadow traffic to exercise verified source.
+
+## Redeployment — 2026-10-07 (BeigeCompass, current hook and accounting fixes)
+
+- The existing repository-only shadow hook now loads frozen source
+  `fe399ab1d223bb7ff0c0f6294913d75b675a1573`. It includes the successful
+  optional-ledger warning (`aeeac47`), invocation-scoped provider accounting
+  (`54ba5ae`), configured roots for normalized sessions (`7a0ec75`), and
+  validation before hook invocation counting (`fe399ab`).
+- Live inspection first found an executable newer than this document's October 3
+  receipt. Its hash matched the preserved October 6 native build/install receipts
+  for `b46bdc7`; it was identified before any replacement. The prior executable
+  `d0a4c7e8dc8b89baaf2f76a15b438d15016ed8d6ea745e3d2bcefb8f964e0af0`
+  is preserved at `~/.local/state/sr/deployments/20261007T175836Z-b46bdc7/sr`.
+- Installed at `2026-10-07 17:58:36 UTC`, mode `0755`, 25,038,976 bytes, SHA256
+  `7e230d0c8d2a791c60e440232ece235fc647df0966ed476cea8df0d185b1b15d`.
+  The cooperating-installer lock, file hashes/inodes/modes, backup, atomic
+  replacement and file/directory fsync checks passed. Permissions were set before
+  file fsync. Noncooperating editors are not protected by a compare-and-swap.
+- DSR `0.2.3` run `657b65f5-4558-4772-8b97-55e119fe5f14` passed through
+  required-remote RCH on `vmi1264463`, one build job:
+  `cargo +nightly-2026-08-31 build --locked --release --target x86_64-unknown-linux-gnu --bin sr -j1`.
+  Actual Rust is `1.100.0-nightly`, commit
+  `90850177249efe0321573c569aec5d12b257f8d6`, LLVM `23.1.0`. All 285 frozen
+  compiler inputs match the qualified source and final worker bytes; manifest
+  SHA256 `e8187b8b734011a35d5606a73e8ef57474e6635bf4d651466846e388567767a9`.
+  The only working-tree change during compilation was task ownership. Native
+  ELF64/x86-64, archived executable and installed bytes agree. The archive
+  `3434a2af64edfa35033f46a189411beedbc042bc165e8fe654f844283bb37787`
+  contains exactly `sr` and verbatim `LICENSE`. Default features remain empty.
+  This is a private native deployment, not a portable release, advisory promotion,
+  new tag or other-platform qualification.
+- Two failed preparations are retained: DSR `cdaf0c46` rejected an unrelated
+  ambient Cargo-cache license symlink before RCH admission; `2e160bff` reached
+  remote Cargo but lacked the pinned Asupersync checkout in offline mode
+  (Cargo exit 101). The successful run used a supported empty private local
+  Cargo seed because compilation delegates to RCH, with locked dependency
+  downloads into RCH's normal worker cache. No shared cache edit, DSR guard
+  bypass, local compilation, timeout increase or GitHub Actions was used. DSR's
+  local cache receipt does not certify the remote compiler's dependency isolation.
+- Candidate and separately installed-path checks each passed 28 comparison
+  records from 40 actual offline CLI executions with synthetic bounded inputs
+  and private HOME/SQLite stores. All three invalid preflight controls append
+  54 bytes on the old binary and zero on the new binary; valid hooks still count.
+  Explicit decisions, missing requirements, offline misses, dry-run, parsing,
+  provider configuration and shadow silence retain their successful controls.
+  These are input/SQLite contracts, not real Claude delivery or organic traffic.
+  The existing roster matched byte for byte in a fresh pair: 47,722 bytes,
+  SHA256 `e3fd5e68a7740cb6fb2bef6d3bd635d398cc0909879dce5375ba6515314d5b82`.
+- Wrapper verification passed 29 records/42 executions. Its initial reused
+  harness failed one expectation: the actual credential file overwrites planted
+  malformed inherited Cloudflare credentials. The failed report is retained; a
+  separate wrapper test explicitly checks that precedence with zero HTTP usage
+  and adds an invalid-provider refusal. The direct-binary malformed-selected-
+  provider refusal remains unchanged and passed. No credential file was edited.
+  Eight isolated installer controls passed on the old, candidate and installed
+  binaries, including modified-command refusal, repeats, unrelated settings and
+  private backups. Actual install/uninstall previews succeeded before and after
+  without changing settings; the exact revocation command in §6 still applies.
+- The wrapper remains SHA256 `fbf531ecefed9d4e49ac9c799f732951b7f9276baf24443c4af472b3aecdc965`.
+  Project/global/trusted configuration hashes and the four-second outer timeout
+  are unchanged. Owner-only credential permissions were checked without printing
+  values. Repository-only consent, shadow mode, raw-capture-off and disabled
+  shared allowance are unchanged. No new public Jev call occurred.
+- Read-only ledger counts remain 170 evaluations/167 shadow rows, zero emissions
+  and independent judgments, 234 attempts, 14 unknown-usage attempts and
+  2,394,033 known tokens; counter 312/recorded 135/non-turn 154/unrecorded 23
+  (an upper bound, not proven outages). A coarse comparison initially mistook
+  nested query-clock changes for data changes. Separate verification checked
+  their exact retention/query relationships and equality of every remaining
+  field, including unknowns. Private controls did not enter the real ledger.
+- Source qualification is the previously executed same-input default suite:
+  1,583 passed, zero failed, eleven existing opt-in ignored entries, with
+  all-target check, strict Clippy and formatting passed. It was not rerun for
+  this executable-only deployment. Fresh verification was by the author; no
+  independent review, live provider success, runtime latency or usefulness claim.
+  Raw receipts and failures: `/scratch/tmp/skillranker-shadow-upgrade-20261007-_ehsgz5u`.
+- `sr-1uf4` remains open with its original requirements: at least 500
+  representative real invocations and the declared revision/harness/model/policy/
+  population, strata, fallback/latency/memory and known/unknown usage evidence.
+  Relevance, paired outcomes, native platform and original `sr-9fzp` gates remain
+  separate. Ordinary future traffic can now exercise the current fixes.
