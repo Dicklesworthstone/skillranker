@@ -281,9 +281,97 @@ variants. A narrowed receipt has `scope: "diagnostic"`; other receipts have
 or rollout gate.
 
 The validator's output, not a case count, is the mechanical corpus-check
-evidence. The Rust evaluation frame uses one frozen representative per family;
-it does not yet import this adjudicated-corpus schema. Held-out promotion remains
-separate work and must bind its judged cohort to the receipt's primary IDs.
+evidence. The offline handoff below selects one frozen representative per family
+for the existing Rust evaluation frame. Held-out promotion remains separate work;
+the export does not supply independent labels or establish any quality gate.
+
+### 9.1 Offline corpus-to-frame handoff
+
+`scripts/export_corpus_frame.py` consumes the validated manifest and cases plus
+explicitly supplied recorded outcomes. It never calls Jev, resolves embedded
+source paths, or reads/writes the native ledger. The validator returns the same
+bounded objects that passed its checks, so the exporter does not reread a corpus
+that could have changed after validation.
+
+Each JSONL record in `--recorded-frame` is a wrapper with exactly these fields:
+
+```json
+{
+  "schema": "skillranker.corpus_recorded_case.v1",
+  "case_digest": "SHA256 of the canonical adjudicated case object",
+  "roster_manifest_digest": "the adjudicated case's roster.manifest_digest",
+  "record": {
+    "schema_version": 1,
+    "key": {
+      "frame_id": "frozen-frame", "family_id": "family-1",
+      "case_id": "case-1", "replicate": 0, "policy_id": "baseline"
+    },
+    "split": "holdout",
+    "roster_skills": ["opaque-skill-id"],
+    "decision": "ranked",
+    "suggested_skills": ["opaque-skill-id"],
+    "relevance_abstention": false,
+    "operational_failure": false
+  }
+}
+```
+
+Canonical digests use UTF-8 `json.dumps(value, sort_keys=True,
+separators=(",", ":"))` with Python's default ASCII escaping, then SHA256;
+`validate_corpus.canonical_digest` supplies that exact implementation. The
+outcome producer binds each historical decision to its exact corpus case and
+roster. These hashes detect inconsistent bindings; they do not authenticate a
+producer, prove provider execution or blindness, or reconstruct missing evidence.
+Do not expose judged labels to a selector while collecting outcomes.
+
+Supply exactly one outcome per frozen **primary** case, with one frame and policy
+identity. `training` maps to Rust's `train`; validation/holdout keep their names.
+Family, split, exact roster membership and case/roster digests must agree.
+Duplicate, missing, foreign and diagnostic-variant outcomes are refused, as are
+explicit decisions and nonzero replicates. Variants remain in the corpus digest
+and validation receipt, outside the primary evaluation denominator.
+
+The three advisory decisions are `ranked`, `abstain` and `unavailable`.
+Suggestions must be present only for ranked outcomes; unavailable must retain
+`operational_failure: true`, and abstain must retain `relevance_abstention: true`.
+A missing outcome is an incomplete export, never an invented failure. An
+unjudgeable primary keeps its outcome but receives no label. A manual-only skill
+mistakenly suggested by the selector stays in the outcome so it can be scored as
+wrong. Judged labels preserve the independently acceptable set, supplied revision
+and latest recorded adjudication timestamp; their `adjudicator` string encodes
+the sorted adjudicator-ID array as JSON. Missing timestamps are errors.
+
+Create a fresh private destination, then prepare and verify the export:
+
+```bash
+mkdir -m 700 /private/path/eval-export
+python3 -B scripts/export_corpus_frame.py \
+  --manifest /private/path/manifest.json --cases /private/path/cases.jsonl \
+  --recorded-frame /private/path/recorded.jsonl \
+  --label-revision 1 --output-dir /private/path/eval-export
+python3 -B scripts/export_corpus_frame.py --verify --output-dir /private/path/eval-export
+sr eval --dataset /private/path/eval-export/dataset.jsonl \
+  --labels /private/path/eval-export/labels.jsonl --explain --json
+```
+
+Inputs retain the corpus bounds: 256 MiB/10,000 records, 1 MiB per record and
+nesting 64. Each output dataset/label file is at most 256 MiB; the receipt is at
+most 2 MiB. The destination must already be owner-only. Files are mode `0600`,
+fsynced and published individually by atomic links that refuse existing or
+raced-in targets. `receipt.json` publishes **last**, committing the pair; the
+three files are not one filesystem transaction. An interrupted export can leave
+partial files and private staging data, which are retained without destructive
+cleanup. Use a fresh destination after failure. Never score an incomplete export.
+
+The receipt binds full manifest/corpus/outcome content and output hashes, not just
+case-ID membership; `--verify` refuses missing receipts or changed output bytes.
+It is an integrity check, not a signature. `sr eval` does not read this receipt:
+verify immediately before scoring and protect the exported files from concurrent
+edits. The preparation receipt always says `quality_gate: "not-established"`.
+The Rust report remains subject to the independent holdout, retrieval-stage,
+population and promotion requirements above. Synthetic handoff tests prove
+mechanics only. Retire this script when the CLI imports this schema directly
+with equivalent checks; do not maintain a second competing evaluation format.
 
 ## 10. Pilot result — 2026-09-24 (outcome (c): revise the rubric first)
 

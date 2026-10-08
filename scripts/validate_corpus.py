@@ -142,6 +142,12 @@ def main() -> None:
 
 
 def run(manifest_path: Path, cases_path: Path) -> None:
+    _, _, receipt = validate(manifest_path, cases_path)
+    print(json.dumps(receipt, indent=2))
+
+
+def validate(manifest_path: Path, cases_path: Path) -> tuple[dict, dict, dict]:
+    """Return the same bounded objects that passed every corpus check."""
     manifest = load_json(manifest_path, MAX_MANIFEST_BYTES, "manifest")
     require(isinstance(manifest, dict), "manifest must be a JSON object")
     require(manifest.get("schema") == MANIFEST_SCHEMA, "manifest schema mismatch")
@@ -334,30 +340,26 @@ def run(manifest_path: Path, cases_path: Path) -> None:
         name: [case_id for case_id in frozen_lists[name] if cases[case_id]["primary_family_case"]]
         for name in SPLIT_NAMES
     }
-    print(
-        json.dumps(
-            {
-                "status": "passed",
-                "cases": len(cases),
-                "families": len(family_split),
-                "primary_cases": len(family_primary),
-                "variant_cases": len(cases) - len(family_primary),
-                "strata": counts,
-                "variant_strata": variant_counts,
-                "double_judged": double_judged,
-                "double_judgment_population": "all-records",
-                "double_judgment_denominator": len(cases),
-                "primary_double_judged": primary_double_judged,
-                "dataset_digest": dataset_digest,
-                "primary_case_ids_by_split": primary_lists,
-                "primary_dataset_digest": canonical_digest(primary_lists),
-                "declared_population": declared["description"],
-                "narrowed": declared["narrowed"],
-                "scope": "diagnostic" if declared["narrowed"] else "corpus-validation-only",
-            },
-            indent=2,
-        )
-    )
+    receipt = {
+        "status": "passed",
+        "cases": len(cases),
+        "families": len(family_split),
+        "primary_cases": len(family_primary),
+        "variant_cases": len(cases) - len(family_primary),
+        "strata": counts,
+        "variant_strata": variant_counts,
+        "double_judged": double_judged,
+        "double_judgment_population": "all-records",
+        "double_judgment_denominator": len(cases),
+        "primary_double_judged": primary_double_judged,
+        "dataset_digest": dataset_digest,
+        "primary_case_ids_by_split": primary_lists,
+        "primary_dataset_digest": canonical_digest(primary_lists),
+        "declared_population": declared["description"],
+        "narrowed": declared["narrowed"],
+        "scope": "diagnostic" if declared["narrowed"] else "corpus-validation-only",
+    }
+    return manifest, cases, receipt
 
 
 def check_case(
