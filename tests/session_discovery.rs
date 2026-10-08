@@ -1,7 +1,8 @@
 #![cfg(unix)]
 
 use skillranker::context::discovery::{
-    HEAD_BYTES, TAIL_BYTES, attribution, discover_claude_sessions, parse_utc_ms,
+    HEAD_BYTES, TAIL_BYTES, attribution, discover_claude_sessions,
+    discover_claude_sessions_before_cleanup, parse_utc_ms,
 };
 use skillranker::identity::WorkspaceId;
 use std::path::PathBuf;
@@ -180,6 +181,151 @@ fn a_session_without_recorded_times_has_unknown_recency() {
     let inventory = inventory_of(&workspace, projects);
     assert!(inventory.complete);
     assert_eq!(inventory.candidates[0].last_activity_unix_ms, None);
+}
+
+#[test]
+fn impossible_calendar_dates_cannot_establish_recency() {
+    for timestamp in [
+        "2026-02-29T12:00:00Z",
+        "1900-02-29T12:00:00Z",
+        "2100-02-29T12:00:00Z",
+        "2024-02-30T12:00:00Z",
+        "2026-04-31T12:00:00Z",
+        "2026-06-31T12:00:00Z",
+        "2026-09-31T12:00:00Z",
+        "2026-11-31T12:00:00Z",
+    ] {
+        assert_eq!(parse_utc_ms(timestamp), None, "{timestamp}");
+        let (workspace, projects, directory) = tree();
+        std::fs::write(directory.join("s.jsonl"), timed(&workspace, "s", timestamp)).unwrap();
+        let inventory = inventory_of(&workspace, projects);
+        assert!(inventory.complete);
+        assert_eq!(inventory.candidates[0].last_activity_unix_ms, None);
+    }
+    for timestamp in [
+        "2000-02-29T12:00:00Z",
+        "2024-02-29T12:00:00Z",
+        "2400-02-29T12:00:00Z",
+        "2026-02-28T12:00:00Z",
+        "2026-04-30T12:00:00Z",
+        "2026-01-31T12:00:00Z",
+    ] {
+        assert!(parse_utc_ms(timestamp).is_some(), "{timestamp}");
+    }
+}
+
+#[test]
+fn native_discovery_preserves_expiry_and_cancellation_instead_of_partial_inventory() {
+    use skillranker::limits::DurationMillis;
+    use skillranker::runtime::{EntryClock, ProcessInvocation, RuntimeError};
+    let (workspace, projects, directory) = tree();
+    std::fs::write(directory.join("known.jsonl"), record(&workspace, "known")).unwrap();
+    let workspace_id = WorkspaceId::new(workspace.to_str().unwrap()).unwrap();
+    let invocation = ProcessInvocation::enter().unwrap();
+    let cx = invocation.request_cx().unwrap();
+    let roots = [projects];
+    let healthy = discover_claude_sessions_before_cleanup(
+        &roots,
+        &workspace,
+        &workspace_id,
+        &cx,
+        &invocation.clock(),
+    )
+    .unwrap();
+    assert!(healthy.complete);
+    assert_eq!(healthy.candidates.len(), 1);
+
+    let expired = EntryClock::capture_with(
+        DurationMillis::new("test_total", 201, 3_000).unwrap(),
+        DurationMillis::new("test_reserve", 200, 3_000).unwrap(),
+    )
+    .unwrap();
+    while expired.admit_new_work().is_ok() {
+        std::thread::yield_now();
+    }
+    assert!(matches!(
+        discover_claude_sessions_before_cleanup(&roots, &workspace, &workspace_id, &cx, &expired),
+        Err(RuntimeError::Deadline(_))
+    ));
+    invocation.cancel_user(&cx);
+    assert!(matches!(
+        discover_claude_sessions_before_cleanup(
+            &roots,
+            &workspace,
+            &workspace_id,
+            &cx,
+            &invocation.clock()
+        ),
+        Err(RuntimeError::Cancelled)
+    ));
+    assert!(invocation.shutdown());
+}
+
+#[test]
+fn latest_requires_valid_calendar_recency_through_the_cli() {
+    let (workspace, projects, directory) = tree();
+    let root = workspace.parent().unwrap();
+    std::fs::create_dir_all(root.join("config/sr")).unwrap();
+    std::fs::write(
+        root.join("config/sr/config.toml"),
+        format!("[context]\ntranscript_roots = ['{}']\n", projects.display()),
+    )
+    .unwrap();
+    let skill = workspace.join(".claude/skills/test-review");
+    std::fs::create_dir_all(&skill).unwrap();
+    std::fs::write(
+        skill.join("SKILL.md"),
+        "---\nname: test-review\ndescription: Review code carefully\n---\nInspect code.\n",
+    )
+    .unwrap();
+    let write = |session: &str, timestamp: &str| {
+        std::fs::write(
+            directory.join(format!("{session}.jsonl")),
+            serde_json::json!({
+                "type":"user", "uuid":format!("{session}-turn"), "parentUuid":null,
+                "sessionId":session, "cwd":workspace, "timestamp":timestamp,
+                "message":{"role":"user", "content":"Review code"}
+            })
+            .to_string()
+                + "\n",
+        )
+        .unwrap();
+    };
+    write("older", "2026-02-28T12:00:00Z");
+    for (timestamp, expected_exit) in [("2026-02-29T12:00:00Z", 3), ("2026-03-01T12:00:00Z", 0)] {
+        write("newer", timestamp);
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_sr"))
+            .env_clear()
+            .env("HOME", root.join("home"))
+            .env("XDG_CONFIG_HOME", root.join("config"))
+            .current_dir(&workspace)
+            .stdin(std::process::Stdio::null())
+            .args([
+                "rank",
+                "--latest",
+                "--offline",
+                "--no-persist",
+                "--json",
+                "--require-skill",
+                "test-review",
+            ])
+            .output()
+            .unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(expected_exit),
+            "{value}; {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        if expected_exit == 3 {
+            assert_eq!(value["error"]["kind"], "ambiguous-session");
+        } else {
+            assert_eq!(value["decision"], "explicit");
+            assert_eq!(value["event_id"], "newer-turn");
+            assert_eq!(value["usage"]["http_attempts"], 0);
+        }
+    }
 }
 
 #[test]

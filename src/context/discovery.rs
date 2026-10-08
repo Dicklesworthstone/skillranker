@@ -6,7 +6,7 @@
 //! candidate only when its own bounded head records this workspace as its first
 //! working directory and carries its file name as a session identity. Other
 //! workspaces' directories are never listed, symlinks and special files are
-//! never opened, and no candidate is read beyond its head.
+//! never opened. Candidate reads are bounded to their head and tail.
 
 use crate::adapter::{CLAUDE_CODE_ID, CONTRACT_VERSION};
 use crate::authorized_read::{AuthorizedRoot, ReadError};
@@ -15,6 +15,8 @@ use crate::identity::{
     AdapterId, AdapterVersion, SessionId, SessionIdentity, SourceProvenance, WorkspaceId,
 };
 use crate::roster::LocalPath;
+use crate::runtime::{EntryClock, RuntimeError};
+use asupersync::Cx;
 use nix::dir::{Dir, Type};
 use nix::fcntl::{OFlag, openat};
 use nix::sys::stat::{FileStat, Mode, SFlag, fstat};
@@ -161,12 +163,14 @@ pub fn parse_utc_ms(text: &str) -> Option<i64> {
         }
         format!("{fraction:0<3}")[..3].parse::<i64>().ok()?
     };
-    if !(1..=12).contains(&month)
-        || !(1..=31).contains(&day)
-        || hour > 23
-        || minute > 59
-        || second > 60
-    {
+    let month_days = match month {
+        2 if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) => 29,
+        2 => 28,
+        4 | 6 | 9 | 11 => 30,
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        _ => return None,
+    };
+    if !(1..=month_days).contains(&day) || hour > 23 || minute > 59 || second > 60 {
         return None;
     }
     // Days from the civil calendar (proleptic Gregorian), 1970-01-01 = 0.
@@ -199,24 +203,60 @@ pub fn discover_claude_sessions(
     workspace: &Path,
     workspace_id: &WorkspaceId,
 ) -> SessionInventory {
+    // Standalone inventory inspection has no invocation clock. Production
+    // ranking uses the explicit-context variant below.
+    match discover_with_checkpoint(roots, workspace, workspace_id, || {
+        Ok::<(), std::convert::Infallible>(())
+    }) {
+        Ok(inventory) => inventory,
+        Err(never) => match never {},
+    }
+}
+
+/// Invocation-owned discovery. Interruption is not an incomplete attribution
+/// result: callers must preserve it as cancellation or deadline failure.
+pub fn discover_claude_sessions_before_cleanup(
+    roots: &[PathBuf],
+    workspace: &Path,
+    workspace_id: &WorkspaceId,
+    cx: &Cx,
+    clock: &EntryClock,
+) -> Result<SessionInventory, RuntimeError> {
+    discover_with_checkpoint(roots, workspace, workspace_id, || {
+        if cx.is_cancel_requested() {
+            return Err(RuntimeError::Cancelled);
+        }
+        clock.admit_new_work().map(|_| ())
+    })
+}
+
+fn discover_with_checkpoint<E>(
+    roots: &[PathBuf],
+    workspace: &Path,
+    workspace_id: &WorkspaceId,
+    mut checkpoint: impl FnMut() -> Result<(), E>,
+) -> Result<SessionInventory, E> {
+    checkpoint()?;
     let mut inventory = SessionInventory {
         candidates: Vec::new(),
         complete: true,
     };
     let Some(cwd) = workspace.to_str() else {
-        return inventory;
+        return Ok(inventory);
     };
     let (Ok(adapter), Ok(version)) = (
         AdapterId::new(CLAUDE_CODE_ID),
         AdapterVersion::new(CONTRACT_VERSION.to_string()),
     ) else {
         inventory.complete = false;
-        return inventory;
+        return Ok(inventory);
     };
     let mut examined = 0usize;
     let mut files = BTreeSet::new();
     for root in roots {
+        checkpoint()?;
         for name in project_directories(workspace) {
+            checkpoint()?;
             let path = root.join(&name);
             let directory = match AuthorizedRoot::open_absolute(&path) {
                 Ok(directory) => directory,
@@ -235,7 +275,13 @@ pub fn discover_claude_sessions(
                 inventory.complete = false;
                 continue;
             };
-            for entry in listing.iter() {
+            let mut entries = listing.iter();
+            while let Some(entry) = {
+                // Skipped names count as work too; a large unrelated directory
+                // cannot evade the invocation's time/cancellation boundary.
+                checkpoint()?;
+                entries.next()
+            } {
                 let Ok(entry) = entry else {
                     inventory.complete = false;
                     continue;
@@ -249,9 +295,11 @@ pub fn discover_claude_sessions(
                 examined += 1;
                 if examined > MAX_TRANSCRIPTS {
                     inventory.complete = false;
-                    return inventory;
+                    return Ok(inventory);
                 }
-                let (session, recorded, identity) = match probe(&directory, name, cwd) {
+                let probed = probe(&directory, name, cwd);
+                checkpoint()?;
+                let (session, recorded, identity) = match probed {
                     Ok(Some(candidate)) => candidate,
                     Ok(None) => continue,
                     Err(()) => {
@@ -283,7 +331,8 @@ pub fn discover_claude_sessions(
             }
         }
     }
-    inventory
+    checkpoint()?;
+    Ok(inventory)
 }
 
 /// Attribution, last recorded time and file identity of one regular file,
@@ -409,5 +458,54 @@ mod tests {
         ] {
             assert_eq!(parse_utc_ms(invalid), None, "{invalid}");
         }
+    }
+
+    #[test]
+    fn native_walk_stops_at_a_midwalk_cancellation_checkpoint() {
+        use crate::runtime::ProcessInvocation;
+        let root = std::env::temp_dir().join(format!(
+            "sr-session-checkpoint-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let workspace = root.join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let projects = root.join("projects");
+        let directory = projects.join(&project_directories(&workspace)[0]);
+        std::fs::create_dir_all(&directory).unwrap();
+        for session in ["one", "two", "three"] {
+            std::fs::write(
+                directory.join(format!("{session}.jsonl")),
+                line(serde_json::json!({"cwd":workspace, "sessionId":session})),
+            )
+            .unwrap();
+        }
+        let workspace_id = WorkspaceId::new(workspace.to_str().unwrap()).unwrap();
+        let invocation = ProcessInvocation::enter().unwrap();
+        let cx = invocation.request_cx().unwrap();
+        let clock = invocation.clock();
+        let roots = [projects];
+        let healthy =
+            discover_claude_sessions_before_cleanup(&roots, &workspace, &workspace_id, &cx, &clock)
+                .unwrap();
+        assert!(healthy.complete);
+        assert_eq!(healthy.candidates.len(), 3);
+        let mut checkpoints = 0;
+        let interrupted = discover_with_checkpoint(&roots, &workspace, &workspace_id, || {
+            checkpoints += 1;
+            if checkpoints == 8 {
+                invocation.cancel_user(&cx);
+            }
+            if cx.is_cancel_requested() {
+                return Err(RuntimeError::Cancelled);
+            }
+            clock.admit_new_work().map(|_| ())
+        });
+        assert!(matches!(interrupted, Err(RuntimeError::Cancelled)));
+        assert_eq!(checkpoints, 8);
+        assert!(invocation.shutdown());
     }
 }

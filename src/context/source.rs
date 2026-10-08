@@ -173,6 +173,8 @@ pub enum SourceError {
     MissingSession,
     AmbiguousSession,
     IncompleteInventory,
+    DiscoveryDeadline,
+    DiscoveryCancelled,
     InventoryLimit,
     InvalidInventory,
     RemoteSource,
@@ -192,6 +194,7 @@ impl SourceError {
             Self::MissingSession => ErrorKind::MissingSession,
             Self::AmbiguousSession => ErrorKind::AmbiguousSession,
             Self::IncompleteInventory => ErrorKind::InsufficientContext,
+            Self::DiscoveryDeadline | Self::DiscoveryCancelled => ErrorKind::Timeout,
             Self::InventoryLimit => ErrorKind::OversizedInput,
             Self::InvalidInventory => ErrorKind::MalformedInput,
         }
@@ -211,6 +214,9 @@ impl SourceError {
             Self::IncompleteInventory | Self::InventoryLimit => {
                 "Finish bounded discovery pagination or select an exact source."
             }
+            Self::DiscoveryDeadline | Self::DiscoveryCancelled => {
+                "Select an exact source or retry within the invocation budget."
+            }
             _ => "Use one supported explicit source with its required source options.",
         }
     }
@@ -228,6 +234,8 @@ impl fmt::Display for SourceError {
             Self::MissingSession => "no session in the exact workspace",
             Self::AmbiguousSession => "session selection is ambiguous",
             Self::IncompleteInventory => "session discovery is incomplete",
+            Self::DiscoveryDeadline => "session discovery reached its work deadline",
+            Self::DiscoveryCancelled => "session discovery was cancelled",
             Self::InventoryLimit => "session inventory exceeds its bound",
             Self::InvalidInventory => "invalid or duplicate session inventory entry",
             Self::RemoteSource => "remote session sources are not accepted",

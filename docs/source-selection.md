@@ -78,8 +78,9 @@ spelling, and a name alone admits nothing:
   identity; the head check does not verify records beyond the head.
 - Recency is the last complete record's recorded `timestamp`
   (`YYYY-MM-DDTHH:MM:SS[.fraction]Z`, parsed strictly), not the file's
-  modification time. With no valid recorded time, recency is unknown, and
-  `--latest` treats the choice as ambiguous.
+  modification time. Month lengths and Gregorian leap-year rules are validated;
+  impossible dates do not establish recency. With no valid recorded time,
+  recency is unknown, and `--latest` treats the choice as ambiguous.
 - A file read to its end that claims its own session ID but never records a
   `cwd` holds no conversation turn. Claude leaves such stubs, containing only
   session metadata. It is not a candidate and does not make the inventory
@@ -90,6 +91,14 @@ spelling, and a name alone admits nothing:
   incomplete. Neither bare rank nor `--latest` chooses around an unresolved
   file. A verified first `cwd` naming another workspace excludes that file.
 - The same file reached through two names or roots counts once.
+
+Production discovery checks the invocation's work deadline and cancellation
+before root/directory operations, on every enumerated entry (including skipped
+names), and after each bounded head/tail probe. An interrupted walk returns an
+explicit deadline or cancellation error, mapped to the existing timeout CLI
+category; it cannot become a complete empty inventory or an ordinary attribution
+gap. Blocking leaves are still drained before returning. These checkpoints bound
+cooperative work; they cannot interrupt a stalled kernel filesystem operation.
 
 An explicit `--transcript` path gets the same attribution when its records name
 this workspace. Otherwise its cache and single-flight namespace stays private

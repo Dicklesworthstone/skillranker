@@ -1152,15 +1152,32 @@ async fn rank_once(
                     args.workspace.clone(),
                     workspace.clone(),
                 );
+                let discovery_cx = cx.clone();
+                let discovery_clock = *clock;
                 run_blocking_leaf(
                     invocation,
                     cx,
                     BlockingLeafKind::Filesystem,
                     false,
-                    move || crate::context::discovery::discover_claude_sessions(&roots, &path, &id),
+                    move || {
+                        crate::context::discovery::discover_claude_sessions_before_cleanup(
+                            &roots,
+                            &path,
+                            &id,
+                            &discovery_cx,
+                            &discovery_clock,
+                        )
+                    },
                 )
-                .map(|outcome| outcome.value)
-                .map_err(|_| SourceError::IncompleteInventory)
+                .and_then(|outcome| outcome.value)
+                .map_err(|error| match error {
+                    crate::runtime::RuntimeError::Cancelled => SourceError::DiscoveryCancelled,
+                    crate::runtime::RuntimeError::Deadline(_)
+                    | crate::runtime::RuntimeError::LateResultSuppressed => {
+                        SourceError::DiscoveryDeadline
+                    }
+                    _ => SourceError::IncompleteInventory,
+                })
             },
         )
         .map_err(|err| failure(err.kind(), err.to_string()))?;
