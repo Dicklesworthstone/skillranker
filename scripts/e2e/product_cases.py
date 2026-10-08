@@ -6,7 +6,9 @@ each contract-matrix case, the tests whose passing establishes that case.
 `check` verifies the catalog statically against the sources and the matrix.
 `evaluate` reads an actual cargo test log and reports each case passed,
 failed or missing. A case never passes by name alone: every mapped test must
-appear exactly once as `... ok`, and the whole run must be complete.
+appear as `... ok`, and the whole run must be complete. Every unfiltered
+target must execute tests, and its aggregate counts must reconcile with
+all distinct result lines, including tests not mapped to an individual case.
 
 Cargo's stderr and the test binaries' stdout interleave unpredictably, so
 results are attributed by test name. `check` guarantees that every mapped name
@@ -74,6 +76,12 @@ def check(catalog, matrix_path=MATRIX):
             problems.append(f"missing target source tests/{target}.rs")
             tests = set()
         defined[target] = tests
+    # Logs identify tests by unqualified name. A collision would make distinct
+    # target results indistinguishable, even when no named case maps that test.
+    for name in sorted(set().union(*defined.values())):
+        owners = [target for target, tests in defined.items() if name in tests]
+        if len(owners) > 1:
+            problems.append(f"{name} is ambiguous across {owners}")
     for case in catalog["cases"]:
         if case["tests"] == ALL:
             continue
@@ -85,9 +93,6 @@ def check(catalog, matrix_path=MATRIX):
                 problems.append(f"{case['id']}: {target} is not a suite target")
             elif name not in defined[target]:
                 problems.append(f"{case['id']}: {reference} is not a #[test] fn")
-            owners = [t for t, tests in defined.items() if name in tests]
-            if len(owners) > 1:
-                problems.append(f"{case['id']}: {name} is ambiguous across {owners}")
     for entry in catalog.get("allowed_ignored", []):
         target, _, name = entry["test"].partition("::")
         if not entry.get("reason"):
@@ -145,13 +150,16 @@ def parse_log(text):
 def evaluate(catalog, text):
     results, summaries, nested = parse_log(text)
     ignored = {name for name, status in results.items() if status == "ignored"}
+    passed = {name for name, status in results.items() if status == "ok"}
     complete = (
         len(summaries) == len(catalog["targets"])
-        and all(s[0] == "ok" and s[2] == 0 for s in summaries)
+        and all(s[0] == "ok" and s[1] > 0 and s[2] == 0 and s[4] == 0 for s in summaries)
+        # Summary-only or partially lost logs must never certify a whole run.
+        # Exact child runs repeat parent names and do not add to this count.
+        and sum(s[1] for s in summaries) == len(passed)
         # Only declared opt-in tests may be ignored, and the counts must agree.
         and ignored <= allowed_ignored(catalog)
         and sum(s[3] for s in summaries) == len(ignored)
-        and sum(s[1] for s in summaries) > 0
         and not any(status == "FAILED" for status in results.values())
     )
     records = []

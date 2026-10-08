@@ -12,6 +12,9 @@
 
 ### Fixed
 
+- Product e2e reports reconcile summary counts with individual test results
+  and require each target to run tests. Missing result lines, empty targets
+  and ambiguous test names can no longer produce a passing complete-suite report.
 - Runtime shutdown drives owned cancellation before bounded thread teardown.
   Timely rankings retain their completion timestamp across a delayed CLI
   continuation; genuinely late work remains withheld.

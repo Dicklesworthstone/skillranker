@@ -17,18 +17,22 @@ establish it in a catalog, `scripts/e2e/product/<suite>.json`:
            {"id": "full-roster-suite", "assertions": ["p2_gate_passed"], "tests": "all"}]}
 ```
 
-`scripts/e2e/product_cases.py` has two modes:
+`scripts/e2e/product_cases.py` has three modes:
 - `check CATALOG`, a static check. It fails unless:
   - every mapped test is a `#[test]` function in exactly one of the suite's
     targets;
+  - all test names are unambiguous across targets, including unmapped tests;
   - every matrix case of the suite has a catalog entry carrying the row's
     assertion IDs;
   - no catalog case is missing from the matrix.
 - `evaluate CATALOG LOG`, which reads the actual cargo test log and reports
   each case as `passed`, `failed` or `missing`. A case passes only if every
-  mapped test appears exactly once as `... ok`, and the run is complete: one
-  `test result: ok` per target, with none failed or filtered, and at least one
-  passed. An `all` case needs only the complete run.
+  mapped test appears as `... ok`, and the run is complete: one unfiltered
+  `test result: ok` per target, with no failures or measurements and at least
+  one passed test in **each** target. Summary passed/ignored counts must match
+  the distinct result lines, including unmapped tests. Summary-only logs,
+  lost result lines and empty targets cannot establish a complete run. An
+  `all` case requires these same completeness checks.
 - `targets CATALOG`, which prints the suite's targets.
 
 A run may not skip tests silently. It may report as ignored only the opt-in

@@ -3,6 +3,7 @@
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import product_cases  # noqa: E402
@@ -86,8 +87,41 @@ class EvaluateTests(unittest.TestCase):
         text = "\n".join(["test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out"] * 2)
         self.assertEqual(statuses(text), {"first": "missing", "whole": "failed"})
 
+    def test_summaries_without_result_lines_cannot_establish_the_whole_suite(self):
+        self.assertEqual(statuses(log())["whole"], "failed")
+
+    def test_a_missing_unmapped_result_fails_every_otherwise_passing_case(self):
+        # Mapped results survive, but one result elsewhere in the suite is lost.
+        text = "\n".join(["test one ... ok", "test two ... ok",
+                          SUMMARY.format(n=1), SUMMARY.format(n=2)])
+        self.assertEqual(statuses(text), {"first": "failed", "whole": "failed"})
+        self.assertEqual(statuses("test three ... ok\n" + text),
+                         {"first": "passed", "whole": "passed"})
+
+    def test_one_empty_target_does_not_hide_behind_another_passing_target(self):
+        text = "\n".join(["test one ... ok", "test two ... ok",
+                          SUMMARY.format(n=2), SUMMARY.format(n=0)])
+        self.assertEqual(statuses(text), {"first": "failed", "whole": "failed"})
+
+    def test_extra_result_lines_do_not_match_a_complete_target_accounting(self):
+        text = log("test one ... ok", "test two ... ok", "test foreign ... ok")
+        self.assertEqual(statuses(text), {"first": "failed", "whole": "failed"})
+
+    def test_measurements_cannot_substitute_for_test_execution(self):
+        measured = SUMMARY.format(n=1).replace("0 measured", "1 measured")
+        text = "\n".join(["test one ... ok", "test two ... ok",
+                          SUMMARY.format(n=1), measured])
+        self.assertEqual(statuses(text), {"first": "failed", "whole": "failed"})
+
 
 class CatalogTests(unittest.TestCase):
+    def test_duplicate_unmapped_names_are_ambiguous_for_whole_suite_accounting(self):
+        catalog = dict(CATALOG, cases=[CATALOG["cases"][1]])
+        with patch.object(product_cases, "defined_tests", return_value={"same"}), \
+                patch.object(product_cases, "ignored_tests", return_value=set()):
+            problems = product_cases.check(catalog)
+        self.assertTrue(any("same is ambiguous across" in p for p in problems))
+
     def test_every_product_catalog_matches_sources_and_the_matrix(self):
         for path in sorted((Path(__file__).parent / "product").glob("*.json")):
             catalog = product_cases.load_catalog(path)
