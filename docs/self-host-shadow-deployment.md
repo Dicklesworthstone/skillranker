@@ -993,3 +993,66 @@ the confirmation to look for.
   delivery, independent relevance or policy/advisory promotion. The original
   `sr-9fzp`, `sr-1uf4` and corpus/cohort gates remain open. Raw evidence and
   deployment receipt: `/scratch/tmp/skillranker-emission-review-kx5pmyjg`.
+
+## Redeployment — 2026-10-08 (BeigeCompass, owned cancellation and completion time)
+
+- Installed source `a5a27c2046582072b1d00b7a7339ec055d8fc338` at
+  `2026-10-08 22:26:06 UTC`. This activates the already-qualified `3f5c18b`
+  owned-cancellation drain and `78ad660` monotonic completion-time repairs.
+  Cooperative cleanup runs before bounded teardown; a timely prepared ranking
+  survives a delayed CLI continuation. Genuinely late work remains withheld.
+- Executable SHA256:
+  `9df692b0c5c024359532e66e71e9a845eadbce6f7c8d398af41ac0cf46be0a1c`,
+  25,165,232 bytes, mode `0755`. The previous `dc17cc5` executable is preserved
+  at `~/.local/state/sr/deployments/20261008T222606Z-dc17cc5/sr`, SHA256
+  `ca1ddcc5c1ca80eaae41ed0a63f450402cba57159b0dbf86d98d825207b5d3a1`.
+  Cooperating lock, inode/hash/mode rechecks, backup, atomic replacement and
+  file/directory fsync passed; this is not CAS against noncooperating editors.
+- DSR run `907cc67e-7041-499c-9f78-c77e1dd6dc7c` passed in 268.446 seconds
+  through mandatory RCH on `vmi1264463`, locked native Linux x86-64 release,
+  default features and one job. All 285 committed compiler/test inputs match
+  the frozen local and worker manifest. The dirty-tree marker reflects Beads
+  activity; preserved untracked peer paths are outside that source identity.
+  ELF64 x86-64, archive bytes and source-linked artifact checks passed. Archive
+  SHA256 `d813510a70d814d7943b0f79b89e62ce4e9ce960430bd296b93d33a800545d66`
+  contains exactly the identical executable and verbatim `LICENSE`. No tag,
+  public release, other target or provider qualification was created.
+- Production/compiler/test source bytes match the previous full qualification
+  at `78ad660`: only the two coverage TOML files differ among its 285 inputs.
+  That prior check/strict-Clippy/full-default evidence is reused, not rerun:
+  1,604 unfiltered passes plus one nested positive control, zero failures and
+  eleven existing opt-in ignores. Fresh RCH runs passed 72 focused and 132
+  cache tests with three declared existing opt-ins; all five cache catalog
+  cases passed. Matrix validation and its adversarial controls passed separately.
+- Candidate and installed paths each passed 28 offline CLI/hook records, eight
+  isolated installer controls and 26 delivery/persistence records using real
+  SQLite. Both comparison paths already contain the delivery repair and were
+  required to preserve it; old defects were not expected or fabricated. The
+  actual credential wrapper passed 29 records. Held-open hook stdin under an
+  explicit 300 ms invocation budget returned exit zero, empty stdout and a
+  sanitized deadline diagnostic in approximately 114 ms on baseline, candidate
+  and installed paths. These are synthetic input controls, not real Claude
+  delivery or a population latency measurement.
+- Wrapper, trusted config, repository/global settings and four-second outer
+  hook timeout retain all four original identities. Live install/uninstall
+  previews are byte-identical. Real budget and stats fields are unchanged after
+  validating query-clock relations: 170 evaluations, zero emissions or independent
+  judgments, 234 attempts, fourteen unknown-usage attempts and 2,394,033 known
+  tokens. The shared allowance exists and remains disabled. No provider call,
+  real ledger mutation or artificial cohort traffic was generated.
+- Bounded metadata inspection found three Claude-named processes, none in this
+  checkout, and six local native transcript files last modified September 29.
+  This supports an absence-of-local-prompt-traffic explanation without establishing
+  causality; process-name detection and file mtimes are incomplete evidence.
+  The original `sr-1uf4` representative-cohort and independent outcome gates and
+  `sr-9fzp` historical stalled-leaf/unfinished-row investigation remain open.
+- Retained preparation failures: the standard shared DSR configuration had no
+  SkillRanker entry, so the existing reviewed private configuration was reused;
+  a read-only Beads formatter assumed a missing description field. Wrapped Git
+  publication and a large documentation shell wrapper were refused by DCG;
+  direct explicit commands and structured patches succeeded without override.
+  Fresh author review also corrected the new corpus export's Unicode and
+  destination-rename boundaries. No product assertion, timeout, gate, dependency
+  or consent setting was weakened. Verification remains author-only. Raw
+  artifacts and deployment receipt:
+  `/scratch/tmp/skillranker-gap-execution-ghhj0f_f/native`.

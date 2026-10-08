@@ -1,10 +1,45 @@
 # SkillRanker reality check and bridge plan
 
-Latest assessment: 2026-10-08 UTC, source `78ad66094193b32592b414ad253882b9cec0edef`.
+Assessment snapshot: 2026-10-08 UTC, source `78ad66094193b32592b414ad253882b9cec0edef`.
 Earlier reviews and receipts remain below as history. Source, installed artifact,
 provider qualification and recommendation quality are separate claims.
 
-## Current assessment — 2026-10-08 UTC
+## Implementation follow-up — 2026-10-08 22:26 UTC
+
+Three high-value implementation gaps from the assessment below are now closed:
+
+- `a920b63` restores the five missing roadmap coverage declarations and replaces
+  16 stale cache catalog references with current production-store and real CLI
+  controls. Mandatory RCH runs passed 72 focused and 132 cache tests; all five
+  cache cases passed. Three existing opt-in tests are declared and cannot
+  establish a case. The matrix validates 98 declarations; its 21 adversarial
+  checks and 13 product-case checks pass. `.6.29` remains open for its original
+  compatible benchmark and complete phase acceptance.
+- `a5a27c2` adds the checked offline corpus-to-frame handoff in
+  [the corpus contract](relevance-corpus-contract.md#91-offline-corpus-to-frame-handoff).
+  All 41 corpus-validator regressions and 21 handoff controls pass, plus five
+  separate directory-rename, quota, FIFO and permission controls. Actual installed
+  `sr eval` preserves the four constructed cases, three judgments, one failed
+  attempt and one unjudged case, loss 2 and zero HTTP attempts. This prepares
+  evaluation inputs; `.8.1` and `sr-uv2v` retain all independent-human and holdout
+  requirements. No missing outcome or judgment was invented.
+- The native Linux executable now contains `3f5c18b` and `78ad660`, built from
+  `a5a27c2` through DSR/RCH and installed with rollback at 22:26:06 UTC. Its SHA256
+  is `9df692b0c5c024359532e66e71e9a845eadbce6f7c8d398af41ac0cf46be0a1c`.
+  See the [deployment receipt](self-host-shadow-deployment.md#redeployment--2026-10-08-beigecompass-owned-cancellation-and-completion-time).
+  Configuration, consent, hook scope and real operational totals are unchanged.
+
+The remaining bottleneck is external evidence: independent human relevance
+judgments, ratified paired outcomes, actual supported-harness delivery and a
+representative operational cohort. `sr-9fzp` retains its unresolved historical
+stalled-leaf/unfinished-row cause. A bounded metadata check found no Claude-named
+process in this checkout and six native transcript files last modified September
+29; that is consistent with absent local Claude prompt traffic, not established
+causality. No synthetic traffic was added to the cohort. Raw evidence and the
+granular execution TODO remain in `/scratch/tmp/skillranker-gap-execution-ghhj0f_f`
+and `/scratch/tmp/skillranker-execution-20260930.md`.
+
+## Assessment snapshot — 2026-10-08 UTC
 
 **The core selector works, and the principal components are connected. The
 project has not yet demonstrated that its advice improves agent work or meets

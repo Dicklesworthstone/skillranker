@@ -2,8 +2,22 @@
 
 ## Unreleased
 
+### Added
+
+- An offline corpus-to-frame exporter connects validated adjudicated primary
+  cases and explicitly recorded outcomes to `sr eval`. It preserves failures
+  and unknown judgments, checks case/roster/split bindings, and publishes private
+  files without overwriting existing targets. Export integrity is separately
+  verifiable; preparing a frame does not establish a relevance or rollout gate.
+
 ### Fixed
 
+- Runtime shutdown drives owned cancellation before bounded thread teardown.
+  Timely rankings retain their completion timestamp across a delayed CLI
+  continuation; genuinely late work remains withheld.
+- Product coverage now includes the five recent boundary repairs and references
+  current production cache tests. Catalog validation catches undeclared ignored
+  tests before execution.
 - Successful ranking also reports unconfirmed optional ledger finalization when
   storage is busy or unavailable, preserving advice and measured provider usage.
 - Replay keeps missing fits unknown, uses only locally admitted shortlisted fits
