@@ -8,7 +8,7 @@ use crate::limits::{
     DEFAULT_INVOCATION_DEADLINE_MS, DEFAULT_OUTPUT_CLEANUP_RESERVE_MS, DurationMillis,
     InvocationDeadline, LimitError, MonotonicMillis,
 };
-use asupersync::runtime::{Runtime, RuntimeBuilder};
+use asupersync::runtime::{RootDrainOutcome, Runtime, RuntimeBuilder};
 use asupersync::{Budget, CancelKind, Cx};
 use std::io::{self, Read};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -343,7 +343,19 @@ impl ProcessInvocation {
     pub fn shutdown(self) -> bool {
         let remaining = self.clock.remaining_until_expiry();
         let bound = Duration::from_millis(remaining.as_millis().max(1));
-        self.runtime.shutdown_timeout(bound)
+        self.drain_and_shutdown(bound)
+    }
+
+    fn drain_and_shutdown(self, bound: Duration) -> bool {
+        let started = Instant::now();
+        // Thread teardown alone aborts pending tasks without running their
+        // cancellation cleanup. Request cancellation and drive the owned root
+        // region first; both phases share this single remaining-time bound.
+        let drained = self.runtime.drain_root_region(bound) == RootDrainOutcome::Quiescent;
+        let stopped = self
+            .runtime
+            .shutdown_timeout(bound.saturating_sub(started.elapsed()));
+        drained && stopped
     }
 
     /// Shut the owned runtime down within an explicit wall-clock bound rather
@@ -355,8 +367,7 @@ impl ProcessInvocation {
     /// remainder measured in tens of milliseconds. A genuinely wedged runtime
     /// still fails: it will not drain within any honest bound.
     pub fn shutdown_within(self, bound: Duration) -> bool {
-        self.runtime
-            .shutdown_timeout(bound.max(Duration::from_millis(1)))
+        self.drain_and_shutdown(bound.max(Duration::from_millis(1)))
     }
 }
 
@@ -631,6 +642,74 @@ pub const fn default_deadline_ms() -> u64 {
 
 pub const fn default_cleanup_reserve_ms() -> u64 {
     DEFAULT_OUTPUT_CLEANUP_RESERVE_MS
+}
+
+#[cfg(test)]
+mod owned_drain_tests {
+    use super::*;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::task::Poll;
+
+    fn pending_child(
+        invocation: &ProcessInvocation,
+        cooperate: bool,
+    ) -> (asupersync::runtime::TaskHandle<()>, Arc<AtomicBool>) {
+        let started = Arc::new(AtomicBool::new(false));
+        let cleaned = Arc::new(AtomicBool::new(false));
+        let child_started = started.clone();
+        let child_cleaned = cleaned.clone();
+        let cx = invocation.request_cx().unwrap();
+        let child = cx
+            .spawn(move |child_cx| async move {
+                std::future::poll_fn(move |_| {
+                    child_started.store(true, Ordering::Release);
+                    if cooperate && child_cx.is_cancel_requested() {
+                        child_cleaned.store(true, Ordering::Release);
+                        Poll::Ready(())
+                    } else {
+                        Poll::Pending
+                    }
+                })
+                .await
+            })
+            .unwrap();
+        invocation.runtime().block_on(std::future::poll_fn(|task| {
+            if started.load(Ordering::Acquire) {
+                Poll::Ready(())
+            } else {
+                task.waker().wake_by_ref();
+                Poll::Pending
+            }
+        }));
+        (child, cleaned)
+    }
+
+    #[test]
+    fn shutdown_runs_owned_cancellation_cleanup_before_returning_success() {
+        let invocation = ProcessInvocation::enter().unwrap();
+        let (child, cleaned) = pending_child(&invocation, true);
+        assert!(invocation.shutdown());
+        assert!(
+            cleaned.load(Ordering::Acquire),
+            "dropping a pending task is not execution of its cancellation cleanup"
+        );
+        drop(child);
+    }
+
+    #[test]
+    fn shutdown_never_reports_undrained_owned_work_as_success() {
+        let clock = EntryClock::capture_with(
+            DurationMillis::new("test", 1_000, 3_000).unwrap(),
+            DurationMillis::new("cleanup", 200, 3_000).unwrap(),
+        )
+        .unwrap();
+        let invocation = ProcessInvocation::from_clock(clock).unwrap();
+        let (child, cleaned) = pending_child(&invocation, false);
+        assert!(!invocation.shutdown());
+        assert!(!cleaned.load(Ordering::Acquire));
+        drop(child);
+    }
 }
 
 #[cfg(test)]
