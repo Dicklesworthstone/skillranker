@@ -858,3 +858,72 @@ the confirmation to look for.
   open. Independent relevance/paired-outcome gates and the original `sr-9fzp`
   timeout cause remain unresolved. This receipt qualifies a private native Linux
   deployment, without advisory promotion or other-platform qualification.
+
+## Redeployment — 2026-10-08 (BeigeCompass, native session discovery)
+
+- Installed source `87dabdab4d0e7e2b6309e11babbd3fa6a9c7e100` at
+  `2026-10-08 04:45:48 UTC`. Native session discovery now checks the original
+  invocation deadline and cancellation during its walk, preserves timeout
+  classification, and rejects impossible Gregorian dates as recency
+  (`sr-roadmap-l1i.4.15`). Stalled kernel filesystem operations remain outside
+  the cooperative-interruption guarantee; the original `sr-9fzp` cause is open.
+- Executable SHA256:
+  `d6f25bea819be64addbaee4fff53ee758030ebc6e725552f09ba39784f829030`,
+  25,169,672 bytes, mode `0755`. The preceding `06bfabd` executable is retained at
+  `~/.local/state/sr/deployments/20261008T044548Z-06bfabd/sr`, SHA256
+  `069f8d8b69c27d9dc35d66edf91d08c9fd5eeb4ca85d3e8a4e1c7ce6ce3bd4aa`.
+  Cooperating lock, identity rechecks, atomic replacement and file/directory
+  fsync passed. These checks do not provide CAS against noncooperating editors.
+- DSR run `44c052bb-8c3c-4228-b631-5b005e8f51f8` passed in 1,215.432 seconds
+  through mandatory RCH on `vmi1264463`, with the pinned native release command,
+  default features and one build job. All 285 compiler/test inputs match the
+  committed source, worker and qualified manifest
+  `115477548261eb6d98cf071cd16de9a08a40cd3299fcdd46d9c9e6556573a7a3`.
+  Preserved untracked peer paths are excluded from that source identity.
+  ELF64 x86-64 and license qualification passed. Archive SHA256
+  `28ab4b91a4e130242e66708bb275b17eb90d1da8bb1b660a6ef002d2729adcd6`
+  contains exactly the identical executable and verbatim `LICENSE`.
+- The same source passed the full default suite: 1,596 tests, zero failures,
+  eleven unchanged ignored entries (paid/manual checks and subprocess entry
+  points), plus all-target check, strict Clippy and formatting. A separate
+  fresh author execution passed 207 focused tests.
+  All successful remote gates verified the same 285 input hashes afterward.
+  UBS remained nonzero with reviewed public-name/mode comparison heuristics;
+  no suppression was introduced. The aborted baseline and incorrect initial
+  test selector executed no tests; their failures remain in the raw evidence.
+- Five predeclared native cases used synthetic input and the actual CLI.
+  The original executable reproduced the wrong timeout classification and
+  impossible-date selection. Candidate and fresh installed-path runs passed
+  all five repaired expectations, including exact-source and valid-date
+  positives. The installed large-directory case returned timeout exit 6 at
+  103.711 ms, versus the original insufficient-context exit 7 at 263.958 ms.
+  These are individual observations, not a benchmark or hard real-time proof.
+  Candidate and installed CLI/hook comparisons each passed 28 records; the
+  actual wrapper passed 29. Eight isolated installer controls passed for each
+  candidate and installed executable.
+- The first native build, DSR `2ff55bcc-2a49-4dad-a9fb-c4fb0725bbbd`, failed
+  after Cargo could not process dependency information: all 873 referenced
+  Asupersync Git-source paths were absent. The generated dependency-info file
+  itself existed; an initial diagnosis saying otherwise was corrected.
+  SBH quarantine record `b59a19df7c8c` records the Git cache move during the
+  active compilation. Official `sbh protect` added markers and protection
+  registry entries for `/data/tmp/rch-cargo-cache-vmi1264463` and the held copy
+  `/data/tmp/.sbh/quarantine/b59a19df7c8c`. Both protections are retained.
+  The successful ordinary locked retry fetched pinned dependencies into the
+  protected cache, with source, profile, commands and timeouts unchanged.
+- Wrapper, settings, trusted configuration, consent and four-second hook
+  timeout are unchanged; real install/uninstall previews match byte for byte.
+  Credential files were not edited, and owner-only permissions were checked.
+  All operational statistics remain unchanged: 170 evaluations, zero emitted
+  suggestions, zero independent judgments, 234 attempts, fourteen unknown-usage
+  attempts and 2,394,033 known tokens. Four statistics query-time fields were
+  validated before comparison. The first private comparison also treated the
+  budget's displayed UTC hour as durable state and failed across an hour
+  boundary. Its original script and snapshots are retained. The corrected
+  check validates both hourly windows against the source formula and compares
+  every other budget field exactly; the allowance guard remains disabled.
+- This is author-only native Linux verification. No provider requests,
+  organic cohort traffic, independent relevance labels, real Claude delivery
+  or other-platform acceptance were established. `sr-1uf4` retains its original
+  cohort requirements. Raw failures, source manifests, controls and deployment
+  receipt: `/scratch/tmp/skillranker-session-deadline-q1l380g6`.
