@@ -927,3 +927,69 @@ the confirmation to look for.
   or other-platform acceptance were established. `sr-1uf4` retains its original
   cohort requirements. Raw failures, source manifests, controls and deployment
   receipt: `/scratch/tmp/skillranker-session-deadline-q1l380g6`.
+
+## Redeployment — 2026-10-08 (BeigeCompass, delivery persistence)
+
+- Installed source `dc17cc54c0a1e2baebf887c8b4cfba741ce48d6d` at
+  `2026-10-08 11:51:29 UTC` (`sr-roadmap-l1i.6.32`). Post-output delivery
+  recording now requires both an enabled ledger policy and confirmation of
+  the actual ranking-event write. Rendered JSON, including a preview's nested
+  decision or cache-only persistence metadata, cannot authorize that write.
+  JSON and table decisions share the recording path; advisory hooks honor
+  the same opt-outs, and recorded shadow decisions remain prepared.
+- Executable SHA256:
+  `ca1ddcc5c1ca80eaae41ed0a63f450402cba57159b0dbf86d98d825207b5d3a1`,
+  25,154,120 bytes, mode `0755`. The preceding `87dabda` executable remains at
+  `~/.local/state/sr/deployments/20261008T115129Z-87dabda/sr`, SHA256
+  `d6f25bea819be64addbaee4fff53ee758030ebc6e725552f09ba39784f829030`.
+  Cooperating lock, identity rechecks, atomic replacement and file/directory
+  fsync passed; these do not provide CAS against noncooperating editors.
+- DSR run `0d3963e5-1db3-497f-aabf-405dbb737d37` passed in 1,504.050 seconds
+  through mandatory RCH on `vmi1264463`, using the pinned native release
+  command, default features and one build job. All 285 compiler/test inputs
+  match the committed source, local/worker trees and qualified manifest
+  `9bf2e58a0321cf2bdf553ef1c945ef4e59ead6dc81257d62eaa6637be4ac4fc4`.
+  Preserved untracked peer paths are excluded from that source identity.
+  ELF64 x86-64 and source-linked artifact checks passed. Archive SHA256
+  `a6510c52297239bfa786967865cb43649ac20fe2cb2d38c0a13e2f5aa8ec4beb`
+  contains exactly the identical executable and verbatim `LICENSE`.
+  No public release or additional platform was qualified.
+- The same frozen source passed 192 focused tests, all-target check, strict
+  all-target Clippy, formatting, and the full default suite: 1,601 tests,
+  zero failures, eleven unchanged paid/manual or subprocess entry-point
+  ignores. The full suite re-executed all five new regressions after fresh
+  source review. No redundant third focused run was counted. UBS diff/staged
+  scans remained nonzero (four critical, 701 warnings, 418 informational):
+  the critical findings are two unchanged test panic assertions and two
+  public stage-name comparisons misclassified as secret comparisons.
+  No suppression, assertion relaxation, timeout or dependency change was made.
+- Actual native old/candidate and old/installed comparisons each passed all
+  26 predeclared delivery records using synthetic input and real SQLite.
+  The old executable reproduced opt-out/dry-run ledger writes and missing
+  table emission. Candidate and installed versions preserve all ledger table
+  contents under opt-outs/previews while retaining useful explicit output,
+  and record authorized JSON/table/advisory delivery. CLI/hook smoke checks
+  passed 28 records for each candidate and installed path; the actual wrapper
+  passed 29. Eight isolated installer controls passed for each new executable.
+- Retained failures: the first draft confused coarse serialized persistence
+  with a confirmed ledger write; author review caught it, cancelled its
+  compilation before tests, and replaced it with a separate local write fact.
+  A numeric cancellation selector was refused; exact wrapper cancellation
+  required official recovery before the source owner was released. The
+  intermediate source-acquisition refusal (103), recovered termination (137),
+  stale local-manifest refusal and incorrect private input setups remain in
+  the raw evidence. The first source push omitted `AGENT_NAME` and was
+  refused; the registered-identity retry passed with the guard enabled.
+  CASS and later Agent Mail timeouts limit history and coordination evidence.
+- Wrapper, settings, trusted configuration, consent and the four-second hook
+  timeout are unchanged; real install/uninstall previews match byte for byte.
+  Credential files were not edited and owner-only permissions were checked.
+  Operational totals remain 170 evaluations, zero emitted suggestions, zero
+  independent judgments, 234 attempts, fourteen unknown-usage attempts and
+  2,394,033 known tokens. Four query-time fields and both displayed budget
+  windows were validated before comparing every other field; the allowance
+  guard remains disabled. No public provider or organic cohort traffic was
+  generated. Verification is author-only and does not establish real Claude
+  delivery, independent relevance or policy/advisory promotion. The original
+  `sr-9fzp`, `sr-1uf4` and corpus/cohort gates remain open. Raw evidence and
+  deployment receipt: `/scratch/tmp/skillranker-emission-review-kx5pmyjg`.
