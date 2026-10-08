@@ -418,12 +418,13 @@ pub async fn execute_pipeline(
         .map(|outcome| outcome.document)
 }
 
-/// Local completion facts for the CLI's post-output delivery write. These are
-/// deliberately separate from the serializable document: `persistence` can
-/// describe a working response cache even when the ledger write failed.
+/// Local completion facts for CLI publication and its post-output delivery
+/// write. Serialized timing cannot authorize publication, and `persistence`
+/// can describe a working response cache even when the ledger write failed.
 pub(crate) struct PipelineOutcome {
     pub(crate) document: OutputDocument,
     pub(crate) ledger_recorded: bool,
+    pub(crate) completed_at: crate::limits::MonotonicMillis,
 }
 
 pub(crate) async fn execute_pipeline_with_recording(
@@ -865,6 +866,9 @@ async fn execute_pipeline_supplied(
     result.map(|document| PipelineOutcome {
         document,
         ledger_recorded: progress.evaluated.ledger_recorded,
+        // All pipeline work, including optional persistence, must finish before
+        // the work cutoff. The caller may resume later in the cleanup reserve.
+        completed_at: clock.now(),
     })
 }
 

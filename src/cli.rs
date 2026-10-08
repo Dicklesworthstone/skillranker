@@ -1246,6 +1246,14 @@ fn timely(clock: &EntryClock) -> Result<(), Failure> {
         .map_err(|_| (6, "timeout", "Local inspection deadline exceeded".into()))
 }
 
+fn rank_work_completed(
+    clock: &EntryClock,
+    completed_at: crate::limits::MonotonicMillis,
+) -> Result<(), Failure> {
+    crate::runtime::admit_publication(clock.deadline(), completed_at, clock.now())
+        .map_err(|_| (6, "timeout", "Local inspection deadline exceeded".into()))
+}
+
 fn execute(
     clock: &EntryClock,
     mut args: Vec<OsString>,
@@ -4379,11 +4387,13 @@ fn rank_command(
     let ledger_recorded = outcome
         .as_ref()
         .is_ok_and(|outcome| outcome.ledger_recorded);
+    // Completion must precede the work cutoff. This continuation and runtime
+    // teardown may enter the cleanup reserve after the pipeline has finished.
+    let completed_in_time = outcome.as_ref().map_or_else(
+        |_| timely(clock),
+        |outcome| rank_work_completed(clock, outcome.completed_at),
+    );
     let outcome = outcome.map(|outcome| outcome.document);
-    // Completion must precede the work cutoff, but teardown may use the
-    // reserved cleanup window. Do not reclassify timely work as late merely
-    // because its successful cleanup entered that window.
-    let completed_in_time = timely(clock);
     let output_doc = finish_rank_invocation(invocation, outcome)?;
     let output_doc = match validate_rank_completion(completed_in_time, &output_doc) {
         Ok(()) => output_doc,
@@ -5795,6 +5805,139 @@ mod invocation_cleanup_tests {
     }
 
     #[test]
+    fn timely_pipeline_advice_survives_a_delayed_cli_continuation() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        // RCH's TMPDIR can have writable ancestors. Use the same trusted
+        // sticky /tmp boundary as the private-store integration tests.
+        let root = std::path::Path::new("/tmp").join(format!(
+            "sr-completion-test-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed),
+        ));
+        let mut directory = std::fs::DirBuilder::new();
+        directory.recursive(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            directory.mode(0o700);
+        }
+        directory.create(&root).unwrap();
+        let workspace = root.join("workspace");
+        let skill = workspace.join(".claude/skills/rust_testing");
+        std::fs::create_dir_all(&skill).unwrap();
+        std::fs::write(
+            skill.join("SKILL.md"),
+            "---\nname: rust_testing\ndescription: Run Rust tests\n---\nUse cargo test.\n",
+        )
+        .unwrap();
+        let context = workspace.join("context.json");
+        std::fs::write(
+            &context,
+            serde_json::to_vec(&serde_json::json!({
+                "schema_version": 1, "harness": "claude_code",
+                "producer_id": "synthetic-test", "workspace_root": workspace,
+                "session_id": "completion-test", "agent_id": null,
+                "branch_id": null, "context_epoch": null,
+                "current_request": {
+                    "event_id": "request-1", "text": "Run the tests",
+                    "attachments_omitted": false, "essential_attachment_missing": false
+                },
+                "events": [], "explicit_skill_references": [], "supplied_loads": []
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let ledger = root.join("ledger");
+        let setup = ProcessInvocation::enter().unwrap();
+        crate::storage::init_ledger(
+            &setup,
+            &setup.request_cx().unwrap(),
+            crate::storage::LedgerLocation::Directory(ledger.clone()),
+        )
+        .unwrap();
+        assert!(setup.shutdown());
+        let clock = EntryClock::capture_with(
+            DurationMillis::new("test_total", 10_000, 30_000).unwrap(),
+            DurationMillis::new("test_cleanup", 8_000, 30_000).unwrap(),
+        )
+        .unwrap();
+        let invocation = ProcessInvocation::from_clock(clock).unwrap();
+        let cx = invocation.request_cx().unwrap();
+        let args = crate::pipeline::RankArgs {
+            workspace,
+            user_config_root: None,
+            home: None,
+            cache_dir: None,
+            ledger_dir: Some(ledger.clone()),
+            sources: ConfigSources::default(),
+            gate: crate::effects::EffectGate::new(
+                crate::privacy::EffectFlags {
+                    offline: true,
+                    no_cache: true,
+                    ..Default::default()
+                },
+                crate::effects::Scope::Rank,
+            )
+            .unwrap(),
+            source_options: crate::context::source::SourceOptions {
+                context: Some(crate::roster::LocalPath::new(context)),
+                ..Default::default()
+            },
+            require_skills: vec![crate::identity::SkillId::new("rust_testing").unwrap()],
+            shortlist_ids: Vec::new(),
+            roster_file: None,
+            explain: false,
+            why_not: None,
+            cursor: None,
+            output_json: true,
+            output_table: false,
+            dry_run: false,
+            save_case: None,
+        };
+        let outcome = invocation
+            .block_on_cancellable(
+                &cx,
+                crate::pipeline::execute_pipeline_with_recording(&invocation, &cx, args, None),
+            )
+            .unwrap();
+        assert!(outcome.ledger_recorded);
+        assert!(outcome.completed_at < clock.deadline().latest_work_time());
+        let connection =
+            rusqlite::Connection::open(ledger.join(crate::storage::LEDGER_FILE)).unwrap();
+        let prepared: (String, String) = connection
+            .query_row(
+                "SELECT decision, exposure_state FROM ranking_events",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(prepared, ("explicit".into(), "prepared".into()));
+        // Delay only the caller: all pipeline work and persistence are complete.
+        std::thread::sleep(Duration::from_millis(
+            clock
+                .deadline()
+                .latest_work_time()
+                .as_millis()
+                .saturating_sub(clock.now().as_millis())
+                + 1,
+        ));
+        assert!(
+            timely(&clock).is_err(),
+            "the continuation is in cleanup reserve"
+        );
+        let completion = rank_work_completed(&clock, outcome.completed_at);
+        let document = finish_rank_invocation(invocation, Ok(outcome.document)).unwrap();
+        validate_rank_completion(completion, &document).unwrap();
+        assert_eq!(document.as_value()["decision"], "explicit");
+        assert_eq!(
+            document.as_value()["skills"][0]["invocation_name"],
+            "rust_testing"
+        );
+        assert_eq!(document.as_value()["usage"]["http_attempts"], 0);
+    }
+
+    #[test]
     fn a_late_work_cutoff_keeps_usage_when_cleanup_is_timely() {
         let clock = EntryClock::capture_with(
             DurationMillis::new("test_total", 1_000, 3_000).unwrap(),
@@ -5809,7 +5952,7 @@ mod invocation_cleanup_tests {
         let usage = value["usage"].clone();
         let document = OutputDocument::from_value(value).unwrap();
         std::thread::sleep(Duration::from_millis(150));
-        let completed_in_time = timely(&clock);
+        let completed_in_time = rank_work_completed(&clock, clock.now());
         let document = finish_rank_invocation(invocation, Ok(document)).unwrap();
         // The result was still actionable after timely cleanup; only the work
         // cutoff withholds it here, matching rank_command's publication path.

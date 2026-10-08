@@ -8,7 +8,7 @@
 //! were never written at all, because nothing mapped an attempt to a row — is what
 //! these cases now hold closed.
 //!
-//! Every case runs the installed binary against the loopback TLS provider fixture
+//! Ranking cases run Cargo's compiled binary against the loopback TLS provider fixture
 //! with an initialised ledger, then reads `provider_attempts` with a plain SQLite
 //! connection. The fixture follows `tests/real_rank_coordination.rs`, which owns the
 //! same provider server.
@@ -433,6 +433,15 @@ struct Provider {
     port: u16,
 }
 
+impl Drop for Provider {
+    fn drop(&mut self) {
+        // Cancellation and hard-kill cases cannot finish the provider protocol.
+        // Child's cached wait status makes this harmless after graceful served().
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
 impl Provider {
     fn start(f: &Fixture, scenario: &str) -> Self {
         Self::start_with(f, scenario, &[])
@@ -508,6 +517,29 @@ impl Provider {
         assert!(self.child.wait().unwrap().success(), "provider must finish");
         served
     }
+}
+
+#[test]
+fn dropping_an_unfinished_provider_terminates_and_reaps_its_child() {
+    use nix::errno::Errno;
+    use nix::sys::signal::{Signal, kill};
+    use nix::sys::wait::{WaitPidFlag, WaitStatus, waitpid};
+    use nix::unistd::Pid;
+    let fixture = Fixture::new();
+    let provider = Provider::start(&fixture, "useful");
+    let pid = Pid::from_raw(i32::try_from(provider.child.id()).unwrap());
+    drop(provider);
+    let observed = waitpid(pid, Some(WaitPidFlag::WNOHANG));
+    // Preserve the planted failure without leaking its owned child ourselves.
+    if matches!(observed, Ok(WaitStatus::StillAlive)) {
+        let _ = kill(pid, Signal::SIGKILL);
+        let _ = waitpid(pid, None);
+    }
+    assert_eq!(
+        observed,
+        Err(Errno::ECHILD),
+        "fixture drop must reap its child"
+    );
 }
 
 #[test]
