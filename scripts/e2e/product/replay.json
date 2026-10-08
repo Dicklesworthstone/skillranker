@@ -10,6 +10,7 @@
     "jev_rerank",
     "jev_wide",
     "ledger_exposure_lifecycle_contract",
+    "ledger_invocation_identity",
     "ledger_migration_contract",
     "ledger_paired_correction_contract",
     "ledger_quota_headroom_contract",
@@ -19,8 +20,8 @@
     "replay_case_completeness",
     "replay_cli_contract",
     "replay_contract",
-    "stats_value_report_contract",
-    "save_case_contract"
+    "save_case_contract",
+    "stats_value_report_contract"
   ],
   "cases": [
     {
@@ -264,6 +265,43 @@
         "complete_independent_evidence"
       ],
       "tests": "all"
+    },
+    {
+      "id": "ledger-invocation-attempt-identity",
+      "assertions": [
+        "invocation_attempt_identity"
+      ],
+      "tests": [
+        "ledger_invocation_identity::later_library_rankings_date_attempts_with_their_own_entry_clock",
+        "ledger_invocation_identity::duplicate_event_library_rankings_preserve_each_provider_attempt"
+      ]
+    },
+    {
+      "id": "observe-boundary-policy",
+      "assertions": [
+        "observe_boundary_enforced"
+      ],
+      "tests": [
+        "observation_contract::observe_boundary_invalid_configuration_cannot_advance_the_cursor",
+        "observation_contract::observe_boundary_configured_roots_record_successful_loads_idempotently",
+        "observation_contract::observe_boundary_other_harness_requires_its_own_inventory",
+        "observation_contract::observe_boundary_other_harness_uses_only_configured_inventory",
+        "observation_contract::observe_boundary_refuses_escaping_symlinks_before_storage",
+        "observation_contract::observe_boundary_refuses_oversized_regular_files_before_storage",
+        "observation_contract::observe_boundary_explicit_inventory_replaces_configured_discovery",
+        "observation_contract::observe_boundary_refuses_fifo_and_device_inputs_without_blocking"
+      ]
+    },
+    {
+      "id": "ledger-emission-persistence-policy",
+      "assertions": [
+        "emission_persistence_enforced"
+      ],
+      "tests": [
+        "ledger_exposure_lifecycle_contract::actual_cli_persistence_opt_outs_and_previews_leave_existing_ledger_unchanged",
+        "ledger_exposure_lifecycle_contract::actual_cli_json_and_table_delivery_record_authorized_emission",
+        "ledger_exposure_lifecycle_contract::actual_cli_opt_outs_and_previews_never_initialize_missing_state"
+      ]
     }
   ]
 }

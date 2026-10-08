@@ -96,6 +96,12 @@ def check(catalog, matrix_path=MATRIX):
             problems.append(f"allowed ignored {entry['test']} is not an #[ignore] test")
         if any(entry["test"] in c["tests"] for c in catalog["cases"] if c["tests"] != ALL):
             problems.append(f"allowed ignored {entry['test']} cannot establish a case")
+    declared_ignored = {entry["test"] for entry in catalog.get("allowed_ignored", [])}
+    for target in defined:
+        for name in sorted(ignored_tests(target)):
+            reference = f"{target}::{name}"
+            if reference not in declared_ignored:
+                problems.append(f"ignored test {reference} needs an allowed_ignored declaration")
     matrix = tomllib.loads(Path(matrix_path).read_text())
     cases = {case["id"]: set(case["assertions"]) for case in catalog["cases"]}
     required = set()

@@ -76,6 +76,19 @@
       "tests": [
         "p6_gate::all_p6_contracts_verified"
       ]
+    },
+    {
+      "id": "hook-preflight-policy",
+      "assertions": [
+        "hook_preflight_before_mutation"
+      ],
+      "tests": [
+        "hook_contract::invalid_hook_arguments_never_append_invocation_counts",
+        "hook_contract::invalid_hook_deadlines_never_append_invocation_counts",
+        "hook_contract::invalid_hook_configuration_never_append_invocation_counts",
+        "hook_contract::valid_hook_cli_deadline_overrides_environment_before_held_open_stdin",
+        "hook_contract::hook_invocations_are_counted_at_entry_even_when_no_row_is_recorded"
+      ]
     }
   ]
 }

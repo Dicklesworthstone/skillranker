@@ -1123,3 +1123,68 @@ features = []
 e2e_suite = "storage-platforms"
 e2e_cases = ["native-private-storage", "wal-contention", "export-no-clobber", "unsafe-target-refusal"]
 assertion_ids = ["native_platform_behavior", "qualified_engine", "private_no_clobber", "linux_nonregression"]
+
+# Recent repair coverage; declaration only, not an execution receipt.
+[[boundaries]]
+id = "p3_native_discovery_deadline"
+owner_bead = "sr-roadmap-l1i.4.15"
+member_beads = ["sr-roadmap-l1i.4.15"]
+phase = "P3"
+title = "Bound native discovery and require valid calendar recency"
+e2e_suite = "context"
+e2e_cases = ["native-discovery-deadline-calendar"]
+assertion_ids = ["native_discovery_bounded"]
+platforms = ["linux"]
+features = []
+
+# Recent repair coverage; declaration only, not an execution receipt.
+[[boundaries]]
+id = "p5_invocation_attempt_identity"
+owner_bead = "sr-roadmap-l1i.6.30"
+member_beads = ["sr-roadmap-l1i.6.30"]
+phase = "P5"
+title = "Keep library provider attempts and timestamps invocation-local"
+e2e_suite = "replay"
+e2e_cases = ["ledger-invocation-attempt-identity"]
+assertion_ids = ["invocation_attempt_identity"]
+platforms = ["linux"]
+features = []
+
+# Recent repair coverage; declaration only, not an execution receipt.
+[[boundaries]]
+id = "p5_observe_boundary_policy"
+owner_bead = "sr-roadmap-l1i.6.31"
+member_beads = ["sr-roadmap-l1i.6.31"]
+phase = "P5"
+title = "Enforce shared observation policy and bounded authorized input"
+e2e_suite = "replay"
+e2e_cases = ["observe-boundary-policy"]
+assertion_ids = ["observe_boundary_enforced"]
+platforms = ["linux"]
+features = []
+
+# Recent repair coverage; declaration only, not an execution receipt.
+[[boundaries]]
+id = "p5_emission_persistence_policy"
+owner_bead = "sr-roadmap-l1i.6.32"
+member_beads = ["sr-roadmap-l1i.6.32"]
+phase = "P5"
+title = "Honor persistence effects when recording actual CLI delivery"
+e2e_suite = "replay"
+e2e_cases = ["ledger-emission-persistence-policy"]
+assertion_ids = ["emission_persistence_enforced"]
+platforms = ["linux"]
+features = []
+
+# Recent repair coverage; declaration only, not an execution receipt.
+[[boundaries]]
+id = "p6_hook_preflight_policy"
+owner_bead = "sr-roadmap-l1i.7.14"
+member_beads = ["sr-roadmap-l1i.7.14"]
+phase = "P6"
+title = "Validate hook usage configuration and deadline before counters"
+e2e_suite = "shadow-hook"
+e2e_cases = ["hook-preflight-policy"]
+assertion_ids = ["hook_preflight_before_mutation"]
+platforms = ["linux"]
+features = []

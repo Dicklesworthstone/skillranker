@@ -119,6 +119,12 @@ class CatalogTests(unittest.TestCase):
         self.assertTrue(any("nowhere is not a suite target" in p for p in problems))
         self.assertTrue(any(f"case {dropped['id']} has no catalog entry" in p for p in problems))
 
+    def test_a_new_target_cannot_hide_an_undeclared_ignored_test(self):
+        catalog = product_cases.load_catalog(Path(__file__).parent / "product/roster.json")
+        added = dict(catalog, targets=catalog["targets"] + ["cass_adapter"])
+        self.assertTrue(any("actual_installed_cass_exports_synthetic_session needs an allowed_ignored"
+                            in p for p in product_cases.check(added)))
+
 
 if __name__ == "__main__":
     unittest.main()

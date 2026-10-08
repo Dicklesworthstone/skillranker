@@ -12,6 +12,7 @@
     "p3_gate",
     "privacy_contract",
     "project_signals",
+    "session_discovery",
     "source_selection"
   ],
   "allowed_ignored": [
@@ -206,6 +207,17 @@
         "p3_gate_passed"
       ],
       "tests": "all"
+    },
+    {
+      "id": "native-discovery-deadline-calendar",
+      "assertions": [
+        "native_discovery_bounded"
+      ],
+      "tests": [
+        "session_discovery::native_discovery_preserves_expiry_and_cancellation_instead_of_partial_inventory",
+        "session_discovery::impossible_calendar_dates_cannot_establish_recency",
+        "session_discovery::latest_requires_valid_calendar_recency_through_the_cli"
+      ]
     }
   ]
 }

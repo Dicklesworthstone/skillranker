@@ -3,16 +3,29 @@
   "suite": "cache",
   "tier": "rust-product-integration",
   "targets": [
+    "cache_atomic_publication",
     "cache_fingerprint",
     "cache_namespace_isolation",
     "cache_policy_revocation",
+    "cache_publication_fence",
     "coordination_contract",
-    "response_cache_contract"
+    "rank_acceptance",
+    "real_rank_coordination",
+    "response_cache_contract",
+    "storage_contract"
   ],
   "allowed_ignored": [
     {
-      "test": "coordination_contract::coordination_child_worker",
-      "reason": "subprocess entry point invoked by real_competing_processes_and_single_flight"
+      "test": "coordination_contract::qualified_store_child_reader",
+      "reason": "owned subprocess entry point invoked by qualified_store_delivers_both_stages_across_processes"
+    },
+    {
+      "test": "rank_acceptance::late_rerank_shutdown_contention_diagnostic",
+      "reason": "manual contention diagnostic; ordinary deadline and late-publication controls remain unignored"
+    },
+    {
+      "test": "storage_contract::crash_writer_child",
+      "reason": "owned subprocess entry point invoked by abrupt_process_exit_preserves_only_committed_generation"
     }
   ],
   "cases": [
@@ -52,7 +65,8 @@
       ],
       "tests": [
         "cache_policy_revocation::exact_hit_consumer_withholds_stale_exclusion_authority",
-        "cache_policy_revocation::two_process_follower_withholds_stale_exclusion_authority"
+        "cache_policy_revocation::qualified_store_consumers_withhold_stale_exclusion_authority",
+        "rank_acceptance::a_changed_exclusion_supersedes_the_evaluation"
       ]
     },
     {
@@ -62,8 +76,8 @@
         "network_revocation_safe"
       ],
       "tests": [
-        "cache_policy_revocation::exact_hit_network_only_revocation_preserves_valid_local_result",
-        "cache_policy_revocation::shared_response_network_only_revocation_preserves_valid_local_result"
+        "cache_policy_revocation::qualified_cache_network_revocation_preserves_exact_local_hit_and_exposes_miss",
+        "rank_acceptance::offline_serves_a_complete_cached_pair"
       ]
     },
     {
@@ -73,10 +87,10 @@
         "no_cache_no_persist_clean"
       ],
       "tests": [
-        "cache_policy_revocation::no_cache_forbids_cross_process_body_sharing",
-        "cache_policy_revocation::no_persist_guarantees_zero_disk_mutation",
-        "coordination_contract::no_hidden_response_body_in_coordination_store",
-        "coordination_contract::private_bounded_sqlite_qualifications"
+        "cache_policy_revocation::disabled_cache_and_persistence_do_not_open_the_production_store",
+        "coordination_contract::metadata_completion_creates_neither_hidden_bodies_nor_an_alternate_store",
+        "real_rank_coordination::no_cache_and_no_persist_preserve_documented_effects",
+        "storage_contract::unsafe_ancestors_leaf_modes_and_relative_paths_are_refused"
       ]
     },
     {
@@ -86,14 +100,23 @@
         "coordination_lease_recovery_verified"
       ],
       "tests": [
-        "coordination_contract::real_competing_processes_and_single_flight_wide_and_rerank",
-        "coordination_contract::lease_expiry_and_reacquisition_with_fencing_bump",
-        "coordination_contract::fresh_reacquisition_after_cache_loss_when_lease_completed",
-        "coordination_contract::completion_published_after_cache_put_eliminates_body_race",
-        "coordination_contract::old_owner_late_completion_rejected_after_expiry",
-        "coordination_contract::follower_deadline_causes_quiet_fallback",
-        "coordination_contract::different_session_and_event_isolation",
-        "coordination_contract::missing_owner_usage_remains_unknown_no_duplicate_attempt_charges"
+        "coordination_contract::qualified_store_delivers_both_stages_across_processes",
+        "coordination_contract::qualified_store_refresh_does_not_preempt_an_active_owner",
+        "coordination_contract::namespace_keys_acquire_independent_production_leases",
+        "real_rank_coordination::ordinary_two_consumer_success_incurs_one_pair_and_subsequent_exact_offline_reuse",
+        "real_rank_coordination::follower_nearing_deadline_while_leader_active_makes_zero_provider_attempts",
+        "real_rank_coordination::stale_leader_superseded_cannot_overwrite_newer_cache_or_complete_lease",
+        "real_rank_coordination::completed_lease_with_absent_pair_reacquires_leadership_before_fresh_evaluation",
+        "real_rank_coordination::an_unacquirable_lease_sends_uncoordinated_instead_of_a_false_timeout",
+        "real_rank_coordination::busy_optional_lease_completion_keeps_answer_without_claiming_completion",
+        "cache_atomic_publication::pair_and_completion_survive_close_and_reopen_together",
+        "cache_atomic_publication::failed_second_row_preserves_previous_pair_and_active_lease",
+        "cache_atomic_publication::completed_publisher_cannot_replace_the_pair_again",
+        "cache_atomic_publication::wrong_store_fence_leaves_both_databases_untouched",
+        "cache_publication_fence::stale_owner_cannot_replace_successors_actual_cache_body",
+        "cache_publication_fence::expired_owner_does_not_create_a_cache_response",
+        "cache_publication_fence::publication_and_acquisition_share_the_actual_cache_writer",
+        "storage_contract::real_writer_lock_is_bounded_and_retry_after_release_succeeds"
       ]
     }
   ]
