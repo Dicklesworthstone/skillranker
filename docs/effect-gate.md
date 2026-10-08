@@ -43,9 +43,10 @@ and its flag, and holds no path, credential or configuration value:
 ```
 
 Production callers open the cache through `EffectGate::open_cache`. The
-storage-level `open_cache` stays public for storage tests and future
-administrative commands. The rank pipeline, hook, dry-run preview and doctor
-consume the gate in their own tasks. No shipped command reads the gate yet.
+storage-level `open_cache` stays public for storage tests and administrative
+callers. The shipped rank and Claude hook boundaries construct the gate before
+pipeline work; dry-run and doctor use it for their restricted inspection paths.
+`observe` also enforces the shared effect policy before required ledger writes.
 
 ## Verification
 

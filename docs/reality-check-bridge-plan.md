@@ -1,11 +1,299 @@
 # SkillRanker reality check and bridge plan
 
-Latest assessment: 2026-09-30 UTC, frozen source `ef85a1e`, with live tracker
-state refreshed after `07d7393`. Earlier reviews and receipts are retained below
-as history. Inventory and ownership statements describe their stated snapshots,
-not a frozen release or a product-completion percentage.
+Latest assessment: 2026-10-08 UTC, source `78ad66094193b32592b414ad253882b9cec0edef`.
+Earlier reviews and receipts remain below as history. Source, installed artifact,
+provider qualification and recommendation quality are separate claims.
 
-## Current assessment — 2026-09-30 UTC
+## Current assessment — 2026-10-08 UTC
+
+**The core selector works, and the principal components are connected. The
+project has not yet demonstrated that its advice improves agent work or meets
+its advisory rollout gates.** The highest-value next step is to complete a
+small, independently judged evaluation and a qualified controlled delivery path,
+then collect the prospectively defined operational and harm cohorts. Continuing
+to add later-phase features cannot substitute for those results.
+
+### Scope and evidence boundary
+
+Read all 681 lines of AGENTS.md, all 2,109 lines of README.md and the comprehensive
+plan before concluding this assessment. Reviewed current source wiring, relevant
+engineering contracts, all unfinished task titles, pivotal task requirements and
+recent activity. This is a source-bound project assessment, not an assertion that
+every source line or every historical engineering document was audited.
+
+The requested workflow is advice for the next step of one exact live session:
+local authority and visible roster → bounded redacted context → Jev wide/rerank
+or local explicit resolution → eligibility/abstention → output → observations
+and independently evaluated improvements. Jev is essential; fresh ranking needs
+the selected provider's credential and separate trusted network consent. Quill,
+local scoring and caches do not provide a key-free inference backend.
+
+No credential was retrieved, no public Jev request was made, and no hook settings,
+installed binary, allowance, ledger contents or release were changed. Fresh CLI
+checks used synthetic input, private XDG directories and no network consent.
+GitHub release inventory and local operational metadata were read separately.
+
+### Vision checklist: implementation versus acceptance
+
+`WORKING` below means an implemented path with source-bound test evidence and
+specific CLI/integration coverage. It does not imply universal safety, current
+native-harness qualification or measured usefulness. `PARTIAL`, `UNPROVEN` and
+`NOT_STARTED` describe the named goal, not a percentage of the project.
+
+| # | Testable goal from README/plan | Status and implementation evidence | Remaining boundary and existing owner |
+|---|---|---|---|
+| 1 | Standalone, bounded Rust CLI with Jev as ranking engine | WORKING: one package, unsafe forbidden, pinned lock/toolchain; `src/main.rs`, `src/cli.rs`, `src/pipeline.rs` | Release qualification remains `.8.7`; no runtime `ms` dependency |
+| 2 | Exact session/branch identity and authoritative current request | WORKING for tested local contracts: `src/context/`, Claude overlay and source-selection tests | Actual version-specific harness semantics remain `.8.10`; normalized input does not certify a native adapter |
+| 3 | Resolve explicit requirements locally; exclusions prevail | WORKING: explicit resolver, precedence/restriction checks; fresh exact request succeeds with zero provider attempts | Preserve positive and ambiguous/missing controls in every trial path |
+| 4 | Use only visible, unambiguously invocable skills | WORKING for bounded roster contracts: parsing, import, collision/shadowing and whole-selection revalidation | Actual Claude visibility/precedence at the installed version remains `.8.10` |
+| 5 | Deterministic overflow retrieval within 254 real options plus none | WORKING mechanics: bounded Quill adapter and 0/1/254/255+ controls | Independent positive overflow coverage remains `sr-uv2v` → `.8.1` |
+| 6 | Sequential wide/rerank, strict structured Jev answers | WORKING TypeSafe production path with historical live maximum-shape evidence; real local TLS/codec tests | Provider compatibility is revision/request-specific; optional Cloudflare qualification remains `.2.14` |
+| 7 | Correct fit/none eligibility and finite scoring | WORKING: `src/eligibility.rs`, `src/scoring.rs`; every candidate beats none before blending; explicit requests bypass probabilistic gates | Numerical correctness does not prove the heuristic's usefulness; `.8.1` owns that comparison |
+| 8 | Consent, redaction, input bounds and trusted configuration | WORKING for exercised boundaries: `src/config.rs`, `src/effects.rs`, privacy/input tests and actual CLI refusal controls | Maintain these through experiments; no proof of every possible disclosure failure |
+| 9 | One owned deadline, cancellation and cleanup | PARTIAL: Asupersync, owned children and substantial real stall/reap coverage; latest drain/completion fixes qualified in source | Original intermittent overrun and unfinished-ledger cause remains `sr-9fzp`; latest two fixes are not installed |
+| 10 | Exact namespaced cache reuse and fenced single flight | WORKING: production `CacheStore`, one SQLite response/lease boundary; real two-process/cache-publication tests | Old `sr-shnb` divergence is repaired; no observed cache reuse in the present live ledger |
+| 11 | Durable bounded ledger, observation and corrective feedback | WORKING mechanics: real SQLite tests, explicit observation, cursor/identity/write policy and feedback commands | `.6.29` still requires complete evidence and a compatible independent benchmark; zero current judgments |
+| 12 | Faithful inert replay and bounded evaluation | WORKING mechanics: replay, labeled frames, sampling and explicit capped online evaluation | `.8.1` must bind adjudicated corpus primary IDs to the different Rust evaluation schema; no implicit direct importer |
+| 13 | Shadow Claude hook and reversible installation | WORKING component/local integration path: quiet failures, complete-envelope publication, managed settings and snoozes | Native advisory qualification remains UNPROVEN; `.8.9` and `.8.10` own controlled delivery |
+| 14 | Real experimental advice and provider-independent return to shadow | NOT_STARTED as an accepted trial capability; existing production renderer/pipeline are reusable | `.8.2` → `.8.9` → `.8.10`; no parallel ranking backend or qualification bypass |
+| 15 | Independently demonstrated relevance and abstention quality | UNPROVEN: no promotion corpus; current observations are not labels | `sr-uv2v` acquisition and `.8.1` frozen comparison |
+| 16 | Controlled agent harm risk within the declared bound | UNPROVEN: cohort tools/contracts exist; no ratified promotion cohort or completed controlled outcomes | `.8.2` freezes/ratifies; `.8.3` measures harm-or-unresolved, separately from relevance |
+| 17 | Representative availability, useful interruption/cost tradeoff | UNPROVEN: 170 mixed historical ledger events, zero emitted suggestions; no new-revision organic cohort | `sr-1uf4`, `.8.4`, `.8.5`; at least 500 representative invocations with original denominators |
+| 18 | Cache p95 ≤100 ms; warm network p50/p95 ≤600/1,500 ms | PARTIAL: real local optimization, measured CPU/RSS tradeoffs and retained regressions | Recent quieter optimized cache p95 is 117.255 ms; loaded-host results are much worse; `.8.4` retains performance acceptance |
+| 19 | Durable shared attempt allowance | WORKING implementation: debit-before-send, generations, real concurrent-process evidence and budget CLI | Current installation reports disabled; choose/freeze a trial cap before expanding traffic under `sr-1uf4`/`.8.2` |
+| 20 | Safe supported-platform installation and distribution | PARTIAL: source installer and Linux deployment; older native APFS/Apple Silicon and Rosetta evidence exists | Current macOS qualification `.5.23` remains blocked; no GitHub releases; DSR packaging `.8.7` |
+| 21 | Calibration, managed policy apply/rollback and shrunk priors | NOT_STARTED as public capability; statistical helpers are already implemented | P8 `.9.1`–`.9.4`, `.9.8`–`.9.9`; independent separated labels precede learning |
+| 22 | Valid sequential monitoring without automatic policy changes | NOT_STARTED as public capability | P8 `.9.5`–`.9.9`; monitoring never replaces the initial promotion experiment |
+| 23 | TUI and bounded refresh/watch | NOT_STARTED; `tui = []` is a reserved feature | `.10.6`, `.10.7`, `.10.24`; shared result model and terminal recovery tests required |
+| 24 | Description diagnostics, overlays and suspected coverage gaps | NOT_STARTED as commands; roster/explanation inputs already exist | `.10.3`–`.10.5`, `.10.22`–`.10.23`, `.10.32`; no automatic library editing |
+| 25 | Passage/query-view/chunk/suppression and allocation experiments | NOT_STARTED as accepted experiments | `.10.1`–`.10.2`, `.10.9`–`.10.11`, `.10.14` and their verification tasks; equal-budget held-out comparisons |
+| 26 | Codex, omp/pi and Grok native support | NOT_STARTED as qualified native integrations; normalized context is available | `.10.15`–`.10.20`, `.10.8.1`–`.10.8.3`, `.10.27`–`.10.29`; six implementation/verification tasks deliberately deferred pending contracts |
+| 27 | Optional FrankenSQLite replacement under identical storage tests | NOT_STARTED experiment; bundled rusqlite is the current intended backend | `.10.12`; substitution is not a prerequisite for core value |
+
+Task suffixes in this section expand to `sr-roadmap-l1i`. Goals derive from the
+[comprehensive plan](../COMPREHENSIVE_PLAN_TO_DESIGN_SKILLRANKER.md),
+[capability registry](capabilities.md) and [public output contract](output-contract.md).
+
+The unchanged initial relevance targets require ≥300 independently adjudicated
+primary families (≥150 positive, ≥100 no-match, ≥50 near-miss), with ≥50 positive
+overflow cases before an overflow-quality claim. Candidate coverage must reach
+98% at 254 on that overflow subset and 95% at M on positive cases. Emitted top-one
+precision must be ≥90% with a 95% lower bound ≥80%; correct suggestions must cover
+≥80% of positives. Needless suggestions must be ≤5% with a 95% upper bound ≤10%.
+These are prospective benchmark targets under justified sampling/interval
+assumptions, not measured results or production-prevalence claims. Controlled
+harm and representative availability remain separate cohorts.
+
+### What actually runs and what is deployed
+
+The installed `sr 0.1.0` exposes 16 implemented subcommands plus help/version:
+`rank`, `roster`, `doctor`, `capabilities`, `demo`, `hook`, `install-hook`,
+`uninstall-hook`, `stats`, `observe`, `feedback`, `snooze`, `budget`, `replay`,
+`eval`, and `ledger`. Dispatch and focused tests exercise real implementations;
+they are not empty stubs. `calibrate`, `tui`, `gaps` and `doctor --descriptions`
+remain planned and are refused. The four demo cases are synthetic, non-actionable
+artifacts. Help success checks establish help availability only.
+
+Current source is `78ad660`; installed binary SHA-256 is
+`ca1ddcc5c1ca80eaae41ed0a63f450402cba57159b0dbf86d98d825207b5d3a1`,
+matching the [October 8 deployment receipt](self-host-shadow-deployment.md) for
+`dc17cc5`. It contains the discovery, observation and delivery-persistence
+repairs, but not `3f5c18b` (owned cancellation drain) or `78ad660` (pipeline
+completion time rather than delayed CLI continuation time). Source qualification
+does not activate those changes. The original `sr-9fzp` cause remains open even
+with both source fixes.
+
+The single managed sr hook is repository-local with a four-second outer timeout.
+Trusted networking is enabled; hook mode remains default shadow. No sr hook is
+installed globally and the shared attempt allowance is disabled. This review
+preserved all those settings. The local Claude executable now reports **2.1.294**;
+the capability registry still has no tested Claude version and nine unevaluated
+conformance dimensions. In `hook_command`, a ranked advisory must pass
+`AdapterRecord::advice(EmitNativeAdvice, …)`. Consequently, changing `hook.mode`
+to advisory alone does not establish or unlock qualified native ranked advice.
+Explicit user requirements retain their separate local authority.
+
+Fresh `sr stats --json` still reports 170 events: 167 shadow and three CLI.
+Shadow rows contain 73 ranked/muted, 29 abstentions, 57 unavailable and eight
+unfinished events. There are zero emitted suggestions, zero independent
+usefulness judgments and zero successful observed loads; four loads were
+attempted. All modes together have 59 unavailable events and eight unfinished.
+These are mixed historical operational outcomes, not a representative current
+fallback-rate estimate. The entry counter is 312, with 23 unrecorded entries
+reported as an upper bound rather than 23 proven outages. Attempt accounting is
+234 attempts, 220 completed and 14 with unknown usage; known usage totals
+2,394,033 tokens. No cost is invented for unknown attempts.
+
+Those counts match earlier deployment snapshots: the recent repairs have not
+yet produced a fresh organic soak in this ledger. The cause of stagnant traffic
+was not established here; a repo-local Claude hook does not observe every agent
+harness or every repository. GitHub's release API returned an empty list again.
+Source installation is available, but a published qualified multi-target release
+is not.
+
+### Repairs since the previous assessment and actual blockers
+
+The September 30 diagnosis is superseded for four repaired boundaries:
+Cloudflare dry-run now uses the actual bounded wire encoder (`.5.30`); unused
+single-flight/cache implementations were retired in favor of the production
+store (`sr-shnb`); bounded Git/discovery overlap and two-worker file reads were
+integrated and measured (`sr-w4in`); corpus quotas now count primary families,
+with session-level adjudicator exclusions and real overflow-size checks
+(`.8.11` and `sr-uv2v` repairs). These are meaningful changes, not merely tracker
+closures. Their independent-quality and current-platform gates remain separate.
+
+The optional Cloudflare route's latest recorded public attempt is **HTTP 402**,
+not the earlier HTTP 401. The user-authorized `cf` credential repair succeeded
+and model-catalog access worked. One maximum-shape wide attempt was sent;
+rerank never started and usage remains unknown. Billing-read access was forbidden.
+Neither a precise billing cause nor a zero balance was established. Resolve
+account entitlement/read access before another explicitly capped qualification
+attempt; do not repeat credential refreshes or purchase credits by inference.
+See [Cloudflare transport](cloudflare-transport.md).
+
+Mac qualification has older genuine native APFS/Apple Silicon evidence and
+Intel-through-Rosetta evidence at their stated revisions. It is not current
+qualification. The latest recorded native attempt stopped before source sync or
+compilation because RCH 2.1.16's dispatcher requested GNU `flock --no-fork` from
+a Homebrew implementation without that option. `.5.23` needs a verified corrected
+Darwin dispatcher through the normal RCH/DSR path, then current-source storage,
+export and installer checks. No current physical Intel/HFS+ coverage is claimed.
+The prior Tailscale reauthentication response does not itself pass this gate.
+
+### Fresh findings and task coverage
+
+The tracker contains 341 issues: 274 closed, 58 open, one in progress, two blocked
+and six deferred. All **67 unfinished items** were considered against the vision;
+these counts are not a completion percentage. `br ready` exposes five tasks:
+`.6.29`, `.8.2`, `sr-uv2v`, `sr-1uf4` and `sr-9fzp`. Graph triage lists additional
+parent/organizational candidates; readiness is not proof of external inputs.
+`br dep cycles` reports none.
+
+**A fresh check fails:** `python3 -B scripts/validate_contract_matrix.py` reports
+`invalid contract matrix: roadmap-coverage`. Both matrix declarations omit five
+recently closed repairs: `.4.15`, `.6.30`, `.6.31`, `.6.32` and `.7.14`. This is
+verification inventory drift, not a demonstrated failure of those runtime
+repairs. `.6.29` already owns complete applicable matrix coverage; its task now
+records the exact missing members and required correction. Restore deliberate
+phase-correct ownership and real unit/e2e mappings in both declarations, keeping
+unexecuted coverage planned. Do not relax the validator, borrow unrelated cases
+or mistake a green inventory for independent benchmark acceptance.
+
+The adjudicated corpus and Rust labeled evaluation frame have different schemas.
+The corpus contract explicitly says there is no direct importer. `.8.1` therefore
+needs an explicit checked handoff binding the validated primary IDs, split and
+label membership, roster/content/policy identity and failure denominators to its
+actual evaluation inputs. This is an integration requirement on the existing
+holdout task, not permission to synthesize absent judgments or replay bodies.
+
+No major vision goal without an existing task owner was found. The new findings
+fit existing acceptance requirements; no duplicate roadmap was created. Completing
+only the implementation portions of all open tasks would **not** close the gap.
+Completing their full original acceptance, including external judgments, actual
+harness/platform proof and controlled outcomes, would cover the stated vision
+subject to the declared populations and explicit supported/unsupported adapter
+dispositions. Those external inputs cannot be manufactured by code or task closure.
+The maintainer has already said no independent corpus/cohort is available.
+
+### Bridge plan in practical order
+
+1. **Restore trustworthy evidence and deploy the qualified runtime fixes.**
+   Under `.6.29`, repair the five missing matrix memberships without lowering
+   acceptance. Under `sr-9fzp`/`sr-1uf4`, produce and activate an exact-source DSR
+   artifact containing the latest two qualified runtime fixes, preserving the
+   existing rollback and source/binary identities. Keep the unresolved original
+   overrun investigation open; do not restart unrelated feature work to claim it.
+2. **Make a small independent relevance pilot feasible.** `sr-uv2v` owns consent,
+   an independent human review arrangement and frozen 15–25-case pilot from the
+   registered rubric. Measure human cost and disagreement first; use a prospectively
+   declared narrower population if warranted. `.8.1` owns the schema handoff and
+   baseline comparisons. A pilot is diagnostic, not the 300-case promotion cohort.
+3. **Build the controlled delivery path against a frozen cohort design.**
+   `.8.2` needs ratified prospective design and independent blinded adjudication;
+   `.8.9` reuses the production pipeline for scoped experimental opt-in and
+   provider-independent stop; `.8.10` proves real delivery/visibility and both
+   stop-versus-publication orderings at an actual pinned Claude version.
+4. **Collect representative operational and paired outcome evidence.**
+   `sr-1uf4` must establish why organic traffic stopped, freeze the intended
+   workload/sampling/cost cap and collect new-revision data without padding it.
+   `.8.4` needs ≥500 representative invocations and ≤5% operational fallback,
+   including outages; `.8.3` needs the separately frozen harm-or-unresolved cohort.
+   Zero flagged units among 150 independent units can meet the declared 2% bound
+   only under its justified prospective model; zero emitted advice cannot.
+5. **Use measured failures to choose optimizations and release scope.**
+   Profile fresh cache/cold/network strata before another performance rewrite;
+   retain all outcomes, CPU/RSS and loaded-host regressions. Resolve macOS and
+   Cloudflare blockers in parallel if those targets/providers are in release scope.
+   `.8.5` measures actual usefulness/interruption/cost; `.8.6`–`.8.8` require the
+   resulting gates and DSR release evidence. Do not turn optional provider failure
+   into a reason to bypass the qualified default provider.
+6. **Then pursue P8/P9 against demonstrated needs.** Calibration requires real
+   independent separated labels. TUI/watch, description/gap tools, retrieval
+   variants and extra native adapters remain individually scoped, tested and
+   evidence-gated work; they do not block testing the current core value.
+
+### Ambition and refinement, without another process framework
+
+Three ambition passes informed this in-place revision: first, prioritize proof of
+next-step benefit over command count; second, connect the existing evaluator,
+corpus and production renderer instead of introducing replacement subsystems;
+third, improve evidence per unit of human/API cost using the registered pilot,
+family separation and prospective sampling rather than adoption-driven tuning.
+No extra routine inference, daemon or new framework follows from these passes.
+
+Five refinement passes checked: (1) every vision goal against existing owners;
+(2) dependency order and the separate experimental versus public advisory gates;
+(3) corpus/evaluator identity and complete failure denominators; (4) deployed
+revision, disabled allowance, actual harness version and current platform/provider
+blockers; (5) residual scope, duplication and unchanged acceptance. The last pass
+found no further task or product-scope change to add. Existing tasks were clarified
+through `br`; no unmet gate was closed and no replacement issue absorbed one.
+
+### Verification performed for this assessment
+
+Fresh: documentation consistency passes (47 links, 19 phase checks, two examples,
+five JSON, 22 shell and one TOML checks; syntax only, examples not executed).
+Resolved dependency guards pass in four default/no-default ±TUI graphs, 284
+reachable packages each, with only the pinned Asupersync runtime and Quill lexical
+engine and no forbidden engine/runtime features. Task graph is acyclic. GitHub
+release inventory is empty. Installed capabilities, scoped configuration hashes,
+Claude version and read-only stats/budget were inspected.
+
+Fresh isolated CLI journeys cover capabilities, 16 help paths, four demo cases,
+planned-command refusals, roster/doctor, local explicit resolution, missing exact
+request, stateless offline miss, dry-run and malformed-hook fail-quiet behavior.
+All 33 intended assertions are supported after correcting the test driver: its
+first four rank runs incorrectly supplied an unsolicited stdin pipe (all properly
+refused), and one follow-up expected the wrong missing-request error kind.
+The contract returns `unresolved-explicit`, exit 5. Original failed driver receipts
+are retained; neither correction changed product code or weakened a checked-in test.
+No isolated data/cache state was created. These smoke checks exercise the installed
+`dc17cc5` binary, not the newer uninstalled runtime repairs.
+
+Reused and reverified, **not rerun**: all 285 current compiler/test/lock/toolchain
+input hashes match the frozen `78ad660` RCH receipts. Locked all-target check,
+strict Clippy and full default suite exited zero there. The raw full log has
+1,604 unfiltered passes plus one nested filtered positive control, zero failures
+and 11 opt-in ignores (150 summaries). This is Linux x86_64 evidence; it does not
+qualify a Mac or count as a live provider, independent quality or real-harness run.
+
+The matrix validation failure above remains open. CASS health is unhealthy;
+two bounded project-history searches, including the rare `sr-9fzp` term, failed
+with exit 9 because Quill exhausted its 10,000,000-unit query fuel. No index rebuild
+or capacity bypass was attempted. Current source/Git/Beads evidence was used
+instead; exhaustive prior-session search is not claimed. This assessment is solo;
+no independent verifier or new Cargo execution is claimed for documentation edits.
+Staged UBS exits 3 because Markdown/Beads JSONL have no supported scanner; nothing
+was scanned and this is not a passing bug scan. No no-scan override was used.
+
+Private receipts: `/scratch/tmp/skillranker-reality-20261008-5ed9w90a`.
+Existing frozen compiler receipts:
+`/scratch/tmp/skillranker-completion-instant-gb4w4vli`.
+The detailed working TODO and bounded honesty audit remain in
+`/scratch/tmp/skillranker-execution-20260930.md`. They are operator scratch,
+not a new runtime dependency or implementation deliverable.
+
+## Historical assessment — 2026-09-30 UTC
 
 **SkillRanker has a substantial working core and an operational shadow
 deployment. It has not established that its recommendations improve agent work,
