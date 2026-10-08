@@ -35,6 +35,18 @@ does not claim that a late write was rolled back or that an in-flight row was fi
 Failure recording remains bounded: a run that returns after its permitted
 recording work window can retain an in-flight row with an unconfirmed warning.
 
+The CLI carries delivery-recording permission and event identity separately from
+rendered JSON or table text. Only a completed decision with a confirmed ranking
+event ledger write and an enabled ledger policy may transition its event to
+emitted after successful output and flush. `--no-ledger`, `--no-persist` and
+`--dry-run` also withhold this post-output ledger access, including when a matching historical
+event already exists. A preview's nested decision is never delivery authority.
+JSON and table decisions use the same recording path. Advisory hooks apply the
+same permission check. Recorded shadow decisions remain prepared and emit no
+advisory output. Optional delivery recording uses the configured invocation
+deadline and bounded runtime drain. A failed or late post-output write cannot retract already written output
+or establish confirmed delivery; stdout and a database commit remain non-atomic.
+
 | Decision | Skills | Model estimates | Ordinary CLI exit |
 | --- | --- | --- | --- |
 | `ranked` | Nonempty, at most 32, consecutive ranks and distinct stable IDs | Evaluated probabilities, phase, and scores | 0 |

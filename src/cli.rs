@@ -949,30 +949,25 @@ pub fn run(clock: EntryClock) -> u8 {
     let is_hook_claude = is_hook_claude_invocation(&args);
     let is_help = args.iter().any(|arg| arg == "--help" || arg == "-h");
     let wants_json = args.iter().any(|arg| arg == "--json") || !io::stdout().is_terminal();
-    // Only a ranking publishes its decision. Other commands can echo an
-    // event ID (snooze, feedback, replay) without exposing any advice.
-    let publishes_ranking = args
-        .get(1)
-        .and_then(|arg| arg.to_str())
-        .is_none_or(|first| first == "rank" || first.starts_with('-'));
-    let location = if let Some(dir) = try_extract_dir(&args) {
-        crate::storage::LedgerLocation::Directory(dir)
-    } else {
-        crate::storage::LedgerLocation::Platform
-    };
-    match execute(&clock, args) {
+    // Only the completed ranking can authorize delivery recording. Rendered
+    // JSON (including a dry-run's nested decision) carries no such authority.
+    let mut emission = None;
+    match execute(&clock, args, &mut emission) {
         Ok(output) => {
             if is_hook_claude && !is_help {
                 0
             } else {
                 let bytes_len = output.len();
-                match io::stdout().lock().write_all(output.as_bytes()) {
+                let mut stdout = io::stdout().lock();
+                match stdout
+                    .write_all(output.as_bytes())
+                    .and_then(|()| stdout.flush())
+                {
                     Ok(()) => {
                         if bytes_len > 0
-                            && publishes_ranking
-                            && let Some(event_id) = try_extract_event_id(&output)
+                            && let Some(emission) = emission
                         {
-                            let _ = try_record_cli_emission(&clock, location, &event_id, bytes_len);
+                            let _ = try_record_cli_emission(&emission, bytes_len);
                         }
                         0
                     }
@@ -1078,62 +1073,59 @@ fn count_hook_entry(m: &clap::ArgMatches) {
     );
 }
 
-fn try_extract_dir(args: &[OsString]) -> Option<PathBuf> {
-    let mut iter = args.iter();
-    while let Some(arg) = iter.next() {
-        if arg == "--dir" {
-            if let Some(next) = iter.next() {
-                return Some(PathBuf::from(next));
-            }
-        } else if let Some(s) = arg.to_str()
-            && let Some(stripped) = s.strip_prefix("--dir=")
-        {
-            return Some(PathBuf::from(stripped));
-        }
-    }
-    None
-}
-
-fn try_extract_event_id(output: &str) -> Option<String> {
-    let trimmed = output.trim();
-    if trimmed.starts_with('{')
-        && let Ok(val) = serde_json::from_str::<serde_json::Value>(trimmed)
-    {
-        if let Some(id) = val.get("event_id").and_then(|v| v.as_str()) {
-            return Some(id.to_string());
-        }
-        if let Some(id) = val
-            .get("local_decision")
-            .and_then(|local| local.get("event_id"))
-            .and_then(|v| v.as_str())
-        {
-            return Some(id.to_string());
-        }
-    }
-    None
-}
-
-fn try_record_cli_emission(
-    clock: &EntryClock,
+struct EmissionRecording {
+    clock: EntryClock,
     location: crate::storage::LedgerLocation,
-    event_id: &str,
-    bytes_written: usize,
-) -> bool {
-    let Ok(invocation) = crate::runtime::ProcessInvocation::from_clock(*clock) else {
+    event_id: String,
+}
+
+impl EmissionRecording {
+    fn prepared(
+        clock: EntryClock,
+        gate: crate::effects::EffectGate,
+        location: crate::storage::LedgerLocation,
+        document: &OutputDocument,
+        ledger_recorded: bool,
+    ) -> Option<Self> {
+        if gate.ledger() != crate::privacy::StoreAccess::Enabled
+            || !ledger_recorded
+            || !matches!(
+                document.kind(),
+                crate::output::OutputKind::Decision(
+                    crate::output::Decision::Ranked
+                        | crate::output::Decision::Explicit
+                        | crate::output::Decision::Abstain
+                )
+            )
+        {
+            return None;
+        }
+        Some(Self {
+            clock,
+            location,
+            event_id: document.as_value().get("event_id")?.as_str()?.to_owned(),
+        })
+    }
+}
+
+fn try_record_cli_emission(emission: &EmissionRecording, bytes_written: usize) -> bool {
+    let Ok(invocation) = crate::runtime::ProcessInvocation::from_clock(emission.clock) else {
         return false;
     };
-    let Ok(cx) = invocation.request_cx() else {
-        return false;
-    };
-    crate::storage::record_emission(
-        &invocation,
-        &cx,
-        crate::storage::LedgerAccess::ExistingOnly,
-        location,
-        event_id,
-        bytes_written,
-    )
-    .unwrap_or(false)
+    let recorded = invocation.request_cx().is_ok_and(|cx| {
+        crate::storage::record_emission(
+            &invocation,
+            &cx,
+            crate::storage::LedgerAccess::ExistingOnly,
+            emission.location.clone(),
+            &emission.event_id,
+            bytes_written,
+        )
+        .unwrap_or(false)
+    });
+    // Even an optional post-output write owns and drains its runtime. Failure
+    // cannot retract output or establish confirmed delivery.
+    finish_invocation(invocation, Ok(recorded)).unwrap_or(false)
 }
 
 pub type Failure = (u8, &'static str, String);
@@ -1254,7 +1246,11 @@ fn timely(clock: &EntryClock) -> Result<(), Failure> {
         .map_err(|_| (6, "timeout", "Local inspection deadline exceeded".into()))
 }
 
-fn execute(clock: &EntryClock, mut args: Vec<OsString>) -> Result<String, Failure> {
+fn execute(
+    clock: &EntryClock,
+    mut args: Vec<OsString>,
+    emission: &mut Option<EmissionRecording>,
+) -> Result<String, Failure> {
     timely(clock)?;
     // Bare `sr` is `sr rank`: rank flags may follow the program name directly.
     if args
@@ -1337,7 +1333,7 @@ fn execute(clock: &EntryClock, mut args: Vec<OsString>) -> Result<String, Failur
         if rank_matches.get_flag("help") {
             return Ok(HELP.into());
         }
-        return rank_command(clock, Some(rank_matches));
+        return rank_command(clock, Some(rank_matches), emission);
     }
     if let Some(("capabilities", capabilities)) = matches.subcommand() {
         if capabilities.get_flag("help") {
@@ -1425,7 +1421,7 @@ fn execute(clock: &EntryClock, mut args: Vec<OsString>) -> Result<String, Failur
         return uninstall_hook_command(clock, uninstall_matches);
     }
     // Bare `sr` ranks once, as documented.
-    rank_command(clock, None)
+    rank_command(clock, None, emission)
 }
 
 /// `sr budget`: inspect, preview or configure the trusted shared allowance.
@@ -4169,6 +4165,7 @@ fn environment_sources(sources: &mut ConfigSources) -> Result<(), Failure> {
 fn rank_command(
     clock: &EntryClock,
     rank_matches: Option<&clap::ArgMatches>,
+    emission: &mut Option<EmissionRecording>,
 ) -> Result<String, Failure> {
     timely(clock)?;
     let json_output = rank_matches
@@ -4376,9 +4373,13 @@ fn rank_command(
         .and_then(|cx| {
             invocation.block_on_cancellable(
                 &cx,
-                crate::pipeline::execute_pipeline(&invocation, &cx, args, None),
+                crate::pipeline::execute_pipeline_with_recording(&invocation, &cx, args, None),
             )
         });
+    let ledger_recorded = outcome
+        .as_ref()
+        .is_ok_and(|outcome| outcome.ledger_recorded);
+    let outcome = outcome.map(|outcome| outcome.document);
     // Completion must precede the work cutoff, but teardown may use the
     // reserved cleanup window. Do not reclassify timely work as late merely
     // because its successful cleanup entered that window.
@@ -4413,6 +4414,13 @@ fn rank_command(
         }
     }
 
+    *emission = EmissionRecording::prepared(
+        *clock,
+        gate,
+        crate::storage::LedgerLocation::Platform,
+        &output_doc,
+        ledger_recorded,
+    );
     if json_output {
         Ok(format!(
             "{}\n",
@@ -4625,9 +4633,13 @@ fn hook_claude_command(clock: &EntryClock, m: &clap::ArgMatches) -> Result<Strin
         .and_then(|cx| {
             invocation.block_on_cancellable(
                 &cx,
-                crate::pipeline::execute_pipeline(&invocation, &cx, args, None),
+                crate::pipeline::execute_pipeline_with_recording(&invocation, &cx, args, None),
             )
         });
+    let ledger_recorded = outcome
+        .as_ref()
+        .is_ok_and(|outcome| outcome.ledger_recorded);
+    let outcome = outcome.map(|outcome| outcome.document);
     let completed_in_time = timely(clock);
     let output_doc = finish_invocation(invocation, outcome)?;
     completed_in_time?;
@@ -4686,18 +4698,19 @@ fn hook_claude_command(clock: &EntryClock, m: &clap::ArgMatches) -> Result<Strin
                 {
                     Ok(()) => {
                         let total_written = wire.len() + 1;
-                        if let Some(event_id) = output_doc
-                            .as_value()
-                            .get("event_id")
-                            .and_then(|v| v.as_str())
-                        {
-                            let location = if let Some(dir) = m.get_one::<String>("dir") {
-                                crate::storage::LedgerLocation::Directory(PathBuf::from(dir))
-                            } else {
-                                crate::storage::LedgerLocation::Platform
-                            };
-                            let _ =
-                                try_record_cli_emission(clock, location, event_id, total_written);
+                        let location = if let Some(dir) = m.get_one::<String>("dir") {
+                            crate::storage::LedgerLocation::Directory(PathBuf::from(dir))
+                        } else {
+                            crate::storage::LedgerLocation::Platform
+                        };
+                        if let Some(emission) = EmissionRecording::prepared(
+                            *clock,
+                            gate,
+                            location,
+                            &output_doc,
+                            ledger_recorded,
+                        ) {
+                            let _ = try_record_cli_emission(&emission, total_written);
                         }
                     }
                     Err(e) => {
@@ -5557,6 +5570,59 @@ mod invocation_cleanup_tests {
     use super::*;
     use crate::runtime::ProcessInvocation;
     use std::time::Duration;
+
+    #[test]
+    fn serialized_persistence_is_not_delivery_recording_authority() {
+        let document = OutputDocument::from_value(
+            serde_json::from_str(include_str!("../tests/fixtures/output-ranked.v1.json")).unwrap(),
+        )
+        .unwrap();
+        let gate = crate::effects::EffectGate::new(
+            crate::privacy::EffectFlags::default(),
+            crate::effects::Scope::Rank,
+        )
+        .unwrap();
+        let clock = EntryClock::capture()
+            .unwrap()
+            .with_total(DurationMillis::new("test_total", 10_000, 60_000).unwrap())
+            .unwrap();
+        let prepare = |gate, document: &OutputDocument, recorded| {
+            EmissionRecording::prepared(
+                clock,
+                gate,
+                crate::storage::LedgerLocation::Platform,
+                document,
+                recorded,
+            )
+        };
+        // A cache-backed document has no authority to mutate a historical row.
+        assert!(prepare(gate, &document, false).is_none());
+        let emission = prepare(gate, &document, true).unwrap();
+        assert_eq!(emission.clock.deadline().total().as_millis(), 10_000);
+        for flags in [
+            crate::privacy::EffectFlags {
+                no_ledger: true,
+                ..Default::default()
+            },
+            crate::privacy::EffectFlags {
+                no_persist: true,
+                ..Default::default()
+            },
+            crate::privacy::EffectFlags {
+                dry_run: true,
+                ..Default::default()
+            },
+        ] {
+            let restricted =
+                crate::effects::EffectGate::new(flags, crate::effects::Scope::Rank).unwrap();
+            assert!(prepare(restricted, &document, true).is_none());
+        }
+        let preview = OutputDocument::from_value(
+            serde_json::from_str(include_str!("../tests/fixtures/output-preview.v1.json")).unwrap(),
+        )
+        .unwrap();
+        assert!(prepare(gate, &preview, true).is_none());
+    }
 
     #[test]
     fn an_observe_roster_deadline_is_a_timeout_not_an_unusable_roster() {

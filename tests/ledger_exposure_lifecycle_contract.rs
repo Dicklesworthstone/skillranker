@@ -85,6 +85,199 @@ fn make_test_candidate(event_id: &str, skill_id: &str) -> NewRankingCandidate {
     }
 }
 
+/// Exercise publication through the actual CLI, with every platform path isolated.
+struct CliDeliveryFixture {
+    root: PathBuf,
+}
+
+impl CliDeliveryFixture {
+    fn new() -> Self {
+        let root = temp_private_dir("actual-cli-delivery");
+        let workspace = root.join("workspace");
+        let skill = workspace.join(".claude/skills/delivery-review");
+        fs::create_dir_all(&skill).unwrap();
+        fs::create_dir_all(root.join("home")).unwrap();
+        fs::write(skill.join("SKILL.md"), "---\nname: delivery-review\ndescription: Review Rust code\n---\nReview Rust code carefully.\n").unwrap();
+        fs::write(
+            workspace.join("context.json"),
+            serde_json::json!({
+                "schema_version": 1, "harness": "claude_code", "producer_id": "delivery-test",
+                "workspace_root": workspace, "session_id": "delivery-session", "agent_id": null,
+                "branch_id": null, "context_epoch": null,
+                "current_request": {"event_id": "delivery-turn", "text": "Review the code",
+                    "attachments_omitted": false, "essential_attachment_missing": false},
+                "events": [], "explicit_skill_references": [], "supplied_loads": []
+            })
+            .to_string(),
+        )
+        .unwrap();
+        Self { root }
+    }
+
+    fn run(&self, args: &[&str]) -> std::process::Output {
+        std::process::Command::new(env!("CARGO_BIN_EXE_sr"))
+            .env_clear()
+            .env("HOME", self.root.join("home"))
+            .env("XDG_CONFIG_HOME", self.root.join("home/.config"))
+            .env("XDG_DATA_HOME", self.root.join("data"))
+            .env("XDG_CACHE_HOME", self.root.join("cache"))
+            .env("TERM", "dumb")
+            .current_dir(self.root.join("workspace"))
+            .args(args)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .unwrap()
+    }
+
+    fn rank(&self, bare: bool, flags: &[&str]) -> std::process::Output {
+        let mut args = Vec::new();
+        if !bare {
+            args.push("rank");
+        }
+        args.extend([
+            "--context",
+            "context.json",
+            "--require-skill",
+            "delivery-review",
+            "--offline",
+            "--no-cache",
+        ]);
+        args.extend_from_slice(flags);
+        self.run(&args)
+    }
+
+    fn database(&self) -> Connection {
+        Connection::open(self.root.join("data/sr").join(LEDGER_FILE)).unwrap()
+    }
+
+    fn initialize(&self) {
+        let out = self.run(&["ledger", "init", "--json"]);
+        assert_eq!(out.status.code(), Some(0), "{out:?}");
+        let out = self.rank(false, &["--json"]);
+        assert_explicit_delivery(&out);
+        assert_eq!(self.exposure(), "emitted");
+    }
+
+    fn prepare_existing(&self) -> Vec<(String, Vec<Vec<rusqlite::types::Value>>)> {
+        let db = self.database();
+        assert_eq!(
+            db.execute(
+                "UPDATE ranking_events SET exposure_state = 'prepared' WHERE event_id = ?1",
+                ["delivery-turn"],
+            )
+            .unwrap(),
+            1
+        );
+        drop(db);
+        self.contents()
+    }
+
+    fn exposure(&self) -> String {
+        self.database()
+            .query_row(
+                "SELECT exposure_state FROM ranking_events WHERE event_id = ?1",
+                ["delivery-turn"],
+                |row| row.get(0),
+            )
+            .unwrap()
+    }
+
+    fn contents(&self) -> Vec<(String, Vec<Vec<rusqlite::types::Value>>)> {
+        let db = self.database();
+        let tables: Vec<String> = db
+            .prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        tables
+            .into_iter()
+            .map(|table| {
+                let mut statement = db
+                    .prepare(&format!("SELECT * FROM \"{}\"", table.replace('"', "\"\"")))
+                    .unwrap();
+                let columns = statement.column_count();
+                let rows = statement
+                    .query_map([], |row| {
+                        (0..columns)
+                            .map(|column| row.get(column))
+                            .collect::<Result<Vec<rusqlite::types::Value>, _>>()
+                    })
+                    .unwrap()
+                    .map(Result::unwrap)
+                    .collect();
+                (table, rows)
+            })
+            .collect()
+    }
+}
+
+fn assert_explicit_delivery(out: &std::process::Output) -> serde_json::Value {
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(value["decision"], "explicit");
+    assert_eq!(value["event_id"], "delivery-turn");
+    assert_eq!(value["skills"][0]["invocation_name"], "delivery-review");
+    assert_eq!(value["usage"]["http_attempts"], 0);
+    value
+}
+
+#[test]
+fn actual_cli_persistence_opt_outs_and_previews_leave_existing_ledger_unchanged() {
+    let fixture = CliDeliveryFixture::new();
+    fixture.initialize();
+    for bare in [false, true] {
+        for flag in ["--no-ledger", "--no-persist"] {
+            let before = fixture.prepare_existing();
+            let out = fixture.rank(bare, &["--json", flag]);
+            assert_eq!(assert_explicit_delivery(&out)["persistence"], "disabled");
+            assert_eq!(fixture.contents(), before, "bare={bare}, {flag}");
+        }
+        let before = fixture.prepare_existing();
+        let out = fixture.rank(bare, &["--json", "--dry-run"]);
+        assert_eq!(out.status.code(), Some(0), "{out:?}");
+        let preview: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(preview["local_decision"]["decision"], "explicit");
+        assert_eq!(preview["local_decision"]["event_id"], "delivery-turn");
+        assert_eq!(fixture.contents(), before, "bare={bare}, dry-run");
+    }
+}
+
+#[test]
+fn actual_cli_json_and_table_delivery_record_authorized_emission() {
+    let fixture = CliDeliveryFixture::new();
+    fixture.initialize();
+    for bare in [false, true] {
+        for format in ["--json", "--table"] {
+            fixture.prepare_existing();
+            let out = fixture.rank(bare, &[format]);
+            assert_eq!(out.status.code(), Some(0), "{out:?}");
+            if format == "--json" {
+                assert_eq!(assert_explicit_delivery(&out)["persistence"], "recorded");
+            } else {
+                assert!(String::from_utf8_lossy(&out.stdout).contains("delivery-review"));
+            }
+            assert_eq!(fixture.exposure(), "emitted", "bare={bare}, {format}");
+        }
+    }
+}
+
+#[test]
+fn actual_cli_opt_outs_and_previews_never_initialize_missing_state() {
+    let fixture = CliDeliveryFixture::new();
+    for flag in ["--no-ledger", "--no-persist", "--dry-run"] {
+        let out = fixture.rank(false, &["--json", flag]);
+        assert_eq!(out.status.code(), Some(0), "{out:?}");
+        let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        let decision = value.get("local_decision").unwrap_or(&value);
+        assert_eq!(decision["decision"], "explicit");
+        assert_eq!(decision["skills"][0]["invocation_name"], "delivery-review");
+        assert!(!fixture.root.join("data").exists(), "{flag}");
+        assert!(!fixture.root.join("cache").exists(), "{flag}");
+    }
+}
+
 /// 1. Prepare before stdout, and transition to emitted after successful bounded stdout write.
 #[test]
 fn prepare_before_stdout_and_emit_after_successful_write() {

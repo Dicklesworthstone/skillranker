@@ -1169,6 +1169,78 @@ fn initialized_counter_fixture() -> HookFixture {
     fixture
 }
 
+#[test]
+fn advisory_delivery_honors_ledger_opt_outs_without_losing_explicit_advice() {
+    let fixture = HookFixture::new();
+    let dir = fixture.ledger_dir();
+    let out = fixture.run_cli(&["ledger", "init", "--dir", dir.to_str().unwrap(), "--json"]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let config_dir = fixture.home().join(".config/sr");
+    fs::create_dir_all(&config_dir).unwrap();
+    fs::write(
+        config_dir.join("config.toml"),
+        "[hook]\nmode = 'advisory'\n",
+    )
+    .unwrap();
+    let payload = serde_json::to_vec(&json!({
+        "hook_event_name": "UserPromptSubmit",
+        "prompt": "Please use skill test-repair to fix cargo test failures.",
+        "prompt_id": "advisory-delivery-turn",
+        "session_id": fixture.session_id,
+        "transcript_path": fixture.transcript_path(),
+        "cwd": fixture.workspace(),
+    }))
+    .unwrap();
+    // An actual shadow turn prepares the matching historical event without
+    // claiming delivery. A stateless redelivery must not mutate that event.
+    let out = fixture.run_hook(&payload, &["--shadow", "--no-cache"]);
+    assert_eq!(
+        (out.status.code(), out.stdout.len()),
+        (Some(0), 0),
+        "{out:?}"
+    );
+    let db = rusqlite::Connection::open(dir.join(skillranker::storage::LEDGER_FILE)).unwrap();
+    let state = || {
+        db.query_row(
+        "SELECT decision, exposure_state, (SELECT data_generation FROM store_meta WHERE singleton = 1) FROM ranking_events WHERE event_id = ?1",
+        ["advisory-delivery-turn"],
+        |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?)),
+    ).unwrap()
+    };
+    let prepared = state();
+    assert_eq!((&*prepared.0, &*prepared.1), ("explicit", "prepared"));
+    let entries_path = dir.join(skillranker::storage::hook_entries::HOOK_ENTRIES_FILE);
+    let counter_before = fs::read(&entries_path).unwrap();
+    for flag in ["--no-ledger", "--no-persist"] {
+        let out = fixture.run_hook(&payload, &[flag, "--no-cache"]);
+        assert_eq!(out.status.code(), Some(0), "{out:?}");
+        let envelope: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        let advice = envelope["hookSpecificOutput"]["additionalContext"]
+            .as_str()
+            .unwrap();
+        assert!(advice.contains("test-repair"), "{envelope}");
+        assert_eq!(state(), prepared, "{flag}");
+        assert_eq!(fs::read(&entries_path).unwrap(), counter_before, "{flag}");
+    }
+    // The authorized positive counterpart still publishes and records delivery.
+    let out = fixture.run_hook(&payload, &["--no-cache"]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let envelope: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(
+        envelope["hookSpecificOutput"]["additionalContext"]
+            .as_str()
+            .unwrap()
+            .contains("test-repair")
+    );
+    let delivered = state();
+    assert_eq!((&*delivered.0, &*delivered.1), ("explicit", "emitted"));
+    assert_eq!(delivered.2, prepared.2 + 1);
+    assert_eq!(
+        fs::read(&entries_path).unwrap().len(),
+        counter_before.len() + 54
+    );
+}
+
 fn hook_counter_bytes(fixture: &HookFixture) -> Vec<u8> {
     fs::read(
         fixture

@@ -413,6 +413,25 @@ pub async fn execute_pipeline(
     args: RankArgs,
     transport: Option<&dyn JevTransport>,
 ) -> Result<OutputDocument, PipelineFailure> {
+    execute_pipeline_with_recording(invocation, cx, args, transport)
+        .await
+        .map(|outcome| outcome.document)
+}
+
+/// Local completion facts for the CLI's post-output delivery write. These are
+/// deliberately separate from the serializable document: `persistence` can
+/// describe a working response cache even when the ledger write failed.
+pub(crate) struct PipelineOutcome {
+    pub(crate) document: OutputDocument,
+    pub(crate) ledger_recorded: bool,
+}
+
+pub(crate) async fn execute_pipeline_with_recording(
+    invocation: &ProcessInvocation,
+    cx: &Cx,
+    args: RankArgs,
+    transport: Option<&dyn JevTransport>,
+) -> Result<PipelineOutcome, PipelineFailure> {
     execute_pipeline_supplied(invocation, cx, args, transport, None, None, None).await
 }
 
@@ -439,6 +458,7 @@ pub async fn execute_pipeline_with_context(
         expected_wide_digest,
     )
     .await
+    .map(|outcome| outcome.document)
 }
 
 /// How many lexical hits an evaluation keeps for the Quill-only baseline.
@@ -551,7 +571,7 @@ async fn execute_pipeline_supplied(
     supplied_context: Option<Vec<u8>>,
     evidence: Option<&mut StageEvidence>,
     expected_wide_digest: Option<WidePreview>,
-) -> Result<OutputDocument, PipelineFailure> {
+) -> Result<PipelineOutcome, PipelineFailure> {
     let clock = &invocation.clock();
     // Every effect restriction comes from the gate; `args.dry_run` can only add
     // the dry-run restriction, never remove one.
@@ -818,7 +838,7 @@ async fn execute_pipeline_supplied(
         Ok(doc)
     });
     finalize_failed_recording(invocation, &mut progress, result.as_ref().err());
-    match result {
+    let result = match result {
         Err(failure) => match &progress.admitted {
             Some(admitted) => {
                 let evaluated = Evaluated {
@@ -841,7 +861,11 @@ async fn execute_pipeline_supplied(
             None => Err(failure),
         },
         result => result,
-    }
+    };
+    result.map(|document| PipelineOutcome {
+        document,
+        ledger_recorded: progress.evaluated.ledger_recorded,
+    })
 }
 
 fn with_storage_warnings(
