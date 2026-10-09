@@ -1154,13 +1154,14 @@ fn finish_invocation<T>(
 fn finish_rank_invocation(
     invocation: crate::runtime::ProcessInvocation,
     outcome: Result<OutputDocument, Failure>,
+    ledger_recorded: bool,
 ) -> Result<OutputDocument, Failure> {
     let clock = invocation.clock();
     match (outcome, finish_invocation(invocation, Ok(()))) {
         (outcome, Ok(())) => outcome,
         (Err(_), Err(failure)) => Err(failure),
         (Ok(document), Err(failure)) => {
-            rank_failure_receipt(document, failure, clock.now().as_millis())
+            rank_failure_receipt(document, failure, clock.now().as_millis(), ledger_recorded)
         }
     }
 }
@@ -1169,6 +1170,7 @@ fn rank_failure_receipt(
     mut document: OutputDocument,
     failure: Failure,
     elapsed_ms: u64,
+    ledger_recorded: bool,
 ) -> Result<OutputDocument, Failure> {
     match document.kind() {
         crate::output::OutputKind::Decision(crate::output::Decision::Unavailable) => {
@@ -1196,6 +1198,37 @@ fn rank_failure_receipt(
             )
             .as_value()["error"]
                 .clone();
+            if ledger_recorded {
+                // This timeout happened after the pipeline's optional write.
+                // Prepared rows are protected against duplicate deliveries;
+                // neither a late overwrite nor `persistence` (also cache-backed)
+                // can establish that the durable outcome matches this receipt.
+                value["error"]["message"] = serde_json::json!(format!(
+                    "{}. The prepared ledger outcome could not be reconciled.",
+                    failure.2
+                ));
+                let Some(warnings) = value["warnings"].as_array_mut() else {
+                    return Err(failure);
+                };
+                if !warnings
+                    .iter()
+                    .any(|warning| warning["kind"] == "ledger-finalization-unconfirmed")
+                {
+                    if warnings.len() < crate::output::MAX_WARNING_DETAILS {
+                        warnings.push(serde_json::json!({
+                            "kind": "ledger-finalization-unconfirmed", "count": 1,
+                            "message": "Final timeout could not be reconciled with the prepared ledger outcome"
+                        }));
+                    } else {
+                        value["warnings_omitted"] = serde_json::json!(
+                            value["warnings_omitted"]
+                                .as_u64()
+                                .unwrap_or(0)
+                                .saturating_add(1)
+                        );
+                    }
+                }
+            }
             document = OutputDocument::from_value(value).map_err(|_| failure)?;
         }
         _ => return Err(failure),
@@ -4394,10 +4427,15 @@ fn rank_command(
         |outcome| rank_work_completed(clock, outcome.completed_at),
     );
     let outcome = outcome.map(|outcome| outcome.document);
-    let output_doc = finish_rank_invocation(invocation, outcome)?;
+    let output_doc = finish_rank_invocation(invocation, outcome, ledger_recorded)?;
     let output_doc = match validate_rank_completion(completed_in_time, &output_doc) {
         Ok(()) => output_doc,
-        Err(failure) => rank_failure_receipt(output_doc, failure, clock.now().as_millis())?,
+        Err(failure) => rank_failure_receipt(
+            output_doc,
+            failure,
+            clock.now().as_millis(),
+            ledger_recorded,
+        )?,
     };
 
     // An unavailable decision, or a dry-run preview of one, exits with its
@@ -5743,7 +5781,7 @@ mod invocation_cleanup_tests {
             }
             let original = value.clone();
             let document = OutputDocument::from_value(value).unwrap();
-            let result = finish_rank_invocation(expired_invocation(), Ok(document)).unwrap();
+            let result = finish_rank_invocation(expired_invocation(), Ok(document), false).unwrap();
             let result = result.as_value();
             assert_eq!(result["decision"], "unavailable");
             assert_eq!(result["error"]["kind"], "timeout");
@@ -5770,10 +5808,11 @@ mod invocation_cleanup_tests {
             serde_json::from_str(include_str!("../tests/fixtures/output-ranked.v1.json")).unwrap(),
         )
         .unwrap();
-        let mut unavailable = finish_rank_invocation(expired_invocation(), Ok(ranked)).unwrap();
+        let mut unavailable =
+            finish_rank_invocation(expired_invocation(), Ok(ranked), false).unwrap();
         unavailable.record_elapsed(0);
         let original = unavailable.as_value().clone();
-        let result = finish_rank_invocation(expired_invocation(), Ok(unavailable)).unwrap();
+        let result = finish_rank_invocation(expired_invocation(), Ok(unavailable), true).unwrap();
         for (field, value) in original.as_object().unwrap() {
             if field != "elapsed_ms" {
                 assert_eq!(&result.as_value()[field], value, "{field}");
@@ -5783,12 +5822,100 @@ mod invocation_cleanup_tests {
     }
 
     #[test]
+    fn final_timeout_warns_only_when_a_ledger_outcome_was_recorded() {
+        for (ledger_recorded, persistence) in
+            [(true, "recorded"), (false, "recorded"), (false, "disabled")]
+        {
+            let mut value: serde_json::Value =
+                serde_json::from_str(include_str!("../tests/fixtures/output-ranked.v1.json"))
+                    .unwrap();
+            value["persistence"] = serde_json::json!(persistence);
+            let usage = value["usage"].clone();
+            let document = OutputDocument::from_value(value).unwrap();
+            let result = rank_failure_receipt(
+                document,
+                (
+                    6,
+                    "timeout",
+                    "Local completion exceeded its deadline".into(),
+                ),
+                3_001,
+                ledger_recorded,
+            )
+            .unwrap();
+            let value = result.as_value();
+            assert_eq!(value["decision"], "unavailable");
+            assert_eq!(value["skills"], serde_json::json!([]));
+            assert_eq!(value["usage"], usage);
+            assert_eq!(value["persistence"], persistence);
+            assert_eq!(
+                value["warnings"].as_array().unwrap().len(),
+                usize::from(ledger_recorded)
+            );
+            assert_eq!(
+                value["error"]["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("prepared ledger outcome"),
+                ledger_recorded,
+                "human errors must disclose only a confirmed ledger mismatch"
+            );
+        }
+    }
+
+    #[test]
+    fn final_timeout_deduplicates_and_bounds_the_ledger_warning() {
+        for already_warned in [false, true] {
+            let mut value: serde_json::Value =
+                serde_json::from_str(include_str!("../tests/fixtures/output-ranked.v1.json"))
+                    .unwrap();
+            value["warnings"] = serde_json::json!(
+                (0..crate::output::MAX_WARNING_DETAILS)
+                    .map(|index| serde_json::json!({
+                        "kind": if already_warned && index == 0 {
+                            "ledger-finalization-unconfirmed".to_owned()
+                        } else { format!("existing-{index}") },
+                        "count": 7, "message": "Existing diagnostic"
+                    }))
+                    .collect::<Vec<_>>()
+            );
+            value["warnings_omitted"] = serde_json::json!(5);
+            let result = rank_failure_receipt(
+                OutputDocument::from_value(value).unwrap(),
+                (6, "timeout", "Cleanup exceeded its deadline".into()),
+                3_001,
+                true,
+            )
+            .unwrap();
+            assert_eq!(
+                result.as_value()["warnings"].as_array().unwrap().len(),
+                crate::output::MAX_WARNING_DETAILS
+            );
+            assert_eq!(
+                result.as_value()["warnings_omitted"],
+                if already_warned { 5 } else { 6 }
+            );
+            assert_eq!(result.as_value()["warnings"][0]["count"], 7);
+            // A second failure boundary preserves the first unavailable receipt.
+            let before = result.as_value().clone();
+            let repeated = rank_failure_receipt(
+                result,
+                (6, "timeout", "Another cleanup failure".into()),
+                3_001,
+                true,
+            )
+            .unwrap();
+            assert_eq!(repeated.as_value(), &before);
+        }
+    }
+
+    #[test]
     fn late_rank_cleanup_cannot_publish_a_successful_artifact() {
         let document = OutputDocument::from_value(
             serde_json::from_str(include_str!("../tests/fixtures/output-preview.v1.json")).unwrap(),
         )
         .unwrap();
-        let result = finish_rank_invocation(expired_invocation(), Ok(document));
+        let result = finish_rank_invocation(expired_invocation(), Ok(document), false);
         assert!(matches!(result, Err((6, "timeout", _))), "{result:?}");
     }
 
@@ -5800,12 +5927,16 @@ mod invocation_cleanup_tests {
         .unwrap();
         let original = document.as_value().clone();
         let result =
-            finish_rank_invocation(ProcessInvocation::enter().unwrap(), Ok(document)).unwrap();
+            finish_rank_invocation(ProcessInvocation::enter().unwrap(), Ok(document), false)
+                .unwrap();
         assert_eq!(result.as_value(), &original);
     }
 
-    #[test]
-    fn timely_pipeline_advice_survives_a_delayed_cli_continuation() {
+    fn prepared_explicit_pipeline() -> (
+        ProcessInvocation,
+        crate::pipeline::PipelineOutcome,
+        rusqlite::Connection,
+    ) {
         use std::sync::atomic::{AtomicU64, Ordering};
         static NEXT: AtomicU64 = AtomicU64::new(0);
         // RCH's TMPDIR can have writable ancestors. Use the same trusted
@@ -5913,6 +6044,13 @@ mod invocation_cleanup_tests {
             )
             .unwrap();
         assert_eq!(prepared, ("explicit".into(), "prepared".into()));
+        (invocation, outcome, connection)
+    }
+
+    #[test]
+    fn timely_pipeline_advice_survives_a_delayed_cli_continuation() {
+        let (invocation, outcome, _) = prepared_explicit_pipeline();
+        let clock = invocation.clock();
         // Delay only the caller: all pipeline work and persistence are complete.
         std::thread::sleep(Duration::from_millis(
             clock
@@ -5927,7 +6065,9 @@ mod invocation_cleanup_tests {
             "the continuation is in cleanup reserve"
         );
         let completion = rank_work_completed(&clock, outcome.completed_at);
-        let document = finish_rank_invocation(invocation, Ok(outcome.document)).unwrap();
+        let document =
+            finish_rank_invocation(invocation, Ok(outcome.document), outcome.ledger_recorded)
+                .unwrap();
         validate_rank_completion(completion, &document).unwrap();
         assert_eq!(document.as_value()["decision"], "explicit");
         assert_eq!(
@@ -5935,10 +6075,67 @@ mod invocation_cleanup_tests {
             "rust_testing"
         );
         assert_eq!(document.as_value()["usage"]["http_attempts"], 0);
+        assert!(
+            !document.as_value()["warnings"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|warning| warning["kind"] == "ledger-finalization-unconfirmed")
+        );
+    }
+
+    #[test]
+    fn expired_cli_completion_exposes_the_unreconciled_prepared_ledger_outcome() {
+        let (invocation, outcome, connection) = prepared_explicit_pipeline();
+        let clock = invocation.clock();
+        let usage = outcome.document.as_value()["usage"].clone();
+        std::thread::sleep(Duration::from_millis(
+            clock
+                .deadline()
+                .expires_at()
+                .as_millis()
+                .saturating_sub(clock.now().as_millis())
+                + 1,
+        ));
+        let document =
+            finish_rank_invocation(invocation, Ok(outcome.document), outcome.ledger_recorded)
+                .unwrap();
+        let value = document.as_value();
+        assert_eq!(value["decision"], "unavailable");
+        assert_eq!(value["error"]["kind"], "timeout");
+        assert_eq!(value["skills"], serde_json::json!([]));
+        assert_eq!(value["usage"], usage);
+        assert_eq!(
+            value["warnings"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|warning| warning["kind"] == "ledger-finalization-unconfirmed")
+                .count(),
+            1,
+            "a final timeout is not the already prepared durable outcome: {value}"
+        );
+        let prepared: (String, String) = connection
+            .query_row(
+                "SELECT decision, exposure_state FROM ranking_events",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(prepared, ("explicit".into(), "prepared".into()));
     }
 
     #[test]
     fn a_late_work_cutoff_keeps_usage_when_cleanup_is_timely() {
+        assert_late_work_cutoff(false);
+    }
+
+    #[test]
+    fn a_late_work_cutoff_discloses_an_unreconciled_ledger_outcome() {
+        assert_late_work_cutoff(true);
+    }
+
+    fn assert_late_work_cutoff(ledger_recorded: bool) {
         let clock = EntryClock::capture_with(
             DurationMillis::new("test_total", 1_000, 3_000).unwrap(),
             DurationMillis::new("test_cleanup", 900, 3_000).unwrap(),
@@ -5953,16 +6150,22 @@ mod invocation_cleanup_tests {
         let document = OutputDocument::from_value(value).unwrap();
         std::thread::sleep(Duration::from_millis(150));
         let completed_in_time = rank_work_completed(&clock, clock.now());
-        let document = finish_rank_invocation(invocation, Ok(document)).unwrap();
+        let document = finish_rank_invocation(invocation, Ok(document), ledger_recorded).unwrap();
         // The result was still actionable after timely cleanup; only the work
         // cutoff withholds it here, matching rank_command's publication path.
         assert_eq!(document.as_value()["decision"], "ranked");
         let failure = validate_rank_completion(completed_in_time, &document).unwrap_err();
-        let result = rank_failure_receipt(document, failure, clock.now().as_millis()).unwrap();
+        let result =
+            rank_failure_receipt(document, failure, clock.now().as_millis(), ledger_recorded)
+                .unwrap();
         assert_eq!(result.as_value()["decision"], "unavailable");
         assert_eq!(result.as_value()["error"]["kind"], "timeout");
         assert_eq!(result.as_value()["skills"], serde_json::json!([]));
         assert_eq!(result.as_value()["usage"], usage);
+        assert_eq!(
+            result.as_value()["warnings"].as_array().unwrap().len(),
+            usize::from(ledger_recorded)
+        );
     }
 }
 

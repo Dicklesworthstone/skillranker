@@ -120,6 +120,15 @@ not use one also carries the `cache-unavailable` warning, because an uncached
 run that says nothing is indistinguishable from a cached one and silently pays
 for every response twice. The warning names no path, mode or errno.
 
+If final CLI completion suppresses a prepared success as a timeout, a confirmed
+pipeline ledger write does not establish that the stored outcome matches the
+returned timeout. The error message discloses the mismatch and JSON carries
+`ledger-finalization-unconfirmed` (or increments `warnings_omitted` at the warning
+limit). This uses the pipeline's ledger-write result, rather than the coarse
+`persistence` field, which can also describe a working cache. It preserves usage
+and the prepared row; it does not attempt an unsafe late overwrite of a duplicate
+delivery. An already unavailable outcome retains its original failure receipt.
+
 ## Failure envelopes
 
 A failure before input admission may contain just version, unavailable decision,

@@ -12,6 +12,9 @@
 
 ### Fixed
 
+- A final CLI timeout now discloses when its returned outcome could not be
+  reconciled with a prepared ledger success. The diagnostic preserves usage
+  and bounded warnings without overwriting another delivery's durable record.
 - Product e2e reports reconcile summary counts with individual test results
   and require each target to run tests. Missing result lines, empty targets
   and ambiguous test names can no longer produce a passing complete-suite report.
