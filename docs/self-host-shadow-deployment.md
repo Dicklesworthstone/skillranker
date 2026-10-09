@@ -1056,3 +1056,84 @@ the confirmation to look for.
   or consent setting was weakened. Verification remains author-only. Raw
   artifacts and deployment receipt:
   `/scratch/tmp/skillranker-gap-execution-ghhj0f_f/native`.
+
+## Redeployment — 2026-10-09 (BeigeCompass, first native prompts)
+
+- Installed source `b5445ca896aa2f7f73c7a00357fd323a75a08674` at
+  `2026-10-09 07:14:16 UTC`. Claude 2.1.295 submitted its first prompt before
+  creating a fresh workspace's transcript directory. The prior executable
+  rejected that prompt before ranking. The overlay now accepts descriptor-verified
+  absence of the implicit parent and retains the submitted prompt and identity.
+  Unavailable configured roots, broken links, traversal, non-directory parents
+  and malformed existing files remain failures. The broader absence-check anchor
+  cannot supply transcript content, and the overlay creates no native files.
+  This release also activates the earlier `bfcfe4d` final-timeout ledger warning.
+- Executable SHA256:
+  `dcfe6a544cfa0336012e2022f039c445a9f242181e24d694934a3c3c7ef4a966`,
+  25,174,576 bytes, mode `0755`. The preceding `a5a27c2` executable remains at
+  `~/.local/state/sr/deployments/20261009T071416Z-a5a27c2/sr`, SHA256
+  `9df692b0c5c024359532e66e71e9a845eadbce6f7c8d398af41ac0cf46be0a1c`.
+  Cooperating lock, identity rechecks, backup, atomic replacement and file/directory
+  fsync passed. These do not provide CAS against noncooperating editors.
+- DSR run `ddc3652e-bdbc-474c-bb7b-9e78031af9f2` passed in 1,678.016 seconds
+  through mandatory RCH on `vmi1264463`, locked native Linux x86-64 release,
+  default features and one job. All 285 compiler/test inputs match the frozen
+  local and worker manifest. Preserved untracked peer paths are outside that
+  identity. ELF64 x86-64, artifact bytes and source-linked manifest checks passed.
+  Archive SHA256
+  `925dddb9b045bc681081de0c3d807b80f9444cc3dbb69e56d460f5f59d5c2313`
+  contains exactly the identical executable and verbatim `LICENSE`. No tag,
+  public release, other platform or provider qualification was created.
+- Original-source missing-directory regression: two passes and one failure.
+  Repaired focused context/authorized-read/hook controls: 40 passes. Locked
+  all-target check and strict all-target Clippy passed, as did formatting,
+  whitespace and 61 Python runner controls. Final default full suite on RCH
+  `hz4` passed in 1,512.249 seconds: 1,610 distinct unfiltered passes plus one
+  nested positive control, zero failures, eleven unchanged opt-in ignores and
+  zero fixture tracebacks. The existing parser reconciled every result with
+  149 unfiltered target summaries. Source hashes stayed unchanged; clean-overlay
+  fingerprint `705e038cf1f9ed0a6ce8efa1c4309205036e95f2e6940ec697415fc97b396447`
+  and tree `7cb289191cd15f35ef3c1fbc8bf15c1ebbbb382f` bind this qualification.
+  Compilation and temporary test staging used private owner-only memory storage
+  to avoid that worker's severe disk waits; this is not production-disk proof.
+- Three earlier unchanged full runs on `vmi1264463` failed timing assertions:
+  paid-rerank cleanup had no reserve left; a second run admitted only one
+  attempt; a later transport refusal took 542 ms against its 500 ms assertion.
+  Unchanged isolation and two mixed retry runs passed. CPU pressure was elevated
+  near the later failure, but correlation does not establish its cause. All
+  failures remain retained. No assertion, invocation deadline, reserve or default
+  test-concurrency setting was changed. The final pass does not resolve the
+  original `sr-9fzp` intermittent stalled-leaf/in-flight investigation.
+- Actual Claude 2.1.295 three-turn probes used fresh private workspaces and
+  ledgers, synthetic requests and offline `sr`. The old executable failed three
+  of 49 predeclared checks. Candidate and installed paths each passed all 49,
+  including an observed absent transcript parent, preserved native prompt IDs,
+  silent shadow delivery, an accepted explicit envelope, and nonblocking invalid
+  flags/unsupported events. Identical explicit text retained distinct prompt IDs.
+  Tools were disabled: this establishes hook acceptance, not skill loading,
+  visibility, nine-dimension native advisory qualification or relevance quality.
+  Each probe recorded zero Jev attempts. Claude's own synthetic Haiku calls were
+  separately bounded to three turns per executable and $0.10 per turn.
+- Candidate and installed paths each passed 28 CLI/hook records, eight installer
+  controls and 26 delivery/persistence records with real SQLite. The actual
+  credential wrapper passed 29 controls. Both comparisons preserved the earlier
+  delivery repairs; no old defect was expected or fabricated. Four configuration
+  identities, live install/uninstall previews and operational metrics remained
+  unchanged after activation: 170 evaluations, zero emitted suggestions or
+  independent judgments, 234 attempts, fourteen unknown-usage attempts and
+  2,394,033 known tokens. Query-clock and displayed budget-window relationships
+  were validated before comparison. The allowance remains disabled. Credentials
+  were not edited; owner-only permissions were checked.
+- Retained preparation failures include an RCH source-drift refusal after my
+  formatting, CASS's exhausted search fuel, and a private telemetry SSH timeout
+  that interrupted the first alternate-worker build before tests. Official
+  same-wrapper recovery finalized that job as exit 137; it received no test
+  credit. Missing and then incorrect wrapper-test arguments also failed before
+  the correct wrapper invocation passed; expectations were unchanged. UBS
+  staged/diff findings remain 13 critical, 512 warnings and 133 informational;
+  critical findings match unchanged test-panic/dummy-secret heuristics, with new
+  setup warnings reviewed without suppression. Verification is author-only.
+  The original `sr-1uf4` representative 500-turn cohort, independent corpus/paired
+  outcome gates and native promotion gates remain open. Synthetic probes receive
+  no organic cohort credit. Raw evidence, failing logs, audit and deployment
+  receipt: `/scratch/tmp/skillranker-claude-native-3_xe6z4x`.
