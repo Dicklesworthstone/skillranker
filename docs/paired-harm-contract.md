@@ -168,12 +168,22 @@ exists so that a slow, selective trickle of labels cannot decide the result.
 
 Freeze also derives `inference_digest` over the purpose, ratification, declared
 population, inference declaration and entire `planned` endpoint policy. Validation rejects changes
-without a matching freeze. These plain digests detect inconsistency; they do
+without a matching freeze. It derives `participants_digest` over the agent
+identity, selector identity and complete adjudicator registry, and checks this
+binding before processing runs or judgments. Adding, removing or replacing a
+reviewer, or changing either producer identity, invalidates that binding.
+Drafts cannot supply either derived digest.
+
+These plain digests detect inconsistency; they do
 not authenticate authorship or prove temporal provenance against a rewritten
 artifact. Maintainer review must establish those facts and the model's validity.
 Existing v1 artifacts without an inference declaration/digest remain readable
 for counts, with no confidence bound; appending a model to a legacy freeze is
-rejected. A changed design requires a new prospective cohort.
+rejected. Artifacts without `participants_digest` also retain their descriptive
+counts, even if they declared an inference model, but their bound is
+`not established`: they did not bind the participant roles and reviewer registry.
+Adding a checksum later does not establish prospective provenance. A changed
+design or participant registry requires a new prospective cohort.
 
 The numeric report marks a computed bound `conditional_on_declared_model` and
 `model_independently_verified: false`. `promotion_claim_supported` records that

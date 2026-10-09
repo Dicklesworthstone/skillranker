@@ -68,6 +68,15 @@ def inference_digest(manifest: dict[str, Any]) -> str:
     })
 
 
+def participants_digest(manifest: dict[str, Any]) -> str:
+    """Bind the independent roles and reviewer registry supplied at freeze."""
+    return canonical_digest({
+        "agent_identity": manifest["agent_identity"],
+        "selector_identity": manifest["selector_identity"],
+        "adjudicators": manifest["adjudicators"],
+    })
+
+
 def fail(message: str) -> None:
     raise SystemExit(f"harm cohort validation failed: {message}")
 
@@ -185,7 +194,8 @@ def check_common(manifest: Any) -> dict[str, Any]:
 def freeze(draft_path: Path, out_path: Path, seed_hex: str | None) -> None:
     draft = check_common(load_json(draft_path, MAX_MANIFEST_BYTES, "draft"))
     units = check_units_shape(draft.get("units"))
-    for field in ("randomization", "units_digest", "settings_digest", "inference_digest", "frozen_at_unix_ms"):
+    for field in ("randomization", "units_digest", "settings_digest", "inference_digest",
+                  "participants_digest", "frozen_at_unix_ms"):
         require(field not in draft, f"a draft must not carry {field}; freeze derives it")
     if seed_hex is None:
         seed = os.urandom(32)
@@ -205,6 +215,7 @@ def freeze(draft_path: Path, out_path: Path, seed_hex: str | None) -> None:
     frozen["units_digest"] = canonical_digest(frozen_units)
     frozen["settings_digest"] = canonical_digest(draft["settings"])
     frozen["inference_digest"] = inference_digest(draft)
+    frozen["participants_digest"] = participants_digest(draft)
     frozen["frozen_at_unix_ms"] = int(time.time() * 1000)
     require(
         frozen["frozen_at_unix_ms"] < draft["planned"]["label_deadline_unix_ms"],
@@ -254,6 +265,9 @@ def check_frozen(manifest: dict[str, Any]) -> tuple[bytes, dict[str, dict[str, A
     units = check_units_shape(manifest.get("units"))
     require(manifest.get("units_digest") == canonical_digest(units), "units_digest does not match the units")
     require(manifest.get("settings_digest") == canonical_digest(manifest["settings"]), "settings_digest does not match the settings")
+    if "participants_digest" in manifest:
+        require(manifest["participants_digest"] == participants_digest(manifest),
+                "participants_digest does not match the frozen roles and adjudicator registry")
     frozen_at = require_int(manifest.get("frozen_at_unix_ms"), "frozen_at_unix_ms", 1)
     require(frozen_at < manifest["planned"]["label_deadline_unix_ms"], "the label deadline must be after the freeze")
     by_id: dict[str, dict[str, Any]] = {}
@@ -426,7 +440,9 @@ def validate(manifest_path: Path, runs_path: Path, judgments_path: Path) -> dict
     }
     reason = None
     inference = manifest.get("inference")
-    if inference is None:
+    if "participants_digest" not in manifest:
+        reason = "participants and adjudicator registry were not bound at freeze"
+    elif inference is None:
         reason = "no endpoint model and sampling design were declared at freeze"
     elif inference["method"] != "clopper_pearson_one_sided" or inference["endpoint_model"] != "iid_bernoulli":
         reason = "the declared design does not support an iid binomial bound"

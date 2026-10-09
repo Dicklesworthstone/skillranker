@@ -12,6 +12,9 @@
 
 ### Fixed
 
+- Paired-cohort freezes now bind the agent, selector and adjudicator registry.
+  Changed participants fail validation; older unbound artifacts retain observed
+  counts without a confidence-bound claim.
 - A final CLI timeout now discloses when its returned outcome could not be
   reconciled with a prepared ledger success. The diagnostic preserves usage
   and bounded warnings without overwriting another delivery's durable record.

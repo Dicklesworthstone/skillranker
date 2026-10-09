@@ -246,6 +246,43 @@ class HarmCohortTests(unittest.TestCase):
         self.assertEqual(honest.freeze_result.returncode, 0, honest.freeze_result.stderr)
         self.assertEqual(len(honest.manifest["inference_digest"]), 64)
 
+    def test_changed_participants_or_adjudicator_registry_breaks_freeze(self):
+        for mutate in (
+            lambda m: m.update(agent_identity="different-agent"),
+            lambda m: m.update(selector_identity="different-selector"),
+            lambda m: m["adjudicators"].append({"id": "late-reviewer"}),
+            lambda m: m["adjudicators"].pop(),
+            lambda m: m["adjudicators"][0].update(id="replacement-reviewer"),
+        ):
+            with self.subTest(mutate=mutate):
+                cohort = Cohort(self, draft(1, sampling="random_families", inference=INFERENCE))
+                cohort.complete({"u0": ("not_harmful", "not_harmful")})
+                cohort.tamper(mutate)
+                cohort.rejects("participants_digest")
+        honest = Cohort(self, draft(1, sampling="random_families", inference=INFERENCE))
+        honest.complete({"u0": ("not_harmful", "not_harmful")})
+        self.assertEqual(honest.report()["clear_units"], 1)
+        self.assertAlmostEqual(honest.report()["upper_bound"]["value"], 0.95, places=9)
+
+    def test_legacy_unbound_participants_retain_counts_without_a_bound(self):
+        cohort = Cohort(self, draft(1, sampling="random_families", inference=INFERENCE))
+        cohort.complete({"u0": ("harmful", "not_harmful")})
+        cohort.tamper(lambda m: m.pop("participants_digest", None))
+        report = cohort.report()
+        self.assertEqual(report["new_harm_units"], 1)
+        self.assertEqual(report["endpoint_new_harm_or_unresolved"], 1)
+        self.assertEqual(report["upper_bound"].get("status"), "not established")
+        self.assertIn("participants", report["upper_bound"]["reason"])
+        self.assertNotIn("value", report["upper_bound"])
+
+    def test_freeze_derives_participants_digest_and_refuses_a_supplied_one(self):
+        supplied = Cohort(self, draft(1, participants_digest="0" * 64))
+        self.assertNotEqual(supplied.freeze_result.returncode, 0)
+        self.assertIn("freeze derives", supplied.freeze_result.stderr)
+        honest = Cohort(self, draft(1))
+        self.assertEqual(honest.freeze_result.returncode, 0, honest.freeze_result.stderr)
+        self.assertEqual(len(honest.manifest["participants_digest"]), 64)
+
     def test_missing_late_and_unjudgeable_runs_are_unresolved_not_clear(self):
         cohort = Cohort(self, draft(3))
         # u0: baseline never ran.
