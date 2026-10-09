@@ -836,8 +836,10 @@ pub fn parse_live_cases_streaming<R: BufRead>(
         EVALUATION_DATASET_BYTES.max(),
     )? > 0
     {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
+        if line
+            .bytes()
+            .all(|byte| matches!(byte, b' ' | b'\t' | b'\r' | b'\n'))
+        {
             line.clear();
             continue;
         }
@@ -847,7 +849,7 @@ pub fn parse_live_cases_streaming<R: BufRead>(
                 max: EVALUATION_CASE_RECORDS.max(),
             });
         }
-        let value = parse_bounded_json(trimmed.as_bytes(), EVALUATION_DATASET_DEPTH.max())?;
+        let value = parse_bounded_json(line.as_bytes(), EVALUATION_DATASET_DEPTH.max())?;
         let case: LiveEvaluationCase = serde_json::from_value(value)
             .map_err(|e| EvaluationError::InvalidField(format!("malformed live case: {e}")))?;
         if case.schema_version != SCHEMA_VERSION {

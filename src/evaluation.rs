@@ -33,6 +33,7 @@ pub use stratified::{
 
 use crate::limits::{EVALUATION_CASE_RECORDS, EVALUATION_DATASET_BYTES, EVALUATION_DATASET_DEPTH};
 use crate::output::{ErrorKind, SCHEMA_VERSION};
+use serde::de::DeserializeSeed;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
@@ -378,104 +379,26 @@ pub fn parse_bounded_json(bytes: &[u8], max_depth: usize) -> Result<Value, Evalu
         }
     }
 
-    let text = std::str::from_utf8(bytes)
-        .map_err(|e| EvaluationError::InvalidJson(format!("invalid UTF-8: {e}")))?;
-    let value: Value =
-        serde_json::from_str(text).map_err(|e| EvaluationError::InvalidJson(e.to_string()))?;
-    check_no_duplicate_keys(text)?;
-    Ok(value)
-}
-
-fn check_no_duplicate_keys(json_str: &str) -> Result<(), EvaluationError> {
-    let mut parser = json_strip_parser::JsonKeyTracker::new();
-    parser.scan(json_str)
-}
-
-mod json_strip_parser {
-    use super::EvaluationError;
-    use std::collections::BTreeSet;
-
-    pub struct JsonKeyTracker {
-        stack: Vec<BTreeSet<String>>,
-    }
-
-    impl JsonKeyTracker {
-        pub fn new() -> Self {
-            Self { stack: Vec::new() }
-        }
-
-        pub fn scan(&mut self, json_str: &str) -> Result<(), EvaluationError> {
-            let mut in_string = false;
-            let mut escape = false;
-            let mut collecting_key = false;
-            let mut current_key = String::new();
-            let mut expect_colon = false;
-
-            let chars: Vec<char> = json_str.chars().collect();
-            let mut i = 0;
-            while i < chars.len() {
-                let c = chars[i];
-                if escape {
-                    if collecting_key {
-                        current_key.push(c);
-                    }
-                    escape = false;
-                    i += 1;
-                    continue;
-                }
-                if c == '\\' && in_string {
-                    escape = true;
-                    i += 1;
-                    continue;
-                }
-                if c == '"' {
-                    in_string = !in_string;
-                    if in_string {
-                        if !expect_colon && self.stack.last().is_some() {
-                            collecting_key = true;
-                            current_key.clear();
-                        }
-                    } else if collecting_key {
-                        collecting_key = false;
-                        expect_colon = true;
-                    }
-                    i += 1;
-                    continue;
-                }
-                if in_string {
-                    if collecting_key {
-                        current_key.push(c);
-                    }
-                    i += 1;
-                    continue;
-                }
-                match c {
-                    '{' => {
-                        self.stack.push(BTreeSet::new());
-                        expect_colon = false;
-                    }
-                    '}' => {
-                        self.stack.pop();
-                        expect_colon = false;
-                    }
-                    ':' if expect_colon => {
-                        if let Some(set) = self.stack.last_mut()
-                            && !set.insert(current_key.clone())
-                        {
-                            return Err(EvaluationError::DuplicateKey(current_key));
-                        }
-                        expect_colon = false;
-                    }
-                    ',' => {
-                        expect_colon = false;
-                    }
-                    _ => {}
-                }
-                i += 1;
+    // Decode keys before comparing them, including escaped spellings and
+    // additive metadata. The shared decoder rejects collisions before Value
+    // could discard a definition and preserves the standard numeric profile.
+    let mut deserializer = serde_json::Deserializer::from_slice(bytes);
+    let value = crate::output::JsonSeed(0)
+        .deserialize(&mut deserializer)
+        .map_err(|error| {
+            let message = error.to_string();
+            if message.contains("duplicate JSON key") {
+                EvaluationError::DuplicateKey("evaluation definition".into())
+            } else if message.contains("JSON depth limit") {
+                EvaluationError::ExcessiveDepth
+            } else {
+                EvaluationError::InvalidJson("syntax or value".into())
             }
-            Ok(())
-        }
-    }
+        })?;
+    deserializer
+        .end()
+        .map_err(|_| EvaluationError::InvalidJson("trailing content".into()))?;
+    Ok(value)
 }
 
 /// Bound the read itself: an unterminated line must not allocate beyond the
@@ -516,8 +439,10 @@ pub fn parse_case_records_streaming<R: BufRead>(
         EVALUATION_DATASET_BYTES.max(),
     )? > 0
     {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
+        if line
+            .bytes()
+            .all(|byte| matches!(byte, b' ' | b'\t' | b'\r' | b'\n'))
+        {
             line.clear();
             continue;
         }
@@ -527,7 +452,7 @@ pub fn parse_case_records_streaming<R: BufRead>(
                 max: EVALUATION_CASE_RECORDS.max(),
             });
         }
-        let value = parse_bounded_json(trimmed.as_bytes(), EVALUATION_DATASET_DEPTH.max())?;
+        let value = parse_bounded_json(line.as_bytes(), EVALUATION_DATASET_DEPTH.max())?;
         let record: EvaluationCaseRecord = serde_json::from_value(value)
             .map_err(|e| EvaluationError::InvalidField(format!("malformed case record: {e}")))?;
         if record.schema_version != SCHEMA_VERSION {
@@ -555,8 +480,10 @@ pub fn parse_labels_streaming<R: BufRead>(
         EVALUATION_DATASET_BYTES.max(),
     )? > 0
     {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
+        if line
+            .bytes()
+            .all(|byte| matches!(byte, b' ' | b'\t' | b'\r' | b'\n'))
+        {
             line.clear();
             continue;
         }
@@ -566,7 +493,7 @@ pub fn parse_labels_streaming<R: BufRead>(
                 max: EVALUATION_CASE_RECORDS.max(),
             });
         }
-        let value = parse_bounded_json(trimmed.as_bytes(), EVALUATION_DATASET_DEPTH.max())?;
+        let value = parse_bounded_json(line.as_bytes(), EVALUATION_DATASET_DEPTH.max())?;
         let label: JudgedLabel = serde_json::from_value(value)
             .map_err(|e| EvaluationError::InvalidField(format!("malformed judged label: {e}")))?;
         if label.schema_version != SCHEMA_VERSION {

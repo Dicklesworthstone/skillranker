@@ -213,6 +213,34 @@ class ExportTest(unittest.TestCase):
         with self.assertRaisesRegex(bridge.Reject, "byte bounds"):
             bridge.export(*inputs, self.output, 7)
 
+    def test_recorded_blank_lines_cannot_hide_invalid_json_whitespace(self):
+        inputs = self.inputs()
+        original = inputs[2].read_bytes()
+        for whitespace in (b"\x0b", b"\x0c"):
+            with self.subTest(whitespace=whitespace):
+                output = self.root / ("invalid-whitespace-" + whitespace.hex())
+                output.mkdir(mode=0o700)
+                inputs[2].write_bytes(whitespace + b"\n" + original)
+                with self.assertRaisesRegex(bridge.Reject, "bounded UTF-8 JSON"):
+                    bridge.export(*inputs, output, 7)
+                self.assertEqual(list(output.iterdir()), [])
+        inputs[2].write_bytes(b" \t\r\n" + original)
+        receipt = bridge.export(*inputs, self.output, 7)
+        self.assertEqual((receipt["primary_cases"], receipt["labels"]), (4, 3))
+
+    def test_unused_corpus_metadata_still_requires_unicode_scalar_values(self):
+        inputs = self.inputs()
+        self.cases[0]["consent_reference"] = "private-canary\ud800"
+        self.records[0]["case_digest"] = bridge.canonical_digest(self.cases[0])
+        # Serialize escaped surrogates like an external producer. The export
+        # encoder itself already rejects them and is not this test's boundary.
+        inputs[1].write_text("".join(json.dumps(c) + "\n" for c in self.cases))
+        inputs[2].write_text("".join(json.dumps(r) + "\n" for r in self.records))
+        with self.assertRaisesRegex(bridge.Reject, "non-Unicode string") as rejected:
+            bridge.export(*inputs, self.output, 7)
+        self.assertNotIn("private-canary", str(rejected.exception))
+        self.assertEqual(list(self.output.iterdir()), [])
+
     def test_unpaired_surrogate_cannot_publish_a_rust_unreadable_record(self):
         self.records[0]["record"]["prompt_summary"] = "\ud800"
         inputs = self.inputs_without_recorded_encoding()

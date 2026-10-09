@@ -241,11 +241,10 @@ def read_records(path: Path, schema: str, label: str) -> list[dict[str, Any]]:
             total += len(raw)
             require(total <= MAX_RECORDS_BYTES, f"{label} exceeds its byte bound")
             require(len(raw) <= MAX_RECORD_BYTES, f"{label} line {number} exceeds its byte bound")
-            line = raw.strip()
-            if not line:
+            if not raw.strip(b" \t\r\n"):
                 continue
             require(len(records) < MAX_RECORDS, f"{label} record count exceeds its bound")
-            record = decode_bounded_json(line, f"{label} line {number}")
+            record = decode_bounded_json(raw, f"{label} line {number}")
             require(isinstance(record, dict), f"{label} line {number} must be an object")
             require(record.get("schema") == schema, f"{label} line {number} has a schema mismatch")
             records.append(record)

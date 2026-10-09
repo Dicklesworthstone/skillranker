@@ -355,7 +355,15 @@ sr eval --dataset /private/path/eval-export/dataset.jsonl \
 ```
 
 Inputs retain the corpus bounds: 256 MiB/10,000 records, 1 MiB per record and
-nesting 64. Each output dataset/label file is at most 256 MiB; the receipt is at
+nesting 64. Blank lines may contain only JSON whitespace (space, tab, CR and LF);
+invalid edge whitespace is never stripped before parsing. All decoded strings
+and object keys must contain Unicode scalar values, including unused metadata.
+Escaped unpaired surrogates are refused before validation or publication.
+`sr eval --dataset FRAME --labels FILE` applies the same whitespace grammar to
+recorded frame and label imports, including Unicode whitespace outside strings.
+Live-case imports use the same grammar. All three reject duplicate decoded object
+keys, including equivalent escaped spellings and nested additive metadata.
+Each output dataset/label file is at most 256 MiB; the receipt is at
 most 2 MiB. The destination must already be owner-only. Files are mode `0600`,
 fsynced and published individually by atomic links that refuse existing or
 raced-in targets. `receipt.json` publishes **last**, committing the pair; the

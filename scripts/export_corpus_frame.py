@@ -107,7 +107,7 @@ def load_recorded(path, cases, primary_ids):
             total += len(raw)
             require(total <= MAX_CASES_BYTES and len(raw) <= MAX_RECORD_BYTES,
                     "recorded frame exceeds byte bounds")
-            if not raw.strip():
+            if not raw.strip(b" \t\r\n"):
                 continue
             require(len(recorded) < MAX_CASES, "recorded frame exceeds record bound")
             wrapper = decode_bounded_json(raw, "recorded frame record")

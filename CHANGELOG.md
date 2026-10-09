@@ -12,6 +12,12 @@
 
 ### Fixed
 
+- Offline corpus, export and paired-cohort preparation reject invalid JSON
+  whitespace and escaped unpaired surrogates, including unused metadata and
+  object keys. Evaluation case, label and live-case imports also reject non-JSON
+  edge whitespace and duplicate keys with equivalent escaped spellings. Their
+  decoded-key checks now use the existing shared JSON decoder. Valid JSON
+  whitespace and Unicode remain supported.
 - Claude's first prompt now reaches ranking even when the harness has not yet
   created its workspace transcript directory. Absence is checked without
   widening transcript-read authority or creating native files.

@@ -100,7 +100,7 @@ def decode_bounded_json(raw: bytes, label: str) -> Any:
         return parsed
 
     try:
-        return json.loads(
+        value = json.loads(
             raw.decode("utf-8"),
             object_pairs_hook=unique_object,
             parse_constant=reject_constant,
@@ -108,6 +108,20 @@ def decode_bounded_json(raw: bytes, label: str) -> Any:
         )
     except (RecursionError, UnicodeDecodeError, ValueError) as error:
         raise Reject(f"{label} is not valid bounded UTF-8 JSON") from error
+    # Python accepts escaped lone surrogates; Rust's JSON consumers do not.
+    # Check keys as well as values, including metadata unused by this schema.
+    pending = [value]
+    while pending:
+        node = pending.pop()
+        if isinstance(node, str):
+            require(not any(0xD800 <= ord(char) <= 0xDFFF for char in node),
+                    f"{label} contains a non-Unicode string")
+        elif isinstance(node, dict):
+            pending.extend(node.keys())
+            pending.extend(node.values())
+        elif isinstance(node, list):
+            pending.extend(node)
+    return value
 
 
 def load_json(path: Path, max_bytes: int, label: str) -> Any:
@@ -233,12 +247,13 @@ def validate(manifest_path: Path, cases_path: Path) -> tuple[dict, dict, dict]:
             require(total_bytes <= MAX_CASES_BYTES, "cases exceeds its byte bound")
             if len(raw) > MAX_RECORD_BYTES:
                 fail(f"case record at line {line_number} exceeds its byte bound")
-            line = raw.strip()
-            if not line:
+            # Only JSON whitespace can form an ignorable blank line. Parse the
+            # original bytes so invalid edge whitespace cannot be normalized.
+            if not raw.strip(b" \t\r\n"):
                 continue
             if len(cases) >= MAX_CASES:
                 fail("case count exceeds its bound")
-            case = decode_bounded_json(line, f"case at line {line_number}")
+            case = decode_bounded_json(raw, f"case at line {line_number}")
             require(isinstance(case, dict), f"case at line {line_number} must be an object")
             require(
                 case.get("schema_version") == CASE_SCHEMA,

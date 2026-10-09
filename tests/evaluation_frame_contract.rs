@@ -3,8 +3,9 @@
 
 use skillranker::evaluation::{
     CaseKey, EvaluationCaseRecord, EvaluationError, EvaluationSplit, JudgedLabel, LabelStatus,
-    RelevanceClass, compute_metrics, join_evaluation_frame, parse_case_records_streaming,
-    parse_labels_streaming, resolve_label_revisions, verify_split_isolation,
+    LiveEvaluationCase, RelevanceClass, compute_metrics, join_evaluation_frame, parse_bounded_json,
+    parse_case_records_streaming, parse_labels_streaming, parse_live_cases_streaming,
+    resolve_label_revisions, verify_split_isolation,
 };
 use skillranker::output::SCHEMA_VERSION;
 use std::collections::BTreeMap;
@@ -72,6 +73,30 @@ fn streaming_case_records_parses_valid_jsonl() {
 }
 
 #[test]
+fn streaming_case_records_rejects_non_json_edge_whitespace() {
+    let mut case = sample_case("frame-1", "fam-1", "case-1", 0, EvaluationSplit::Train);
+    case.prompt_summary = Some("Unicode 🚀 and escaped controls \u{000b}\u{000c}".into());
+    let json = serde_json::to_string(&case).unwrap();
+    let good = format!(" \t\r\n \t{json}\r\n");
+    assert_eq!(
+        parse_case_records_streaming(Cursor::new(good.as_bytes())).unwrap(),
+        vec![case]
+    );
+    for whitespace in ['\u{000b}', '\u{000c}', '\u{0085}', '\u{00a0}'] {
+        for bad in [
+            format!("{whitespace}{json}\n"),
+            format!("{whitespace}\n{json}\n"),
+            format!("{json}{whitespace}\n"),
+        ] {
+            assert!(matches!(
+                parse_case_records_streaming(Cursor::new(bad.as_bytes())),
+                Err(EvaluationError::InvalidJson(_))
+            ));
+        }
+    }
+}
+
+#[test]
 fn streaming_case_records_rejects_duplicate_json_keys() {
     let case = sample_case("frame-1", "fam-1", "case-1", 0, EvaluationSplit::Train);
     let mut json_str = serde_json::to_string(&case).unwrap();
@@ -111,6 +136,30 @@ fn streaming_labels_parses_valid_jsonl() {
     assert_eq!(labels.len(), 2);
     assert_eq!(labels[0].case_id, "case-1");
     assert_eq!(labels[1].case_id, "case-2");
+}
+
+#[test]
+fn streaming_labels_rejects_non_json_edge_whitespace() {
+    let mut label = sample_label("case-1", 1, &["rust-test-triage"]);
+    label.notes = Some("Unicode 🚀 and escaped controls \u{000b}\u{000c}".into());
+    let json = serde_json::to_string(&label).unwrap();
+    let good = format!(" \t\r\n \t{json}\r\n");
+    assert_eq!(
+        parse_labels_streaming(Cursor::new(good.as_bytes())).unwrap(),
+        vec![label]
+    );
+    for whitespace in ['\u{000b}', '\u{000c}', '\u{0085}', '\u{00a0}'] {
+        for bad in [
+            format!("{whitespace}{json}\n"),
+            format!("{whitespace}\n{json}\n"),
+            format!("{json}{whitespace}\n"),
+        ] {
+            assert!(matches!(
+                parse_labels_streaming(Cursor::new(bad.as_bytes())),
+                Err(EvaluationError::InvalidJson(_))
+            ));
+        }
+    }
 }
 
 #[test]
@@ -340,4 +389,103 @@ fn explicit_request_separated_from_advisory_metrics() {
     // Explicit cases do not pollute advisory precision or coverage
     assert_eq!(metrics.top1_precision, None);
     assert_eq!(metrics.candidate_coverage_rate, None);
+}
+
+#[test]
+fn bounded_json_checks_decoded_keys_within_each_object() {
+    for bad in [
+        r#"{"a":1,"\u0061":2}"#,
+        r#"{"nested":[{"a":1,"\u0061":2}]}"#,
+        r#"{"a\"b":1,"a\u0022b":2}"#,
+        r#"{"a\\b":1,"a\u005cb":2}"#,
+        r#"{"🚀":1,"\ud83d\ude80":2}"#,
+    ] {
+        assert!(matches!(
+            parse_bounded_json(bad.as_bytes(), 64),
+            Err(EvaluationError::DuplicateKey(_))
+        ));
+    }
+    for good in [
+        r#"{"a":"a","b":{"a":"b"},"c":[{"a":1},{"a":2}]}"#,
+        r#"{"a\\b":1,"ab":2,"\u0063":"🚀"}"#,
+        r#"{"array":["a","b"],"number":0.12345678901234568}"#,
+    ] {
+        assert_eq!(
+            parse_bounded_json(good.as_bytes(), 64).unwrap(),
+            serde_json::from_str::<serde_json::Value>(good).unwrap()
+        );
+    }
+    let deepest = format!("{}0{}", "[".repeat(64), "]".repeat(64));
+    assert!(parse_bounded_json(deepest.as_bytes(), 64).is_ok());
+    assert!(matches!(
+        parse_bounded_json(deepest.as_bytes(), 63),
+        Err(EvaluationError::ExcessiveDepth)
+    ));
+    assert!(matches!(
+        parse_bounded_json(b"{} {}", 64),
+        Err(EvaluationError::InvalidJson(_))
+    ));
+}
+
+#[test]
+fn streaming_imports_reject_escaped_duplicate_keys() {
+    let case = serde_json::to_string(&sample_case(
+        "frame",
+        "family",
+        "case",
+        0,
+        EvaluationSplit::Train,
+    ))
+    .unwrap();
+    let label = serde_json::to_string(&sample_label("case", 1, &["rust-tester"])).unwrap();
+    let live = serde_json::to_string(&LiveEvaluationCase {
+        schema_version: SCHEMA_VERSION,
+        key: CaseKey::new("frame", "family", "case", 0, "default"),
+        split: EvaluationSplit::Train,
+        context: serde_json::json!({"schema_version": 1, "messages": []}),
+    })
+    .unwrap();
+    for json in [&case, &label, &live] {
+        let duplicate = json.replacen(
+            "\"schema_version\":1",
+            r#""schema_version":1,"\u0073chema_version":1"#,
+            1,
+        );
+        let result = if json == &case {
+            parse_case_records_streaming(Cursor::new(duplicate.as_bytes())).map(|_| ())
+        } else if json == &label {
+            parse_labels_streaming(Cursor::new(duplicate.as_bytes())).map(|_| ())
+        } else {
+            parse_live_cases_streaming(Cursor::new(duplicate.as_bytes())).map(|_| ())
+        };
+        assert!(matches!(result, Err(EvaluationError::DuplicateKey(_))));
+    }
+}
+
+#[test]
+fn streaming_live_cases_reject_non_json_edge_whitespace() {
+    let case = LiveEvaluationCase {
+        schema_version: SCHEMA_VERSION,
+        key: CaseKey::new("frame", "family", "case", 0, "default"),
+        split: EvaluationSplit::Train,
+        context: serde_json::json!({"text": "Unicode 🚀 and escaped controls \u{000b}\u{000c}"}),
+    };
+    let json = serde_json::to_string(&case).unwrap();
+    let good = format!(" \t\r\n \t{json}\r\n");
+    assert_eq!(
+        parse_live_cases_streaming(Cursor::new(good.as_bytes())).unwrap(),
+        vec![case]
+    );
+    for whitespace in ['\u{000b}', '\u{000c}', '\u{0085}', '\u{00a0}'] {
+        for bad in [
+            format!("{whitespace}{json}\n"),
+            format!("{whitespace}\n{json}\n"),
+            format!("{json}{whitespace}\n"),
+        ] {
+            assert!(matches!(
+                parse_live_cases_streaming(Cursor::new(bad.as_bytes())),
+                Err(EvaluationError::InvalidJson(_))
+            ));
+        }
+    }
 }

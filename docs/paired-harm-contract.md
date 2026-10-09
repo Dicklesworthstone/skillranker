@@ -200,7 +200,10 @@ number only.
 --judgments JUDGMENTS.jsonl` checks the cohort against this contract and prints
 its endpoint report. It fails on:
 
-- duplicate JSON keys, oversized input or excessive nesting;
+- duplicate JSON keys, oversized input, excessive nesting or escaped unpaired
+  surrogates in any string or object key (including unused metadata);
+- non-JSON whitespace around records or in blank lines; space, tab, CR and LF
+  remain accepted without stripping invalid bytes before parsing;
 - a manifest whose arm orders, blind labels or unit digest do not match its own
   seed, or blind labels that name an arm;
 - a family in more than one unit;

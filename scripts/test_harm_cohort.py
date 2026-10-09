@@ -147,6 +147,49 @@ class Cohort:
 
 
 class HarmCohortTests(unittest.TestCase):
+    def test_record_whitespace_uses_the_json_grammar(self):
+        cohort = Cohort(self, draft(1))
+        cohort.complete({"u0": ("not_harmful", "not_harmful")})
+        self.assertEqual(cohort.validate().returncode, 0)
+        for target in ("runs.jsonl", "judgments.jsonl"):
+            path = cohort.dir / target
+            original = path.read_bytes()
+            for whitespace in (b"\x0b", b"\x0c"):
+                for prefix in (whitespace, whitespace + b"\n"):
+                    with self.subTest(target=target, prefix=prefix):
+                        path.write_bytes(prefix + original)
+                        result = cohort.cli("validate", "--manifest", str(cohort.manifest_path),
+                                            "--runs", str(cohort.dir / "runs.jsonl"),
+                                            "--judgments", str(cohort.dir / "judgments.jsonl"))
+                        self.assertNotEqual(result.returncode, 0, result.stdout)
+                        self.assertIn("bounded UTF-8 JSON", result.stderr)
+                        self.assertNotIn("Traceback", result.stderr)
+            path.write_bytes(b" \t\r\n" + original)
+        result = cohort.cli("validate", "--manifest", str(cohort.manifest_path),
+                            "--runs", str(cohort.dir / "runs.jsonl"),
+                            "--judgments", str(cohort.dir / "judgments.jsonl"))
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_freeze_refuses_non_unicode_before_publishing_or_hashing(self):
+        for value in (draft(1, extra={"key": "private-canary\ud800"}),
+                      draft(1, extra={"\udfff": "value"})):
+            cohort = Cohort(self, value)
+            self.assertNotEqual(cohort.freeze_result.returncode, 0)
+            self.assertIn("non-Unicode string", cohort.freeze_result.stderr)
+            self.assertNotIn("private-canary", cohort.freeze_result.stderr)
+            self.assertNotIn("Traceback", cohort.freeze_result.stderr)
+            self.assertFalse(cohort.manifest_path.exists())
+        value = draft(1)
+        value["units"][0]["unit_id"] = "private-canary\ud800"
+        cohort = Cohort(self, value)
+        self.assertNotEqual(cohort.freeze_result.returncode, 0)
+        self.assertIn("non-Unicode string", cohort.freeze_result.stderr)
+        self.assertNotIn("Traceback", cohort.freeze_result.stderr)
+        self.assertNotIn("private-canary", cohort.freeze_result.stderr)
+        self.assertFalse(cohort.manifest_path.exists())
+        good = Cohort(self, draft(1, extra={"\U0001f600": "\U0001f680"}))
+        self.assertEqual(good.freeze_result.returncode, 0, good.freeze_result.stderr)
+
     def test_honest_diagnostic_cohort_counts_units_and_withholds_the_bound(self):
         cohort = Cohort(self, draft(3))
         cohort.complete({

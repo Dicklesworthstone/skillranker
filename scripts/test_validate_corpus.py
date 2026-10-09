@@ -323,6 +323,40 @@ class CorpusValidatorTest(unittest.TestCase):
         self.assertNotIn("private", result.stderr)
         self.assertNotIn("Traceback", result.stderr)
 
+    def test_jsonl_whitespace_uses_the_json_grammar(self):
+        manifest, cases = valid_corpus()
+        raw = b"".join(json.dumps(c).encode() + b"\n" for c in cases)
+        good = self.run_raw_validator(json.dumps(manifest).encode(), b" \t\r\n" + raw)
+        self.assertEqual(good.returncode, 0, good.stderr)
+        for whitespace in (b"\x0b", b"\x0c"):
+            for document in (whitespace + raw, whitespace + b"\n" + raw, raw + whitespace):
+                with self.subTest(document=document[:10]):
+                    result = self.run_raw_validator(json.dumps(manifest).encode(), document)
+                    self.assertNotEqual(result.returncode, 0, result.stdout)
+                    self.assertIn("bounded UTF-8 JSON", result.stderr)
+                    self.assertNotIn("Traceback", result.stderr)
+
+    def test_escaped_strings_and_keys_require_unicode_scalar_values(self):
+        for target in ("manifest", "case"):
+            for bad in ("\ud800", "\udfff"):
+                for as_key in (False, True):
+                    with self.subTest(target=target, bad=repr(bad), as_key=as_key):
+                        manifest, cases = valid_corpus()
+                        node = manifest if target == "manifest" else cases[0]
+                        node["extra"] = {bad: "private-canary"} if as_key else {"key": "private-canary" + bad}
+                        result = self.run_validator(manifest, cases)
+                        self.assertNotEqual(result.returncode, 0, result.stdout)
+                        self.assertIn("non-Unicode string", result.stderr)
+                        self.assertNotIn("private-canary", result.stderr)
+                        self.assertNotIn("Traceback", result.stderr)
+        manifest, cases = valid_corpus()
+        cases[0]["extra"] = {"\U0001f600": ["accent \u00e9", "\U0001f680"]}
+        result = self.run_validator(manifest, cases)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        raw_cases = b"".join(json.dumps(c, ensure_ascii=False).encode() + b"\n" for c in cases)
+        result = self.run_raw_validator(json.dumps(manifest).encode(), raw_cases)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_record_byte_limit_counts_blank_lines_and_accepts_exact_limit(self):
         manifest, cases = valid_corpus()
         rest = "".join(json.dumps(c) + "\n" for c in cases[1:]).encode()
