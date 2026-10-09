@@ -8,6 +8,106 @@ use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::Duration;
 
+#[derive(Clone, Copy)]
+enum QueuedLeafRelease {
+    Timely,
+    Cancelled,
+    Expired,
+}
+
+// Hold the real single-worker pool until the production leaf is actually queued.
+// The controller changes admission before releasing that worker; an already
+// running blocking operation still drains rather than being pretended cancellable.
+fn queued_leaf_execution(release: QueuedLeafRelease) -> (Result<u8, RuntimeError>, bool) {
+    let clock = EntryClock::capture().unwrap();
+    let invocation = ProcessInvocation::from_clock_with_blocking_pool(clock, 1, 1).unwrap();
+    let cx = invocation.request_cx().unwrap();
+    let pool = invocation.runtime().blocking_handle().unwrap();
+    let (started_tx, started_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let blocker = pool.spawn(move || {
+        started_tx.send(()).unwrap();
+        release_rx.recv_timeout(Duration::from_secs(4)).unwrap();
+    });
+    started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    let controller_pool = pool.clone();
+    let controller_cx = cx.clone();
+    let controller = thread::spawn(move || {
+        while controller_pool.pending_count() == 0 {
+            clock
+                .admit_new_work()
+                .expect("production leaf must actually queue");
+            thread::sleep(Duration::from_millis(1));
+        }
+        match release {
+            QueuedLeafRelease::Timely => {}
+            QueuedLeafRelease::Cancelled => {
+                controller_cx
+                    .cancel_with(asupersync::CancelKind::User, Some("queued leaf execution"));
+            }
+            QueuedLeafRelease::Expired => {
+                thread::sleep(Duration::from_millis(
+                    clock.remaining_before_cleanup().as_millis() + 1,
+                ));
+                assert!(clock.admit_new_work().is_err());
+            }
+        }
+        release_tx.send(()).unwrap();
+    });
+    let ran = Arc::new(AtomicBool::new(false));
+    let leaf_ran = Arc::clone(&ran);
+    let result = invocation
+        .runtime()
+        .block_on(skillranker::blocking::run_blocking_leaf_async(
+            clock,
+            &cx,
+            BlockingLeafKind::Filesystem,
+            false,
+            move || {
+                leaf_ran.store(true, Ordering::SeqCst);
+                9_u8
+            },
+        ))
+        .map(|outcome| outcome.value);
+    controller.join().unwrap();
+    assert!(
+        blocker.wait_timeout(Duration::from_secs(2)),
+        "the occupied worker must finish before handoff"
+    );
+    assert!(invocation.shutdown(), "all owned blocking work must drain");
+    (result, ran.load(Ordering::SeqCst))
+}
+
+#[test]
+fn timely_queued_blocking_leaf_executes_and_publishes() {
+    assert_eq!(
+        queued_leaf_execution(QueuedLeafRelease::Timely),
+        (Ok(9), true)
+    );
+}
+
+#[test]
+fn cancelled_queued_blocking_leaf_never_starts() {
+    let (result, ran) = queued_leaf_execution(QueuedLeafRelease::Cancelled);
+    assert!(matches!(result, Err(RuntimeError::Cancelled)));
+    assert!(
+        !ran,
+        "cancelled queued work must not execute its side effect"
+    );
+}
+
+#[test]
+fn expired_queued_blocking_leaf_never_starts() {
+    let (result, ran) = queued_leaf_execution(QueuedLeafRelease::Expired);
+    assert!(matches!(
+        result,
+        Err(RuntimeError::LateResultSuppressed
+            | RuntimeError::Cancelled
+            | RuntimeError::Deadline(_))
+    ));
+    assert!(!ran, "expired queued work must not execute its side effect");
+}
+
 #[test]
 fn uninterruptible_leaves_are_maintenance_only() {
     assert_eq!(

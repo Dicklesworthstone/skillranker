@@ -111,9 +111,10 @@ pub fn admit_blocking_publication(
 
 /// Run `f` on the process blocking pool.
 ///
-/// The closure itself is not cancelled. A cancelled caller, a cancelled join,
-/// or a completion in the cleanup reserve cannot be published as a timely
-/// hook result.
+/// Queued work rechecks cancellation and the work window before starting.
+/// Once started, the closure itself is not cancelled. A cancelled caller,
+/// a cancelled join, or a completion in the cleanup reserve cannot be
+/// published as a timely hook result.
 pub fn run_blocking_leaf<F, T>(
     invocation: &ProcessInvocation,
     cx: &Cx,
@@ -166,7 +167,8 @@ where
 
 /// Admit at most four leaves, retaining input order. Every admitted handle is
 /// joined before returning, including admission failure and cancellation. A
-/// blocking closure is not interruptible; late values remain unpublishable.
+/// queued leaf rechecks admission when its worker starts. A running blocking
+/// closure is not interruptible; late values remain unpublishable.
 pub async fn run_blocking_batch<F, T>(
     clock: EntryClock,
     cx: &Cx,
@@ -188,12 +190,20 @@ where
             error = Some(e);
             break;
         }
-        match cx.spawn_blocking(move |_child| {
+        let parent = cx.clone();
+        match cx.spawn_blocking(move |child| {
+            // Submission can precede execution by an entire work window.
+            // A wrapper's cancellation alone cannot retract a pool callback
+            // that has been claimed, so admit immediately before its body.
+            if parent.is_cancel_requested() || child.is_cancel_requested() {
+                return Err(RuntimeError::Cancelled);
+            }
+            admit_blocking_leaf(&clock, kind, uninterruptible)?;
             let value = leaf();
-            BlockingOutcome {
+            Ok(BlockingOutcome {
                 completed_at: clock.now(),
                 value,
-            }
+            })
         }) {
             Ok(handle) => handles.push(handle),
             Err(_) => {
@@ -205,11 +215,14 @@ where
     let mut outcomes = Vec::with_capacity(handles.len());
     for mut handle in handles {
         match handle.join(cx).await {
-            Ok(outcome) => {
+            Ok(Ok(outcome)) => {
                 if let Err(e) = admit_blocking_publication(&clock, outcome.completed_at, cx) {
                     error.get_or_insert(e);
                 }
                 outcomes.push(outcome);
+            }
+            Ok(Err(e)) => {
+                error.get_or_insert(e);
             }
             Err(_) => {
                 error.get_or_insert(RuntimeError::Cancelled);

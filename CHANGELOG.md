@@ -12,6 +12,9 @@
 
 ### Fixed
 
+- Queued blocking work rechecks cancellation and its work deadline before
+  starting filesystem, regex or SQLite callbacks. Work that already started
+  still drains, and late results remain withheld.
 - Offline corpus, export and paired-cohort preparation reject invalid JSON
   whitespace and escaped unpaired surrogates, including unused metadata and
   object keys. Evaluation case, label and live-case imports also reject non-JSON
