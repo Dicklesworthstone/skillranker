@@ -176,7 +176,7 @@ pub fn apply_claude_prompt_overlay_before(
         });
     };
 
-    let opened = open_transcript(&raw_path, request.authorized_root.as_deref())?;
+    let opened = open_transcript(&raw_path, request.authorized_root.as_deref(), clock)?;
     checkpoint(clock)?;
     if opened.is_none() {
         // First turn of a new session: transcript does not yet exist!
@@ -616,17 +616,53 @@ fn malformed(detail: &str) -> OverlayError {
 fn open_transcript(
     path: &Path,
     root: Option<&Path>,
+    clock: &EntryClock,
 ) -> Result<Option<std::fs::File>, OverlayError> {
     if !path.is_absolute() {
         return Err(OverlayError::TranscriptPathForbidden(
             "absolute path required".into(),
         ));
     }
-    let root = root
+    let selected_root = root
         .or_else(|| path.parent())
         .ok_or(OverlayError::CrossSessionReadForbidden)?;
-    let authority = AuthorizedRoot::open_absolute(root)
-        .map_err(|_| OverlayError::TranscriptPathForbidden("authorized root unavailable".into()))?;
+    let unavailable =
+        || OverlayError::TranscriptPathForbidden("authorized root unavailable".into());
+    let authority = match AuthorizedRoot::open_absolute(selected_root) {
+        Ok(authority) => authority,
+        Err(ReadError::NotFound) if root.is_none() => {
+            if path
+                .components()
+                .any(|part| part == std::path::Component::ParentDir)
+            {
+                return Err(unavailable());
+            }
+            // Claude may submit the first prompt before creating this workspace's
+            // transcript directory. Prove absence with the descriptor walk from
+            // an existing ancestor, so broken links are not treated as absence.
+            // This broader anchor never grants a transcript read: if a file races
+            // into existence, withhold this invocation rather than read through it.
+            for ancestor in selected_root
+                .ancestors()
+                .skip(1)
+                .take(crate::authorized_read::MAX_RESOLUTION_STEPS)
+            {
+                checkpoint(clock)?;
+                match AuthorizedRoot::open_absolute(ancestor) {
+                    Ok(anchor) => {
+                        return match AuthorizedRoots::single(anchor).open_absolute_file(path) {
+                            Err(ReadError::NotFound) => Ok(None),
+                            _ => Err(unavailable()),
+                        };
+                    }
+                    Err(ReadError::NotFound) => continue,
+                    Err(_) => return Err(unavailable()),
+                }
+            }
+            return Err(unavailable());
+        }
+        Err(_) => return Err(unavailable()),
+    };
     match AuthorizedRoots::single(authority).open_absolute_file(path) {
         Ok(file) => Ok(Some(file)),
         Err(ReadError::NotFound) => Ok(None),

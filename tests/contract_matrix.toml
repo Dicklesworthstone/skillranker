@@ -792,7 +792,9 @@ member_beads = ["sr-roadmap-l1i.4.5"]
 phase = "P3"
 title = "Implement authoritative Claude prompt overlay"
 unit_property_tests = [
-    "tests/context_contract.rs::claude_prompt_overlay"
+    "tests/context_contract.rs::claude_prompt_overlay",
+    "tests/context_contract.rs::claude_prompt_overlay_missing_workspace_directory",
+    "tests/context_contract.rs::claude_prompt_overlay_missing_parent_keeps_authority_failures"
 ]
 e2e_suite = "context"
 e2e_cases = ["hook-prompt-overlaid-once"]

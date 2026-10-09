@@ -908,6 +908,112 @@ fn claude_prompt_overlay() {
 }
 
 #[test]
+fn claude_prompt_overlay_missing_workspace_directory() {
+    let test_dir = temp_dir("claude-missing-workspace");
+    let transcript = test_dir.join("projects/new-workspace/session.jsonl");
+    let hook = ClaudeUserPromptSubmit::from_json(
+        &serde_json::to_vec(&serde_json::json!({
+            "hook_event_name": "UserPromptSubmit",
+            "prompt": "first native prompt",
+            "prompt_id": "first-native-prompt",
+            "session_id": "first-native-session",
+            "transcript_path": transcript,
+        }))
+        .unwrap(),
+        UnknownFieldPolicy::RetainAdditive,
+    )
+    .unwrap();
+    let request = ClaudeOverlayRequest {
+        hook_input: hook,
+        transcript_path: None,
+        authorized_root: None,
+    };
+    let result = apply_claude_prompt_overlay(&request)
+        .expect("a native transcript directory need not exist before the first hook");
+    assert_eq!(result.context_quality, ContextQuality::PromptOnly);
+    assert_eq!(result.events.len(), 1);
+    assert_eq!(result.current_request.text.as_str(), "first native prompt");
+    assert_eq!(
+        result.current_request.event_id.unwrap().as_str(),
+        "first-native-prompt"
+    );
+    assert_eq!(result.session_id.unwrap().as_str(), "first-native-session");
+    assert!(
+        !transcript.parent().unwrap().exists(),
+        "overlay must not create native directories"
+    );
+
+    // Once Claude creates the directory, ordinary file validation still applies.
+    fs::create_dir_all(transcript.parent().unwrap()).unwrap();
+    fs::write(&transcript, b"{malformed}\n").unwrap();
+    assert!(matches!(
+        apply_claude_prompt_overlay(&request),
+        Err(OverlayError::MalformedTranscript(_))
+    ));
+}
+
+#[test]
+fn claude_prompt_overlay_missing_parent_keeps_authority_failures() {
+    let test_dir = temp_dir("claude-missing-parent-authority");
+    let missing_parent = test_dir.join("missing");
+    let hook = ClaudeUserPromptSubmit::from_json(
+        &serde_json::to_vec(&serde_json::json!({
+            "hook_event_name": "UserPromptSubmit", "prompt": "first prompt",
+            "session_id": "session", "prompt_id": "prompt",
+        }))
+        .unwrap(),
+        UnknownFieldPolicy::RetainAdditive,
+    )
+    .unwrap();
+    let request = |path: PathBuf, root: Option<PathBuf>| ClaudeOverlayRequest {
+        hook_input: hook.clone(),
+        transcript_path: Some(path),
+        authorized_root: root,
+    };
+    // Missing explicit policy roots are failures, even if the target is absent.
+    assert!(matches!(
+        apply_claude_prompt_overlay(&request(
+            missing_parent.join("session.jsonl"),
+            Some(missing_parent.clone())
+        )),
+        Err(OverlayError::TranscriptPathForbidden(_))
+    ));
+    assert!(matches!(
+        apply_claude_prompt_overlay(&request(
+            missing_parent.join("session.jsonl"),
+            Some(test_dir.join("other-missing-root"))
+        )),
+        Err(OverlayError::TranscriptPathForbidden(_))
+    ));
+    assert!(matches!(
+        apply_claude_prompt_overlay(&request(
+            missing_parent.join("session.jsonl"),
+            Some(test_dir.clone())
+        ))
+        .unwrap()
+        .context_quality,
+        ContextQuality::PromptOnly
+    ));
+    // A broken directory symlink must not masquerade as a new workspace.
+    let broken = test_dir.join("broken-parent");
+    std::os::unix::fs::symlink(&missing_parent, &broken).unwrap();
+    assert!(matches!(
+        apply_claude_prompt_overlay(&request(broken.join("session.jsonl"), None)),
+        Err(OverlayError::TranscriptPathForbidden(_))
+    ));
+    let regular = test_dir.join("regular-parent");
+    fs::write(&regular, b"not a directory").unwrap();
+    assert!(matches!(
+        apply_claude_prompt_overlay(&request(regular.join("session.jsonl"), None)),
+        Err(OverlayError::TranscriptPathForbidden(_))
+    ));
+    assert!(matches!(
+        apply_claude_prompt_overlay(&request(missing_parent.join("../session.jsonl"), None)),
+        Err(OverlayError::TranscriptPathForbidden(_))
+    ));
+}
+
+#[test]
 fn normalized_envelopes() {
     // 1. Valid normalized context parses successfully
     let valid_json = r#"{

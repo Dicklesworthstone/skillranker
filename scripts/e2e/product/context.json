@@ -84,6 +84,8 @@
       ],
       "tests": [
         "context_contract::claude_prompt_overlay",
+        "context_contract::claude_prompt_overlay_missing_workspace_directory",
+        "context_contract::claude_prompt_overlay_missing_parent_keeps_authority_failures",
         "context_overlay_safety::pending_prompt_without_event_id_is_retained_once_after_native_lineage",
         "context_overlay_safety::wrong_native_session_is_rejected_with_an_honest_matching_twin"
       ]

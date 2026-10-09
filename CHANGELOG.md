@@ -12,6 +12,9 @@
 
 ### Fixed
 
+- Claude's first prompt now reaches ranking even when the harness has not yet
+  created its workspace transcript directory. Absence is checked without
+  widening transcript-read authority or creating native files.
 - Paired-cohort freezes now bind the agent, selector and adjudicator registry.
   Changed participants fail validation; older unbound artifacts retain observed
   counts without a confidence-bound claim.

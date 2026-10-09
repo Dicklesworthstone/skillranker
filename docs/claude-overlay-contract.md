@@ -20,6 +20,7 @@ Satisfies boundary `p3_claude_overlay` (`sr-roadmap-l1i.4.5`).
 ### 3. Missing First Transcript as `PromptOnly`
 - On the very first turn of a new session, the transcript file may not yet exist on disk.
 - An absent transcript file is authorized and ranked with the hook prompt and an empty transcript, recording `context_quality: prompt_only`.
+- Claude may also submit the first prompt before creating the workspace's transcript directory. When the hook supplies the exact path without an explicit policy root, a bounded descriptor walk verifies absence from an existing ancestor. This check cannot read a transcript through the broader ancestor; a raced-in file is withheld. An unavailable explicitly supplied root, a broken link, a non-directory parent or a traversal path remains an error. The overlay creates no transcript directories or files.
 
 ### 4. Malformed Existing Transcript Rejection
 - If a transcript file exists on disk but contains corrupted or malformed records, it must **never** silently fall back to an empty history or prompt-only mode.
@@ -40,6 +41,8 @@ Satisfies boundary `p3_claude_overlay` (`sr-roadmap-l1i.4.5`).
 |---|---|---|
 | `tests/context_contract.rs::claude_prompt_overlay` | Full contract verification across all 9 fixture shapes | `tests/context_contract.rs` |
 | `first_file_missing` | Absent first file succeeds as `ContextQuality::PromptOnly` | `tests/context_contract.rs` |
+| `claude_prompt_overlay_missing_workspace_directory` | Absent workspace directory retains the authoritative prompt and identity; a later malformed file still fails | `tests/context_contract.rs` |
+| `claude_prompt_overlay_missing_parent_keeps_authority_failures` | Explicit roots, broken links, non-directory parents and traversal remain restricted | `tests/context_contract.rs` |
 | `prompt_absent` | Absent prompt appended authoritatively once | `tests/context_contract.rs` |
 | `prompt_present_dedup` | Present prompt overlaid by `prompt_id` without duplication | `tests/context_contract.rs` |
 | `equal_text_distinct_turns` | Identical text across turns preserved as distinct turns | `tests/context_contract.rs` |
