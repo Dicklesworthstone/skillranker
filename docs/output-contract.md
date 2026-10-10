@@ -371,10 +371,19 @@ failures, not a count of them, and an availability report must present it as a b
 report `hook_entries_pruned` or `hook_entries_cleared`, summed over them; `null` means
 a counter could not be aligned with the rows.
 
-`latency` reports `mean_ms`, `median_ms`, `p95_ms`, `min_ms`, `max_ms` over turns that
-finished, plus `excluded_unfinished`. An unfinished turn's recorded duration is a
-placeholder, not a measurement of a fast turn; admitting it would drag every figure
-toward zero. A summary drawn from a subset states the size of the subset it dropped.
+`latency` reports `measured_turns`, `mean_ms`, `median_ms`, `p95_ms`, `p99_ms`,
+`min_ms`, `max_ms` over finished turns, including operational failures, plus
+`excluded_unfinished`. An unfinished turn's recorded duration is a placeholder,
+not a measurement of a fast turn. The two counts sum to `turns.total_evaluated`.
+Tail percentiles use nearest rank; the median preserves the upper middle sample
+for an even count. Duration fields are zero when `measured_turns` is zero.
+
+`latency_by_channel` contains `{channel, latency}` summaries in channel-name order
+over the same snapshot and time window. It includes channels with only unfinished
+turns, so a CLI sample cannot hide a missing shadow-hook measurement. Channel
+counts sum to the aggregate counts. These are recorded ranking durations, not
+end-to-end process measurements: cold-start/TLS strata and memory were not recorded
+and cannot be reconstructed from the ledger.
 
 `observations` separates evidence states (`observed_loads`, `attempted_loads`,
 `censored_observations`) from attribution (`attributed_loads`, `unattributed_loads`),

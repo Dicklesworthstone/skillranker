@@ -2739,10 +2739,12 @@ fn format_stats_report(report: &crate::storage::StatsValueReport) -> String {
     let _ = writeln!(out, "\n--- Latency ---");
     let _ = writeln!(
         out,
-        "Mean: {} ms | Median: {} ms | P95: {} ms | Range: {} .. {} ms",
+        "Measured turns: {} | Mean: {} ms | Median: {} ms | P95: {} ms | P99: {} ms | Range: {} .. {} ms",
+        report.latency.measured_turns,
         report.latency.mean_ms,
         report.latency.median_ms,
         report.latency.p95_ms,
+        report.latency.p99_ms,
         report.latency.min_ms,
         report.latency.max_ms
     );
@@ -2755,6 +2757,23 @@ fn format_stats_report(report: &crate::storage::StatsValueReport) -> String {
             report.latency.excluded_unfinished
         );
     }
+    for channel in &report.latency_by_channel {
+        let latency = &channel.latency;
+        let _ = writeln!(
+            out,
+            "  [{}] measured: {}, unfinished: {} | Median: {} ms | P95: {} ms | P99: {} ms",
+            channel.channel,
+            latency.measured_turns,
+            latency.excluded_unfinished,
+            latency.median_ms,
+            latency.p95_ms,
+            latency.p99_ms
+        );
+    }
+    let _ = writeln!(
+        out,
+        "Recorded ranking durations; cold-start/TLS strata and memory are not recorded."
+    );
 
     let _ = writeln!(out, "\n--- Observations & Adoption ---");
     let _ = writeln!(

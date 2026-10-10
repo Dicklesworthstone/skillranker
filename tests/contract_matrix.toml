@@ -1390,6 +1390,7 @@ unit_property_tests = [
     "tests/stats_value_report_contract.rs::empty_ledger_stats_reports_clean_zeros_and_not_estimable",
     "tests/stats_value_report_contract.rs::mixed_cohorts_and_channels_preserve_distinct_denominators",
     "tests/stats_value_report_contract.rs::latency_summary_computes_accurate_percentiles",
+    "tests/stats_value_report_contract.rs::channel_latency_keeps_failures_and_excludes_unfinished_in_the_same_window",
     "tests/stats_value_report_contract.rs::provider_metrics_tracks_tokens_and_cache_served_events",
     "tests/stats_value_report_contract.rs::observations_and_adoption_rate_tracked_with_caveats",
     "tests/stats_value_report_contract.rs::judgments_and_cost_per_useful_suggestion_calculated",

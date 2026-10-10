@@ -208,8 +208,11 @@ fn empty_ledger_stats_reports_clean_zeros_and_not_estimable() {
     assert!(report.turns.by_channel.is_empty());
 
     assert_eq!(report.latency.mean_ms, 0);
+    assert_eq!(report.latency.measured_turns, 0);
     assert_eq!(report.latency.median_ms, 0);
     assert_eq!(report.latency.p95_ms, 0);
+    assert_eq!(report.latency.p99_ms, 0);
+    assert!(report.latency_by_channel.is_empty());
     assert_eq!(report.latency.min_ms, 0);
     assert_eq!(report.latency.max_ms, 0);
 
@@ -429,6 +432,197 @@ fn latency_summary_computes_accurate_percentiles() {
     assert_eq!(report.latency.median_ms, 30);
     assert_eq!(report.latency.mean_ms, 40); // (10+20+30+40+100) / 5 = 40
     assert_eq!(report.latency.p95_ms, 100);
+    assert_eq!(report.latency.p99_ms, 100);
+    assert_eq!(report.latency.measured_turns, 5);
+}
+
+#[test]
+fn channel_latency_keeps_failures_and_excludes_unfinished_in_the_same_window() {
+    let dir = temp_private_dir("channel-latency");
+    let (inv, cx) = test_invocation();
+    let location = LedgerLocation::Directory(dir.clone());
+    init_ledger(&inv, &cx, location.clone()).expect("init ledger");
+    let LedgerOpen::Ready(mut store) =
+        open_ledger(&inv, &cx, LedgerAccess::ExistingOnly, location.clone()).expect("open ledger")
+    else {
+        panic!("expected ready store");
+    };
+    let stamp = store.stamp();
+    let base = 1_000_000;
+    store
+        .record_roster_snapshot(inv.clock(), &cx, &snapshot_fixture("snap-1", base), stamp)
+        .expect("snapshot");
+    let mut events = Vec::new();
+    // Enough samples to distinguish p95, p99 and max; reverse insertion order.
+    for latency in (1..=100).rev() {
+        events.push(event_fixture(
+            &format!("cli-{latency}"),
+            "cli",
+            DecisionKind::Ranked,
+            ExposureState::Generated,
+            latency,
+            base + latency,
+        ));
+    }
+    for (id, channel, decision, elapsed, time, unfinished) in [
+        (
+            "shadow-fast",
+            "shadow",
+            DecisionKind::Abstain,
+            10,
+            base + 1,
+            false,
+        ),
+        (
+            "shadow-ranked",
+            "shadow",
+            DecisionKind::Ranked,
+            30,
+            base + 2,
+            false,
+        ),
+        (
+            "shadow-failure",
+            "shadow",
+            DecisionKind::Unavailable,
+            900,
+            base + 3,
+            false,
+        ),
+        (
+            "shadow-running",
+            "shadow",
+            DecisionKind::Unavailable,
+            0,
+            base + 4,
+            true,
+        ),
+        (
+            "tui-running",
+            "tui",
+            DecisionKind::Unavailable,
+            123,
+            base + 5,
+            true,
+        ),
+        (
+            "too-old",
+            "shadow",
+            DecisionKind::Ranked,
+            90_000,
+            base - 1,
+            false,
+        ),
+        (
+            "too-new",
+            "shadow",
+            DecisionKind::Ranked,
+            99_000,
+            base + 201,
+            false,
+        ),
+    ] {
+        let mut event = event_fixture(
+            id,
+            channel,
+            decision,
+            ExposureState::Generated,
+            elapsed,
+            time,
+        );
+        if unfinished {
+            event.reason = IN_FLIGHT_REASON.into();
+        }
+        events.push(event);
+    }
+    for event in events {
+        store
+            .record_ranking_event_with_attempts(inv.clock(), &cx, &event, &[], None, &[], stamp)
+            .expect("event");
+    }
+    let report = store
+        .query_value_stats(base as i64, base as i64 + 200, false)
+        .expect("stats");
+    assert_eq!(report.turns.total_evaluated, 105);
+    assert_eq!(report.latency.measured_turns, 103);
+    assert_eq!(report.latency.excluded_unfinished, 2);
+    assert_eq!(
+        report.latency.max_ms, 900,
+        "finished failures remain measured"
+    );
+    assert_eq!(report.latency_by_channel.len(), 3);
+    let cli = &report.latency_by_channel[0];
+    assert_eq!(cli.channel, "cli");
+    assert_eq!(cli.latency.measured_turns, 100);
+    assert_eq!(cli.latency.mean_ms, 50);
+    assert_eq!(
+        cli.latency.median_ms, 51,
+        "preserve the upper-middle median"
+    );
+    assert_eq!(cli.latency.p95_ms, 95);
+    assert_eq!(cli.latency.p99_ms, 99);
+    assert_eq!(cli.latency.max_ms, 100);
+    let shadow = &report.latency_by_channel[1];
+    assert_eq!(shadow.channel, "shadow");
+    assert_eq!(shadow.latency.measured_turns, 3);
+    assert_eq!(shadow.latency.excluded_unfinished, 1);
+    assert_eq!(shadow.latency.mean_ms, 313);
+    assert_eq!(shadow.latency.median_ms, 30);
+    assert_eq!(shadow.latency.p99_ms, 900);
+    let tui = &report.latency_by_channel[2];
+    assert_eq!(tui.channel, "tui");
+    assert_eq!(tui.latency.measured_turns, 0);
+    assert_eq!(tui.latency.excluded_unfinished, 1);
+    assert_eq!(
+        tui.latency.p99_ms, 0,
+        "placeholder durations are never samples"
+    );
+    assert_eq!(
+        report
+            .latency_by_channel
+            .iter()
+            .map(|c| c.latency.measured_turns)
+            .sum::<u64>(),
+        103
+    );
+    assert_eq!(
+        report
+            .latency_by_channel
+            .iter()
+            .map(|c| c.latency.excluded_unfinished)
+            .sum::<u64>(),
+        2
+    );
+    drop(store);
+
+    for format in ["--json", "--table"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_sr"))
+            .args(["stats", "--dir"])
+            .arg(&dir)
+            .arg(format)
+            .output()
+            .expect("stats CLI");
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        if format == "--json" {
+            let report: StatsValueReport = serde_json::from_slice(&output.stdout).expect("report");
+            assert_eq!(report.latency.measured_turns, 105);
+            assert_eq!(report.latency.excluded_unfinished, 2);
+            assert_eq!(report.latency_by_channel[0].latency.p99_ms, 99);
+            assert_eq!(report.latency_by_channel[1].latency.p99_ms, 99_000);
+        } else {
+            let table = String::from_utf8(output.stdout).expect("table");
+            assert!(table.contains("[cli] measured: 100, unfinished: 0"));
+            assert!(table.contains("[shadow] measured: 5, unfinished: 1"));
+            assert!(table.contains("[tui] measured: 0, unfinished: 1"));
+            assert!(table.contains("P99: 99 ms"));
+            assert!(table.contains("cold-start/TLS strata and memory are not recorded"));
+        }
+    }
 }
 
 #[test]

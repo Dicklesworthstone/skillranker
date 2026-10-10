@@ -600,16 +600,53 @@ pub struct FailureCause {
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct LatencySummary {
+    pub measured_turns: u64,
     pub mean_ms: u64,
     pub median_ms: u64,
     pub p95_ms: u64,
+    pub p99_ms: u64,
     pub min_ms: u64,
     pub max_ms: u64,
-    /// Turns left out of the five figures above because they never finished, so their
+    /// Turns left out of the duration figures because they never finished, so their
     /// recorded duration is a placeholder rather than a measurement. Reported so that
     /// a summary drawn from a subset says which subset, rather than implying it
     /// covered every turn in the window.
     pub excluded_unfinished: u64,
+}
+
+impl LatencySummary {
+    /// Samples arrive sorted by the shared report query. Preserve the existing
+    /// upper-middle median; p95 and p99 use the nearest-rank convention.
+    fn from_sorted_samples(samples: &[u64], excluded_unfinished: u64) -> Self {
+        let len = samples.len();
+        Self {
+            measured_turns: len as u64,
+            mean_ms: if len == 0 {
+                0
+            } else {
+                (samples.iter().map(|&value| u128::from(value)).sum::<u128>() / len as u128) as u64
+            },
+            median_ms: samples.get(len / 2).copied().unwrap_or(0),
+            // ceil(0.95 * n) - 1 = n - floor(n / 20) - 1, and similarly for p99.
+            p95_ms: samples
+                .get(len.saturating_sub(len / 20 + 1))
+                .copied()
+                .unwrap_or(0),
+            p99_ms: samples
+                .get(len.saturating_sub(len / 100 + 1))
+                .copied()
+                .unwrap_or(0),
+            min_ms: samples.first().copied().unwrap_or(0),
+            max_ms: samples.last().copied().unwrap_or(0),
+            excluded_unfinished,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ChannelLatencySummary {
+    pub channel: String,
+    pub latency: LatencySummary,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -745,6 +782,7 @@ pub struct StatsValueReport {
     pub since_unix_ms: i64,
     pub turns: TurnMetrics,
     pub latency: LatencySummary,
+    pub latency_by_channel: Vec<ChannelLatencySummary>,
     pub observations: ObservationMetrics,
     pub judgments: JudgmentMetrics,
     pub provider: ProviderMetrics,
@@ -3294,48 +3332,42 @@ impl LedgerStore {
 
         // 2. Latency. An unfinished row carries `elapsed_ms = 0` as a placeholder, not
         // as a measurement of a very fast turn. Admitting it would pull the mean, the
-        // median and p95 toward zero and make every killed invocation look like the
+        // median and tail percentiles toward zero and make every killed invocation look like the
         // fastest thing the product ever did, so the sample is drawn from turns that
         // finished and the summary reports how many it left out.
         let mut lat_stmt = self.connection.prepare(&format!(
-            "SELECT elapsed_ms FROM ranking_events WHERE created_at_unix_ms >= ?1 \
-             AND created_at_unix_ms <= ?2 AND NOT {UNFINISHED_ROW_SQL} ORDER BY elapsed_ms ASC"
+            "SELECT mode_channel, elapsed_ms, {UNFINISHED_ROW_SQL} FROM ranking_events \
+             WHERE created_at_unix_ms >= ?1 AND created_at_unix_ms <= ?2 ORDER BY elapsed_ms ASC"
         ))?;
         let lat_rows = lat_stmt.query_map(
             params![since_unix_ms, as_of_unix_ms, IN_FLIGHT_REASON],
-            |row| row.get::<_, i64>(0),
+            |row| {
+                let elapsed_ms = row.get::<_, i64>(1)?;
+                let elapsed_ms = u64::try_from(elapsed_ms)
+                    .map_err(|_| rusqlite::Error::IntegralValueOutOfRange(1, elapsed_ms))?;
+                Ok((row.get::<_, String>(0)?, elapsed_ms, row.get::<_, bool>(2)?))
+            },
         )?;
         let mut latencies: Vec<u64> = Vec::new();
-        let mut sum_lat: u64 = 0;
-        for l in lat_rows {
-            let val = l? as u64;
-            sum_lat = sum_lat.saturating_add(val);
-            latencies.push(val);
+        let mut channel_samples = std::collections::BTreeMap::<String, (Vec<u64>, u64)>::new();
+        for row in lat_rows {
+            let (channel, elapsed_ms, unfinished) = row?;
+            let (samples, excluded) = channel_samples.entry(channel).or_default();
+            if unfinished {
+                *excluded += 1;
+            } else {
+                latencies.push(elapsed_ms);
+                samples.push(elapsed_ms);
+            }
         }
-        let excluded_unfinished = in_flight_or_killed as u64;
-        let latency = if latencies.is_empty() {
-            LatencySummary {
-                mean_ms: 0,
-                median_ms: 0,
-                p95_ms: 0,
-                min_ms: 0,
-                max_ms: 0,
-                excluded_unfinished,
-            }
-        } else {
-            let len = latencies.len();
-            let p95_idx = ((len as f64 * 0.95).ceil() as usize)
-                .saturating_sub(1)
-                .min(len - 1);
-            LatencySummary {
-                mean_ms: sum_lat / (len as u64),
-                median_ms: latencies[len / 2],
-                p95_ms: latencies[p95_idx],
-                min_ms: latencies[0],
-                max_ms: latencies[len - 1],
-                excluded_unfinished,
-            }
-        };
+        let latency = LatencySummary::from_sorted_samples(&latencies, in_flight_or_killed as u64);
+        let latency_by_channel = channel_samples
+            .into_iter()
+            .map(|(channel, (samples, excluded))| ChannelLatencySummary {
+                channel,
+                latency: LatencySummary::from_sorted_samples(&samples, excluded),
+            })
+            .collect();
 
         // 3. Observations
         let total_obs: i64 = self.connection.query_row(
@@ -3694,6 +3726,7 @@ impl LedgerStore {
             since_unix_ms,
             turns,
             latency,
+            latency_by_channel,
             observations,
             judgments,
             provider,
