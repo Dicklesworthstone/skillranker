@@ -1248,3 +1248,56 @@ the confirmation to look for.
   Independent corpus/cohort gates and the historical timeout cause remain open.
   Author-only activation proof and rollback receipt:
   `/scratch/tmp/skillranker-stats-activation-rqps11yy/retry-hz2`.
+
+## Redeployment — 2026-10-10 UTC (BeigeCompass, observation boundaries)
+
+- Activated source `11ed1c5185d2d792067040e7b0711f1060c5c0db` at
+  `2026-10-10 13:05:31 UTC`. Installed `observe` now refuses unresolved
+  lineage, records only the selected branch, and distinguishes explicit
+  producer/session/agent observation namespaces. Normalized imports retain
+  their loads and cursors with unknown exposure attribution; producer-aware
+  ranking/exposure provenance and historical attribution remain unqualified.
+- Installed SHA256
+  `6964ceb79ac8aeed3c04208b5dde64c38b6e2022661210436357a7ce0527fe05`,
+  25,373,808 bytes, mode `0755`. Prior `40d320e` is preserved at
+  `~/.local/state/sr/deployments/20261010T130531Z-40d320e/sr`, SHA256
+  `2e0a6a9b480cca829473bf6ca2c4ec70f17f9aff72029d304e0308fb4f93246e`.
+  Cooperating lock, identity rechecks, backup, atomic replacement and fsync
+  passed. External noncooperating edits remain outside CAS protection.
+- DSR `50b4b077-605f-4f33-80c3-4b1242cb794f` succeeded in 1,389 seconds
+  through mandatory remote RCH on `vmi1264463`, locked native Linux x86-64
+  release, default features, one Cargo job and normal admission. All 285
+  frozen inputs matched the actual isolated worker snapshot twice. Existing
+  source check, strict Clippy and full default proof are reused, not rerun:
+  1,628 distinct passes, zero failures and eleven unchanged opt-in ignores
+  at base `24961ea` plus overlay `104f64a4`, with committed input bytes
+  matching `11ed1c5`. Build metadata includes tracker-only dirtiness;
+  unrelated untracked paths were preserved. ELF, manifest, archive and verbatim
+  `LICENSE` checks passed; no public release or other-platform qualification.
+- Candidate and installed paths each pass 39 observation commands and 19
+  private ledger initializations, 33 parser controls, seven stats groups,
+  28 CLI/hook records, 26 delivery/persistence records and eight installer
+  controls. Private candidate wrapper and actual installed credential wrapper
+  each pass 29 records. Inputs and stores are synthetic and isolated; all
+  calls are offline. The prior executable reproduced the sibling-load defect.
+- Four configuration identities, live installation/removal previews, budget
+  fields and all non-clock operational metrics remain unchanged: 170
+  evaluations, zero emissions or independent judgments, 234 attempts and
+  fourteen unknown-usage attempts. No operator observation reconciliation,
+  public provider call or organic cohort traffic was generated. Consent,
+  shadow mode, capture, coverage, timeout and disabled shared guard are unchanged.
+- Retained failures: initial busy-worker admission refused after 308.288
+  seconds without compilation or local fallback; a reused private checker
+  subsequently inspected an obsolete persistent root and failed despite
+  successful DSR compilation. Correct isolated-source proofs reconcile that
+  error. A native fixture filename disagreed with its session ID; the fixture
+  was corrected with every assertion retained, and the mismatch now has a
+  separate refusal control. A duplicate exclusive-output postcheck failed;
+  fresh output paths passed the final invariance check. Six bounded CASS
+  searches timed out. Staged UBS exited 3 with no supported source files;
+  nothing was scanned. Documentation consistency and whitespace passed.
+  No failing case was given qualification credit.
+- Author-only native activation. Original `sr-1uf4` representative 500-turn
+  and metric requirements, independent corpus/cohort gates, and the historical
+  timeout cause remain open. Evidence, failed logs, audit and rollback receipt:
+  `/scratch/tmp/skillranker-observe-activation-yoyao7rl/retry-vmi1264463`.
