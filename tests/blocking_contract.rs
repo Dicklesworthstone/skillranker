@@ -395,6 +395,53 @@ fn cancelled_batch_drains_all_running_leaves_before_returning() {
 }
 
 #[test]
+fn cancelled_running_leaf_waits_for_release_before_returning() {
+    // Immediate release cannot distinguish joining a wrapper from draining
+    // its actual blocking callback. Keep the worker held after cancellation
+    // and observe whether the production batch returns before that release.
+    let invocation = ProcessInvocation::enter().unwrap();
+    let cx = invocation.request_cx().unwrap();
+    let controller_cx = cx.clone();
+    let returned = Arc::new(AtomicBool::new(false));
+    let observed_return = Arc::clone(&returned);
+    let finished = Arc::new(AtomicBool::new(false));
+    let leaf_finished = Arc::clone(&finished);
+    let (started_tx, started_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let controller = thread::spawn(move || {
+        started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        controller_cx.cancel_with(asupersync::CancelKind::User, Some("held running leaf"));
+        thread::sleep(Duration::from_millis(250));
+        let returned_before_release = observed_return.load(Ordering::SeqCst);
+        release_tx.send(()).unwrap();
+        returned_before_release
+    });
+    let result = run_blocking_leaf(
+        &invocation,
+        &cx,
+        BlockingLeafKind::Filesystem,
+        false,
+        move || {
+            started_tx.send(()).unwrap();
+            release_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+            leaf_finished.store(true, Ordering::SeqCst);
+        },
+    );
+    returned.store(true, Ordering::SeqCst);
+    let returned_before_release = controller.join().unwrap();
+    assert!(
+        !returned_before_release,
+        "wrapper returned before callback release"
+    );
+    assert!(
+        finished.load(Ordering::SeqCst),
+        "callback must finish before return"
+    );
+    assert_eq!(result, Err(RuntimeError::Cancelled));
+    assert!(invocation.shutdown());
+}
+
+#[test]
 fn late_batch_drains_timely_and_stalled_siblings_without_publication() {
     use skillranker::blocking::run_blocking_batch;
     use skillranker::limits::DurationMillis;
