@@ -4,13 +4,16 @@ Pre-registration for running `sr hook claude` in **shadow mode** on this
 repository's maintainer environment to produce the operational cohort the
 promotion gates consume (`.8.4`: ≤5% operational fallback over ≥500
 representative hook invocations; latency p50/p95/p99 across cold/warm/cache
-strata). Decisions 1–4 below are settled **before** any traffic counts, as
-the bead requires. This document changes no defaults for anyone else.
+strata). The initial protocol and later revision-bound deployment receipts
+are recorded here. Deployment and controlled checks do not establish cohort
+acceptance. This document changes no defaults for anyone else.
 
 ## 1. Consent and privacy boundary
 
 - Scope: sessions of coding agents working in this repository on this
   machine, including subagents. The maintainer operates all of them.
+  Only verified Claude hook traffic is covered by this installation; other
+  agent harnesses are not covered merely because they use the repository.
 - Shadow recording writes bounded local metadata (events, attempts, usage,
   latency) to `~/.local/share/sr/ledger.sqlite3`. Case bodies and replay
   capture remain separately opt-in and are **not** enabled.
@@ -35,19 +38,23 @@ independent blinded adjudicator.
 
 ## 3. Provider budget (requires maintainer sign-off)
 
-Shadow evaluation calls Jev on every user prompt: 2 logical requests (wide +
-rerank when the gate passes), up to 4 HTTP attempts. At this fleet's current
-activity that is several hundred invocations per day against ~210-candidate
-Choices. The durable shared allowance (`.7.4`–`.7.8`) does not exist yet, so
-there is **no hard automated cap**; the mitigations are:
+Shadow evaluation can call Jev on each covered user prompt: at most 2 logical
+requests (wide + rerank when the gate passes), up to 4 HTTP attempts. The durable
+shared allowance (`.7.4`–`.7.8`) is implemented. The current local deployment's
+`sr budget --json` reports its guard **disabled**, so this deployment has no
+enforced shared cap. Its existing mitigations are:
 
 - the provider circuit behavior of `sr` itself (outages fail closed, quietly);
 - per-invocation caps (2 requests / 4 attempts / 3 s deadline);
 - manual inspection via `sr stats` (attempts, known tokens, unknown usage);
 - an explicit revocation path (§6) that stops spend in one command.
 
-Estimated daily spend driver: `invocations × ~2 requests × ~10–20 K tokens`.
-The maintainer sets the acceptable number before installation.
+The original several-hundred-per-day estimate was not measured. The September
+17–21 Claude transcript count was 96 prompts over five active days (about 19 per
+day); that historical sample does not establish today's rate. Before expanding
+coverage or starting a prospective cohort, freeze the population and sampling
+policy and approve an affordable shared allowance. No cap, sampling, consent or
+coverage setting changed during the redeployments below.
 
 ## 4. Blinding for the paired harm cohort (`.8.2`)
 
@@ -60,9 +67,10 @@ agent) and is out of scope here.
 
 ## 5. Installation procedure (each step verified before the next)
 
-1. **Build a release binary at a frozen revision** — the hook must not point
+1. **Build a release binary at a frozen revision through the configured DSR
+   and mandatory RCH route** — the hook must not point
    at the fleet's debug target, which every peer build overwrites:
-   `cargo build --locked --release` → install to `~/.local/bin/sr`
+   locked native release build → qualify → install to `~/.local/bin/sr`
    (record the SHA256 and revision in this document when done).
 2. `sr ledger init` in the real HOME (idempotent; preserves any existing
    store).
@@ -1137,3 +1145,62 @@ the confirmation to look for.
   outcome gates and native promotion gates remain open. Synthetic probes receive
   no organic cohort credit. Raw evidence, failing logs, audit and deployment
   receipt: `/scratch/tmp/skillranker-claude-native-3_xe6z4x`.
+
+## Redeployment — 2026-10-10 UTC (BeigeCompass, evidence parsing and queued work)
+
+- Activated source `e7e2acd3d35b9c0c98dec6cc2f97d11eafe7bf6f` at
+  `2026-10-10 01:38:36 UTC`. This connects the published strict evidence-file
+  parsers and queued blocking-work admission repair to the existing shadow
+  executable. Running blocking closures remain nonpreemptible; this does not
+  resolve the original historical `sr-9fzp` cause.
+- Installed SHA256
+  `61983b861e3bc72e190e9b79272f71f9a1d4e69407e0f7dfd860f9181a4065f9`,
+  25,332,064 bytes, mode `0755`. The old `b5445ca` executable is preserved at
+  `~/.local/state/sr/deployments/20261010T013836Z-b5445ca/sr`, SHA256
+  `dcfe6a544cfa0336012e2022f039c445a9f242181e24d694934a3c3c7ef4a966`.
+  Cooperating lock, inode/hash/mode rechecks, backup, atomic replacement and
+  file/directory fsync passed; external noncooperating edits are not CAS-protected.
+- DSR `a138165d-7009-47f0-804e-352a8fde5959` passed in 1,690.210 seconds
+  through mandatory RCH `vmi1264463`, locked native Linux x86-64 release,
+  default features and one job. All 285 committed/local/worker inputs match
+  the earlier qualification manifest
+  `1aeadfd290832df00fdb405ef33496f3d12a18e149ce862c6df67d3197ae189c`.
+  That same source's all-target check, strict Clippy and full default proof
+  are reused: 1,618 distinct passes, one nested positive control, zero failures
+  and eleven existing opt-in ignores. Those tests were not rerun for this
+  executable-only deployment. ELF64 x86-64, artifact manifest and archive checks
+  passed; archive SHA256
+  `19f7484e9c72ec74fc530cb295f8f9d7913d6d3c0d9e55be4bfe5cfd31772b9f`
+  contains exactly the identical executable and verbatim `LICENSE`.
+- The actual old binary failed 28 of 33 raw evidence-file controls by accepting
+  invalid JSON whitespace or escaped duplicate keys. Candidate and installed
+  paths each pass all 33, including three valid counterparts and thirty
+  malformed-input refusals, zero HTTP accounting and non-actionable reports
+  with quality `not-established`. Each comparison run also passed 28 CLI/hook
+  and 26 real SQLite delivery records; each new binary passed eight isolated
+  installer controls. The actual credential wrapper passed 29 records.
+- Four configuration identities, live install/uninstall previews and every
+  non-clock operational field remain unchanged. Query-clock relationships were
+  checked before comparison: 170 evaluations (167 shadow), zero emissions or
+  independent judgments, 234 attempts and fourteen unknown-usage attempts.
+  Credentials, consent, allowance, hook timeout and capture policy were not
+  changed. No provider or organic cohort traffic was generated.
+- Preparation incident: failed Mail reservations did not stop the initial
+  chained Beads claim. The author caught this sequencing error and stopped
+  repository edits until coordination recovered. After graceful owner drain
+  and raw DB/sidecar backup, the first supported repair failed its staged backup
+  integrity check. Supported leaked-page vacuum then reclaimed two pages;
+  canonical integrity/FKs passed and all 22 original table row hashes were
+  unchanged before normal mailbox writes resumed. Exact reservations were then
+  acquired. No archive reconstruction or row-loss acceptance was used.
+  Both eight-second CASS searches timed out (124); setup path/flag errors and
+  a DCG-refused large wrapper are retained without qualification credit.
+  Staged UBS exited 3 because this documentation/tracker-only change contains
+  no supported source files; nothing was scanned and no UBS pass is claimed.
+  Documentation consistency and whitespace checks passed.
+- Author-only native Linux verification; no new real-Claude delivery,
+  public provider, other-platform, independent quality or phase promotion.
+  `sr-1uf4` keeps its original representative 500-turn and metric requirements;
+  corpus/paired-outcome gates and the historical runtime investigation stay
+  open. Raw controls, failures, audit and rollback receipt:
+  `/scratch/tmp/skillranker-qualified-deployment-tc2xged2`.
