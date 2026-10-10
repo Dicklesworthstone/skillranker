@@ -2397,16 +2397,12 @@ fn observe_owned(
 
     let cursor_session_id = if is_native {
         format!("native:{}:{}", harness_opt.unwrap(), session_id)
-    } else if normalized_context.producer_id.is_some()
-        || session_id.starts_with("native:")
-        || session_id.starts_with("producer:")
-        || session_id.starts_with("producer-v2:")
-    {
-        // Imported opaque IDs may contain colons. Frame the fields instead of
-        // joining them, and never let an import name a native/producer cursor.
-        // Legacy unqualified imports keep their existing cursor namespace.
+    } else {
+        // Frame every import, including absent producer/agent identities. Epoch
+        // changes cannot reuse an earlier observation watermark. Historical
+        // cursors lack this scope and remain untouched, rather than reassigned.
         format!(
-            "producer-v2:{}",
+            "producer-v3:{}",
             serde_json::json!([
                 normalized_context.harness.as_str(),
                 normalized_context
@@ -2415,10 +2411,12 @@ fn observe_owned(
                     .map(|id| id.as_str()),
                 normalized_context.agent_id.as_ref().map(|id| id.as_str()),
                 session_id,
+                normalized_context
+                    .context_epoch
+                    .as_ref()
+                    .map(|id| id.as_str()),
             ])
         )
-    } else {
-        session_id.clone()
     };
 
     let existing_cursor = crate::storage::get_session_cursor(
@@ -2502,12 +2500,12 @@ fn observe_owned(
             | crate::context::LoadState::Unobservable => crate::storage::EvidenceState::Censored,
         };
         let event_id_str = obs.event_id.as_ref().map_or("event-0", |e| e.as_str());
-        let source_event_key = if !is_native && normalized_context.producer_id.is_some() {
-            // The old key omitted producer, harness, agent and workspace. Its
-            // rows cannot retrospectively establish which producer owned them;
-            // retain them and use an unambiguous versioned key for new imports.
+        let source_event_key = if !is_native {
+            // All imports need the complete declared scope: unqualified keys
+            // omitted harness/agent/workspace, and v2 omitted epoch. Preserve
+            // those rows without guessing provenance or merging new evidence.
             format!(
-                "normalized-v2:{}",
+                "normalized-v3:{}",
                 serde_json::json!([
                     workspace.to_string_lossy(),
                     normalized_context.harness.as_str(),
@@ -2518,18 +2516,18 @@ fn observe_owned(
                     normalized_context.agent_id.as_ref().map(|id| id.as_str()),
                     session_id,
                     agent_branch,
+                    normalized_context
+                        .context_epoch
+                        .as_ref()
+                        .map(|id| id.as_str()),
                     event_id_str,
                     obs.skill_id.as_str(),
                 ])
             )
         } else {
-            // Preserve qualified native and legacy unqualified import history.
+            // Preserve the native source namespace.
             format!(
-                "{}:{}:{}:{}:{}",
-                if is_native { "native" } else { "normalized" },
-                session_id,
-                agent_branch,
-                event_id_str,
+                "native:{session_id}:{agent_branch}:{event_id_str}:{}",
                 obs.skill_id.as_str()
             )
         };

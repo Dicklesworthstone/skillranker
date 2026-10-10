@@ -394,7 +394,7 @@ fn observe_boundary_producer_namespaces_preserve_distinct_loads_and_idempotence(
     }
     let connection = Connection::open(fixture.root.join("ledger").join(LEDGER_FILE)).unwrap();
     let loaded: i64 = connection.query_row(
-        "SELECT count(*) FROM observations WHERE evidence_state='loaded' AND source_event_key LIKE 'normalized-v2:%'",
+        "SELECT count(*) FROM observations WHERE evidence_state='loaded' AND source_event_key LIKE 'normalized-v3:%'",
         [], |row| row.get(0),
     ).unwrap();
     assert_eq!(loaded, 6);
@@ -407,15 +407,92 @@ fn observe_boundary_producer_keys_do_not_reassign_legacy_rows() {
     fixture.context(&["review"]);
     let path = fixture.root.join("workspace/context.json");
     let mut context: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-    // Record the historical unqualified namespace through the actual CLI.
-    let first = fixture.observe("context.json", &[]);
-    assert!(first.status.success());
-    let connection = Connection::open(fixture.root.join("ledger").join(LEDGER_FILE)).unwrap();
-    let legacy: (String, String, String, i64) = connection.query_row(
-        "SELECT observation_id,source_event_key,evidence_state,observed_at_unix_ms FROM observations",
-        [], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?)),
-    ).unwrap();
-    for producer in ["producer-a", "producer-b"] {
+    let listing = fixture
+        .command()
+        .args(["roster", "--json"])
+        .output()
+        .unwrap();
+    assert!(listing.status.success());
+    let listing: serde_json::Value = serde_json::from_slice(&listing.stdout).unwrap();
+    let skill_id = listing["records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|record| record["name"] == "review")
+        .unwrap()["skill_id"]
+        .as_str()
+        .unwrap();
+    let workspace = fixture
+        .root
+        .join("workspace")
+        .to_string_lossy()
+        .into_owned();
+    let location = LedgerLocation::Directory(fixture.root.join("ledger"));
+    let (invocation, cx) = test_invocation();
+    // Seed the actual historical formats through the storage API. The new CLI
+    // deliberately cannot create these incompletely scoped identities.
+    let historical = [
+        (
+            "observe-boundary".to_owned(),
+            format!("normalized:observe-boundary:main:load-0:{skill_id}"),
+        ),
+        (
+            format!(
+                "producer-v2:{}",
+                serde_json::json!(["claude_code", "producer-a", null, "observe-boundary"])
+            ),
+            format!(
+                "normalized-v2:{}",
+                serde_json::json!([
+                    workspace,
+                    "claude_code",
+                    "producer-a",
+                    null,
+                    "observe-boundary",
+                    "main",
+                    "load-0",
+                    skill_id
+                ])
+            ),
+        ),
+    ]
+    .map(|(session_key, source_event_key)| {
+        let observation = NewObservation {
+            observation_id: format!("obs-{source_event_key}"),
+            source_event_key,
+            workspace_root: workspace.clone(),
+            session_id: "observe-boundary".into(),
+            agent_branch: "main".into(),
+            attributed_event_id: None,
+            skill_id: skill_id.into(),
+            evidence_state: EvidenceState::Loaded,
+            observed_at_unix_ms: 1234,
+        };
+        let cursor = SessionCursor {
+            workspace_root: workspace.clone(),
+            session_id: session_key,
+            agent_branch: "main".into(),
+            cursor_kind: CursorKind::Observation,
+            transcript_generation: 1,
+            last_complete_event_id: "load-0".into(),
+            last_offset_bytes: 12,
+            updated_at_unix_ms: 1234,
+        };
+        assert_eq!(
+            record_observations_with_cursor(
+                &invocation,
+                &cx,
+                LedgerAccess::ExistingOnly,
+                location.clone(),
+                std::slice::from_ref(&observation),
+                &cursor,
+                Some(0)
+            ),
+            Ok(true)
+        );
+        (observation, cursor)
+    });
+    for producer in [None, Some("producer-a"), Some("producer-b")] {
         context["producer_id"] = serde_json::json!(producer);
         fs::write(&path, context.to_string()).unwrap();
         let output = fixture.observe("context.json", &[]);
@@ -423,12 +500,163 @@ fn observe_boundary_producer_keys_do_not_reassign_legacy_rows() {
         let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
         assert_eq!(value["cursor_generation"], 1);
     }
-    assert_eq!(fixture.counts(), (3, 3));
-    let preserved: (String, String, String, i64) = connection.query_row(
-        "SELECT observation_id,source_event_key,evidence_state,observed_at_unix_ms FROM observations WHERE observation_id=?1",
-        [&legacy.0], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?)),
+    assert_eq!(fixture.counts(), (5, 5));
+    let (invocation, cx) = test_invocation();
+    let observations = get_session_observations(
+        &invocation,
+        &cx,
+        LedgerAccess::ExistingOnly,
+        location.clone(),
+        &workspace,
+        "observe-boundary",
+    )
+    .unwrap();
+    for (observation, cursor) in historical {
+        assert_eq!(
+            observations
+                .iter()
+                .find(|row| row.observation_id == observation.observation_id),
+            Some(&observation)
+        );
+        assert_eq!(
+            get_session_cursor(
+                &invocation,
+                &cx,
+                LedgerAccess::ExistingOnly,
+                location.clone(),
+                &workspace,
+                &cursor.session_id,
+                "main",
+                CursorKind::Observation
+            )
+            .unwrap(),
+            Some(cursor)
+        );
+    }
+}
+
+#[test]
+fn observe_boundary_nullable_producer_scopes_include_agent_harness_and_epoch() {
+    let fixture = ObserveBoundaryFixture::new();
+    fixture.skill("workspace/custom", "review");
+    fs::write(
+        fixture.root.join("workspace/.sr/config.toml"),
+        "[roster]\nroots=['custom']\n",
+    )
+    .unwrap();
+    fixture.context(&["review"]);
+    let path = fixture.root.join("workspace/context.json");
+    let mut context: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    for (index, (producer, harness, agent, epoch)) in [
+        (None, "claude_code", None, None),
+        (None, "claude_code", None, Some("epoch-0")),
+        (None, "claude_code", Some("agent-a"), Some("epoch-0")),
+        (None, "claude_code", Some("agent-b"), Some("epoch-0")),
+        (None, "external-harness", Some("agent-b"), Some("epoch-0")),
+        (None, "external-harness", Some("agent-b"), Some("epoch-1")),
+        (
+            Some("producer-a"),
+            "external-harness",
+            Some("agent-b"),
+            Some("epoch-1"),
+        ),
+        (
+            Some("producer-a"),
+            "external-harness",
+            Some("agent-b"),
+            Some("epoch-0"),
+        ),
+        (
+            Some("producer-a"),
+            "external-harness",
+            Some("agent-b"),
+            None,
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        context["producer_id"] = serde_json::json!(producer);
+        context["harness"] = serde_json::json!(harness);
+        context["agent_id"] = serde_json::json!(agent);
+        context["context_epoch"] = serde_json::json!(epoch);
+        for event in context["events"].as_array_mut().unwrap() {
+            event["agent_id"] = serde_json::json!(agent);
+        }
+        fs::write(&path, context.to_string()).unwrap();
+        for generation in [1, 2] {
+            let output = fixture.observe("context.json", &[]);
+            assert!(
+                output.status.success(),
+                "{}; {}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(value["cursor_generation"], generation);
+            assert_eq!(value["observations_recorded"], 1);
+            assert_eq!(fixture.counts(), ((index + 1) as i64, (index + 1) as i64));
+        }
+    }
+    let connection = Connection::open(fixture.root.join("ledger").join(LEDGER_FILE)).unwrap();
+    let loaded: (i64, i64, i64) = connection.query_row(
+        "SELECT count(*),count(DISTINCT skill_id),count(attributed_event_id) FROM observations WHERE evidence_state='loaded' AND source_event_key LIKE 'normalized-v3:%'",
+        [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
     ).unwrap();
-    assert_eq!(preserved, legacy);
+    assert_eq!(loaded, (9, 1, 0));
+}
+
+#[test]
+fn observe_boundary_unqualified_imports_in_shared_ledger_keep_actual_workspaces_separate() {
+    let fixture = ObserveBoundaryFixture::new();
+    fixture.skill("home/.claude/skills", "review");
+    fixture.context(&["review"]);
+    let context: serde_json::Value =
+        serde_json::from_slice(&fs::read(fixture.root.join("workspace/context.json")).unwrap())
+            .unwrap();
+    let other = fixture.root.join("other-workspace");
+    fs::DirBuilder::new().mode(0o700).create(&other).unwrap();
+    // Both inputs claim the first workspace; only the invocation workspace has
+    // authority. The same home skill identity is visible in both workspaces.
+    fs::write(other.join("context.json"), context.to_string()).unwrap();
+    for (index, workspace) in [fixture.root.join("workspace"), other]
+        .into_iter()
+        .enumerate()
+    {
+        for generation in [1, 2] {
+            let output = fixture
+                .command()
+                .current_dir(&workspace)
+                .args(["observe", "--context", "context.json", "--dir"])
+                .arg(fixture.root.join("ledger"))
+                .arg("--json")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}; {}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(value["cursor_generation"], generation);
+            assert_eq!(value["observations_recorded"], 1);
+            assert_eq!(
+                value["workspace_root"],
+                workspace.to_string_lossy().as_ref()
+            );
+            assert_eq!(fixture.counts(), ((index + 1) as i64, (index + 1) as i64));
+        }
+    }
+    let connection = Connection::open(fixture.root.join("ledger").join(LEDGER_FILE)).unwrap();
+    let scopes: (i64, i64) = connection
+        .query_row(
+            "SELECT count(DISTINCT workspace_root),count(DISTINCT skill_id) FROM observations",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(scopes, (2, 1));
 }
 
 #[test]
@@ -1916,10 +2144,14 @@ fn test_observe_cli_e2e_with_context() {
     // Verify database has the session cursor recorded at generation 1
     let db_path = dir.join(LEDGER_FILE);
     let conn = Connection::open(&db_path).expect("open db");
+    let cursor_key = format!(
+        "producer-v3:{}",
+        serde_json::json!(["claude_code", null, null, "session-cli-e2e", "epoch-0"])
+    );
     let (cur_gen, last_ev): (i64, String) = conn
         .query_row(
-            "SELECT transcript_generation, last_complete_event_id FROM session_cursors WHERE session_id = 'session-cli-e2e'",
-            [],
+            "SELECT transcript_generation, last_complete_event_id FROM session_cursors WHERE session_id = ?1",
+            [&cursor_key],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .expect("query cursor");
@@ -2365,11 +2597,15 @@ fn test_observe_cli_cass_and_normalized_same_ids_cannot_move_native_cursor() {
         .expect("run normalized observe");
     assert_eq!(norm_out.status.code(), Some(0));
 
-    // Normalized cursor was created at its own key ("shared-session") at gen 1
+    // Even an unqualified normalized import uses its framed epoch-aware key.
+    let normalized_key = format!(
+        "producer-v3:{}",
+        serde_json::json!(["claude_code", null, null, "shared-session", "epoch-0"])
+    );
     let cur_gen_norm: i64 = conn
         .query_row(
-            "SELECT transcript_generation FROM session_cursors WHERE session_id = 'shared-session'",
-            [],
+            "SELECT transcript_generation FROM session_cursors WHERE session_id = ?1",
+            [&normalized_key],
             |r| r.get(0),
         )
         .expect("query normalized cursor");

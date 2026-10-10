@@ -298,6 +298,8 @@
         "observation_contract::observe_boundary_native_namespace_cannot_authorize_an_unresolved_fork",
         "observation_contract::observe_boundary_producer_namespaces_preserve_distinct_loads_and_idempotence",
         "observation_contract::observe_boundary_producer_keys_do_not_reassign_legacy_rows",
+        "observation_contract::observe_boundary_nullable_producer_scopes_include_agent_harness_and_epoch",
+        "observation_contract::observe_boundary_unqualified_imports_in_shared_ledger_keep_actual_workspaces_separate",
         "observation_contract::observe_boundary_imported_loads_cannot_claim_native_exposure_by_repeating_ids"
       ]
     },

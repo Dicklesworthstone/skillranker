@@ -37,11 +37,15 @@ for unlabelled native records it names the local ledger branch and does not
 authorize an ambiguous fork. Empty and unambiguous unlabelled history remain
 supported.
 
-New explicit-producer imports use framed, versioned observation and cursor keys,
-so producer/session IDs containing colons and distinct agent identities remain
-separate. Imports cannot name a native cursor by repeating its key as a session
-ID. Legacy rows are preserved; their missing producer provenance is not
-reconstructed. New imported loads retain unknown exposure attribution, since raw
+All normalized observation imports use framed, versioned observation and cursor
+keys, including imports without a producer ID. Harness, nullable producer/agent,
+session, branch, and nullable context epoch keep distinct scopes separate;
+observations also bind to the actual invocation workspace, event and skill.
+Repeated delivery within that declared scope remains idempotent. Imports cannot
+name a native cursor by repeating its key as a session ID. Legacy and v2 rows and
+cursors are preserved separately; missing provenance is not reconstructed, and
+reimporting historical events can record new, separately scoped evidence.
+New imported loads retain unknown exposure attribution, since raw
 session/branch IDs alone cannot establish the source of a recorded exposure.
 All normalized ranking imports use opaque, versioned event and ledger-session
 IDs, bound to the invocation workspace, harness, producer and agent. An imported
