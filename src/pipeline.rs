@@ -1547,6 +1547,13 @@ async fn rank_once(
         }
     };
 
+    let record_identity = RankingRecordIdentity::new(
+        &normalized_context,
+        source_selection.target(),
+        &args.workspace,
+        clock,
+    );
+
     if normalized_context.current_request.event_id.is_none() {
         let derived = derive_request_event_id(&normalized_context);
         if let Ok(id) = crate::identity::EventId::new(&derived) {
@@ -1709,12 +1716,7 @@ async fn rank_once(
     let (warnings, warnings_omitted) =
         roster_warnings(&roster, progress.evaluated.source_warning.as_ref());
     progress.admitted = Some(Admitted {
-        event_id: normalized_context
-            .current_request
-            .event_id
-            .as_ref()
-            .map(|e| e.as_str().to_owned())
-            .unwrap_or_else(|| derive_request_event_id(&normalized_context)),
+        event_id: record_identity.event_id.clone(),
         harness: normalized_context.harness.as_str().to_owned(),
         total: roster.skills().len(),
         partial: roster.is_partial(),
@@ -1780,12 +1782,7 @@ async fn rank_once(
             roster_source
                 .validate_concurrent(&dependencies, cx, clock)
                 .await?;
-            let event_id_str = normalized_context
-                .current_request
-                .event_id
-                .as_ref()
-                .map(|e| e.as_str().to_string())
-                .unwrap_or_else(|| derive_request_event_id(&normalized_context));
+            let event_id_str = record_identity.event_id.clone();
             let explicit_candidates: Vec<crate::storage::NewRankingCandidate> = skills
                 .iter()
                 .enumerate()
@@ -1817,6 +1814,7 @@ async fn rank_once(
                 args.ledger_dir.as_deref(),
                 &roster,
                 &normalized_context,
+                &record_identity,
                 crate::storage::DecisionKind::Explicit,
                 "explicit-match",
                 mode_channel,
@@ -1828,6 +1826,7 @@ async fn rank_once(
             let mut doc = build_explicit_document(
                 &skills,
                 &normalized_context,
+                &record_identity,
                 &roster,
                 clock.now().as_millis(),
                 &progress.evaluated,
@@ -2012,7 +2011,7 @@ async fn rank_once(
     // like configuration, also with the ledger or persistence disabled, never
     // cleaned up here, and applied before retrieval. Explicit requests were
     // resolved above and ignore them.
-    let snooze_scope = current_snooze_scope(&normalized_context);
+    let snooze_scope = current_snooze_scope(&normalized_context, &record_identity);
     let snooze_controls = match &snooze_scope {
         Some(scope) => config_files
             .snoozes(clock)?
@@ -2127,6 +2126,7 @@ async fn rank_once(
                     args.ledger_dir.as_deref(),
                     &roster,
                     &normalized_context,
+                    &record_identity,
                     crate::storage::DecisionKind::Abstain,
                     reason.as_str(),
                     mode_channel,
@@ -2138,6 +2138,7 @@ async fn rank_once(
                 let mut doc = build_abstain_document(
                     reason.as_str(),
                     &normalized_context,
+                    &record_identity,
                     &roster,
                     clock.now().as_millis(),
                     None,
@@ -2300,6 +2301,7 @@ async fn rank_once(
             args.ledger_dir.as_deref(),
             &roster,
             &normalized_context,
+            &record_identity,
             crate::storage::DecisionKind::Abstain,
             "no-shortlist-match",
             mode_channel,
@@ -2311,6 +2313,7 @@ async fn rank_once(
         let mut doc = build_abstain_document(
             "no-shortlist-match",
             &normalized_context,
+            &record_identity,
             &roster,
             clock.now().as_millis(),
             None,
@@ -2878,25 +2881,15 @@ async fn rank_once(
     progress.failed_recording =
         matches!(gate.ledger(), StoreAccess::Enabled).then(|| FailureRecording {
             ledger_dir: args.ledger_dir.clone(),
-            workspace_root: normalized_context.workspace_root.as_str().to_string(),
-            session_id: normalized_context
-                .session_id
-                .as_ref()
-                .map_or_else(|| "session-0".to_string(), |s| s.as_str().to_string()),
+            workspace_root: record_identity.workspace_root.clone(),
+            session_id: record_identity.session_id.clone(),
             agent_branch: normalized_context
                 .branch_id
                 .as_ref()
                 .map_or_else(|| "main".to_string(), |b| b.as_str().to_string()),
             mode_channel: mode_channel.to_string(),
             policy_version: "ranking-v1",
-            event_id: normalized_context
-                .current_request
-                .event_id
-                .as_ref()
-                .map_or_else(
-                    || derive_request_event_id(&normalized_context),
-                    |e| e.as_str().to_string(),
-                ),
+            event_id: record_identity.event_id.clone(),
             attempts: Vec::new(),
         });
     // Written before the first send, so an invocation killed while waiting on the
@@ -3143,6 +3136,7 @@ async fn rank_once(
                 args.ledger_dir.as_deref(),
                 &roster,
                 &normalized_context,
+                &record_identity,
                 crate::storage::DecisionKind::Abstain,
                 "low-need",
                 mode_channel,
@@ -3154,6 +3148,7 @@ async fn rank_once(
             let mut doc = build_abstain_document(
                 "low-need",
                 &normalized_context,
+                &record_identity,
                 &roster,
                 clock.now().as_millis(),
                 None,
@@ -3467,6 +3462,7 @@ async fn rank_once(
                     args.ledger_dir.as_deref(),
                     &roster,
                     &normalized_context,
+                    &record_identity,
                     crate::storage::DecisionKind::Abstain,
                     reason.as_str(),
                     mode_channel,
@@ -3484,6 +3480,7 @@ async fn rank_once(
                 let mut doc = build_abstain_document(
                     reason.as_str(),
                     &normalized_context,
+                    &record_identity,
                     &roster,
                     clock.now().as_millis(),
                     None,
@@ -3532,6 +3529,7 @@ async fn rank_once(
                     args.ledger_dir.as_deref(),
                     &roster,
                     &normalized_context,
+                    &record_identity,
                     crate::storage::DecisionKind::Unavailable,
                     reason.as_str(),
                     mode_channel,
@@ -3579,12 +3577,7 @@ async fn rank_once(
     })?;
 
     // 16. Build Ranked OutputDocument
-    let event_id_str = normalized_context
-        .current_request
-        .event_id
-        .as_ref()
-        .map(|e| e.as_str().to_string())
-        .unwrap_or_else(|| derive_request_event_id(&normalized_context));
+    let event_id_str = record_identity.event_id.clone();
 
     // Scoring uses renormalized probabilities; the ledger keeps the values the
     // provider actually returned beside them.
@@ -3654,6 +3647,7 @@ async fn rank_once(
         args.ledger_dir.as_deref(),
         &roster,
         &normalized_context,
+        &record_identity,
         crate::storage::DecisionKind::Ranked,
         "eligible-candidates",
         mode_channel,
@@ -3676,6 +3670,7 @@ async fn rank_once(
         &wide_outcome,
         &rerank_outcome,
         &normalized_context,
+        &record_identity,
         &roster,
         &Evaluated {
             metrics: progress.metrics.clone(),
@@ -3731,12 +3726,15 @@ struct SnoozeCheck<'a> {
 
 /// This context's snooze scope, as the ledger records its events. A context
 /// without a session identity has none, so no snooze can apply to it.
-fn current_snooze_scope(context: &NormalizedContext) -> Option<crate::snooze::SnoozeScope> {
-    let session = context.session_id.as_ref()?;
+fn current_snooze_scope(
+    context: &NormalizedContext,
+    record_identity: &RankingRecordIdentity,
+) -> Option<crate::snooze::SnoozeScope> {
+    context.session_id.as_ref()?;
     crate::snooze::SnoozeScope::from_event(
         "current",
-        context.workspace_root.as_str(),
-        session.as_str(),
+        &record_identity.workspace_root,
+        &record_identity.session_id,
         context.branch_id.as_ref().map_or("main", |b| b.as_str()),
     )
     .ok()
@@ -4739,6 +4737,7 @@ fn map_transport_error(kind: TransportErrorKind) -> PipelineFailure {
 fn build_explicit_document(
     skills: &[ResolvedExplicitSkill],
     context: &NormalizedContext,
+    record_identity: &RankingRecordIdentity,
     roster: &ResolvedRoster,
     elapsed_ms: u64,
     evaluated: &Evaluated,
@@ -4786,14 +4785,7 @@ fn build_explicit_document(
         })
         .collect();
 
-    let derived_event_id;
-    let event_id = match context.current_request.event_id.as_ref() {
-        Some(e) => e.as_str(),
-        None => {
-            derived_event_id = derive_request_event_id(context);
-            derived_event_id.as_str()
-        }
-    };
+    let event_id = record_identity.event_id.as_str();
 
     let val = json!({
         "schema_version": SCHEMA_VERSION,
@@ -5011,6 +5003,86 @@ fn dominant_phase(phase: &BTreeMap<String, f64>) -> Option<&str> {
         .iter()
         .max_by(|a, b| a.1.total_cmp(b.1))
         .map(|(p, _)| p.as_str())
+}
+
+/// Ledger and public decision identity are separate from transcript event IDs.
+/// Normalized imports cannot merge turns, costs or snoozes by using the same
+/// opaque session/event IDs. Native IDs and historical rows remain unchanged;
+/// missing import provenance is invocation-local, never inferred from those rows.
+struct RankingRecordIdentity {
+    workspace_root: String,
+    event_id: String,
+    session_id: String,
+}
+
+impl RankingRecordIdentity {
+    fn new(
+        context: &NormalizedContext,
+        source: &SourceTarget,
+        workspace: &Path,
+        clock: &EntryClock,
+    ) -> Self {
+        let raw_event = context.current_request.event_id.as_ref().map_or_else(
+            || derive_request_event_id(context),
+            |id| id.as_str().to_owned(),
+        );
+        let raw_session = context
+            .session_id
+            .as_ref()
+            .map_or("session-0", |id| id.as_str());
+        if !matches!(
+            source,
+            SourceTarget::NormalizedFile(_) | SourceTarget::NormalizedStdin
+        ) {
+            return Self {
+                workspace_root: context.workspace_root.as_str().to_owned(),
+                event_id: raw_event,
+                session_id: raw_session.to_owned(),
+            };
+        }
+        let workspace_root = workspace.to_string_lossy().into_owned();
+        // Unknown attribution is invocation-local; do not turn missing fields
+        // into a durable namespace shared by unrelated imports.
+        let invocation = (context.producer_id.is_none()
+            || context.current_request.event_id.is_none()
+            || context.session_id.is_none()
+            || context.agent_id.is_none()
+            || context.branch_id.is_none()
+            || context.context_epoch.is_none())
+        .then(|| clock.invocation_row_mark());
+        let namespace = json!([
+            "skillranker.normalized-ranking.v2",
+            context.schema_version,
+            workspace_root,
+            context.harness.as_str(),
+            context.producer_id,
+            context.agent_id,
+            context.session_id,
+        ]);
+        // JSON framing keeps delimiter-containing IDs and null fields distinct.
+        let session_bytes = serde_json::to_vec(&namespace).expect("identity JSON");
+        let session_id = if context.session_id.is_some() {
+            format!(
+                "ranking-session-v2-{}",
+                blake3::hash(&session_bytes).to_hex()
+            )
+        } else {
+            "session-0".to_owned()
+        };
+        let event_bytes = serde_json::to_vec(&json!([
+            namespace,
+            context.branch_id,
+            context.context_epoch,
+            raw_event,
+            invocation,
+        ]))
+        .expect("identity JSON");
+        Self {
+            workspace_root,
+            event_id: format!("ranking-event-v2-{}", blake3::hash(&event_bytes).to_hex()),
+            session_id,
+        }
+    }
 }
 
 pub(crate) fn derive_request_event_id(context: &NormalizedContext) -> String {
@@ -5296,6 +5368,7 @@ fn prepare_ledger_record(
     ledger_dir: Option<&Path>,
     roster: &ResolvedRoster,
     context: &NormalizedContext,
+    record_identity: &RankingRecordIdentity,
     decision: crate::storage::DecisionKind,
     reason: &str,
     mode_channel: &str,
@@ -5371,7 +5444,7 @@ fn prepare_ledger_record(
 
     let snapshot = crate::storage::NewRosterSnapshot {
         snapshot_id: snapshot_id.clone(),
-        workspace_root: context.workspace_root.as_str().to_string(),
+        workspace_root: record_identity.workspace_root.clone(),
         adapter: context.harness.as_str().to_string(),
         total_candidates,
         eligible_candidates,
@@ -5384,12 +5457,7 @@ fn prepare_ledger_record(
         created_at_unix_ms: now_unix_ms,
     };
 
-    let event_id = context
-        .current_request
-        .event_id
-        .as_ref()
-        .map(|e| e.as_str().to_string())
-        .unwrap_or_else(|| derive_request_event_id(context));
+    let event_id = record_identity.event_id.clone();
 
     // Built against the id this event is about to be written under, so cost cannot
     // be attributed to an event that does not exist.
@@ -5400,12 +5468,8 @@ fn prepare_ledger_record(
     let event = crate::storage::NewRankingEvent {
         event_id,
         verified_delivery_key: None,
-        workspace_root: context.workspace_root.as_str().to_string(),
-        session_id: context
-            .session_id
-            .as_ref()
-            .map(|s| s.as_str().to_string())
-            .unwrap_or_else(|| "session-0".to_string()),
+        workspace_root: record_identity.workspace_root.clone(),
+        session_id: record_identity.session_id.clone(),
         agent_branch: context
             .branch_id
             .as_ref()
@@ -5449,6 +5513,7 @@ fn prepare_ledger_record(
 fn build_abstain_document(
     reason: &str,
     context: &NormalizedContext,
+    record_identity: &RankingRecordIdentity,
     roster: &ResolvedRoster,
     elapsed_ms: u64,
     dry_run: Option<Value>,
@@ -5456,14 +5521,7 @@ fn build_abstain_document(
 ) -> OutputDocument {
     let quality = &evaluated.quality;
     let (warnings, warnings_omitted) = roster_warnings(roster, evaluated.source_warning.as_ref());
-    let derived_event_id;
-    let event_id = match context.current_request.event_id.as_ref() {
-        Some(e) => e.as_str(),
-        None => {
-            derived_event_id = derive_request_event_id(context);
-            derived_event_id.as_str()
-        }
-    };
+    let event_id = record_identity.event_id.as_str();
 
     let mut val = json!({
         "schema_version": SCHEMA_VERSION,
@@ -5517,6 +5575,7 @@ fn build_ranked_document(
     wide_outcome: &WideOutcome<'_>,
     rerank_outcome: &RerankOutcome<'_>,
     context: &NormalizedContext,
+    record_identity: &RankingRecordIdentity,
     roster: &ResolvedRoster,
     evaluated: &Evaluated,
     elapsed_ms: u64,
@@ -5553,14 +5612,7 @@ fn build_ranked_document(
         }));
     }
 
-    let derived_event_id;
-    let event_id = match context.current_request.event_id.as_ref() {
-        Some(e) => e.as_str(),
-        None => {
-            derived_event_id = derive_request_event_id(context);
-            derived_event_id.as_str()
-        }
-    };
+    let event_id = record_identity.event_id.as_str();
 
     let val = json!({
         "schema_version": SCHEMA_VERSION,

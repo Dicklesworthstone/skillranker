@@ -254,7 +254,12 @@ fn a_skill_snooze_withholds_only_that_skill_in_its_own_session() {
     assert_eq!(preview["applied"], false, "{preview}");
     assert_eq!(preview["action"], "skill");
     assert_eq!(preview["skill_id"], top.as_str());
-    assert_eq!(preview["scope"]["session_id"], "s1");
+    assert!(
+        preview["scope"]["session_id"]
+            .as_str()
+            .unwrap()
+            .starts_with("ranking-session-v2-")
+    );
     assert_eq!(preview["scope"]["agent_branch"], "main");
     assert_eq!(preview["duration_ms"], 1_800_000);
     assert!(preview["effect"].as_str().unwrap().contains("Preview only"));
@@ -439,6 +444,11 @@ fn a_snooze_applied_while_a_ranking_is_pending_withholds_only_its_scope() {
 fn an_uncertain_expiry_stays_muted_and_doctor_shows_it() {
     let home = Home::new();
     let (event, top) = home.recorded("s1", "t1");
+    let preview = home.json(
+        1,
+        &["snooze", &event, "--skill", &top, "--for", "30m", "--json"],
+    );
+    let session = preview["scope"]["session_id"].as_str().unwrap();
     // Created an hour in the future: the clock moved back after writing it.
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -450,7 +460,7 @@ fn an_uncertain_expiry_stays_muted_and_doctor_shows_it() {
         home.snooze_file(),
         format!(
             "schema_version = 1\n\n[[snooze]]\nevent_id = \"{event}\"\nworkspace_root = \"{}\"\n\
-             session_id = \"s1\"\nagent_branch = \"main\"\nskill_id = \"{top}\"\n\
+             session_id = \"{session}\"\nagent_branch = \"main\"\nskill_id = \"{top}\"\n\
              created_at_unix_ms = {}\nexpires_at_unix_ms = {}\n",
             workspace.to_str().unwrap(),
             now + 3_600_000,

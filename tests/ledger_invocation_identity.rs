@@ -129,8 +129,8 @@ impl Fixture {
             &context,
             json!({
                 "schema_version": 1, "harness": harness, "producer_id": "invocation-test",
-                "workspace_root": workspace, "session_id": "session", "agent_id": null,
-                "branch_id": null, "context_epoch": null,
+                "workspace_root": workspace, "session_id": "session", "agent_id": "agent",
+                "branch_id": "main", "context_epoch": "epoch-0",
                 "current_request": {"event_id": event, "text": "Diagnose our failing Rust tests",
                     "attachments_omitted": false, "essential_attachment_missing": false},
                 "events": [], "explicit_skill_references": [], "supplied_loads": []

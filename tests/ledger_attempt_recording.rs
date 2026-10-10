@@ -28,6 +28,19 @@ struct Fixture {
 }
 
 impl Fixture {
+    fn normalized_context(&self, producer: Option<&str>) -> (PathBuf, Value) {
+        let path = self.workspace().join("context.json");
+        let value = json!({
+            "schema_version": 1, "harness": "claude_code", "producer_id": producer,
+            "workspace_root": self.workspace(), "session_id": "shared-session",
+            "agent_id": "agent-a", "branch_id": "main", "context_epoch": "epoch-0",
+            "current_request": {"event_id": "shared-request", "text": TASK,
+                "attachments_omitted": false, "essential_attachment_missing": false},
+            "events": []
+        });
+        (path, value)
+    }
+
     fn new() -> Self {
         // Owner-only directories under Linux's root-owned sticky /tmp: the store
         // refuses a group- or other-writable ancestor, and a worker's TMPDIR can
@@ -433,6 +446,315 @@ struct StoredAttempt {
     output_tokens: Option<i64>,
     http_status: Option<i64>,
     error_kind: Option<String>,
+}
+
+#[test]
+fn producer_qualified_rankings_keep_distinct_events_candidates_and_feedback() {
+    let f = Fixture::new();
+    f.ledger_init();
+    // Preserve an actual native event, then try its IDs through normalized input.
+    f.claude_session("shared-session", TASK);
+    let native = f
+        .command(
+            1,
+            &[
+                "rank",
+                "--transcript",
+                f.transcript("shared-session").to_str().unwrap(),
+                "--harness",
+                "claude_code",
+                "--require-skill",
+                "alpha",
+                "--offline",
+                "--no-cache",
+                "--json",
+            ],
+        )
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(
+        native.status.success(),
+        "{}",
+        String::from_utf8_lossy(&native.stderr)
+    );
+    let native_doc: Value = serde_json::from_slice(&native.stdout).unwrap();
+    assert_eq!(native_doc["event_id"], "shared-session-2");
+    let (path, mut context) = f.normalized_context(Some("producer-a"));
+    context["current_request"]["event_id"] = native_doc["event_id"].clone();
+    let run = |value: &Value| {
+        std::fs::write(&path, value.to_string()).unwrap();
+        let out = f
+            .command(
+                1,
+                &[
+                    "rank",
+                    "--context",
+                    path.to_str().unwrap(),
+                    "--require-skill",
+                    "alpha",
+                    "--offline",
+                    "--no-cache",
+                    "--json",
+                ],
+            )
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let doc: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(doc["decision"], "explicit");
+        assert_eq!(doc["persistence"], "recorded");
+        doc
+    };
+    // A missing producer cannot impersonate the native row either.
+    let mut unqualified = context.clone();
+    unqualified["producer_id"] = Value::Null;
+    let imported = run(&unqualified);
+    assert_ne!(imported["event_id"], native_doc["event_id"]);
+    let first = run(&context);
+    let first_id = first["event_id"].as_str().unwrap();
+    assert!(first_id.starts_with("ranking-event-v2-"));
+    assert_eq!(
+        run(&context)["event_id"],
+        first_id,
+        "same complete producer turn deduplicates"
+    );
+    let mut ids = std::collections::BTreeSet::from([first_id.to_owned()]);
+    for (field, value) in [
+        ("producer_id", "producer-b"),
+        ("agent_id", "agent-b"),
+        ("session_id", "other-session"),
+        ("branch_id", "feature"),
+        ("context_epoch", "epoch-1"),
+    ] {
+        let mut other = context.clone();
+        other[field] = json!(value);
+        let doc = run(&other);
+        assert!(
+            ids.insert(doc["event_id"].as_str().unwrap().to_owned()),
+            "{field} collided"
+        );
+    }
+    // Delimiter boundaries must remain distinct; hashing a colon-joined key would alias these.
+    for (producer, session) in [("a:b", "c"), ("a", "b:c")] {
+        let mut other = context.clone();
+        other["producer_id"] = json!(producer);
+        other["session_id"] = json!(session);
+        assert!(ids.insert(run(&other)["event_id"].as_str().unwrap().to_owned()));
+    }
+    let conn = rusqlite::Connection::open(f.ledger_db()).unwrap();
+    let events: i64 = conn
+        .query_row("SELECT count(*) FROM ranking_events", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(
+        events,
+        (ids.len() + 2) as i64,
+        "native row, unqualified import and every producer turn survive"
+    );
+    for id in &ids {
+        let (candidates, state): (i64, String) = conn.query_row(
+            "SELECT (SELECT count(*) FROM ranking_candidates c WHERE c.event_id=e.event_id), exposure_state
+             FROM ranking_events e WHERE event_id=?1", [id], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!(candidates, 1, "{id}: candidate identity diverged");
+        assert_eq!(state, "emitted", "{id}: stdout delivery was not recorded");
+    }
+    let skill = first["skills"][0]["skill_id"].as_str().unwrap();
+    let out = f
+        .command(
+            1,
+            &[
+                "feedback",
+                first_id,
+                "--skill",
+                skill,
+                "--verdict",
+                "unknown",
+                "--json",
+            ],
+        )
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "feedback must accept the public event ID: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(f.events().len(), ids.len() + 2);
+}
+
+#[test]
+fn incomplete_producer_rankings_stay_invocation_local() {
+    let f = Fixture::new();
+    f.ledger_init();
+    for missing in [
+        "producer_id",
+        "session_id",
+        "agent_id",
+        "branch_id",
+        "context_epoch",
+        "event_id",
+    ] {
+        let (path, mut context) = f.normalized_context(Some("producer-a"));
+        if missing == "event_id" {
+            context["current_request"]["event_id"] = Value::Null;
+        } else {
+            context[missing] = Value::Null;
+        }
+        std::fs::write(&path, context.to_string()).unwrap();
+        let mut ids = std::collections::BTreeSet::new();
+        for _ in 0..2 {
+            let out = f
+                .command(
+                    1,
+                    &[
+                        "rank",
+                        "--context",
+                        path.to_str().unwrap(),
+                        "--require-skill",
+                        "alpha",
+                        "--offline",
+                        "--no-cache",
+                        "--json",
+                    ],
+                )
+                .stdin(Stdio::null())
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            let doc: Value = serde_json::from_slice(&out.stdout).unwrap();
+            assert_eq!(doc["persistence"], "recorded");
+            assert!(
+                ids.insert(doc["event_id"].as_str().unwrap().to_owned()),
+                "missing {missing} fabricated a shared identity"
+            );
+        }
+    }
+    assert_eq!(f.events().len(), 12);
+}
+
+#[test]
+fn producer_ranking_workspace_scope_comes_from_the_invocation() {
+    let f = Fixture::new();
+    f.ledger_init();
+    let (path, mut context) = f.normalized_context(Some("producer-a"));
+    // A normalized envelope declares a path; it cannot grant that workspace's
+    // identity to an invocation running elsewhere.
+    context["workspace_root"] = json!("/declared/shared/workspace");
+    std::fs::write(&path, context.to_string()).unwrap();
+    let other = f.root.join("other-workspace");
+    let skill = other.join(".claude/skills/alpha/SKILL.md");
+    std::fs::create_dir_all(skill.parent().unwrap()).unwrap();
+    std::fs::copy(f.workspace().join(".claude/skills/alpha/SKILL.md"), &skill).unwrap();
+    let mut ids = std::collections::BTreeSet::new();
+    for workspace in [f.workspace(), other] {
+        let out = f
+            .command(
+                1,
+                &[
+                    "rank",
+                    "--context",
+                    path.to_str().unwrap(),
+                    "--require-skill",
+                    "alpha",
+                    "--offline",
+                    "--no-cache",
+                    "--json",
+                ],
+            )
+            .current_dir(&workspace)
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let doc: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(doc["persistence"], "recorded");
+        let id = doc["event_id"].as_str().unwrap().to_owned();
+        assert!(
+            ids.insert(id.clone()),
+            "distinct invocation workspaces collided"
+        );
+        let conn = rusqlite::Connection::open(f.ledger_db()).unwrap();
+        let stored: String = conn
+            .query_row(
+                "SELECT workspace_root FROM ranking_events WHERE event_id=?1",
+                [&id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored, workspace.to_str().unwrap());
+        let snapshot_workspace: String = conn.query_row(
+            "SELECT s.workspace_root FROM roster_snapshots s JOIN ranking_events e ON e.snapshot_id=s.snapshot_id WHERE e.event_id=?1",
+            [&id], |r| r.get(0)).unwrap();
+        assert_eq!(snapshot_workspace, stored);
+    }
+    assert_eq!(f.events().len(), 2);
+}
+
+#[test]
+fn producer_rankings_own_their_successful_and_failed_provider_attempts() {
+    let f = Fixture::new();
+    f.ledger_init();
+    let (path, mut context) = f.normalized_context(Some("producer-a"));
+    let mut owners = std::collections::BTreeSet::new();
+    for (producer, scenario, expected_exit, expected_served) in [
+        ("producer-a", "useful", 0, 2),
+        ("producer-b", "useful", 0, 2),
+        ("producer-c", "unauthorized", 4, 1),
+    ] {
+        context["producer_id"] = json!(producer);
+        std::fs::write(&path, context.to_string()).unwrap();
+        let provider = Provider::start(&f, scenario);
+        let out = f
+            .rank_command(
+                provider.port,
+                &["--context", path.to_str().unwrap(), "--no-cache"],
+            )
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        assert_eq!(
+            out.status.code(),
+            Some(expected_exit),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(provider.finish(), expected_served);
+        let doc: Value = serde_json::from_slice(&out.stdout).unwrap();
+        let id = doc["event_id"].as_str().unwrap().to_owned();
+        assert!(id.starts_with("ranking-event-v2-"));
+        assert!(owners.insert(id.clone()));
+        let attempts = f.attempts();
+        assert_eq!(
+            attempts.iter().filter(|a| a.owner_event_id == id).count(),
+            expected_served
+        );
+    }
+    assert_eq!(f.events().len(), 3);
+    assert_eq!(f.attempts().len(), 5);
+    assert!(
+        f.attempts()
+            .iter()
+            .all(|a| owners.contains(&a.owner_event_id))
+    );
+    assert_eq!(f.events().iter().filter(|e| e.1 == "ranked").count(), 2);
+    assert_eq!(
+        f.events().iter().filter(|e| e.1 == "unavailable").count(),
+        1
+    );
 }
 
 struct Provider {

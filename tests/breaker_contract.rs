@@ -169,7 +169,11 @@ impl Provider {
             .arg(scenario)
             .args(args)
             .env_clear()
-            .stdin(Stdio::null())
+            .stdin(if scenario == "hold-wide" {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            })
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
             .spawn()
@@ -180,6 +184,17 @@ impl Provider {
         let hello: Value = serde_json::from_str(&hello).unwrap();
         let port = u16::try_from(hello["port"].as_u64().unwrap()).unwrap();
         Self { child, lines, port }
+    }
+
+    /// Release the held wide answer after the rival's admission has completed.
+    fn release_wide(&mut self) {
+        use std::io::Write;
+        self.child
+            .stdin
+            .as_mut()
+            .unwrap()
+            .write_all(b"release\n")
+            .unwrap();
     }
 
     /// Requests the provider answered.
@@ -344,8 +359,10 @@ fn two_processes_race_for_one_half_open_probe() {
     let failing = Provider::scenario(&home, "always-503", &[]);
     home.run(failing.port, &Home::rank_args(&home.context("open"), &[]));
     assert_eq!(failing.finish(), 3);
-    // The origin recovers slowly: the probe's wide answer takes two seconds.
-    let slow = Provider::scenario(&home, "slow-wide", &["", "2"]);
+    // Keep the real wide response pending until the rival has been refused.
+    // A fixed delay cannot establish overlap when process startup is scheduled late.
+    let held = home.root.join("wide-held");
+    let mut slow = Provider::scenario(&home, "hold-wide", &[held.to_str().unwrap()]);
     let port = slow.port;
     let db = rusqlite::Connection::open(breaker_db(&home)).unwrap();
     db.execute(
@@ -362,9 +379,18 @@ fn two_processes_race_for_one_half_open_probe() {
             .unwrap()
     };
     let owner = spawn("probe");
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !held.is_file() {
+        assert!(
+            std::time::Instant::now() < until,
+            "probe never reached the provider"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
     let rival = spawn("rival");
     let rival = rival.wait_with_output().unwrap();
+    let rival_kind = kind(&rival);
+    slow.release_wide();
     let owner = owner.wait_with_output().unwrap();
     assert_eq!(
         slow.finish(),
@@ -372,5 +398,10 @@ fn two_processes_race_for_one_half_open_probe() {
         "only the probe owner's wide and rerank were sent"
     );
     assert!(owner.status.success(), "{}", describe(&owner));
-    assert_eq!(kind(&rival), (Some(4), "provider-cooldown".to_owned()));
+    assert_eq!(
+        rival_kind,
+        (Some(4), "provider-cooldown".to_owned()),
+        "{}",
+        describe(&rival)
+    );
 }

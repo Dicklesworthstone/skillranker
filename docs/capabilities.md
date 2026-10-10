@@ -43,6 +43,17 @@ separate. Imports cannot name a native cursor by repeating its key as a session
 ID. Legacy rows are preserved; their missing producer provenance is not
 reconstructed. New imported loads retain unknown exposure attribution, since raw
 session/branch IDs alone cannot establish the source of a recorded exposure.
+All normalized ranking imports use opaque, versioned event and ledger-session
+IDs, bound to the invocation workspace, harness, producer and agent. An imported
+workspace path grants no workspace identity. Branch, context epoch and request
+event distinguish turns; missing producer/session/agent/branch/epoch/request-event
+attribution gives each invocation a separate event. Public event IDs remain the
+keys for feedback and delivery recording. Snoozes follow the same declared
+producer/session/agent scope across turns, but missing sessions cannot be snoozed.
+Native ranking IDs and historical rows remain unchanged. Historical unqualified
+snoozes are not assigned to an imported scope automatically; reapply them using
+the new normalized event ID when that scope is intended.
+
 Producer-aware imported exposure attribution remains unqualified. Native
 observation attribution and repeated-delivery behavior retain their existing
 contracts. These source controls do not establish independent usefulness,

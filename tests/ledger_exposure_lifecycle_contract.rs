@@ -88,6 +88,7 @@ fn make_test_candidate(event_id: &str, skill_id: &str) -> NewRankingCandidate {
 /// Exercise publication through the actual CLI, with every platform path isolated.
 struct CliDeliveryFixture {
     root: PathBuf,
+    event_id: String,
 }
 
 impl CliDeliveryFixture {
@@ -102,8 +103,8 @@ impl CliDeliveryFixture {
             workspace.join("context.json"),
             serde_json::json!({
                 "schema_version": 1, "harness": "claude_code", "producer_id": "delivery-test",
-                "workspace_root": workspace, "session_id": "delivery-session", "agent_id": null,
-                "branch_id": null, "context_epoch": null,
+                "workspace_root": workspace, "session_id": "delivery-session", "agent_id": "agent",
+                "branch_id": "main", "context_epoch": "epoch-0",
                 "current_request": {"event_id": "delivery-turn", "text": "Review the code",
                     "attachments_omitted": false, "essential_attachment_missing": false},
                 "events": [], "explicit_skill_references": [], "supplied_loads": []
@@ -111,7 +112,25 @@ impl CliDeliveryFixture {
             .to_string(),
         )
         .unwrap();
-        Self { root }
+        let namespace = serde_json::json!([
+            "skillranker.normalized-ranking.v2",
+            1,
+            workspace,
+            "claude_code",
+            "delivery-test",
+            "agent",
+            "delivery-session"
+        ]);
+        let bytes = serde_json::to_vec(&serde_json::json!([
+            namespace,
+            "main",
+            "epoch-0",
+            "delivery-turn",
+            null
+        ]))
+        .unwrap();
+        let event_id = format!("ranking-event-v2-{}", blake3::hash(&bytes).to_hex());
+        Self { root, event_id }
     }
 
     fn run(&self, args: &[&str]) -> std::process::Output {
@@ -154,7 +173,7 @@ impl CliDeliveryFixture {
         let out = self.run(&["ledger", "init", "--json"]);
         assert_eq!(out.status.code(), Some(0), "{out:?}");
         let out = self.rank(false, &["--json"]);
-        assert_explicit_delivery(&out);
+        assert_explicit_delivery(&out, &self.event_id);
         assert_eq!(self.exposure(), "emitted");
     }
 
@@ -163,7 +182,7 @@ impl CliDeliveryFixture {
         assert_eq!(
             db.execute(
                 "UPDATE ranking_events SET exposure_state = 'prepared' WHERE event_id = ?1",
-                ["delivery-turn"],
+                [&self.event_id],
             )
             .unwrap(),
             1
@@ -176,7 +195,7 @@ impl CliDeliveryFixture {
         self.database()
             .query_row(
                 "SELECT exposure_state FROM ranking_events WHERE event_id = ?1",
-                ["delivery-turn"],
+                [&self.event_id],
                 |row| row.get(0),
             )
             .unwrap()
@@ -213,11 +232,11 @@ impl CliDeliveryFixture {
     }
 }
 
-fn assert_explicit_delivery(out: &std::process::Output) -> serde_json::Value {
+fn assert_explicit_delivery(out: &std::process::Output, event_id: &str) -> serde_json::Value {
     assert_eq!(out.status.code(), Some(0), "{out:?}");
     let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(value["decision"], "explicit");
-    assert_eq!(value["event_id"], "delivery-turn");
+    assert_eq!(value["event_id"], event_id);
     assert_eq!(value["skills"][0]["invocation_name"], "delivery-review");
     assert_eq!(value["usage"]["http_attempts"], 0);
     value
@@ -231,7 +250,10 @@ fn actual_cli_persistence_opt_outs_and_previews_leave_existing_ledger_unchanged(
         for flag in ["--no-ledger", "--no-persist"] {
             let before = fixture.prepare_existing();
             let out = fixture.rank(bare, &["--json", flag]);
-            assert_eq!(assert_explicit_delivery(&out)["persistence"], "disabled");
+            assert_eq!(
+                assert_explicit_delivery(&out, &fixture.event_id)["persistence"],
+                "disabled"
+            );
             assert_eq!(fixture.contents(), before, "bare={bare}, {flag}");
         }
         let before = fixture.prepare_existing();
@@ -239,7 +261,7 @@ fn actual_cli_persistence_opt_outs_and_previews_leave_existing_ledger_unchanged(
         assert_eq!(out.status.code(), Some(0), "{out:?}");
         let preview: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
         assert_eq!(preview["local_decision"]["decision"], "explicit");
-        assert_eq!(preview["local_decision"]["event_id"], "delivery-turn");
+        assert_eq!(preview["local_decision"]["event_id"], fixture.event_id);
         assert_eq!(fixture.contents(), before, "bare={bare}, dry-run");
     }
 }
@@ -254,7 +276,10 @@ fn actual_cli_json_and_table_delivery_record_authorized_emission() {
             let out = fixture.rank(bare, &[format]);
             assert_eq!(out.status.code(), Some(0), "{out:?}");
             if format == "--json" {
-                assert_eq!(assert_explicit_delivery(&out)["persistence"], "recorded");
+                assert_eq!(
+                    assert_explicit_delivery(&out, &fixture.event_id)["persistence"],
+                    "recorded"
+                );
             } else {
                 assert!(String::from_utf8_lossy(&out.stdout).contains("delivery-review"));
             }

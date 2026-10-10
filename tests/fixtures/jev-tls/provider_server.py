@@ -20,12 +20,14 @@ Scenarios:
   always-503      every attempt is a 503 with Retry-After: 0
   unauthorized    every attempt is a 401
   slow-wide       like useful; the wide answer is delayed by TEXT seconds
+  hold-wide       like useful; write PATH when wide is held, release on stdin
   drift           like useful, but every choice distribution sums to 0.92,
                   as live totals drift from one
 """
 
 import json
 import pathlib
+import select
 import socket
 import ssl
 import sys
@@ -134,6 +136,10 @@ while True:
         time.sleep(float(text))
     if scenario == "slow-wide" and stage == "wide":
         time.sleep(float(text))
+    if scenario == "hold-wide" and stage == "wide":
+        target.write_text("wide held\n")
+        if not select.select([sys.stdin], [], [], 10)[0] or sys.stdin.readline() != "release\n":
+            raise RuntimeError("wide response was not released within the fixture deadline")
     status = "200 OK"
     if scenario == "always-503" or (
             scenario == "retry-wide" and stages.count("wide") == 1 and stage == "wide"):
