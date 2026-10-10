@@ -4803,6 +4803,28 @@ impl LedgerStore {
         expected_cursor_gen: Option<u64>,
         expected_stamp: LedgerStamp,
     ) -> Result<LedgerStamp, StoreError> {
+        self.record_observations_with_cursor_attribution(
+            clock,
+            cx,
+            observations,
+            cursor,
+            expected_cursor_gen,
+            expected_stamp,
+            true,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn record_observations_with_cursor_attribution(
+        &mut self,
+        clock: EntryClock,
+        cx: &Cx,
+        observations: &[NewObservation],
+        cursor: &SessionCursor,
+        expected_cursor_gen: Option<u64>,
+        expected_stamp: LedgerStamp,
+        infer_attribution: bool,
+    ) -> Result<LedgerStamp, StoreError> {
         if self.read_only {
             return Err(StoreError::Permissions);
         }
@@ -4848,6 +4870,7 @@ impl LedgerStore {
         // Never let stale attempts or censored input weaken confirmed evidence.
         for obs in observations {
             let attributed_event_id = match &obs.attributed_event_id {
+                _ if !infer_attribution => None,
                 Some(id) => Some(id.clone()),
                 None => {
                     let min_time = obs.observed_at_unix_ms.saturating_sub(1_800_000);
@@ -6380,6 +6403,54 @@ pub fn record_observations_with_cursor(
     cursor: &SessionCursor,
     expected_cursor_gen: Option<u64>,
 ) -> Result<bool, StoreError> {
+    record_observations_with_cursor_attribution(
+        invocation,
+        cx,
+        access,
+        location,
+        observations,
+        cursor,
+        expected_cursor_gen,
+        true,
+    )
+}
+
+/// Imported records cannot prove the source of a ledger exposure by repeating
+/// its raw session/branch IDs. Keep the load and cursor, with unknown attribution.
+/// This also rejects a supplied attribution; producer-aware exposure provenance
+/// must be qualified before imports can contribute exposure-based learning.
+pub(crate) fn record_imported_observations_with_cursor(
+    invocation: &ProcessInvocation,
+    cx: &Cx,
+    access: LedgerAccess,
+    location: LedgerLocation,
+    observations: &[NewObservation],
+    cursor: &SessionCursor,
+    expected_cursor_gen: Option<u64>,
+) -> Result<bool, StoreError> {
+    record_observations_with_cursor_attribution(
+        invocation,
+        cx,
+        access,
+        location,
+        observations,
+        cursor,
+        expected_cursor_gen,
+        false,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn record_observations_with_cursor_attribution(
+    invocation: &ProcessInvocation,
+    cx: &Cx,
+    access: LedgerAccess,
+    location: LedgerLocation,
+    observations: &[NewObservation],
+    cursor: &SessionCursor,
+    expected_cursor_gen: Option<u64>,
+    infer_attribution: bool,
+) -> Result<bool, StoreError> {
     if access == LedgerAccess::Disabled {
         return Err(StoreError::Permissions);
     }
@@ -6403,13 +6474,14 @@ pub fn record_observations_with_cursor(
                 }
             };
             let stamp = store.stamp();
-            store.record_observations_with_cursor(
+            store.record_observations_with_cursor_attribution(
                 clock,
                 &child,
                 &observations,
                 &cursor,
                 expected_cursor_gen,
                 stamp,
+                infer_attribution,
             )?;
             Ok(true)
         },

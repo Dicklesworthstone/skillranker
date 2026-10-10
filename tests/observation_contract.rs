@@ -147,6 +147,40 @@ impl ObserveBoundaryFixture {
         command.output().unwrap()
     }
 
+    fn fork_context(&self) -> serde_json::Value {
+        self.skill("workspace/custom", "left-review");
+        self.skill("workspace/custom", "right-review");
+        fs::write(
+            self.root.join("workspace/.sr/config.toml"),
+            "[roster]\nroots=['custom']\n",
+        )
+        .unwrap();
+        self.context(&["left-review", "right-review"]);
+        let path = self.root.join("workspace/context.json");
+        let mut context: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        context["branch_id"] = serde_json::Value::Null;
+        context["events"][0]["branch_id"] = serde_json::Value::Null;
+        for (index, branch) in [(1, "left"), (2, "right")] {
+            context["events"][index]["parent_id"] = serde_json::json!("request");
+            context["events"][index]["branch_id"] = serde_json::json!(branch);
+        }
+        fs::write(path, context.to_string()).unwrap();
+        context
+    }
+
+    fn observe_branch(&self, branch: Option<&str>, path: &str) -> std::process::Output {
+        let mut command = self.command();
+        command
+            .args(["observe", "--context", path, "--dir"])
+            .arg(self.root.join("ledger"))
+            .arg("--json");
+        if let Some(branch) = branch {
+            command.args(["--branch", branch]);
+        }
+        command.output().unwrap()
+    }
+
     fn counts(&self) -> (i64, i64) {
         let connection = Connection::open(self.root.join("ledger").join(LEDGER_FILE)).unwrap();
         connection.query_row(
@@ -161,6 +195,385 @@ impl ObserveBoundaryFixture {
         fs::write(dir.join("SKILL.md"), format!(
             "---\nname: {name}\ndescription: Review code carefully\n---\nInspect the implementation.\n"
         )).unwrap();
+    }
+}
+
+#[test]
+fn observe_boundary_unresolved_lineage_cannot_record_or_advance_cursor() {
+    for case in [
+        "siblings",
+        "missing-branch",
+        "cycle",
+        "conflicting-ancestor",
+        "disconnected-context",
+    ] {
+        let fixture = ObserveBoundaryFixture::new();
+        let mut context = fixture.fork_context();
+        let branch = match case {
+            "missing-branch" => Some("absent"),
+            "cycle" => {
+                context["events"][0]["parent_id"] = serde_json::json!("load-0");
+                Some("left")
+            }
+            "conflicting-ancestor" => {
+                context["events"][0]["branch_id"] = serde_json::json!("right");
+                Some("left")
+            }
+            "disconnected-context" => {
+                context["events"].as_array_mut().unwrap().truncate(2);
+                context["events"][0]["branch_id"] = serde_json::json!("left");
+                context["events"][1]["parent_id"] = serde_json::Value::Null;
+                Some("left")
+            }
+            _ => None,
+        };
+        fs::write(
+            fixture.root.join("workspace/context.json"),
+            context.to_string(),
+        )
+        .unwrap();
+        let output = fixture.observe_branch(branch, "context.json");
+        assert_eq!(
+            output.status.code(),
+            Some(3),
+            "{case}: {} {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(value["error"]["kind"], "ambiguous-branch", "{case}");
+        assert_eq!(fixture.counts(), (0, 0), "{case}");
+        let connection = Connection::open(fixture.root.join("ledger").join(LEDGER_FILE)).unwrap();
+        let snapshots: i64 = connection
+            .query_row("SELECT count(*) FROM roster_snapshots", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(
+            snapshots, 0,
+            "{case}: refusal must precede roster persistence"
+        );
+    }
+}
+
+#[test]
+fn observe_boundary_selected_fork_records_only_its_load_idempotently() {
+    for (branch, last_event) in [("left", "load-0"), ("right", "load-1")] {
+        let fixture = ObserveBoundaryFixture::new();
+        fixture.fork_context();
+        for generation in 1..=2 {
+            let output = fixture.observe_branch(Some(branch), "context.json");
+            assert!(
+                output.status.success(),
+                "{} {}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(value["agent_branch"], branch);
+            // The watermark names the last inspected source record, while
+            // persisted observations must contain only the selected lineage.
+            assert_eq!(value["last_event_id"], "load-1");
+            assert_eq!(value["observations_recorded"], 1);
+            assert_eq!(value["cursor_generation"], generation);
+            assert_eq!(fixture.counts(), (1, 1));
+        }
+        let connection = Connection::open(fixture.root.join("ledger").join(LEDGER_FILE)).unwrap();
+        let observation: (String, String, String) = connection
+            .query_row(
+                "SELECT agent_branch, evidence_state, source_event_key FROM observations",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(observation.0, branch);
+        assert_eq!(observation.1, "loaded");
+        assert!(observation.2.contains(last_event));
+        let cursor_branch: String = connection
+            .query_row("SELECT agent_branch FROM session_cursors", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(cursor_branch, branch);
+    }
+}
+
+#[test]
+fn observe_boundary_invalid_branch_is_rejected_before_source_reads() {
+    let too_long = "a".repeat(skillranker::identity::MAX_ID_BYTES + 1);
+    for branch in [
+        "",
+        "two branches",
+        "private\nbranch",
+        "\u{202e}branch",
+        &too_long,
+    ] {
+        let fixture = ObserveBoundaryFixture::new();
+        let output = fixture.observe_branch(Some(branch), "nonexistent.json");
+        assert_eq!(output.status.code(), Some(2));
+        let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(
+            value["error"]["message"],
+            "Invalid observation branch identity"
+        );
+        assert_eq!(fixture.counts(), (0, 0));
+    }
+}
+
+#[test]
+fn observe_boundary_empty_or_unlabelled_history_preserves_safe_observation() {
+    for empty in [true, false] {
+        let fixture = ObserveBoundaryFixture::new();
+        fixture.skill("workspace/.claude/skills", "review");
+        fixture.context(&["review"]);
+        let path = fixture.root.join("workspace/context.json");
+        let mut context: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        context["branch_id"] = serde_json::Value::Null;
+        if empty {
+            context["events"] = serde_json::json!([]);
+        } else {
+            for event in context["events"].as_array_mut().unwrap() {
+                event["branch_id"] = serde_json::Value::Null;
+            }
+        }
+        fs::write(path, context.to_string()).unwrap();
+        let output = fixture.observe_branch(empty.then_some("selected"), "context.json");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(
+            value["agent_branch"],
+            if empty { "selected" } else { "main" }
+        );
+        assert_eq!(value["observations_recorded"], if empty { 0 } else { 1 });
+        assert_eq!(fixture.counts(), (if empty { 0 } else { 1 }, 1));
+    }
+}
+
+#[test]
+fn observe_boundary_producer_namespaces_preserve_distinct_loads_and_idempotence() {
+    let fixture = ObserveBoundaryFixture::new();
+    fixture.skill("workspace/.claude/skills", "review");
+    fixture.context(&["review"]);
+    let path = fixture.root.join("workspace/context.json");
+    let mut context: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    for (index, (producer, session, agent)) in [
+        ("producer-a", "same-session", None),
+        ("producer-b", "same-session", None),
+        ("a", "b:c", None),
+        ("a:b", "c", None),
+        ("producer-a", "same-session", Some("agent-a")),
+        ("producer-a", "same-session", Some("agent-b")),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        context["producer_id"] = serde_json::json!(producer);
+        context["session_id"] = serde_json::json!(session);
+        context["agent_id"] = serde_json::json!(agent);
+        for event in context["events"].as_array_mut().unwrap() {
+            event["agent_id"] = serde_json::json!(agent);
+        }
+        fs::write(&path, context.to_string()).unwrap();
+        for generation in [1, 2] {
+            let output = fixture.observe("context.json", &[]);
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stdout)
+            );
+            let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(value["cursor_generation"], generation);
+            assert_eq!(value["observations_recorded"], 1);
+            assert_eq!(fixture.counts(), ((index + 1) as i64, (index + 1) as i64));
+        }
+    }
+    let connection = Connection::open(fixture.root.join("ledger").join(LEDGER_FILE)).unwrap();
+    let loaded: i64 = connection.query_row(
+        "SELECT count(*) FROM observations WHERE evidence_state='loaded' AND source_event_key LIKE 'normalized-v2:%'",
+        [], |row| row.get(0),
+    ).unwrap();
+    assert_eq!(loaded, 6);
+}
+
+#[test]
+fn observe_boundary_producer_keys_do_not_reassign_legacy_rows() {
+    let fixture = ObserveBoundaryFixture::new();
+    fixture.skill("workspace/.claude/skills", "review");
+    fixture.context(&["review"]);
+    let path = fixture.root.join("workspace/context.json");
+    let mut context: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    // Record the historical unqualified namespace through the actual CLI.
+    let first = fixture.observe("context.json", &[]);
+    assert!(first.status.success());
+    let connection = Connection::open(fixture.root.join("ledger").join(LEDGER_FILE)).unwrap();
+    let legacy: (String, String, String, i64) = connection.query_row(
+        "SELECT observation_id,source_event_key,evidence_state,observed_at_unix_ms FROM observations",
+        [], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?)),
+    ).unwrap();
+    for producer in ["producer-a", "producer-b"] {
+        context["producer_id"] = serde_json::json!(producer);
+        fs::write(&path, context.to_string()).unwrap();
+        let output = fixture.observe("context.json", &[]);
+        assert!(output.status.success());
+        let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(value["cursor_generation"], 1);
+    }
+    assert_eq!(fixture.counts(), (3, 3));
+    let preserved: (String, String, String, i64) = connection.query_row(
+        "SELECT observation_id,source_event_key,evidence_state,observed_at_unix_ms FROM observations WHERE observation_id=?1",
+        [&legacy.0], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?)),
+    ).unwrap();
+    assert_eq!(preserved, legacy);
+}
+
+#[test]
+fn observe_boundary_imported_loads_cannot_claim_native_exposure_by_repeating_ids() {
+    for producer in [None, Some("external-producer")] {
+        let fixture = ObserveBoundaryFixture::new();
+        fixture.skill("workspace/.claude/skills", "review");
+        fixture.context(&["review"]);
+        let path = fixture.root.join("workspace/context.json");
+        let mut context: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        context["producer_id"] = serde_json::json!(producer);
+        fs::write(&path, context.to_string()).unwrap();
+        let (invocation, cx) = test_invocation();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        let mut event = make_test_ranking_event("native-exposure", now, ExposureState::Emitted);
+        event.workspace_root = fixture
+            .root
+            .join("workspace")
+            .to_string_lossy()
+            .into_owned();
+        event.session_id = "observe-boundary".into();
+        event.agent_branch = "main".into();
+        assert!(
+            record_ranking(
+                &invocation,
+                &cx,
+                LedgerAccess::ExistingOnly,
+                LedgerLocation::Directory(fixture.root.join("ledger")),
+                &event,
+                &[],
+                None
+            )
+            .unwrap()
+        );
+        for _ in 0..2 {
+            let output = fixture.observe("context.json", &[]);
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stdout)
+            );
+            assert_eq!(fixture.counts(), (1, 1));
+        }
+        let connection = Connection::open(fixture.root.join("ledger").join(LEDGER_FILE)).unwrap();
+        let observation: (String, Option<String>) = connection
+            .query_row(
+                "SELECT evidence_state,attributed_event_id FROM observations",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(observation.0, "loaded");
+        assert_eq!(
+            observation.1, None,
+            "repeated IDs cannot prove native exposure attribution"
+        );
+        let exposure: String = connection
+            .query_row(
+                "SELECT exposure_state FROM ranking_events WHERE event_id='native-exposure'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(exposure, "emitted");
+    }
+}
+
+#[test]
+fn observe_boundary_native_namespace_cannot_authorize_an_unresolved_fork() {
+    let fixture = ObserveBoundaryFixture::new();
+    fixture.skill("workspace/.claude/skills", "review");
+    let path = fixture.root.join("workspace/native-branch.jsonl");
+    let records = [
+        serde_json::json!({"cwd":fixture.root.join("workspace"),"sessionId":"native-branch"}),
+        serde_json::json!({"type":"user","uuid":"request","sessionId":"native-branch",
+            "message":{"role":"user","content":"Review code"}}),
+        serde_json::json!({"type":"assistant","uuid":"call","parentUuid":"request",
+            "sessionId":"native-branch","message":{"role":"assistant","content":[
+                {"type":"tool_use","id":"review-call","name":"review","input":{}}]}}),
+        serde_json::json!({"type":"tool_result","uuid":"result","parentUuid":"call",
+            "sessionId":"native-branch","tool_use_id":"review-call",
+            "content":"Skill loaded","is_error":false}),
+    ];
+    let lines = records.iter().map(ToString::to_string).collect::<Vec<_>>();
+    fs::write(&path, lines.join("\n") + "\n").unwrap();
+    let observe = || {
+        fixture
+            .command()
+            .args(["observe", "--transcript"])
+            .arg(&path)
+            .args(["--harness", "claude_code", "--branch", "feature-x", "--dir"])
+            .arg(fixture.root.join("ledger"))
+            .arg("--json")
+            .output()
+            .unwrap()
+    };
+    let output = observe();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["agent_branch"], "feature-x");
+    assert_eq!(value["observations_recorded"], 1);
+    assert_eq!(fixture.counts(), (1, 1));
+    let connection = Connection::open(fixture.root.join("ledger").join(LEDGER_FILE)).unwrap();
+    let cursor = || {
+        connection.query_row(
+            "SELECT agent_branch, transcript_generation, last_offset_bytes, last_complete_event_id FROM session_cursors",
+            [], |row| Ok((row.get::<_,String>(0)?, row.get::<_,i64>(1)?, row.get::<_,i64>(2)?, row.get::<_,String>(3)?)),
+        ).unwrap()
+    };
+    let before = cursor();
+    assert_eq!(before.0, "feature-x");
+    assert_eq!(before.3, "result");
+    for case in ["siblings", "missing-link"] {
+        let mut broken = lines.clone();
+        for leaf in if case == "siblings" {
+            &["left", "right"][..]
+        } else {
+            &["continued"][..]
+        } {
+            broken.push(
+                serde_json::json!({"type":"user","uuid":leaf,
+                "parentUuid":if case == "siblings" { "result" } else { "missing-id" },
+                "sessionId":"native-branch","message":{"role":"user","content":"Continue"}})
+                .to_string(),
+            );
+        }
+        fs::write(&path, broken.join("\n") + "\n").unwrap();
+        let output = observe();
+        assert_eq!(output.status.code(), Some(3), "{case}");
+        let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(value["error"]["kind"], "ambiguous-branch", "{case}");
+        assert_eq!(fixture.counts(), (1, 1), "{case}");
+        assert_eq!(
+            cursor(),
+            before,
+            "{case}: refusal must preserve the existing byte watermark"
+        );
     }
 }
 
@@ -1427,7 +1840,7 @@ fn test_observe_cli_e2e_with_context() {
             },
             {
                 "event_id": "tool-call-1",
-                "parent_id": null,
+                "parent_id": "req-1",
                 "turn_id": "turn-1",
                 "agent_id": null,
                 "branch_id": "main",
@@ -1974,6 +2387,29 @@ fn test_observe_cli_cass_and_normalized_same_ids_cannot_move_native_cursor() {
         cur_gen_native_after_norm, 1,
         "normalized context with same session ID must not move native cursor"
     );
+
+    // An import can supply a complete native cursor string as its opaque ID.
+    // It must still start its own generation, never join the native namespace.
+    let mut spoof = ctx_val;
+    spoof["session_id"] = serde_json::json!("native:claude_code:shared-session");
+    fs::write(&ctx_path, spoof.to_string()).expect("write spoofed cursor ID");
+    for expected in [1, 2] {
+        let output = std::process::Command::new(bin)
+            .current_dir(&ws_dir)
+            .args(["observe", "--context"])
+            .arg(&ctx_path)
+            .args(["--dir", ledger_dir_str, "--json"])
+            .output()
+            .expect("run normalized reserved-namespace import");
+        assert_eq!(output.status.code(), Some(0));
+        let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(value["cursor_generation"], expected);
+        let native_generation: i64 = conn.query_row(
+            "SELECT transcript_generation FROM session_cursors WHERE session_id='native:claude_code:shared-session'",
+            [], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(native_generation, 1);
+    }
 }
 
 #[test]

@@ -265,7 +265,15 @@ impl Fixture {
                 json!({
                     "type": if n % 2 == 0 { "assistant" } else { "user" },
                     "uuid": format!("{session}-{n}"),
-                    "parentUuid": if n == 0 { Value::Null } else { json!(format!("{session}-{}", n - 1)) },
+                    "parentUuid": if n == 0 {
+                        Value::Null
+                    } else if n - 1 == pair_at {
+                        // The pair replaced record pair_at; continue from its
+                        // result instead of an ID this fixture never wrote.
+                        json!(format!("{session}-load-result"))
+                    } else {
+                        json!(format!("{session}-{}", n - 1))
+                    },
                     "cwd": workspace_str,
                     "sessionId": session,
                     "timestamp": "2026-09-19T10:00:00Z",

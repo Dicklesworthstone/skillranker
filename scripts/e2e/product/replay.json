@@ -290,7 +290,15 @@
         "observation_contract::observe_boundary_refuses_escaping_symlinks_before_storage",
         "observation_contract::observe_boundary_refuses_oversized_regular_files_before_storage",
         "observation_contract::observe_boundary_explicit_inventory_replaces_configured_discovery",
-        "observation_contract::observe_boundary_refuses_fifo_and_device_inputs_without_blocking"
+        "observation_contract::observe_boundary_refuses_fifo_and_device_inputs_without_blocking",
+        "observation_contract::observe_boundary_unresolved_lineage_cannot_record_or_advance_cursor",
+        "observation_contract::observe_boundary_selected_fork_records_only_its_load_idempotently",
+        "observation_contract::observe_boundary_invalid_branch_is_rejected_before_source_reads",
+        "observation_contract::observe_boundary_empty_or_unlabelled_history_preserves_safe_observation",
+        "observation_contract::observe_boundary_native_namespace_cannot_authorize_an_unresolved_fork",
+        "observation_contract::observe_boundary_producer_namespaces_preserve_distinct_loads_and_idempotence",
+        "observation_contract::observe_boundary_producer_keys_do_not_reassign_legacy_rows",
+        "observation_contract::observe_boundary_imported_loads_cannot_claim_native_exposure_by_repeating_ids"
       ]
     },
     {

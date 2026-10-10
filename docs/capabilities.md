@@ -30,6 +30,24 @@ provider availability, native harness support or installed-version
 compatibility. The Claude adapter stays unverified with no tested version, so
 no native advice is claimed.
 
+Observation source boundaries are separate from phase acceptance. `observe`
+refuses nonempty history whose active lineage cannot be resolved, before writing
+loads or advancing a cursor. An explicit branch selects a normalized lineage;
+for unlabelled native records it names the local ledger branch and does not
+authorize an ambiguous fork. Empty and unambiguous unlabelled history remain
+supported.
+
+New explicit-producer imports use framed, versioned observation and cursor keys,
+so producer/session IDs containing colons and distinct agent identities remain
+separate. Imports cannot name a native cursor by repeating its key as a session
+ID. Legacy rows are preserved; their missing producer provenance is not
+reconstructed. New imported loads retain unknown exposure attribution, since raw
+session/branch IDs alone cannot establish the source of a recorded exposure.
+Producer-aware imported exposure attribution remains unqualified. Native
+observation attribution and repeated-delivery behavior retain their existing
+contracts. These source controls do not establish independent usefulness,
+representative traffic, a native harness qualification or P5 acceptance.
+
 Behavior that must match the registry:
 - Every implemented command answers `--help`.
 - A planned command is refused as `invalid-usage` (exit 2). It is never

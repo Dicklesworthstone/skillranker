@@ -2077,6 +2077,11 @@ fn observe_owned(
     workspace: PathBuf,
     config: &ResolvedConfig,
 ) -> Result<String, Failure> {
+    let requested_branch = matches
+        .get_one::<String>("branch")
+        .map(crate::identity::BranchId::new)
+        .transpose()
+        .map_err(|_| invalid("Invalid observation branch identity"))?;
     let context_file = matches.get_one::<String>("context");
     let transcript_file = matches.get_one::<String>("transcript");
     let harness_opt = matches.get_one::<String>("harness");
@@ -2268,26 +2273,40 @@ fn observe_owned(
         }
     };
 
+    let is_native = transcript_file.is_some();
+    let observation_branch = requested_branch.or_else(|| normalized_context.branch_id.clone());
+    // Unlabelled native Claude records still need an unambiguous lineage.
+    // In that format --branch names local persistence, not a source qualifier.
+    let unlabelled_native = is_native
+        && normalized_context
+            .events
+            .iter()
+            .all(|event| event.branch_id.is_none());
     let branch_target = crate::context::branch::BranchResolutionTarget {
         target_event_id: None,
-        target_branch_id: matches
-            .get_one::<String>("branch")
-            .and_then(|s| crate::identity::BranchId::new(s).ok())
-            .or_else(|| normalized_context.branch_id.clone()),
+        target_branch_id: if unlabelled_native {
+            None
+        } else {
+            observation_branch.clone()
+        },
         target_agent_id: normalized_context.agent_id.clone(),
     };
     let resolved_branch =
         crate::context::branch::resolve_active_branch(&normalized_context.events, &branch_target);
     let active_branch = resolved_branch.active_branch();
-    let agent_branch = matches
-        .get_one::<String>("branch")
-        .cloned()
-        .or_else(|| {
-            active_branch
-                .and_then(|b| b.branch_id.as_ref())
-                .map(|b| b.as_str().to_string())
-        })
-        .unwrap_or_else(|| "main".to_string());
+    // None means "inspect all events" to the load extractor. It is safe only
+    // for an empty history, never an unresolved fork or invalid lineage.
+    if active_branch.is_none() && !normalized_context.events.is_empty() {
+        return Err((
+            3u8,
+            "ambiguous-branch",
+            "Cannot resolve observation lineage; select an existing --branch or supply an unambiguous source".into(),
+        ));
+    }
+    let agent_branch = observation_branch
+        .as_ref()
+        .or_else(|| active_branch.and_then(|b| b.branch_id.as_ref()))
+        .map_or_else(|| "main".to_string(), |b| b.as_str().to_string());
 
     // Resolve roster
     let home = std::env::var_os("HOME")
@@ -2376,11 +2395,28 @@ fn observe_owned(
 
     let evidence_resolver = crate::pipeline::skill_evidence_resolver_from_roster(&roster);
 
-    let is_native = transcript_file.is_some();
     let cursor_session_id = if is_native {
         format!("native:{}:{}", harness_opt.unwrap(), session_id)
-    } else if let Some(producer) = &normalized_context.producer_id {
-        format!("producer:{}:{}", producer.as_str(), session_id)
+    } else if normalized_context.producer_id.is_some()
+        || session_id.starts_with("native:")
+        || session_id.starts_with("producer:")
+        || session_id.starts_with("producer-v2:")
+    {
+        // Imported opaque IDs may contain colons. Frame the fields instead of
+        // joining them, and never let an import name a native/producer cursor.
+        // Legacy unqualified imports keep their existing cursor namespace.
+        format!(
+            "producer-v2:{}",
+            serde_json::json!([
+                normalized_context.harness.as_str(),
+                normalized_context
+                    .producer_id
+                    .as_ref()
+                    .map(|id| id.as_str()),
+                normalized_context.agent_id.as_ref().map(|id| id.as_str()),
+                session_id,
+            ])
+        )
     } else {
         session_id.clone()
     };
@@ -2466,14 +2502,37 @@ fn observe_owned(
             | crate::context::LoadState::Unobservable => crate::storage::EvidenceState::Censored,
         };
         let event_id_str = obs.event_id.as_ref().map_or("event-0", |e| e.as_str());
-        let source_event_key = format!(
-            "{}:{}:{}:{}:{}",
-            if is_native { "native" } else { "normalized" },
-            session_id,
-            agent_branch,
-            event_id_str,
-            obs.skill_id.as_str()
-        );
+        let source_event_key = if !is_native && normalized_context.producer_id.is_some() {
+            // The old key omitted producer, harness, agent and workspace. Its
+            // rows cannot retrospectively establish which producer owned them;
+            // retain them and use an unambiguous versioned key for new imports.
+            format!(
+                "normalized-v2:{}",
+                serde_json::json!([
+                    workspace.to_string_lossy(),
+                    normalized_context.harness.as_str(),
+                    normalized_context
+                        .producer_id
+                        .as_ref()
+                        .map(|id| id.as_str()),
+                    normalized_context.agent_id.as_ref().map(|id| id.as_str()),
+                    session_id,
+                    agent_branch,
+                    event_id_str,
+                    obs.skill_id.as_str(),
+                ])
+            )
+        } else {
+            // Preserve qualified native and legacy unqualified import history.
+            format!(
+                "{}:{}:{}:{}:{}",
+                if is_native { "native" } else { "normalized" },
+                session_id,
+                agent_branch,
+                event_id_str,
+                obs.skill_id.as_str()
+            )
+        };
         // Derived from the uniqueness key rather than from a subset of it. `observation_id`
         // is the table's PRIMARY KEY and `source_event_key` is UNIQUE, so the two must carry
         // the same identity or they disagree: the old form omitted the producer namespace and
@@ -2513,7 +2572,12 @@ fn observe_owned(
         updated_at_unix_ms: now_ms,
     };
 
-    crate::storage::record_observations_with_cursor(
+    let record_observations = if is_native {
+        crate::storage::record_observations_with_cursor
+    } else {
+        crate::storage::ledger::record_imported_observations_with_cursor
+    };
+    record_observations(
         invocation,
         cx,
         crate::storage::LedgerAccess::ExistingOnly,
