@@ -81,10 +81,12 @@ agent) and is out of scope here.
    `UserPromptSubmit` matcher entry, `timeout: 4`, preserves the existing
    `claude-prompt-compact-check` entry and all unrelated settings), then
    `--apply`. Backup lands in `~/.local/state/sr/backups`.
-5. **Credential environment**: `TYPESAFE_API_KEY` must be in the Claude
-   process environment (hooks inherit it). Source the maintainer `.env`
-   before launching agent sessions; sessions launched without the key record
-   `credential-absent` unavailability, which must be separated from provider
+5. **Credential delivery**: the current managed entry uses the private wrapper
+   `~/.local/libexec/skillranker/sr`, which loads the checkout's owner-only
+   (`0600`) `.env` before executing the installed binary. It does not depend
+   on an old Claude process inheriting the credential. Direct `sr` CLI calls
+   still require an explicit export as described in `AGENTS.md`. Missing
+   credentials record `credential-absent`; keep these separate from provider
    outages in the cohort report.
 6. Smoke: one prompt through a real Claude session; confirm a shadow turn is
    recorded (`sr stats --json`, shadow channel) with zero bytes injected.
@@ -1204,3 +1206,45 @@ the confirmation to look for.
   corpus/paired-outcome gates and the historical runtime investigation stay
   open. Raw controls, failures, audit and rollback receipt:
   `/scratch/tmp/skillranker-qualified-deployment-tc2xged2`.
+
+## Redeployment — 2026-10-10 UTC (BeigeCompass, installed latency reporting)
+
+- Activated source `40d320ebc3d04ac04a01869873195f3cc9ff8eab` at
+  `2026-10-10 05:00:49 UTC`. The installed JSON/table stats now report measured
+  sample counts, p99 and per-channel latency, including failure durations and
+  excluding unfinished rows. Cold-start/TLS strata and memory remain unrecorded.
+- Installed SHA256
+  `2e0a6a9b480cca829473bf6ca2c4ec70f17f9aff72029d304e0308fb4f93246e`,
+  25,381,912 bytes, mode `0755`. Prior source `e7e2acd` is preserved at
+  `~/.local/state/sr/deployments/20261010T050049Z-e7e2acd/sr`, SHA256
+  `61983b861e3bc72e190e9b79272f71f9a1d4e69407e0f7dfd860f9181a4065f9`.
+  Cooperating lock, binary/config identity rechecks, backup, atomic replacement
+  and fsync passed; external noncooperating edits remain outside CAS protection.
+- DSR `296d35b8-3122-48c4-bab4-80a464421e66` passed in 1,142.886 seconds
+  through normal RCH admission on `hz2`, locked native Linux x86-64 release,
+  default features and one job. All 285 local/committed/worker inputs match
+  the qualified source. The existing check, strict Clippy and full default proof
+  (1,620 distinct passes, zero failures, eleven unchanged opt-in ignores) are
+  reused, not rerun. Build metadata includes tracker-only dirtiness while the
+  original task was claimed. ELF, manifest, archive and verbatim `LICENSE`
+  checks passed. No public release, tag or other-platform qualification.
+- Candidate and installed paths each pass seven stats control groups on isolated
+  SQLite fixtures, 33 strict-parser controls, 28 CLI/hook comparison records,
+  eight installer controls and 26 SQLite delivery comparison records. The actual
+  installed credential wrapper passes 29 records. These synthetic offline checks
+  make no provider calls and earn no organic-traffic or independent-quality credit.
+- Real stats now expose 162 measured durations: three CLI and 159 shadow, with
+  eight unfinished shadow rows excluded; aggregate and shadow p99 are 2,569 ms.
+  All existing non-clock metrics are unchanged: 170 evaluations, no emissions or
+  independent judgments, 234 provider attempts and fourteen unknown-usage attempts.
+  Four configuration identities, live install/uninstall previews and budget fields
+  are unchanged. Shared guard remains disabled; consent, capture and scope unchanged.
+- The first DSR attempt refused after 308.905 seconds when the selected `vmi1264463`
+  worker's admission wait expired (RCH-I001; inner exit 103, DSR exit 6). No compile
+  or local fallback ran. The retry used `hz2`'s available normal capacity without
+  interrupting peers or changing scheduler policy. A dynamic inspection command
+  was guard-refused; explicit read-only commands succeeded. All failures retained.
+- `sr-1uf4` remains open under its original representative 500-turn requirements.
+  Independent corpus/cohort gates and the historical timeout cause remain open.
+  Author-only activation proof and rollback receipt:
+  `/scratch/tmp/skillranker-stats-activation-rqps11yy/retry-hz2`.
