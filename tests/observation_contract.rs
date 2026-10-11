@@ -2187,6 +2187,10 @@ fn native_observe_journey(split: bool, failed: bool) {
 }
 
 fn native_observe_timed_journey(split: bool, failed: bool, timing: &str) {
+    native_observe_candidate_journey(split, failed, timing, "returned");
+}
+
+fn native_observe_candidate_journey(split: bool, failed: bool, timing: &str, candidate_case: &str) {
     let bin = env!("CARGO_BIN_EXE_sr");
     let ledger_dir = temp_private_dir("native-obs-ledger");
     let ledger_dir_str = ledger_dir.to_str().unwrap();
@@ -2205,8 +2209,25 @@ fn native_observe_timed_journey(split: bool, failed: bool, timing: &str) {
     // Create a skill in the workspace's .claude/skills directory
     let skill_dir = ws_dir.join(".claude").join("skills").join("code-review");
     fs::create_dir_all(&skill_dir).expect("create skill dir");
-    let skill_content = "---\nname: code-review\ndescription: Review pull requests and code changes\n---\n# code-review\nInspect diffs.\n";
+    let skill_content =
+        "---\nname: code-review\ndescription: Code review skill.\n---\n# code-review\n";
     fs::write(skill_dir.join("SKILL.md"), skill_content).expect("write SKILL.md");
+
+    // Candidate identity/content comes from the actual roster listing for this local file.
+    let listing = std::process::Command::new(bin)
+        .current_dir(&ws_dir)
+        .args(["roster", "--json"])
+        .output()
+        .unwrap();
+    assert!(listing.status.success(), "{listing:?}");
+    let listing: serde_json::Value = serde_json::from_slice(&listing.stdout).unwrap();
+    let skill = listing["records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|record| record["name"] == "code-review")
+        .unwrap();
+    let returned_skill_id = skill["skill_id"].as_str().unwrap();
 
     let now_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -2214,7 +2235,7 @@ fn native_observe_timed_journey(split: bool, failed: bool, timing: &str) {
         .as_millis() as u64;
     // Pre-record an emitted ranking event for this session so we test attribution
     let (inv, cx) = test_invocation();
-    let ranking_ev = NewRankingEvent {
+    let mut ranking_ev = NewRankingEvent {
         event_id: "rank-ev-1".into(),
         verified_delivery_key: None,
         workspace_root: ws_path_str.into(),
@@ -2232,25 +2253,50 @@ fn native_observe_timed_journey(split: bool, failed: bool, timing: &str) {
         output_tokens: Some(10),
         snapshot_id: None,
     };
+    if candidate_case == "explicit" {
+        ranking_ev.decision = DecisionKind::Explicit;
+    }
+    if candidate_case == "acknowledged" {
+        ranking_ev.exposure_state = ExposureState::Acknowledged;
+    }
+    let mut candidate = make_test_candidate(&ranking_ev.event_id, returned_skill_id);
+    candidate.skill_version = skill["content_hash"].as_str().unwrap().to_string();
+    match candidate_case {
+        "explicit" => {
+            candidate.stage = CandidateStage::Wide;
+            candidate.raw_probability = None;
+            candidate.normalized_probability = None;
+            candidate.fit_score = None;
+            candidate.rank_score = None;
+        }
+        "different" => candidate.skill_id = "not-the-loaded-skill".into(),
+        "wrong-stage" => candidate.stage = CandidateStage::Wide,
+        "wide-only" => {
+            candidate.stage = CandidateStage::Wide;
+            candidate.rank_position = None;
+        }
+        "unreturned" => candidate.rank_position = None,
+        "excluded" => {
+            candidate.excluded = true;
+            candidate.exclusion_reason = Some("user-excluded".into());
+        }
+        _ => {}
+    }
+    let candidates = if candidate_case == "missing" {
+        Vec::new()
+    } else {
+        vec![candidate.clone()]
+    };
     record_ranking(
         &inv,
         &cx,
         LedgerAccess::ExistingOnly,
         LedgerLocation::Directory(ledger_dir.clone()),
         &ranking_ev,
-        &[],
+        &candidates,
         None,
     )
     .expect("record ranking event");
-
-    // Create skill in workspace roster
-    let skill_dir = ws_dir.join(".claude/skills/code-review");
-    fs::create_dir_all(&skill_dir).expect("create skill dir");
-    fs::write(
-        skill_dir.join("SKILL.md"),
-        "---\nname: code-review\ndescription: Code review skill.\n---\n# code-review\n",
-    )
-    .expect("write SKILL.md");
 
     // Create a native Claude transcript
     let transcript_path = ws_dir.join("native-sess-1.jsonl");
@@ -2307,7 +2353,8 @@ fn native_observe_timed_journey(split: bool, failed: bool, timing: &str) {
         result["name"] = serde_json::json!("code-review");
         lines[2] = result.to_string();
     }
-    let expects_attribution = matches!(timing, "valid" | "delayed" | "rfc3339");
+    let expects_attribution = matches!(timing, "valid" | "delayed" | "rfc3339")
+        && matches!(candidate_case, "returned" | "explicit" | "acknowledged");
     if matches!(timing, "delayed" | "rfc3339") {
         let mut later = ranking_ev.clone();
         later.event_id = "rank-after-load".into();
@@ -2319,7 +2366,36 @@ fn native_observe_timed_journey(split: bool, failed: bool, timing: &str) {
             LedgerAccess::ExistingOnly,
             LedgerLocation::Directory(ledger_dir.clone()),
             &later,
-            &[],
+            &[NewRankingCandidate {
+                event_id: later.event_id.clone(),
+                ..candidate.clone()
+            }],
+            None,
+        )
+        .unwrap();
+    }
+    if matches!(candidate_case, "superseded-other" | "superseded-abstain") {
+        let mut later = ranking_ev.clone();
+        later.event_id = "rank-supersedes-target".into();
+        later.created_at_unix_ms = now_ms - 1_200;
+        let later_candidates = if candidate_case == "superseded-abstain" {
+            later.decision = DecisionKind::Abstain;
+            Vec::new()
+        } else {
+            vec![NewRankingCandidate {
+                event_id: later.event_id.clone(),
+                skill_id: "another-returned-skill".into(),
+                ..candidate.clone()
+            }]
+        };
+        let (inv, cx) = test_invocation();
+        record_ranking(
+            &inv,
+            &cx,
+            LedgerAccess::ExistingOnly,
+            LedgerLocation::Directory(ledger_dir.clone()),
+            &later,
+            &later_candidates,
             None,
         )
         .unwrap();
@@ -2381,7 +2457,10 @@ fn native_observe_timed_journey(split: bool, failed: bool, timing: &str) {
             LedgerAccess::ExistingOnly,
             LedgerLocation::Directory(ledger_dir.clone()),
             &later,
-            &[],
+            &[NewRankingCandidate {
+                event_id: later.event_id.clone(),
+                ..candidate.clone()
+            }],
             None,
         )
         .unwrap();
@@ -2446,7 +2525,7 @@ fn native_observe_timed_journey(split: bool, failed: bool, timing: &str) {
     assert_eq!(cur_gen, if split { 2 } else { 1 });
     assert_eq!(last_ev, "msg-r1");
 
-    // Verify observation is recorded and attributed to the preceding ranking event
+    // Keep the load independently of whether the preceding emission can receive credit.
     let (skill_id, ev_state, attr_id): (String, String, Option<String>) = conn
         .query_row(
             "SELECT skill_id, evidence_state, attributed_event_id FROM observations WHERE session_id = 'native-sess-1'",
@@ -2454,7 +2533,7 @@ fn native_observe_timed_journey(split: bool, failed: bool, timing: &str) {
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .expect("query observation");
-    assert!(skill_id.starts_with("s_"));
+    assert_eq!(skill_id, returned_skill_id);
     assert_eq!(ev_state, if failed { "attempted" } else { "loaded" });
     if let Some(id) = original_id {
         let stored: String = conn
@@ -2465,7 +2544,7 @@ fn native_observe_timed_journey(split: bool, failed: bool, timing: &str) {
     assert_eq!(
         attr_id,
         expects_attribution.then(|| "rank-ev-1".to_string()),
-        "source timing {timing} must not create or steal exposure attribution"
+        "source timing {timing}, candidate {candidate_case} must not create or steal exposure attribution"
     );
     if expects_attribution {
         let stored_time: i64 = conn
@@ -3013,4 +3092,36 @@ fn native_observation_rfc3339_time_preserves_successful_adoption() {
 #[test]
 fn native_observation_confirmation_after_timing_repair_preserves_load() {
     native_observe_timed_journey(true, false, "late-clock");
+}
+
+#[test]
+fn native_observation_candidate_missing_keeps_load_without_adoption() {
+    native_observe_candidate_journey(false, false, "valid", "missing");
+}
+
+#[test]
+fn native_observation_candidate_must_be_returned_and_unexcluded() {
+    for candidate in [
+        "different",
+        "wrong-stage",
+        "wide-only",
+        "unreturned",
+        "excluded",
+    ] {
+        native_observe_candidate_journey(false, false, "valid", candidate);
+    }
+}
+
+#[test]
+fn native_observation_candidate_supersession_does_not_fall_back() {
+    for candidate in ["superseded-other", "superseded-abstain"] {
+        native_observe_candidate_journey(false, false, "valid", candidate);
+    }
+}
+
+#[test]
+fn native_observation_candidate_explicit_and_acknowledged_loads_still_count() {
+    for candidate in ["explicit", "acknowledged"] {
+        native_observe_candidate_journey(false, false, "valid", candidate);
+    }
 }

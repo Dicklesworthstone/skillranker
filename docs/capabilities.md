@@ -65,8 +65,14 @@ preceding emission. Conflicting timestamps, missing/invalid/future timing, and
 orphan results keep their load evidence with unknown exposure attribution.
 All observations retain collection time for retention and monotonic load-state
 updates. Validated source time is a separate attribution cutoff; collection time
-cannot authorize native adoption credit. Repeated delivery and atomic cursor updates
-remain unchanged. Existing historical attribution is preserved, not repaired
+cannot authorize native adoption credit. Automatic attribution checks the latest
+preceding emission for the observed skill's unexcluded returned candidate:
+rerank for a ranked decision, wide for an explicit decision, with a recorded
+rank position. Missing, shortlist-only or excluded candidates keep unknown
+attribution. A superseding emission without that skill prevents fallback to an
+older suggestion. This membership check does not prove historical load content.
+Repeated delivery and atomic cursor updates remain unchanged. Existing historical
+attribution is preserved, not repaired
 by guessing missing source timing. Exact agent/turn exposure attribution still
 requires qualification; the existing session/branch and 30-minute window are
 not that proof. These source controls do not establish independent usefulness,

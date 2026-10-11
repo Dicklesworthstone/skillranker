@@ -305,7 +305,11 @@
         "observation_contract::native_observation_before_emission_cannot_claim_adoption",
         "observation_contract::native_observation_unknown_or_invalid_timing_keeps_load_without_adoption",
         "observation_contract::native_observation_rfc3339_time_preserves_successful_adoption",
-        "observation_contract::native_observation_confirmation_after_timing_repair_preserves_load"
+        "observation_contract::native_observation_confirmation_after_timing_repair_preserves_load",
+        "observation_contract::native_observation_candidate_missing_keeps_load_without_adoption",
+        "observation_contract::native_observation_candidate_must_be_returned_and_unexcluded",
+        "observation_contract::native_observation_candidate_supersession_does_not_fall_back",
+        "observation_contract::native_observation_candidate_explicit_and_acknowledged_loads_still_count"
       ]
     },
     {

@@ -4869,30 +4869,45 @@ impl LedgerStore {
         // only that same observation, without moving its original attribution.
         // Never let stale attempts or censored input weaken confirmed evidence.
         for obs in observations {
-            let attributed_event_id =
-                match (&obs.attributed_event_id, attribution.attribution_time(obs)) {
-                    (_, None) => None,
-                    (Some(id), Some(_)) => Some(id.clone()),
-                    (None, Some(source_time)) => {
-                        let min_time = source_time.saturating_sub(1_800_000);
-                        tx.query_row(
-                            "SELECT event_id FROM ranking_events
-                         WHERE workspace_root = ?1 AND session_id = ?2 AND agent_branch = ?3
-                           AND exposure_state IN ('emitted', 'acknowledged')
-                           AND created_at_unix_ms <= ?4 AND created_at_unix_ms >= ?5
-                         ORDER BY created_at_unix_ms DESC LIMIT 1",
+            let attributed_event_id = match (
+                &obs.attributed_event_id,
+                attribution.attribution_time(obs),
+            ) {
+                (_, None) => None,
+                (Some(id), Some(_)) => Some(id.clone()),
+                (None, Some(source_time)) => {
+                    // A newer emission supersedes the old one even when it
+                    // did not return this skill. Check membership only after
+                    // choosing latest, never search backward for adoption.
+                    let min_time = source_time.saturating_sub(1_800_000);
+                    tx.query_row(
+                            "SELECT latest.event_id FROM (
+                                 SELECT event_id, decision FROM ranking_events
+                                 WHERE workspace_root = ?1 AND session_id = ?2 AND agent_branch = ?3
+                                   AND exposure_state IN ('emitted', 'acknowledged')
+                                   AND created_at_unix_ms <= ?4 AND created_at_unix_ms >= ?5
+                                 ORDER BY created_at_unix_ms DESC LIMIT 1
+                             ) AS latest
+                             WHERE EXISTS (
+                                 SELECT 1 FROM ranking_candidates AS candidate
+                                 WHERE candidate.event_id = latest.event_id AND candidate.skill_id = ?6
+                                   AND candidate.excluded = 0 AND candidate.rank_position IS NOT NULL
+                                   AND ((latest.decision = 'ranked' AND candidate.stage = 'rerank')
+                                     OR (latest.decision = 'explicit' AND candidate.stage = 'wide'))
+                             )",
                             params![
                                 obs.workspace_root,
                                 obs.session_id,
                                 obs.agent_branch,
                                 source_time as i64,
                                 min_time as i64,
+                                obs.skill_id,
                             ],
                             |r| r.get(0),
                         )
                         .optional()?
-                    }
-                };
+                }
+            };
             tx.execute(
                 "INSERT INTO observations (
                     observation_id, source_event_key, workspace_root, session_id,
