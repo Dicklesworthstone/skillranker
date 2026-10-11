@@ -1076,6 +1076,163 @@ fn suggestion_adoption_requires_a_qualifying_load_for_an_emitted_candidate() {
 }
 
 #[test]
+fn label_coverage_counts_distinct_judged_emissions_in_the_emission_cohort() {
+    let (inv, cx) = test_invocation();
+    let (_, mut store) = ready_store("label-coverage-cohort", &inv, &cx);
+    let stamp = store.stamp();
+    let base = 1_000_000;
+    store
+        .record_roster_snapshot(inv.clock(), &cx, &snapshot_fixture("snap-1", base), stamp)
+        .expect("snapshot");
+    for (id, decision, exposure) in [
+        ("judged", DecisionKind::Ranked, ExposureState::Emitted),
+        (
+            "unjudged",
+            DecisionKind::Explicit,
+            ExposureState::Acknowledged,
+        ),
+        ("shadow", DecisionKind::Ranked, ExposureState::Generated),
+        ("abstained", DecisionKind::Abstain, ExposureState::Generated),
+    ] {
+        store
+            .record_ranking_event_with_attempts(
+                inv.clock(),
+                &cx,
+                &event_fixture(id, "cli", decision, exposure, 50, base + 100),
+                &[],
+                None,
+                &[],
+                stamp,
+            )
+            .expect("event");
+    }
+    for (id, event, skill, label) in [
+        ("first", "judged", "review", JudgmentLabel::Useful),
+        ("second", "judged", "test_runner", JudgmentLabel::Harmful),
+        ("shadow-label", "shadow", "review", JudgmentLabel::Neutral),
+        (
+            "abstained-label",
+            "abstained",
+            "review",
+            JudgmentLabel::Useful,
+        ),
+    ] {
+        store
+            .record_judgment(
+                inv.clock(),
+                &cx,
+                &judgment_fixture(id, event, skill, label, base + 200),
+                stamp,
+            )
+            .expect("judgment");
+    }
+    let report = store
+        .query_value_stats(base as i64, (base + 1_000) as i64, false)
+        .expect("stats");
+    assert_eq!(report.turns.emitted_suggestions, 2);
+    assert_eq!(report.judgments.total_judgments, 4);
+    assert_eq!(report.judgments.distinct_judged_events, 3);
+    assert_eq!(report.judgments.useful, 2);
+    assert_eq!(report.judgments.harmful, 1);
+    assert_eq!(report.judgments.neutral, 1);
+    assert_eq!(report.judgments.useful_ratio_in_judged, Some(0.5));
+    assert_eq!(report.judgments.label_coverage_rate, Some(0.5));
+}
+
+#[test]
+fn label_coverage_distinguishes_no_emissions_from_unjudged_emissions() {
+    let (inv, cx) = test_invocation();
+    let (_, mut store) = ready_store("label-coverage-denominator", &inv, &cx);
+    let stamp = store.stamp();
+    let base = 1_000_000;
+    store
+        .record_roster_snapshot(inv.clock(), &cx, &snapshot_fixture("snap-1", base), stamp)
+        .expect("snapshot");
+    store
+        .record_ranking_event_with_attempts(
+            inv.clock(),
+            &cx,
+            &event_fixture(
+                "shadow",
+                "shadow",
+                DecisionKind::Ranked,
+                ExposureState::Generated,
+                50,
+                base + 100,
+            ),
+            &[],
+            None,
+            &[],
+            stamp,
+        )
+        .expect("shadow event");
+    store
+        .record_judgment(
+            inv.clock(),
+            &cx,
+            &judgment_fixture(
+                "shadow-label",
+                "shadow",
+                "review",
+                JudgmentLabel::Useful,
+                base + 200,
+            ),
+            stamp,
+        )
+        .expect("judgment");
+    let before = store
+        .query_value_stats(base as i64, (base + 1_000) as i64, false)
+        .expect("stats without emissions");
+    assert_eq!(before.judgments.total_judgments, 1);
+    assert_eq!(before.judgments.label_coverage_rate, None);
+
+    store
+        .record_ranking_event_with_attempts(
+            inv.clock(),
+            &cx,
+            &event_fixture(
+                "unjudged",
+                "cli",
+                DecisionKind::Explicit,
+                ExposureState::Acknowledged,
+                50,
+                base + 300,
+            ),
+            &[],
+            None,
+            &[],
+            stamp,
+        )
+        .expect("emitted event");
+    let after = store
+        .query_value_stats(base as i64, (base + 1_000) as i64, false)
+        .expect("stats with unjudged emission");
+    assert_eq!(after.turns.emitted_suggestions, 1);
+    assert_eq!(after.judgments.total_judgments, 1);
+    assert_eq!(after.judgments.distinct_judged_events, 1);
+    assert_eq!(after.judgments.label_coverage_rate, Some(0.0));
+    store
+        .record_judgment(
+            inv.clock(),
+            &cx,
+            &judgment_fixture(
+                "emitted-label",
+                "unjudged",
+                "review",
+                JudgmentLabel::Useful,
+                base + 400,
+            ),
+            stamp,
+        )
+        .expect("explicit emission judgment");
+    let judged = store
+        .query_value_stats(base as i64, (base + 1_000) as i64, false)
+        .expect("stats with judged explicit emission");
+    assert_eq!(judged.judgments.total_judgments, 2);
+    assert_eq!(judged.judgments.label_coverage_rate, Some(1.0));
+}
+
+#[test]
 fn judgments_and_cost_per_useful_suggestion_calculated() {
     let dir = temp_private_dir("judgments");
     let (inv, cx) = test_invocation();

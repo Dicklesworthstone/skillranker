@@ -85,6 +85,13 @@ Adoption also checks successful load state, report time, matching local scope an
 returned candidate membership; historical attribution rows are preserved. This
 metric is operational telemetry, not independently judged usefulness.
 
+Stats label coverage uses distinct judged emitted suggestions in that same emission
+cohort. Labels on un-emitted shadow or abstained turns remain in raw judgment
+counts but cannot inflate coverage of emitted advice; repeated labels count once.
+An empty emission cohort has absent coverage, while an unjudged nonempty cohort
+has zero coverage. These denominator checks do not establish independent label
+provenance or satisfy the corpus, paired-outcome or P5 acceptance gates.
+
 Behavior that must match the registry:
 - Every implemented command answers `--help`.
 - A planned command is refused as `invalid-usage` (exit 2). It is never

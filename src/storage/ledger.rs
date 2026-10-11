@@ -3444,7 +3444,8 @@ impl LedgerStore {
         };
 
         // 4. Judgments
-        let (total_judgments, useful, harmful, neutral, distinct_judged): (
+        let (total_judgments, useful, harmful, neutral, distinct_judged, judged_emissions): (
+            i64,
             i64,
             i64,
             i64,
@@ -3455,14 +3456,27 @@ impl LedgerStore {
              coalesce(sum(CASE WHEN j.label = 'useful' THEN 1 ELSE 0 END), 0), \
              coalesce(sum(CASE WHEN j.label = 'harmful' THEN 1 ELSE 0 END), 0), \
              coalesce(sum(CASE WHEN j.label = 'neutral' THEN 1 ELSE 0 END), 0), \
-             count(DISTINCT j.attributed_event_id) \
+             count(DISTINCT j.attributed_event_id), \
+             count(DISTINCT CASE WHEN e.decision IN ('ranked', 'explicit') \
+               AND e.exposure_state IN ('emitted', 'acknowledged') THEN e.event_id END) \
              FROM judgments j JOIN ranking_events e ON j.attributed_event_id = e.event_id \
              WHERE e.created_at_unix_ms >= ?1 AND e.created_at_unix_ms <= ?2",
             [since_unix_ms, as_of_unix_ms],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                ))
+            },
         )?;
+        // Raw judgments include shadow and abstained turns; coverage must use
+        // the same emitted-suggestion cohort as its denominator.
         let label_coverage_rate = if emitted_suggestions > 0 {
-            Some(distinct_judged as f64 / emitted_suggestions as f64)
+            Some(judged_emissions as f64 / emitted_suggestions as f64)
         } else {
             None
         };

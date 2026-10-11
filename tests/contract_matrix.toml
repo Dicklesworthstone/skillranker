@@ -1396,6 +1396,8 @@ unit_property_tests = [
     "tests/stats_value_report_contract.rs::suggestion_adoption_counts_distinct_emissions_not_repeated_loads",
     "tests/stats_value_report_contract.rs::suggestion_adoption_matches_the_emission_time_window",
     "tests/stats_value_report_contract.rs::suggestion_adoption_requires_a_qualifying_load_for_an_emitted_candidate",
+    "tests/stats_value_report_contract.rs::label_coverage_counts_distinct_judged_emissions_in_the_emission_cohort",
+    "tests/stats_value_report_contract.rs::label_coverage_distinguishes_no_emissions_from_unjudged_emissions",
     "tests/stats_value_report_contract.rs::judgments_and_cost_per_useful_suggestion_calculated",
     "tests/stats_value_report_contract.rs::by_skill_breakdown_orders_by_recommendations_and_shortlist",
     "tests/stats_value_report_contract.rs::time_window_filtering_respects_since_duration",

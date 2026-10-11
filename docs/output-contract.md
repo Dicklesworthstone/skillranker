@@ -405,8 +405,12 @@ emission cohort's adoption. Historical attribution rows are not rewritten, and
 these checks do not establish missing agent/turn or historical content provenance.
 
 `judgments` reports `useful`, `harmful`, `neutral`, `distinct_judged_events`,
-`label_coverage_rate` and `useful_ratio_in_judged`. Ratios are absent, never zero, when
-nothing is labelled.
+`label_coverage_rate` and `useful_ratio_in_judged`. Label coverage divides distinct
+judged emitted suggestions by `turns.emitted_suggestions` in the same event window;
+repeated labels count once, and judgments of shadow or abstained turns remain in
+the raw counts without inflating this emission cohort's coverage. Label coverage
+is absent when there are no emitted suggestions. The useful ratio is absent when
+there are no judgments; a defined ratio with a zero numerator is zero.
 
 `provider` reports attempt counts by settlement (`completed_attempts`,
 `failed_attempts`, `unknown_attempts`), the token totals that are actually known, and
