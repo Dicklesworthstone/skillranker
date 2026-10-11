@@ -25,7 +25,7 @@ use rusqlite::{
     Connection, ErrorCode, OpenFlags, OptionalExtension, TransactionBehavior, config::DbConfig,
     limits::Limit, params,
 };
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fs::File;
 use std::path::{Component, Path, PathBuf};
@@ -4810,7 +4810,7 @@ impl LedgerStore {
             cursor,
             expected_cursor_gen,
             expected_stamp,
-            true,
+            ObservationAttribution::Infer,
         )
     }
 
@@ -4823,7 +4823,7 @@ impl LedgerStore {
         cursor: &SessionCursor,
         expected_cursor_gen: Option<u64>,
         expected_stamp: LedgerStamp,
-        infer_attribution: bool,
+        attribution: ObservationAttribution,
     ) -> Result<LedgerStamp, StoreError> {
         if self.read_only {
             return Err(StoreError::Permissions);
@@ -4869,29 +4869,30 @@ impl LedgerStore {
         // only that same observation, without moving its original attribution.
         // Never let stale attempts or censored input weaken confirmed evidence.
         for obs in observations {
-            let attributed_event_id = match &obs.attributed_event_id {
-                _ if !infer_attribution => None,
-                Some(id) => Some(id.clone()),
-                None => {
-                    let min_time = obs.observed_at_unix_ms.saturating_sub(1_800_000);
-                    tx.query_row(
-                        "SELECT event_id FROM ranking_events
+            let attributed_event_id =
+                match (&obs.attributed_event_id, attribution.attribution_time(obs)) {
+                    (_, None) => None,
+                    (Some(id), Some(_)) => Some(id.clone()),
+                    (None, Some(source_time)) => {
+                        let min_time = source_time.saturating_sub(1_800_000);
+                        tx.query_row(
+                            "SELECT event_id FROM ranking_events
                          WHERE workspace_root = ?1 AND session_id = ?2 AND agent_branch = ?3
                            AND exposure_state IN ('emitted', 'acknowledged')
                            AND created_at_unix_ms <= ?4 AND created_at_unix_ms >= ?5
                          ORDER BY created_at_unix_ms DESC LIMIT 1",
-                        params![
-                            obs.workspace_root,
-                            obs.session_id,
-                            obs.agent_branch,
-                            obs.observed_at_unix_ms as i64,
-                            min_time as i64,
-                        ],
-                        |r| r.get(0),
-                    )
-                    .optional()?
-                }
-            };
+                            params![
+                                obs.workspace_root,
+                                obs.session_id,
+                                obs.agent_branch,
+                                source_time as i64,
+                                min_time as i64,
+                            ],
+                            |r| r.get(0),
+                        )
+                        .optional()?
+                    }
+                };
             tx.execute(
                 "INSERT INTO observations (
                     observation_id, source_event_key, workspace_root, session_id,
@@ -6394,6 +6395,47 @@ pub fn record_acknowledgment(
     res.value
 }
 
+enum ObservationAttribution {
+    Infer,
+    Unknown,
+    NativeTimed(BTreeMap<String, u64>),
+}
+
+impl ObservationAttribution {
+    fn attribution_time(&self, observation: &NewObservation) -> Option<u64> {
+        match self {
+            Self::Infer => Some(observation.observed_at_unix_ms),
+            Self::Unknown => None,
+            Self::NativeTimed(times) => times.get(&observation.observation_id).copied(),
+        }
+    }
+}
+
+/// Native collection time cannot establish that a load followed an exposure.
+/// Admit attribution only for observations with validated invocation source time.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn record_native_observations_with_cursor(
+    invocation: &ProcessInvocation,
+    cx: &Cx,
+    access: LedgerAccess,
+    location: LedgerLocation,
+    observations: &[NewObservation],
+    cursor: &SessionCursor,
+    expected_cursor_gen: Option<u64>,
+    native_observation_times: BTreeMap<String, u64>,
+) -> Result<bool, StoreError> {
+    record_observations_with_cursor_attribution(
+        invocation,
+        cx,
+        access,
+        location,
+        observations,
+        cursor,
+        expected_cursor_gen,
+        ObservationAttribution::NativeTimed(native_observation_times),
+    )
+}
+
 pub fn record_observations_with_cursor(
     invocation: &ProcessInvocation,
     cx: &Cx,
@@ -6411,7 +6453,7 @@ pub fn record_observations_with_cursor(
         observations,
         cursor,
         expected_cursor_gen,
-        true,
+        ObservationAttribution::Infer,
     )
 }
 
@@ -6436,7 +6478,7 @@ pub(crate) fn record_imported_observations_with_cursor(
         observations,
         cursor,
         expected_cursor_gen,
-        false,
+        ObservationAttribution::Unknown,
     )
 }
 
@@ -6449,7 +6491,7 @@ fn record_observations_with_cursor_attribution(
     observations: &[NewObservation],
     cursor: &SessionCursor,
     expected_cursor_gen: Option<u64>,
-    infer_attribution: bool,
+    attribution: ObservationAttribution,
 ) -> Result<bool, StoreError> {
     if access == LedgerAccess::Disabled {
         return Err(StoreError::Permissions);
@@ -6481,7 +6523,7 @@ fn record_observations_with_cursor_attribution(
                 &cursor,
                 expected_cursor_gen,
                 stamp,
-                infer_attribution,
+                attribution,
             )?;
             Ok(true)
         },

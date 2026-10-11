@@ -2491,6 +2491,17 @@ fn observe_owned(
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_millis() as u64);
     let mut new_observations = Vec::with_capacity(raw_observations.len());
+    let mut native_observation_times = std::collections::BTreeMap::new();
+    let native_event_times: std::collections::BTreeMap<_, _> = active_branch
+        .into_iter()
+        .flat_map(|branch| &branch.events)
+        .filter(|event| event.kind == crate::context::EventKind::ToolInvocation)
+        .filter_map(|event| {
+            let id = event.event_id.as_ref()?;
+            let time = u64::try_from(event.timestamp_unix_ms?).ok()?;
+            (time <= now_ms).then_some((id, time))
+        })
+        .collect();
     for obs in &raw_observations {
         let state = match obs.state {
             crate::context::LoadState::ObservedLoaded => crate::storage::EvidenceState::Loaded,
@@ -2539,6 +2550,16 @@ fn observe_owned(
         // key. AGENTS.md requires those namespaces to stay distinct, not to collide
         // (sr-mdng).
         let observation_id = format!("obs-{source_event_key}");
+        let source_time = is_native
+            .then(|| {
+                obs.event_id
+                    .as_ref()
+                    .and_then(|id| native_event_times.get(id).copied())
+            })
+            .flatten();
+        if let Some(source_time) = source_time {
+            native_observation_times.insert(observation_id.clone(), source_time);
+        }
         new_observations.push(crate::storage::NewObservation {
             observation_id,
             source_event_key,
@@ -2570,21 +2591,29 @@ fn observe_owned(
         updated_at_unix_ms: now_ms,
     };
 
-    let record_observations = if is_native {
-        crate::storage::record_observations_with_cursor
+    let recorded = if is_native {
+        crate::storage::ledger::record_native_observations_with_cursor(
+            invocation,
+            cx,
+            crate::storage::LedgerAccess::ExistingOnly,
+            location,
+            &new_observations,
+            &new_cursor,
+            expected_cursor_gen,
+            native_observation_times,
+        )
     } else {
-        crate::storage::ledger::record_imported_observations_with_cursor
+        crate::storage::ledger::record_imported_observations_with_cursor(
+            invocation,
+            cx,
+            crate::storage::LedgerAccess::ExistingOnly,
+            location,
+            &new_observations,
+            &new_cursor,
+            expected_cursor_gen,
+        )
     };
-    record_observations(
-        invocation,
-        cx,
-        crate::storage::LedgerAccess::ExistingOnly,
-        location,
-        &new_observations,
-        &new_cursor,
-        expected_cursor_gen,
-    )
-    .map_err(|err| match err {
+    recorded.map_err(|err| match err {
         crate::storage::StoreError::RecordConflict => (
             crate::output::ErrorKind::RevisionConflict.exit_code() as u8,
             crate::output::ErrorKind::RevisionConflict.as_str(),

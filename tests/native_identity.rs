@@ -560,3 +560,70 @@ fn claude_records_the_user_did_not_submit_are_context_not_requests() {
         assert_eq!(user(typed, text).role, Role::User, "{text}");
     }
 }
+
+#[test]
+fn native_rfc3339_and_numeric_timestamps_preserve_the_same_instant() {
+    for (timestamp, expected) in [
+        ("1970-01-01T00:00:00Z", 0),
+        ("2024-02-29T00:00:00.123Z", 1_709_164_800_123),
+        ("2024-02-29T01:00:00.123+01:00", 1_709_164_800_123),
+        ("2024-02-28T19:00:00.123-05:00", 1_709_164_800_123),
+        ("2024-02-29T00:00:00.123456789Z", 1_709_164_800_123),
+    ] {
+        let mut record = json!({"type":"user","uuid":"time","text":"hello","timestamp":timestamp});
+        assert_eq!(
+            parse(record.clone()).unwrap().timestamp_unix_ms,
+            Some(expected)
+        );
+        record["timestamp_unix_ms"] = json!(expected);
+        assert_eq!(
+            parse(record.clone()).unwrap().timestamp_unix_ms,
+            Some(expected)
+        );
+        record["timestamp_unix_ms"] = json!(expected + 1);
+        assert_eq!(
+            parse(record).unwrap().timestamp_unix_ms,
+            None,
+            "conflicting clocks are unknown"
+        );
+    }
+}
+
+#[test]
+fn invalid_native_timestamps_preserve_records_with_unknown_timing() {
+    for timestamp in [
+        json!(null),
+        json!(17),
+        json!("not-a-time"),
+        json!("2023-02-29T00:00:00Z"),
+        json!("1969-12-31T23:59:59.999999999Z"),
+        json!("2024-02-29T25:00:00Z"),
+        json!("2024-02-29T00:00:00"),
+        json!("2024-02-29T00:00:00Z".repeat(10)),
+    ] {
+        let mut record = json!({"type":"user","uuid":"time","text":"hello","timestamp":timestamp});
+        let event = parse(record.clone()).unwrap();
+        assert_eq!(event.timestamp_unix_ms, None);
+        assert_eq!(event.text.as_str(), "hello");
+        record["timestamp_unix_ms"] = json!(1000);
+        assert_eq!(
+            parse(record).unwrap().timestamp_unix_ms,
+            None,
+            "invalid alternate time cannot be bypassed"
+        );
+    }
+    for numeric in [json!(-1), json!(1.5), json!("1000"), json!(u64::MAX)] {
+        assert_eq!(
+            parse(json!({"type":"user","uuid":"time","text":"hello","timestamp_unix_ms":numeric}))
+                .unwrap()
+                .timestamp_unix_ms,
+            None
+        );
+    }
+    assert_eq!(
+        parse(json!({"type":"user","text":"hello","timestamp_unix_ms":1000}))
+            .unwrap()
+            .timestamp_unix_ms,
+        Some(1000)
+    );
+}

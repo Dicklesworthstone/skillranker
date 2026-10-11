@@ -59,8 +59,17 @@ snoozes are not assigned to an imported scope automatically; reapply them using
 the new normalized event ID when that scope is intended.
 
 Producer-aware imported exposure attribution remains unqualified. Native
-observation attribution and repeated-delivery behavior retain their existing
-contracts. These source controls do not establish independent usefulness,
+observation collection uses validated invocation timestamps (RFC3339 `timestamp`
+or nonnegative integer `timestamp_unix_ms`), not collection time, to select a
+preceding emission. Conflicting timestamps, missing/invalid/future timing, and
+orphan results keep their load evidence with unknown exposure attribution.
+All observations retain collection time for retention and monotonic load-state
+updates. Validated source time is a separate attribution cutoff; collection time
+cannot authorize native adoption credit. Repeated delivery and atomic cursor updates
+remain unchanged. Existing historical attribution is preserved, not repaired
+by guessing missing source timing. Exact agent/turn exposure attribution still
+requires qualification; the existing session/branch and 30-minute window are
+not that proof. These source controls do not establish independent usefulness,
 representative traffic, a native harness qualification or P5 acceptance.
 
 Behavior that must match the registry:

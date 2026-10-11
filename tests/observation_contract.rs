@@ -2183,6 +2183,10 @@ fn test_observe_cli_e2e_with_context() {
 }
 
 fn native_observe_journey(split: bool, failed: bool) {
+    native_observe_timed_journey(split, failed, "valid");
+}
+
+fn native_observe_timed_journey(split: bool, failed: bool, timing: &str) {
     let bin = env!("CARGO_BIN_EXE_sr");
     let ledger_dir = temp_private_dir("native-obs-ledger");
     let ledger_dir_str = ledger_dir.to_str().unwrap();
@@ -2204,6 +2208,10 @@ fn native_observe_journey(split: bool, failed: bool) {
     let skill_content = "---\nname: code-review\ndescription: Review pull requests and code changes\n---\n# code-review\nInspect diffs.\n";
     fs::write(skill_dir.join("SKILL.md"), skill_content).expect("write SKILL.md");
 
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
     // Pre-record an emitted ranking event for this session so we test attribution
     let (inv, cx) = test_invocation();
     let ranking_ev = NewRankingEvent {
@@ -2219,10 +2227,7 @@ fn native_observe_journey(split: bool, failed: bool) {
         reason: "eligible".into(),
         exposure_state: ExposureState::Emitted,
         elapsed_ms: 20,
-        created_at_unix_ms: SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64,
+        created_at_unix_ms: now_ms - 2_000,
         input_tokens: Some(50),
         output_tokens: Some(10),
         snapshot_id: None,
@@ -2255,9 +2260,83 @@ fn native_observe_journey(split: bool, failed: bool) {
         "{\"type\":\"assistant\",\"uuid\":\"msg-a1\",\"sessionId\":\"native-sess-1\",\"parentUuid\":\"msg-u1\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"call-cr-1\",\"name\":\"code-review\",\"input\":{\"path\":\"src/lib.rs\"}}]}}".to_string(),
         "{\"type\":\"tool_result\",\"uuid\":\"msg-r1\",\"sessionId\":\"native-sess-1\",\"parentUuid\":\"msg-a1\",\"tool_use_id\":\"call-cr-1\",\"content\":\"Review passed\",\"is_error\":false}".to_string(),
     ];
+    let source_ms = match timing {
+        "before-emission" => now_ms - 3_000,
+        "future" => now_ms + 60_000,
+        _ => now_ms - 1_000,
+    };
+    let mut lines: Vec<String> = lines.into_iter().collect();
+    for (index, line) in lines.iter_mut().enumerate().skip(1) {
+        let mut record: serde_json::Value = serde_json::from_str(line).unwrap();
+        if timing != "missing" {
+            record["timestamp_unix_ms"] = serde_json::json!(source_ms + index as u64);
+        }
+        if timing == "rfc3339" {
+            record.as_object_mut().unwrap().remove("timestamp_unix_ms");
+            let ms = source_ms + index as u64;
+            let date = time::OffsetDateTime::from_unix_timestamp((ms / 1_000) as i64).unwrap();
+            record["timestamp"] = serde_json::json!(format!(
+                "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z",
+                date.year(),
+                u8::from(date.month()),
+                date.day(),
+                date.hour(),
+                date.minute(),
+                date.second(),
+                ms % 1_000
+            ));
+        }
+        match timing {
+            "malformed" => {
+                record["timestamp"] = serde_json::json!("not-a-time");
+            }
+            "negative" => {
+                record["timestamp_unix_ms"] = serde_json::json!(-1);
+            }
+            "conflicting" => {
+                record["timestamp"] = serde_json::json!("2020-01-01T00:00:00Z");
+            }
+            _ => {}
+        }
+        *line = record.to_string();
+    }
+    if timing == "orphan" {
+        lines.remove(2);
+        let mut result: serde_json::Value = serde_json::from_str(&lines[2]).unwrap();
+        result["parentUuid"] = serde_json::json!("msg-u1");
+        result["name"] = serde_json::json!("code-review");
+        lines[2] = result.to_string();
+    }
+    let expects_attribution = matches!(timing, "valid" | "delayed" | "rfc3339");
+    if matches!(timing, "delayed" | "rfc3339") {
+        let mut later = ranking_ev.clone();
+        later.event_id = "rank-after-load".into();
+        later.created_at_unix_ms = now_ms - 500;
+        let (inv, cx) = test_invocation();
+        record_ranking(
+            &inv,
+            &cx,
+            LedgerAccess::ExistingOnly,
+            LedgerLocation::Directory(ledger_dir.clone()),
+            &later,
+            &[],
+            None,
+        )
+        .unwrap();
+    }
     let mut original_id = None;
     if split {
-        fs::write(&transcript_path, lines[..3].join("\n") + "\n").unwrap();
+        let mut pending = lines[..3].to_vec();
+        if timing == "late-clock" {
+            let mut invocation: serde_json::Value = serde_json::from_str(&pending[2]).unwrap();
+            invocation
+                .as_object_mut()
+                .unwrap()
+                .remove("timestamp_unix_ms");
+            invocation.as_object_mut().unwrap().remove("timestamp");
+            pending[2] = invocation.to_string();
+        }
+        fs::write(&transcript_path, pending.join("\n") + "\n").unwrap();
         let out = std::process::Command::new(bin)
             .current_dir(&ws_dir)
             .args([
@@ -2307,7 +2386,6 @@ fn native_observe_journey(split: bool, failed: bool) {
         )
         .unwrap();
     }
-    let mut lines = lines;
     if failed {
         lines[3] = lines[3].replace("false", "true");
     }
@@ -2384,7 +2462,23 @@ fn native_observe_journey(split: bool, failed: bool) {
             .unwrap();
         assert_eq!(stored, id);
     }
-    assert_eq!(attr_id, Some("rank-ev-1".to_string()));
+    assert_eq!(
+        attr_id,
+        expects_attribution.then(|| "rank-ev-1".to_string()),
+        "source timing {timing} must not create or steal exposure attribution"
+    );
+    if expects_attribution {
+        let stored_time: i64 = conn
+            .query_row("SELECT observed_at_unix_ms FROM observations", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert!(
+            stored_time >= i64::try_from(now_ms).unwrap(),
+            "retention/reporting keeps collector time; source time is only an attribution cutoff"
+        );
+        assert!(stored_time > i64::try_from(source_ms + 2).unwrap());
+    }
 
     // Run sr observe a second time: idempotent, generation advances to 2, no duplicate observation
     let out_2 = std::process::Command::new(bin)
@@ -2440,12 +2534,18 @@ fn native_observe_journey(split: bool, failed: bool) {
         stats["observations"]["attempted_loads"],
         if failed { 1 } else { 0 }
     );
-    if !failed {
+    if !failed && expects_attribution {
         assert!(
             stats["observations"]["suggestion_adoption_rate"]
                 .as_f64()
                 .unwrap()
                 > 0.0
+        );
+    }
+    if !expects_attribution {
+        assert_eq!(
+            stats["observations"]["suggestion_adoption_rate"], 0.0,
+            "an unqualified timestamp cannot manufacture adoption"
         );
     }
 }
@@ -2879,4 +2979,38 @@ fn a_uniqueness_clash_is_reported_as_a_conflict_not_as_corruption() {
          sends a reader looking for damage that is not there"
     );
     assert!(inv.shutdown());
+}
+
+#[test]
+fn native_observation_delayed_collection_uses_invocation_time() {
+    native_observe_timed_journey(false, false, "delayed");
+}
+
+#[test]
+fn native_observation_before_emission_cannot_claim_adoption() {
+    native_observe_timed_journey(false, false, "before-emission");
+}
+
+#[test]
+fn native_observation_unknown_or_invalid_timing_keeps_load_without_adoption() {
+    for timing in [
+        "missing",
+        "future",
+        "malformed",
+        "negative",
+        "conflicting",
+        "orphan",
+    ] {
+        native_observe_timed_journey(false, false, timing);
+    }
+}
+
+#[test]
+fn native_observation_rfc3339_time_preserves_successful_adoption() {
+    native_observe_timed_journey(false, false, "rfc3339");
+}
+
+#[test]
+fn native_observation_confirmation_after_timing_repair_preserves_load() {
+    native_observe_timed_journey(true, false, "late-clock");
 }

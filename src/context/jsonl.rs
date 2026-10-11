@@ -29,7 +29,7 @@ use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
 // Identity validation and attribution changed: rebuild prior cursor state.
-pub const PARSER_VERSION: u32 = 2;
+pub const PARSER_VERSION: u32 = 3;
 
 /// How far an observation read rewinds behind its own watermark.
 ///
@@ -579,6 +579,41 @@ fn is_unmodeled_record(value: &Value) -> bool {
         .and_then(Value::as_str)
         .is_some_and(|native_type| !MODELED_NATIVE_TYPES.contains(&native_type))
 }
+// A timestamp is evidence, never a guess from the file's mtime or collection
+// clock. Conflicting representations and invalid metadata leave timing unknown
+// while preserving the conversational/tool record.
+fn native_timestamp(object: &serde_json::Map<String, Value>) -> Option<i64> {
+    let numeric = || {
+        object
+            .get("timestamp_unix_ms")?
+            .as_i64()
+            .filter(|ms| *ms >= 0)
+    };
+    let rfc3339 = || {
+        let text = object.get("timestamp")?.as_str()?;
+        if text.len() > 64 {
+            return None;
+        }
+        let date =
+            time::OffsetDateTime::parse(text, &time::format_description::well_known::Rfc3339)
+                .ok()?;
+        let ms = date.unix_timestamp_nanos().div_euclid(1_000_000);
+        i64::try_from(ms).ok().filter(|ms| *ms >= 0)
+    };
+    match (
+        object.contains_key("timestamp_unix_ms"),
+        object.contains_key("timestamp"),
+    ) {
+        (true, true) => {
+            let ms = numeric()?;
+            (rfc3339()? == ms).then_some(ms)
+        }
+        (true, false) => numeric(),
+        (false, true) => rfc3339(),
+        (false, false) => None,
+    }
+}
+
 fn event_from_value(value: &Value) -> Option<NormalizedEvent> {
     let object = value.as_object()?;
     if object.contains_key("role") && object.contains_key("kind") {
@@ -591,7 +626,7 @@ fn event_from_value(value: &Value) -> Option<NormalizedEvent> {
     let branch_id = native_identity(object, &["branch_id"], BranchId::new)?;
     let native_type = string_field(object, &["type"]).unwrap_or("message");
     let (default_role, mut default_kind) = map_native_type(native_type);
-    let timestamp_unix_ms = object.get("timestamp_unix_ms").and_then(Value::as_i64);
+    let timestamp_unix_ms = native_timestamp(object);
     // Claude starts the post-compaction chain at a parentless boundary and
     // names the pre-compaction tip only as its logical parent. Linking the
     // two keeps the old tip an ancestor, not a second conversation leaf, and
