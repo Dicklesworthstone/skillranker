@@ -1301,3 +1301,57 @@ the confirmation to look for.
   and metric requirements, independent corpus/cohort gates, and the historical
   timeout cause remain open. Evidence, failed logs, audit and rollback receipt:
   `/scratch/tmp/skillranker-observe-activation-yoyao7rl/retry-vmi1264463`.
+
+## Redeployment — 2026-10-11 UTC (BeigeCompass, attribution and identity)
+
+- Activated source `fd6f1dd75006fdb5cb50e589458a864d5d983f2d` at
+  `2026-10-11 03:43:20 UTC`. Installed observation attribution uses invocation
+  time and requires returned candidate membership in the latest preceding
+  emission. Imported observation scopes and normalized ranking identities
+  include their declared producer/agent/branch/epoch boundaries. Loads remain
+  observable when attribution is unknown; these repairs do not establish
+  historical content or independent usefulness.
+- Installed SHA256
+  `84c93043091371e1116c90e0f6891ad0d7b6172cd1df008425704f80e5287168`,
+  25,406,792 bytes, mode `0755`. Previous `11ed1c5` is preserved at
+  `~/.local/state/sr/deployments/20261011T034320Z-11ed1c5/sr`, SHA256
+  `6964ceb79ac8aeed3c04208b5dde64c38b6e2022661210436357a7ce0527fe05`.
+  Cooperating lock, exact identity rechecks, fsynced backup and atomic
+  replacement passed; noncooperating external editors remain outside CAS.
+- DSR `1d21bab2-06d0-4a61-b282-d5156ede8a3a` passed in 1,428.258 seconds
+  through mandatory remote RCH `vmi1264463`, locked native Linux x86-64
+  release/default features, one Cargo job and normal admission. All 287
+  frozen inputs matched the executing isolated source snapshot twice during
+  compilation. Source check, strict Clippy and full default proof are reused:
+  1,645 parent passes, zero failures, eleven unchanged opt-in ignores; nested
+  credential subprocess one pass is reported separately. Qualified base
+  `d666f96` plus overlay `8798677b` matches committed `fd6f1dd` input bytes.
+  ELF, manifest, archive hashes and verbatim `LICENSE` passed. Tracker-only
+  dirtiness and untracked peer paths were preserved. No public release,
+  portable Linux baseline, other-platform or native harness promotion.
+- Candidate and installed executable each passed 19 attribution cases/96 CLI
+  commands, twelve normalized identity cases/thirteen commands (eleven distinct
+  persisted events), 39 observation commands/19 isolated initializations,
+  33 parser controls, seven stats groups, 28 CLI/hook records, 26 delivery
+  records and eight installer controls. Private candidate wrapper and actual
+  installed credential wrapper each passed 29 records. All deployment controls
+  used synthetic offline inputs and isolated stores. The previous executable
+  passed three attribution positives but failed sixteen negative/timing cases;
+  its normalized identity controls retained only one event instead of eleven.
+- Four configuration identities, install/uninstall previews, budget fields and
+  non-clock live metrics remained unchanged: 170 evaluations, zero emitted
+  suggestions or independent judgments, 234 attempts and fourteen unknown-usage
+  attempts. Existing shadow mode, consent, capture, coverage, four-second outer
+  timeout and disabled shared guard remain unchanged. No real observation
+  reconciliation, historical rewrite or organic cohort traffic was generated.
+- Retained helper failures: initial baseline checker used the wrong duplicate
+  observation count; the complete rerun preserved row/cursor/idempotency checks.
+  Copied fixtures were adapted to published identity namespaces and actual public
+  event IDs. The first installation stopped before backup/replacement because a
+  newline was included in the qualification path; stripping that newline passed
+  every unchanged qualification check. Source admission refusal and disk-full
+  linker failure remain retained without test credit. Author verification only.
+- Original `sr-1uf4` representative 500-turn, per-stratum latency/fallback/memory
+  requirements, independent corpus/cohort gates and historical timeout cause
+  remain open. Raw receipts, failures and rollback binding:
+  `/scratch/tmp/skillranker-membership-activation-92xd0x0y`.
