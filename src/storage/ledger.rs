@@ -3401,8 +3401,33 @@ impl LedgerStore {
         } else {
             None
         };
+        // Adoption is a fraction of emitted suggestions, not a load/event ratio.
+        // Multiple loads of one suggestion count once. Both sides use the
+        // emission cohort; an in-window load of an older suggestion cannot
+        // inflate adoption of unrelated suggestions emitted in this window.
+        let adopted_suggestions: i64 = self.connection.query_row(
+            "SELECT count(DISTINCT event.event_id)
+             FROM observations AS observation
+             JOIN ranking_events AS event ON event.event_id = observation.attributed_event_id
+             JOIN ranking_candidates AS candidate ON candidate.event_id = event.event_id
+                 AND candidate.skill_id = observation.skill_id
+             WHERE event.created_at_unix_ms >= ?1 AND event.created_at_unix_ms <= ?2
+               AND event.decision IN ('ranked', 'explicit')
+               AND event.exposure_state IN ('emitted', 'acknowledged')
+               AND observation.evidence_state = 'loaded'
+               AND observation.observed_at_unix_ms >= event.created_at_unix_ms
+               AND observation.observed_at_unix_ms <= ?2
+               AND observation.workspace_root = event.workspace_root
+               AND observation.session_id = event.session_id
+               AND observation.agent_branch = event.agent_branch
+               AND candidate.excluded = 0 AND candidate.rank_position IS NOT NULL
+               AND ((event.decision = 'ranked' AND candidate.stage = 'rerank')
+                 OR (event.decision = 'explicit' AND candidate.stage = 'wide'))",
+            [since_unix_ms, as_of_unix_ms],
+            |row| row.get(0),
+        )?;
         let suggestion_adoption_rate = if emitted_suggestions > 0 {
-            Some(attributed_loads as f64 / emitted_suggestions as f64)
+            Some(adopted_suggestions as f64 / emitted_suggestions as f64)
         } else {
             None
         };

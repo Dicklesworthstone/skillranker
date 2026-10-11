@@ -78,6 +78,13 @@ requires qualification; the existing session/branch and 30-minute window are
 not that proof. These source controls do not establish independent usefulness,
 representative traffic, a native harness qualification or P5 acceptance.
 
+Stats adoption uses distinct adopted emitted suggestions in the report's emission
+window, so repeated loads cannot raise its rate above one. Raw attributed-load
+counts and observation coverage remain separate collection-window metrics.
+Adoption also checks successful load state, report time, matching local scope and
+returned candidate membership; historical attribution rows are preserved. This
+metric is operational telemetry, not independently judged usefulness.
+
 Behavior that must match the registry:
 - Every implemented command answers `--help`.
 - A planned command is refused as `invalid-usage` (exit 2). It is never

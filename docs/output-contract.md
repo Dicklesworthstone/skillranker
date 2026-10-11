@@ -393,6 +393,17 @@ rather than zero when their denominators are empty, and `caveat` is always prese
 observed adoption is not task success, since a recommendation can cause the load that
 appears to vindicate it.
 
+`observation_coverage` divides attributed loads by observed loads collected in the
+report window. `suggestion_adoption_rate` instead divides distinct adopted emitted
+suggestions by `turns.emitted_suggestions` in that same emission window. A suggestion
+counts once even when several of its skills, or the same skill repeatedly, are
+loaded. Adoption requires a successful attributed load collected at or after its event
+and by the report's `as_of` time, with matching workspace/session/branch and an
+unexcluded returned candidate (rerank for ranked, wide for explicit). Loads of
+older suggestions remain in the raw load counts but do not inflate the current
+emission cohort's adoption. Historical attribution rows are not rewritten, and
+these checks do not establish missing agent/turn or historical content provenance.
+
 `judgments` reports `useful`, `harmful`, `neutral`, `distinct_judged_events`,
 `label_coverage_rate` and `useful_ratio_in_judged`. Ratios are absent, never zero, when
 nothing is labelled.

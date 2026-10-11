@@ -847,6 +847,235 @@ fn observations_and_adoption_rate_tracked_with_caveats() {
 }
 
 #[test]
+fn suggestion_adoption_counts_distinct_emissions_not_repeated_loads() {
+    let (inv, cx) = test_invocation();
+    let (_, mut store) = ready_store("adoption-distinct", &inv, &cx);
+    let stamp = store.stamp();
+    let base = 1_000_000;
+    store
+        .record_roster_snapshot(inv.clock(), &cx, &snapshot_fixture("snap-1", base), stamp)
+        .expect("snapshot");
+    for (id, decision, exposure, stage) in [
+        (
+            "adopted",
+            DecisionKind::Explicit,
+            ExposureState::Acknowledged,
+            CandidateStage::Wide,
+        ),
+        (
+            "unadopted",
+            DecisionKind::Ranked,
+            ExposureState::Emitted,
+            CandidateStage::Rerank,
+        ),
+    ] {
+        let event = event_fixture(id, "cli", decision, exposure, 50, base + 100);
+        let candidates = [
+            candidate_fixture(id, "review", stage, Some(1)),
+            candidate_fixture(id, "test_runner", stage, Some(2)),
+        ];
+        store
+            .record_ranking_event_with_attempts(
+                inv.clock(),
+                &cx,
+                &event,
+                &candidates,
+                None,
+                &[],
+                stamp,
+            )
+            .expect("event");
+    }
+    for (id, skill) in [
+        ("first", "review"),
+        ("repeat", "review"),
+        ("other-skill", "test_runner"),
+    ] {
+        store
+            .record_observation(
+                inv.clock(),
+                &cx,
+                &observation_fixture(
+                    id,
+                    skill,
+                    EvidenceState::Loaded,
+                    Some("adopted"),
+                    base + 200,
+                ),
+                stamp,
+            )
+            .expect("load");
+    }
+    let report = store
+        .query_value_stats(base as i64, (base + 1_000) as i64, false)
+        .expect("stats");
+    assert_eq!(report.turns.emitted_suggestions, 2);
+    assert_eq!(report.observations.attributed_loads, 3);
+    assert_eq!(report.observations.observation_coverage, Some(1.0));
+    assert_eq!(report.observations.suggestion_adoption_rate, Some(0.5));
+}
+
+#[test]
+fn suggestion_adoption_matches_the_emission_time_window() {
+    let (inv, cx) = test_invocation();
+    let (_, mut store) = ready_store("adoption-window", &inv, &cx);
+    let stamp = store.stamp();
+    let base = 1_000_000;
+    store
+        .record_roster_snapshot(inv.clock(), &cx, &snapshot_fixture("snap-1", base), stamp)
+        .expect("snapshot");
+    for (id, time) in [
+        ("old", base + 100),
+        ("current", base + 600),
+        ("no-load", base + 700),
+    ] {
+        let event = event_fixture(
+            id,
+            "cli",
+            DecisionKind::Ranked,
+            ExposureState::Emitted,
+            50,
+            time,
+        );
+        store
+            .record_ranking_event_with_attempts(
+                inv.clock(),
+                &cx,
+                &event,
+                &[candidate_fixture(
+                    id,
+                    "review",
+                    CandidateStage::Rerank,
+                    Some(1),
+                )],
+                None,
+                &[],
+                stamp,
+            )
+            .expect("event");
+    }
+    for (id, event) in [("old-load", "old"), ("current-load", "current")] {
+        store
+            .record_observation(
+                inv.clock(),
+                &cx,
+                &observation_fixture(id, "review", EvidenceState::Loaded, Some(event), base + 800),
+                stamp,
+            )
+            .expect("load");
+    }
+    let report = store
+        .query_value_stats((base + 500) as i64, (base + 1_000) as i64, false)
+        .expect("stats");
+    assert_eq!(report.turns.emitted_suggestions, 2);
+    assert_eq!(report.observations.attributed_loads, 2);
+    assert_eq!(report.observations.suggestion_adoption_rate, Some(0.5));
+}
+
+#[test]
+fn suggestion_adoption_requires_a_qualifying_load_for_an_emitted_candidate() {
+    let (inv, cx) = test_invocation();
+    let (_, mut store) = ready_store("adoption-qualified", &inv, &cx);
+    let stamp = store.stamp();
+    let base = 1_000_000;
+    store
+        .record_roster_snapshot(inv.clock(), &cx, &snapshot_fixture("snap-1", base), stamp)
+        .expect("snapshot");
+    let event = event_fixture(
+        "target",
+        "cli",
+        DecisionKind::Ranked,
+        ExposureState::Emitted,
+        50,
+        base + 100,
+    );
+    let mut excluded = candidate_fixture("target", "deploy", CandidateStage::Rerank, Some(2));
+    excluded.excluded = true;
+    excluded.exclusion_reason = Some("excluded".into());
+    let candidates = [
+        candidate_fixture("target", "review", CandidateStage::Rerank, Some(1)),
+        excluded,
+        candidate_fixture("target", "test_runner", CandidateStage::Wide, Some(3)),
+    ];
+    store
+        .record_ranking_event_with_attempts(inv.clock(), &cx, &event, &candidates, None, &[], stamp)
+        .expect("event");
+    for (id, skill, evidence, time) in [
+        ("attempt", "review", EvidenceState::Attempted, base + 200),
+        ("censored", "review", EvidenceState::Censored, base + 200),
+        ("future", "review", EvidenceState::Loaded, base + 2_000),
+        (
+            "before-emission",
+            "review",
+            EvidenceState::Loaded,
+            base + 50,
+        ),
+        ("excluded", "deploy", EvidenceState::Loaded, base + 200),
+        (
+            "wrong-stage",
+            "test_runner",
+            EvidenceState::Loaded,
+            base + 200,
+        ),
+        ("not-returned", "unknown", EvidenceState::Loaded, base + 200),
+    ] {
+        store
+            .record_observation(
+                inv.clock(),
+                &cx,
+                &observation_fixture(id, skill, evidence, Some("target"), time),
+                stamp,
+            )
+            .expect("nonqualifying observation");
+    }
+    for (id, scope) in [
+        ("foreign-workspace", 0),
+        ("foreign-session", 1),
+        ("foreign-branch", 2),
+    ] {
+        let mut load = observation_fixture(
+            id,
+            "review",
+            EvidenceState::Loaded,
+            Some("target"),
+            base + 200,
+        );
+        match scope {
+            0 => load.workspace_root = "/other/workspace".into(),
+            1 => load.session_id = "other-session".into(),
+            _ => load.agent_branch = "other-branch".into(),
+        }
+        store
+            .record_observation(inv.clock(), &cx, &load, stamp)
+            .expect("foreign observation");
+    }
+    let report = store
+        .query_value_stats(base as i64, (base + 1_000) as i64, false)
+        .expect("stats");
+    assert_eq!(report.turns.emitted_suggestions, 1);
+    assert_eq!(report.observations.attributed_loads, 7);
+    assert_eq!(report.observations.suggestion_adoption_rate, Some(0.0));
+    store
+        .record_observation(
+            inv.clock(),
+            &cx,
+            &observation_fixture(
+                "valid",
+                "review",
+                EvidenceState::Loaded,
+                Some("target"),
+                base + 200,
+            ),
+            stamp,
+        )
+        .expect("qualifying load");
+    let report = store
+        .query_value_stats(base as i64, (base + 1_000) as i64, false)
+        .expect("stats after load");
+    assert_eq!(report.observations.suggestion_adoption_rate, Some(1.0));
+}
+
+#[test]
 fn judgments_and_cost_per_useful_suggestion_calculated() {
     let dir = temp_private_dir("judgments");
     let (inv, cx) = test_invocation();
