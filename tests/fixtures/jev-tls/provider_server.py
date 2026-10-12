@@ -19,6 +19,7 @@ Scenarios:
                   Retry-After: 0
   always-503      every attempt is a 503 with Retry-After: 0
   unauthorized    every attempt is a 401
+  unauthorized-variant-rerank  only the second rerank is a 401, after its wide answer
   slow-wide       like useful; the wide answer is delayed by TEXT seconds
   hold-wide       like useful; write PATH when wide is held, release on stdin
   drift           like useful, but every choice distribution sums to 0.92,
@@ -144,7 +145,9 @@ while True:
     if scenario == "always-503" or (
             scenario == "retry-wide" and stages.count("wide") == 1 and stage == "wide"):
         status = "503 Service Unavailable"
-    elif scenario == "unauthorized":
+    elif scenario == "unauthorized" or (
+            scenario == "unauthorized-variant-rerank" and stage == "rerank"
+            and stages.count("rerank") == 2):
         status = "401 Unauthorized"
     inputs, outputs = USAGE.get(stage, (1, 1))
     body = json.dumps({

@@ -4028,7 +4028,17 @@ fn run_case_pipeline(
                 ),
             )
         });
-    finish_invocation(invocation, outcome).map_err(|(_, kind, _)| kind)
+    finish_live_case_invocation(invocation, outcome)
+}
+
+/// A live evaluation cannot publish late advice, but its completed accounting
+/// and bounded failure receipt survive a cleanup timeout, just as rank's do.
+fn finish_live_case_invocation(
+    invocation: crate::runtime::ProcessInvocation,
+    outcome: Result<OutputDocument, Failure>,
+) -> Result<OutputDocument, &'static str> {
+    // Live evaluations disable the ledger; there is no prepared row to reconcile.
+    finish_rank_invocation(invocation, outcome, false).map_err(|(_, kind, _)| kind)
 }
 
 /// A case's disclosure preview with no network: its receipt, `None` when the
@@ -4089,30 +4099,42 @@ fn rank_live_case(
     case: &crate::evaluation::batch::LiveEvaluationCase,
     expected_wide_digest: Option<crate::pipeline::WidePreview>,
 ) -> crate::evaluation::batch::LiveRankOutcome {
-    use crate::evaluation::batch::LiveRankOutcome;
     let started = std::time::Instant::now();
     let elapsed = || u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     let mut evidence = crate::pipeline::StageEvidence::default();
-    let document = match run_case_pipeline(
+    let document = run_case_pipeline(
         batch,
         per_case_ms,
         args,
         case,
         &mut evidence,
         expected_wide_digest,
-    ) {
+    );
+    live_rank_outcome(document, evidence, elapsed())
+}
+
+/// Convert a settled live case without dropping observed stages on a bare
+/// failure or inventing the missing document's provider usage.
+fn live_rank_outcome(
+    document: Result<OutputDocument, &'static str>,
+    evidence: crate::pipeline::StageEvidence,
+    elapsed_ms: u64,
+) -> crate::evaluation::batch::LiveRankOutcome {
+    use crate::evaluation::batch::LiveRankOutcome;
+    let document = match document {
         Ok(document) => document,
         Err(kind) => {
             return LiveRankOutcome {
                 decision: "unavailable".into(),
                 error_kind: Some(kind.to_owned()),
-                elapsed_ms: elapsed(),
+                elapsed_ms,
                 // Candidates are admitted just before the first request, so a
                 // run that got that far may have sent some without reporting
                 // them: its attempts are unknown, never zero. A preview
                 // refusal stops before any attempt, so it cost nothing.
                 attempts_unknown: !evidence.admitted.is_empty() && !evidence.preview_refused,
                 preview_refused: evidence.preview_refused,
+                evidence: (!evidence.admitted.is_empty()).then_some(evidence),
                 ..LiveRankOutcome::default()
             };
         }
@@ -4137,7 +4159,7 @@ fn rank_live_case(
         input_tokens: usage("input_tokens"),
         output_tokens: usage("output_tokens"),
         error_kind: value["error"]["kind"].as_str().map(str::to_owned),
-        elapsed_ms: elapsed(),
+        elapsed_ms,
         preview_refused: evidence.preview_refused,
         evidence: Some(evidence),
         // The decision document reports its own usage.
@@ -5728,6 +5750,158 @@ mod invocation_cleanup_tests {
     use super::*;
     use crate::runtime::ProcessInvocation;
     use std::time::Duration;
+
+    #[test]
+    fn live_evaluation_cleanup_keeps_usage_but_removes_late_advice() {
+        let ranked: Value =
+            serde_json::from_str(include_str!("../tests/fixtures/output-ranked.v1.json")).unwrap();
+        let usage = ranked["usage"].clone();
+        assert!(usage["http_attempts"].as_u64().unwrap() > 0);
+        for expired in [false, true] {
+            let clock = EntryClock::capture_with(
+                DurationMillis::new("test_total", 1_000, 3_000).unwrap(),
+                DurationMillis::new("test_cleanup", 200, 3_000).unwrap(),
+            )
+            .unwrap();
+            let invocation = ProcessInvocation::from_clock(clock).unwrap();
+            if expired {
+                std::thread::sleep(Duration::from_millis(
+                    clock.remaining_until_expiry().as_millis(),
+                ));
+            }
+            let document = finish_live_case_invocation(
+                invocation,
+                Ok(OutputDocument::from_value(ranked.clone()).unwrap()),
+            )
+            .unwrap();
+            assert_eq!(document.as_value()["usage"], usage);
+            let outcome = live_rank_outcome(
+                Ok(document),
+                crate::pipeline::StageEvidence::default(),
+                1_001,
+            );
+            assert_eq!(
+                outcome.decision,
+                if expired { "unavailable" } else { "ranked" }
+            );
+            assert_eq!(outcome.error_kind.as_deref(), expired.then_some("timeout"));
+            assert_eq!(outcome.suggested_skills.is_empty(), expired);
+            assert_eq!(outcome.requests as u64, usage["requests"].as_u64().unwrap());
+            assert_eq!(
+                outcome.http_attempts as u64,
+                usage["http_attempts"].as_u64().unwrap()
+            );
+            assert_eq!(
+                outcome.unknown_usage_attempts as u64,
+                usage["unknown_usage_attempts"].as_u64().unwrap()
+            );
+            assert_eq!(
+                outcome.input_tokens,
+                usage["input_tokens"].as_u64().unwrap()
+            );
+            assert_eq!(
+                outcome.output_tokens,
+                usage["output_tokens"].as_u64().unwrap()
+            );
+            assert!(!outcome.attempts_unknown);
+        }
+    }
+
+    #[test]
+    fn live_evaluation_cleanup_keeps_original_failure_and_rejects_late_preview() {
+        // A minimal error envelope cannot carry usage without the complete
+        // ranking metadata. Start from the same validated full receipt that
+        // rank uses when a completed ranking is made unavailable.
+        let ranked = OutputDocument::from_value(
+            serde_json::from_str(include_str!("../tests/fixtures/output-ranked.v1.json")).unwrap(),
+        )
+        .unwrap();
+        let mut failure = rank_failure_receipt(
+            ranked,
+            (6, "timeout", "Original ranking failure".into()),
+            0,
+            false,
+        )
+        .unwrap()
+        .as_value()
+        .clone();
+        failure["reason"] = serde_json::json!("authentication");
+        failure["error"] = OutputDocument::failure(crate::output::ErrorKind::Authentication, false)
+            .as_value()["error"]
+            .clone();
+        failure["usage"] = serde_json::json!({
+            "requests": 1, "http_attempts": 1, "unknown_usage_attempts": 1,
+            "input_tokens": 0, "output_tokens": 0
+        });
+        for value in [
+            failure.clone(),
+            serde_json::from_str::<Value>(include_str!("../tests/fixtures/output-preview.v1.json"))
+                .unwrap(),
+        ] {
+            let preview = value["kind"] == "preview";
+            let clock = EntryClock::capture_with(
+                DurationMillis::new("test_total", 1_000, 3_000).unwrap(),
+                DurationMillis::new("test_cleanup", 200, 3_000).unwrap(),
+            )
+            .unwrap();
+            let invocation = ProcessInvocation::from_clock(clock).unwrap();
+            std::thread::sleep(Duration::from_millis(
+                clock.remaining_until_expiry().as_millis(),
+            ));
+            let result = finish_live_case_invocation(
+                invocation,
+                Ok(OutputDocument::from_value(value).unwrap()),
+            );
+            if preview {
+                assert_eq!(result.unwrap_err(), "timeout");
+            } else {
+                let value = result.unwrap().as_value().clone();
+                assert_eq!(value["decision"], "unavailable");
+                assert_eq!(value["error"], failure["error"]);
+                assert_eq!(value["usage"], failure["usage"]);
+                assert_eq!(value["skills"], serde_json::json!([]));
+            }
+        }
+    }
+
+    #[test]
+    fn live_evaluation_bare_failure_retains_only_observed_stages_and_unknown_cost() {
+        use crate::pipeline::{StageEvidence, WideEvidence};
+        for (wide, preview_refused) in [(false, false), (true, false), (false, true)] {
+            let stages = StageEvidence {
+                admitted: vec!["s_observed".into()],
+                wide: wide.then(|| WideEvidence {
+                    needs_skill: 0.8,
+                    none_probability: 0.1,
+                    shortlist: vec![("s_observed".into(), 0.9)],
+                    intrinsic_shortlist: vec!["s_observed".into()],
+                    ..Default::default()
+                }),
+                preview_refused,
+                ..Default::default()
+            };
+            let outcome = live_rank_outcome(Err("timeout"), stages.clone(), 1_001);
+            assert_eq!(outcome.decision, "unavailable");
+            assert_eq!(outcome.error_kind.as_deref(), Some("timeout"));
+            assert_eq!(outcome.evidence, Some(stages));
+            assert!(outcome.suggested_skills.is_empty());
+            assert_eq!(outcome.attempts_unknown, !preview_refused);
+            assert_eq!(outcome.preview_refused, preview_refused);
+            assert_eq!(
+                (
+                    outcome.requests,
+                    outcome.http_attempts,
+                    outcome.unknown_usage_attempts
+                ),
+                (0, 0, 0)
+            );
+            assert_eq!((outcome.input_tokens, outcome.output_tokens), (0, 0));
+        }
+        let early = live_rank_outcome(Err("malformed-input"), StageEvidence::default(), 1);
+        assert_eq!(early.error_kind.as_deref(), Some("malformed-input"));
+        assert!(early.evidence.is_none());
+        assert!(!early.attempts_unknown);
+    }
 
     #[test]
     fn serialized_persistence_is_not_delivery_recording_authority() {

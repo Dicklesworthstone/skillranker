@@ -979,6 +979,87 @@ fn a_live_batch_ranks_each_case_fresh_and_accounts_every_attempt() {
 }
 
 #[test]
+fn a_failed_live_variant_keeps_its_observed_wide_coverage_and_paid_usage() {
+    let root = live_workspace();
+    let ids = roster_ids(&root);
+    // Both admitted candidates are acceptable; this control tests coverage,
+    // accounting and failure identity, not independent relevance quality.
+    let (cases, labels) = live_inputs(&root, &[("case-a", &ids)]);
+    let provider = LiveProvider::start(&root, "unauthorized-variant-rerank");
+    let out = run_live(
+        &root,
+        provider.port,
+        &[
+            "eval",
+            "--dataset",
+            &cases,
+            "--labels",
+            &labels,
+            "--online",
+            "--allow-network",
+            "--max-requests",
+            "8",
+            "--robustness",
+            "--json",
+        ],
+    );
+    let served = provider.finish();
+    let report = json_report(&out);
+    assert_eq!(
+        served
+            .iter()
+            .map(|r| r["stage"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["wide", "rerank", "wide", "rerank"]
+    );
+    assert_eq!(
+        served
+            .iter()
+            .map(|r| r["status"].as_u64().unwrap())
+            .collect::<Vec<_>>(),
+        [200, 200, 200, 401]
+    );
+    assert_ne!(
+        served[0]["body"], served[2]["body"],
+        "variant needs a fresh request"
+    );
+    assert_eq!(report["gate_status"], "not-established");
+    assert_eq!(report["completeness"]["cases_requested"], 1);
+    assert_eq!(report["completeness"]["cases_completed"], 1);
+    assert_eq!(report["metrics"]["judged_cases"], 1);
+    assert_eq!(report["loss_summary"]["total_loss"], 0);
+    assert_eq!(report["cases"][0]["status"]["decision"], "ranked");
+    assert_eq!(report["accounting"]["requests"], 4);
+    assert_eq!(report["accounting"]["http_attempts"], 4);
+    assert_eq!(report["accounting"]["unknown_usage_attempts"], 1);
+    assert_eq!(report["accounting"]["input_tokens"], 320);
+    assert_eq!(report["accounting"]["output_tokens"], 80);
+    let variants = report["baselines"]["robustness"]["variants"]
+        .as_array()
+        .unwrap();
+    assert_eq!(variants.len(), 3);
+    let paired = serde_json::json!({
+        "cases": 1, "base_covered": 1, "variant_covered": 1,
+        "lost": 0, "gained": 0, "unknown": 0
+    });
+    assert_eq!(variants[0]["failures"], 1);
+    assert_eq!(
+        variants[0]["cases"], 0,
+        "failed final decisions are not answered pairs"
+    );
+    assert_eq!(variants[0]["admitted_coverage"], paired);
+    assert_eq!(variants[0]["intrinsic_shortlist_coverage"], paired);
+    for unsent in &variants[1..] {
+        assert_eq!(unsent["not_run"], 1);
+        assert_eq!(unsent["failures"], 0);
+        assert_eq!(unsent["admitted_coverage"]["cases"], 0);
+        assert_eq!(unsent["admitted_coverage"]["unknown"], 0);
+        assert_eq!(unsent["intrinsic_shortlist_coverage"]["cases"], 0);
+        assert_eq!(unsent["intrinsic_shortlist_coverage"]["unknown"], 0);
+    }
+}
+
+#[test]
 fn a_preview_that_ends_locally_is_counted_as_sending_nothing() {
     let root = live_workspace();
     let ids = roster_ids(&root);
