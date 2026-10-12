@@ -1662,3 +1662,108 @@ fn a_live_batch_reports_memory_and_projects_main_ranking_use() {
     assert_eq!(projection.unknown_usage_attempts, 1_000.0);
     assert!(projection.caveat.contains("not included"));
 }
+
+#[test]
+fn roster_arms_preview_separately_and_keep_failures_budget_and_family_identity() {
+    use skillranker::evaluation::batch::{
+        LiveBatchLimits, LiveRankOutcome, VariantKind,
+        execute_live_frame_evaluation_with_roster_variants,
+    };
+    use std::collections::{BTreeMap, BTreeSet};
+    let mut case = live_case("a");
+    case.context = json!({"current_request": {"text": "repair the rust tests"}, "events": []});
+    let base = BTreeSet::from(["s_alpha".to_owned()]);
+    let rosters = BTreeMap::from([
+        (
+            VariantKind::DecoyRoster,
+            BTreeSet::from(["s_alpha".to_owned(), "s_decoy".to_owned()]),
+        ),
+        (
+            VariantKind::LookalikeRoster,
+            BTreeSet::from(["s_alpha".to_owned(), "s_lookalike".to_owned()]),
+        ),
+    ]);
+    let checked = std::cell::RefCell::new(Vec::new());
+    let calls = std::cell::RefCell::new(Vec::new());
+    let report = execute_live_frame_evaluation_with_roster_variants(
+        vec![case.clone()],
+        live_labels(&["a"]),
+        None,
+        &base,
+        &rosters,
+        LiveBatchLimits {
+            max_requests: 100,
+            max_runtime_ms: 60_000,
+            attempts_per_case: 4,
+            fit_threshold: 0.3,
+            gate_threshold: 0.3,
+            robustness_variants: true,
+        },
+        &EntryClock::capture().unwrap(),
+        0,
+        |preview, kind| {
+            assert_eq!(preview.key, case.key);
+            assert_eq!(preview.split, case.split);
+            checked.borrow_mut().push(kind);
+            if kind == Some(VariantKind::LookalikeRoster) {
+                Err("superseded".into())
+            } else {
+                Ok(Some(
+                    json!({"disclosed_bytes": 20, "wide_request_bytes": 30}),
+                ))
+            }
+        },
+        |arm, kind| {
+            assert_eq!(checked.borrow().len(), 3, "all previews precede every send");
+            assert_eq!(arm.key, case.key);
+            assert_eq!(arm.split, case.split);
+            calls.borrow_mut().push(kind);
+            if kind == Some(VariantKind::DecoyRoster) {
+                LiveRankOutcome {
+                    decision: "unavailable".into(),
+                    requests: 1,
+                    http_attempts: 1,
+                    attempts_unknown: true,
+                    error_kind: Some("timeout".into()),
+                    ..LiveRankOutcome::default()
+                }
+            } else {
+                LiveRankOutcome {
+                    decision: "ranked".into(),
+                    suggested_skills: vec!["s_alpha".into()],
+                    requests: 2,
+                    http_attempts: 2,
+                    ..LiveRankOutcome::default()
+                }
+            }
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        *checked.borrow(),
+        vec![
+            None,
+            Some(VariantKind::DecoyRoster),
+            Some(VariantKind::LookalikeRoster)
+        ]
+    );
+    assert_eq!(calls.borrow().len(), 5);
+    assert!(!calls.borrow().contains(&Some(VariantKind::LookalikeRoster)));
+    assert_eq!(report.completeness.cases_requested, 1);
+    assert_eq!(report.metrics.as_ref().unwrap().judged_cases, 1);
+    assert_eq!(report.accounting.http_attempts, 12);
+    assert_eq!(report.accounting.requests, 9);
+    assert_eq!(report.accounting.unknown_usage_attempts, 4);
+    let preview = report.disclosure_preflight.unwrap();
+    assert_eq!(preview.cases_checked, 1);
+    assert_eq!(preview.roster_variants_checked, 2);
+    assert_eq!(preview.roster_variants_refused, 1);
+    assert_eq!(preview.disclosed_bytes, 40);
+    assert_eq!(preview.previewed_wide_request_bytes, 60);
+    let scores = report.baselines.unwrap().robustness.unwrap().variants;
+    assert_eq!(scores[0].failures, 1);
+    assert_eq!(scores[0].admitted_coverage.unknown, 1);
+    assert_eq!(scores[1].preflight_refused, 1);
+    assert_eq!(scores[1].not_run, 1);
+    assert_eq!(scores[1].admitted_coverage.unknown, 0);
+}

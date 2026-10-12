@@ -1129,7 +1129,56 @@ fn an_evaluation_send_whose_preview_sent_nothing_is_withheld() {
     assert_withheld_for(skillranker::pipeline::WidePreview::NoRequest);
 }
 
+#[test]
+fn an_evaluation_arm_with_a_changed_roster_is_withheld_before_admission() {
+    for preview in [
+        skillranker::pipeline::WidePreview::Roster([0u8; 32]),
+        skillranker::pipeline::WidePreview::Bound {
+            request: None,
+            roster: [0u8; 32],
+        },
+    ] {
+        assert_withheld_for(preview);
+    }
+}
+
 fn assert_withheld_for(preview: skillranker::pipeline::WidePreview) {
+    assert_withheld_for_fixture(|_, _| preview);
+}
+
+#[test]
+fn identical_descriptions_cannot_reuse_a_different_roster_snapshot() {
+    assert_withheld_for_fixture(|workspace, cx| {
+        let plan = skillranker::roster::discovery::claude_code_plan(
+            workspace,
+            None,
+            skillranker::roster::Visibility::Verified {
+                contract_version: "claude-code-documented-unverified".into(),
+            },
+        )
+        .unwrap();
+        let roster = skillranker::roster::resolution::resolve_claude_plan(
+            &plan,
+            &std::collections::BTreeMap::new(),
+            cx,
+            &test_clock(),
+        )
+        .unwrap();
+        let digest = skillranker::pipeline::evaluation_roster_digest(&roster);
+        // Same visible descriptions, but a new identity changes the candidate set.
+        create_skill(
+            &workspace.join(".claude/skills"),
+            "skill_c",
+            "Skill Alpha description",
+            "Alpha body",
+        );
+        skillranker::pipeline::WidePreview::Roster(digest)
+    });
+}
+
+fn assert_withheld_for_fixture(
+    make_preview: impl FnOnce(&Path, &Cx) -> skillranker::pipeline::WidePreview,
+) {
     let (_root, workspace) = create_test_env();
     let skills_dir = workspace.join(".claude/skills");
     create_skill(
@@ -1149,6 +1198,7 @@ fn assert_withheld_for(preview: skillranker::pipeline::WidePreview) {
 
     let invocation = ProcessInvocation::from_clock(test_clock()).unwrap();
     let cx = invocation.request_cx().unwrap();
+    let preview = make_preview(&workspace, &cx);
     let gate = EffectGate::new(
         EffectFlags {
             allow_network: true,

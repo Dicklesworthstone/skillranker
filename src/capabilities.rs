@@ -159,6 +159,11 @@ pub fn registry() -> Value {
             "frozen_replay_inputs": crate::replay::frozen::FORMAT_VERSION,
             "replay_computation": crate::replay::frozen::COMPUTATION_VERSION,
         },
+        "evaluation": {
+            "roster_variants": ["decoy-roster", "lookalike-roster"],
+            "roster_source": "explicit authorized file-backed manifests; unchanged baseline plus additions",
+            "roster_previews": "separate wide request and complete local inventory bindings",
+        },
         "features": {
             // Reserved boundary: no TUI implementation ships in any build yet.
             "tui": {"compiled": cfg!(feature = "tui"), "implemented": false},

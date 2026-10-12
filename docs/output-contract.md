@@ -178,6 +178,20 @@ evidence and absent wide answers count as unknown, not misses. Intrinsic top-M
 coverage uses the wide answer even when the gate stops rerank. An operationally
 failed variant may still supply valid earlier-stage evidence; its decision
 failure remains counted separately. Unsent variants count only under `not_run`.
+`kind` also permits `decoy-roster` and `lookalike-roster` when authorized expanded
+file-backed manifests are supplied. Roster arms preserve the baseline candidates
+and use fresh responses, under the same attempt/runtime caps. Their previews are
+bound separately to request bytes and the frozen physical inventory.
+`disclosure_preflight.roster_variants_checked` and `roster_variants_refused` count
+these supplementary previews separately from main cases. Aggregate disclosure
+bytes/redactions include them. `roster_snapshots` maps `baseline` and supplied
+roster-arm names to frozen local inventory digests (identities, content and
+eligibility), with no file paths or skill text. An empty map means no physical
+snapshot evidence was supplied by a library caller, or automatic discovery was
+used without an explicit manifest. A refused roster preview increments its variant
+`preflight_refused` and `not_run`, with no charged attempt or invented stage.
+These new counters default to zero in older schema-v1 reports.
+
 These are descriptive within-family comparisons, not additional independent
 samples or a passed quality gate. Missing coverage fields in older schema-v1
 variant records deserialize to empty counters; they establish no observed pairs.

@@ -13,9 +13,9 @@ use std::ffi::OsString;
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
-const HELP: &str = "SkillRanker — provider-backed skill ranking\n\nUsage: sr [rank] [--context FILE | --transcript FILE --harness NAME | --session PATH | --latest]\n                 [--roster FILE] [--require-skill ID] [--dry-run [--shortlist-ids ID,...]]\n                 [--offline | --allow-network] [--json | --table]\n                 [--top N] [--shortlist M] [--gate FLOAT] [--fits FLOAT]\n                 [--explain] [--why-not ID] [--cursor TOKEN] [--no-tools] [--no-cache]\n                 [--save-case FILE]\n       sr doctor [--json | --table] [--offline | --allow-network]\n       sr doctor --config [--json | --table] [--top N] [--shortlist N]\n       sr roster [--json] [--limit N] [--cursor TOKEN]\n       sr roster --snapshot FILE | --diff FILE\n       sr capabilities [--json]\n       sr demo --case <useful|none|explicit|unavailable> [--json | --table]\n       sr replay FILE [--policy FILE] [--compare-policy FILE] [--json | --table]\n       sr eval --dataset FILE [--allow-network] [--max-runtime-ms MS] [--timeout-ms MS] [--policy FILE] [--compare-policy FILE] [--explain] [--json | --table]\n       sr eval --dataset FRAME --labels FILE [--sample-size N [--seed S]] [--online --allow-network --max-requests N [--max-runtime-ms MS] [--robustness]] [--explain] [--json | --table]\n       sr feedback <EVENT_ID> --skill ID [--instead ID] [--verdict <useful|not-useful|unknown>] [--reason CODE] [--provenance TEXT] [--expected-version GEN] [--dir DIR] [--json]\n       sr budget [--max-attempts N --window 1h [--apply]] [--json]\n       sr snooze <EVENT_ID> (--skill ID --for DURATION | --all --for DURATION | --clear) [--apply] [--dir DIR] [--json]\n       sr ledger <init|migrate|status|prune|clear> [--before TIME] [--apply] [--json]\n       sr observe [--context FILE | --transcript FILE --harness NAME | --session PATH] [--branch NAME] [--roster FILE] [--dir DIR] [--json]\n       sr stats [--since DURATION] [--by-skill] [--dir DIR] [--json | --table]\n       sr hook <claude> [--shadow] [--offline | --allow-network] [--dir DIR]\n       sr install-hook <claude> [--settings-file FILE] [--binary-path PATH] [--timeout-secs N] [--apply]\n       sr uninstall-hook <claude> [--settings-file FILE] [--binary-path PATH] [--timeout-secs N] [--apply]\n       sr --help | --version\n\nRank the next step of an agent session using the configured provider.\nTypeSafe is the default; Cloudflare-hosted TypeSafe Jev can be selected with SR_PROVIDER=cloudflare, CLOUDFLARE_ACCOUNT_ID, and CLOUDFLARE_API_TOKEN. Network consent (--allow-network) is still required.\n";
+const HELP: &str = "SkillRanker — provider-backed skill ranking\n\nUsage: sr [rank] [--context FILE | --transcript FILE --harness NAME | --session PATH | --latest]\n                 [--roster FILE] [--require-skill ID] [--dry-run [--shortlist-ids ID,...]]\n                 [--offline | --allow-network] [--json | --table]\n                 [--top N] [--shortlist M] [--gate FLOAT] [--fits FLOAT]\n                 [--explain] [--why-not ID] [--cursor TOKEN] [--no-tools] [--no-cache]\n                 [--save-case FILE]\n       sr doctor [--json | --table] [--offline | --allow-network]\n       sr doctor --config [--json | --table] [--top N] [--shortlist N]\n       sr roster [--json] [--limit N] [--cursor TOKEN]\n       sr roster --snapshot FILE | --diff FILE\n       sr capabilities [--json]\n       sr demo --case <useful|none|explicit|unavailable> [--json | --table]\n       sr replay FILE [--policy FILE] [--compare-policy FILE] [--json | --table]\n       sr eval --dataset FILE [--allow-network] [--max-runtime-ms MS] [--timeout-ms MS] [--policy FILE] [--compare-policy FILE] [--explain] [--json | --table]\n       sr eval --dataset FRAME --labels FILE [--sample-size N [--seed S]] [--online --allow-network --max-requests N [--max-runtime-ms MS] [--roster FILE] [--robustness [--decoy-roster FILE] [--lookalike-roster FILE]]] [--explain] [--json | --table]\n       sr feedback <EVENT_ID> --skill ID [--instead ID] [--verdict <useful|not-useful|unknown>] [--reason CODE] [--provenance TEXT] [--expected-version GEN] [--dir DIR] [--json]\n       sr budget [--max-attempts N --window 1h [--apply]] [--json]\n       sr snooze <EVENT_ID> (--skill ID --for DURATION | --all --for DURATION | --clear) [--apply] [--dir DIR] [--json]\n       sr ledger <init|migrate|status|prune|clear> [--before TIME] [--apply] [--json]\n       sr observe [--context FILE | --transcript FILE --harness NAME | --session PATH] [--branch NAME] [--roster FILE] [--dir DIR] [--json]\n       sr stats [--since DURATION] [--by-skill] [--dir DIR] [--json | --table]\n       sr hook <claude> [--shadow] [--offline | --allow-network] [--dir DIR]\n       sr install-hook <claude> [--settings-file FILE] [--binary-path PATH] [--timeout-secs N] [--apply]\n       sr uninstall-hook <claude> [--settings-file FILE] [--binary-path PATH] [--timeout-secs N] [--apply]\n       sr --help | --version\n\nRank the next step of an agent session using the configured provider.\nTypeSafe is the default; Cloudflare-hosted TypeSafe Jev can be selected with SR_PROVIDER=cloudflare, CLOUDFLARE_ACCOUNT_ID, and CLOUDFLARE_API_TOKEN. Network consent (--allow-network) is still required.\n";
 
-const EVAL_HELP: &str = "sr eval --dataset FILE [--allow-network] [--max-runtime-ms MS] [--timeout-ms MS] [--policy FILE] [--compare-policy FILE] [--explain] [--json | --table]\n       sr eval --dataset FRAME --labels FILE [--sample-size N [--seed S]] [--online --allow-network --max-requests N [--max-runtime-ms MS] [--robustness]] [--explain] [--json | --table]\n\nEvaluate recorded or synthetic replay batches against local or comparison policies with bounded runtime and explicit accounting.\nWith --labels, score a labeled case frame against independent judgments, optionally over a stratified sample frozen before labels are joined.\n";
+const EVAL_HELP: &str = "sr eval --dataset FILE [--allow-network] [--max-runtime-ms MS] [--timeout-ms MS] [--policy FILE] [--compare-policy FILE] [--explain] [--json | --table]\n       sr eval --dataset FRAME --labels FILE [--sample-size N [--seed S]] [--online --allow-network --max-requests N [--max-runtime-ms MS] [--roster FILE] [--robustness [--decoy-roster FILE] [--lookalike-roster FILE]]] [--explain] [--json | --table]\n\nEvaluate recorded or synthetic replay batches against local or comparison policies with bounded runtime and explicit accounting.\nWith --labels, score a labeled case frame against independent judgments, optionally over a stratified sample frozen before labels are joined.\n";
 
 const STATS_HELP: &str = "sr stats [--since DURATION] [--by-skill] [--dir DIR] [--json | --table]\n\nReport observation and operational metrics across honest cohorts (evaluations, suggestions, abstentions, latency, loads, judgments, tokens, and cost).\n";
 
@@ -356,6 +356,15 @@ fn command() -> Command {
                         .requires("online")
                         .action(ArgAction::SetTrue),
                 )
+                .arg(Arg::new("roster").long("roster").value_name("FILE")
+                    .help("Authorized file-backed baseline roster for a live batch")
+                    .requires("online").action(ArgAction::Set))
+                .arg(Arg::new("decoy-roster").long("decoy-roster").value_name("FILE")
+                    .help("Authorized strict-superset roster for the added-candidate robustness arm")
+                    .requires_all(["robustness", "roster"]).action(ArgAction::Set))
+                .arg(Arg::new("lookalike-roster").long("lookalike-roster").value_name("FILE")
+                    .help("Authorized strict-superset roster whose additions duplicate baseline descriptions")
+                    .requires_all(["robustness", "roster"]).action(ArgAction::Set))
                 .arg(
                     Arg::new("max-requests")
                         .long("max-requests")
@@ -3884,7 +3893,8 @@ fn eval_live_command(
     .map_err(eval_error)?;
     let labels = std::io::BufReader::new(open_eval_input(labels_str, "labels")?);
     timely(clock)?;
-    let roster = resolve_workspace_roster(
+    let baseline_manifest = eval_matches.get_one::<String>("roster").map(PathBuf::from);
+    let roster = resolve_workspace_roster_with_manifest(
         clock,
         &workspace,
         home.as_deref(),
@@ -3892,12 +3902,55 @@ fn eval_live_command(
         crate::roster::Visibility::Verified {
             contract_version: crate::pipeline::PROVISIONAL_CLAUDE_CONTRACT.into(),
         },
+        baseline_manifest.as_deref(),
     )?;
     let current_roster: std::collections::BTreeSet<String> = roster
         .skills()
         .iter()
         .flat_map(|skill| skill.bindings().iter().map(|b| b.id.as_str().to_owned()))
         .collect();
+    let mut variant_manifests = std::collections::BTreeMap::new();
+    let mut variant_rosters = std::collections::BTreeMap::new();
+    let mut roster_digests = std::collections::BTreeMap::new();
+    if baseline_manifest.is_some() {
+        roster_digests.insert(None, crate::pipeline::evaluation_roster_digest(&roster));
+    }
+    for (flag, kind) in [
+        (
+            "decoy-roster",
+            crate::evaluation::batch::VariantKind::DecoyRoster,
+        ),
+        (
+            "lookalike-roster",
+            crate::evaluation::batch::VariantKind::LookalikeRoster,
+        ),
+    ] {
+        if let Some(path) = eval_matches.get_one::<String>(flag) {
+            let path = PathBuf::from(path);
+            let varied = resolve_workspace_roster_with_manifest(
+                clock,
+                &workspace,
+                home.as_deref(),
+                config.effective().roster_roots(),
+                crate::roster::Visibility::Verified {
+                    contract_version: crate::pipeline::PROVISIONAL_CLAUDE_CONTRACT.into(),
+                },
+                Some(&path),
+            )?;
+            validate_eval_roster_variant(&roster, &varied, kind)?;
+            let ids = varied
+                .skills()
+                .iter()
+                .flat_map(|skill| skill.bindings().iter().map(|b| b.id.as_str().to_owned()))
+                .collect();
+            variant_manifests.insert(kind, path);
+            variant_rosters.insert(kind, ids);
+            roster_digests.insert(
+                Some(kind),
+                crate::pipeline::evaluation_roster_digest(&varied),
+            );
+        }
+    }
     let per_case_ms = config.effective().timeout_ms();
     let now_unix_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -3922,6 +3975,7 @@ fn eval_live_command(
     )
     .map_err(|_| invalid("Conflicting live batch effects"))?;
     let case_args = |case: &crate::evaluation::batch::LiveEvaluationCase,
+                     variant: Option<crate::evaluation::batch::VariantKind>,
                      gate: crate::effects::EffectGate| {
         crate::pipeline::RankArgs {
             workspace: workspace.clone(),
@@ -3941,7 +3995,9 @@ fn eval_live_command(
             },
             require_skills: Vec::new(),
             shortlist_ids: Vec::new(),
-            roster_file: None,
+            roster_file: variant
+                .and_then(|kind| variant_manifests.get(&kind).cloned())
+                .or_else(|| baseline_manifest.clone()),
             explain: false,
             why_not: None,
             cursor: None,
@@ -3952,36 +4008,65 @@ fn eval_live_command(
         }
     };
     let previews = std::cell::RefCell::new(PreviewedRequests::new());
-    let report = crate::evaluation::batch::execute_live_frame_evaluation(
+    let mut report = crate::evaluation::batch::execute_live_frame_evaluation_with_roster_variants(
         cases,
         labels,
         sampling,
         &current_roster,
+        &variant_rosters,
         limits,
         clock,
         now_unix_ms,
-        |case| {
+        |case, variant| {
             preview_live_case(
                 clock,
                 per_case_ms,
-                case_args(case, preview_gate),
+                case_args(case, variant, preview_gate),
                 case,
                 &previews,
+                variant,
+                roster_digests.get(&variant).copied(),
             )
         },
-        |case| {
+        |case, variant| {
             // Only the previewed context is bound; an ablation arm or a
             // robustness variant of the same case is a different request.
             let context = serde_json::to_vec(&case.context).unwrap_or_default();
             let expected = previews
                 .borrow()
-                .get(&case.key.case_id)
+                .get(&(case.key.clone(), variant))
                 .filter(|(previewed, _)| *previewed == context)
-                .map(|(_, preview)| *preview);
-            rank_live_case(clock, per_case_ms, case_args(case, gate), case, expected)
+                .map(|(_, preview)| *preview)
+                .or_else(|| {
+                    roster_digests
+                        .get(&variant)
+                        .copied()
+                        .map(crate::pipeline::WidePreview::Roster)
+                });
+            rank_live_case(
+                clock,
+                per_case_ms,
+                case_args(case, variant, gate),
+                case,
+                expected,
+            )
         },
     )
     .map_err(eval_error)?;
+    if let Some(preflight) = report.disclosure_preflight.as_mut() {
+        for (kind, digest) in &roster_digests {
+            let name = match kind {
+                None => "baseline",
+                Some(crate::evaluation::batch::VariantKind::DecoyRoster) => "decoy-roster",
+                Some(crate::evaluation::batch::VariantKind::LookalikeRoster) => "lookalike-roster",
+                Some(_) => continue,
+            };
+            preflight.roster_snapshots.insert(
+                name.into(),
+                blake3::Hash::from(*digest).to_hex().to_string(),
+            );
+        }
+    }
     render_eval_report(report, eval_matches)
 }
 
@@ -4049,9 +4134,18 @@ fn preview_live_case(
     args: crate::pipeline::RankArgs,
     case: &crate::evaluation::batch::LiveEvaluationCase,
     previews: &std::cell::RefCell<PreviewedRequests>,
+    variant: Option<crate::evaluation::batch::VariantKind>,
+    roster_digest: Option<[u8; 32]>,
 ) -> Result<Option<Value>, String> {
     let mut unused = crate::pipeline::StageEvidence::default();
-    let document = run_case_pipeline(batch, per_case_ms, args, case, &mut unused, None)?;
+    let document = run_case_pipeline(
+        batch,
+        per_case_ms,
+        args,
+        case,
+        &mut unused,
+        roster_digest.map(crate::pipeline::WidePreview::Roster),
+    )?;
     let value = document.as_value();
     // The exact wide request this preview would send binds the live send.
     let wide = value["provider_request"]["stages"]
@@ -4061,15 +4155,16 @@ fn preview_live_case(
     // A preview that sends no wide request binds too: the live run may then
     // send none either, or it would disclose something nobody previewed.
     if let Ok(context) = serde_json::to_vec(&case.context) {
-        let preview = match wide {
-            Some(request) => {
-                crate::pipeline::WidePreview::Digest(*blake3::hash(request.as_bytes()).as_bytes())
-            }
-            None => crate::pipeline::WidePreview::NoRequest,
+        let request = wide.map(|request| *blake3::hash(request.as_bytes()).as_bytes());
+        let preview = match roster_digest {
+            Some(roster) => crate::pipeline::WidePreview::Bound { request, roster },
+            None => request
+                .map(crate::pipeline::WidePreview::Digest)
+                .unwrap_or(crate::pipeline::WidePreview::NoRequest),
         };
         previews
             .borrow_mut()
-            .insert(case.key.case_id.clone(), (context, preview));
+            .insert((case.key.clone(), variant), (context, preview));
     }
     // Every preview carries a `disclosure` key; it is null when the run ends
     // locally, which must fall through to the local decision below rather
@@ -4169,8 +4264,13 @@ fn live_rank_outcome(
 
 /// Each previewed case's context bytes and what its preview bound: the BLAKE3
 /// digest of the exact wide request it would send, or that it sends none.
-type PreviewedRequests =
-    std::collections::BTreeMap<String, (Vec<u8>, crate::pipeline::WidePreview)>;
+type PreviewedRequests = std::collections::BTreeMap<
+    (
+        crate::evaluation::CaseKey,
+        Option<crate::evaluation::batch::VariantKind>,
+    ),
+    (Vec<u8>, crate::pipeline::WidePreview),
+>;
 
 /// The longest live or replay batch deadline accepted: one day.
 const MAX_EVAL_RUNTIME_MS: u64 = 86_400_000;
@@ -5629,6 +5729,17 @@ fn resolve_workspace_roster(
     configured: &[crate::privacy::SkillRoot],
     visibility: crate::roster::Visibility,
 ) -> Result<crate::roster::resolution::ResolvedRoster, Failure> {
+    resolve_workspace_roster_with_manifest(clock, workspace, home, configured, visibility, None)
+}
+
+fn resolve_workspace_roster_with_manifest(
+    clock: &EntryClock,
+    workspace: &Path,
+    home: Option<&Path>,
+    configured: &[crate::privacy::SkillRoot],
+    visibility: crate::roster::Visibility,
+    manifest: Option<&Path>,
+) -> Result<crate::roster::resolution::ResolvedRoster, Failure> {
     let unusable = |message: &str| (5u8, "unusable-roster", message.to_owned());
     let plan = crate::roster::discovery::claude_code_plan_with_roots(
         workspace, home, visibility, configured,
@@ -5647,6 +5758,37 @@ fn resolve_workspace_roster(
         .request_cx()
         .map_err(runtime_failure)
         .and_then(|cx| {
+            if let Some(path) = manifest {
+                let path = if path.is_absolute() {
+                    path.to_owned()
+                } else {
+                    workspace.join(path)
+                };
+                let bytes = crate::roster::import::read_roster_file(&path)
+                    .map_err(|_| unusable("The evaluation roster could not be read"))?;
+                return crate::roster::import::import_authorized(
+                    &bytes,
+                    &plan,
+                    &std::collections::BTreeMap::new(),
+                    &cx,
+                    clock,
+                )
+                .map_err(|error| {
+                    if matches!(
+                        error,
+                        crate::roster::import::ImportError::Deadline
+                            | crate::roster::import::ImportError::Cancelled
+                            | crate::roster::import::ImportError::Resolution(
+                                crate::roster::resolution::ResolutionError::Deadline
+                                    | crate::roster::resolution::ResolutionError::Cancelled
+                            )
+                    ) {
+                        (6u8, "timeout", "Local inspection deadline exceeded".into())
+                    } else {
+                        unusable("The evaluation roster could not be authorized")
+                    }
+                });
+            }
             crate::roster::resolution::resolve_claude_plan(
                 &plan,
                 &std::collections::BTreeMap::new(),
@@ -5664,6 +5806,97 @@ fn resolve_workspace_roster(
             })
         });
     finish_invocation(invocation, outcome)
+}
+
+/// Keep baseline identity, bytes and invocation authority unchanged. Added
+/// options are actual distinct invocable skills, never synthetic load targets.
+fn validate_eval_roster_variant(
+    base: &crate::roster::resolution::ResolvedRoster,
+    varied: &crate::roster::resolution::ResolvedRoster,
+    kind: crate::evaluation::batch::VariantKind,
+) -> Result<(), Failure> {
+    let originals: std::collections::BTreeMap<_, _> = base
+        .advisory()
+        .map(|skill| (skill.binding.id.clone(), skill))
+        .collect();
+    let additions: std::collections::BTreeMap<_, _> = varied
+        .advisory()
+        .map(|skill| (skill.binding.id.clone(), skill))
+        .collect();
+    fn bindings(
+        roster: &crate::roster::resolution::ResolvedRoster,
+    ) -> std::collections::BTreeMap<
+        &crate::identity::SkillId,
+        (
+            &crate::roster::SkillRecord,
+            &crate::roster::resolution::Binding,
+        ),
+    > {
+        roster
+            .skills()
+            .iter()
+            .flat_map(|skill| {
+                skill
+                    .bindings()
+                    .iter()
+                    .map(move |binding| (&binding.id, (skill.record(), binding)))
+            })
+            .collect()
+    }
+    let base_bindings = bindings(base);
+    let varied_bindings = bindings(varied);
+    let entire_base_unchanged = base_bindings.iter().all(|(id, (old_record, old))| {
+        varied_bindings.get(id).is_some_and(|(new_record, new)| {
+            old_record == new_record
+                && old.invocation == new.invocation
+                && old.visibility == new.visibility
+                && old.restrictions == new.restrictions
+                && old.priority == new.priority
+        })
+    });
+    if !entire_base_unchanged
+        || additions.len() <= originals.len()
+        || base.is_partial()
+        || varied.is_partial()
+    {
+        return Err(invalid(
+            "A robustness roster must retain every baseline candidate unchanged and add invocable candidates",
+        ));
+    }
+    if kind == crate::evaluation::batch::VariantKind::LookalikeRoster {
+        let descriptions: std::collections::BTreeSet<String> = originals
+            .values()
+            .map(|skill| {
+                skill
+                    .record
+                    .description_full
+                    .as_str()
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .filter(|text| !text.is_empty())
+            .collect();
+        if additions
+            .iter()
+            .filter(|(id, _)| !originals.contains_key(*id))
+            .any(|(_, skill)| {
+                let text = skill
+                    .record
+                    .description_full
+                    .as_str()
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                !descriptions.contains(&text)
+            })
+        {
+            return Err(invalid(
+                "Every added lookalike must duplicate a nonempty baseline description, ignoring whitespace",
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// A snapshot in this workspace's namespace; paths enter only as digests.

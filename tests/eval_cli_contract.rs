@@ -1235,3 +1235,269 @@ fn a_label_naming_a_skill_off_the_current_roster_is_never_sent() {
     );
     assert_eq!(report["loss_summary"]["not_estimable_cases"], 1);
 }
+
+fn physical_manifest(root: &std::path::Path, name: &str, skills: &[&str]) -> String {
+    let path = root.join("workspace").join(name);
+    fs::write(
+        &path,
+        serde_json::json!({
+            "schema": "sr.roster.v1", "harness": "claude_code", "mode": "authorized_files",
+            "skills": skills.iter().map(|skill| serde_json::json!({
+                "source": "claude_code.project", "path": format!("{skill}/SKILL.md")
+            })).collect::<Vec<_>>()
+        })
+        .to_string(),
+    )
+    .unwrap();
+    path.to_string_lossy().into_owned()
+}
+
+#[test]
+fn authorized_roster_variants_send_fresh_requests_without_adding_families() {
+    // Actual local files/TLS/CLI; descriptions, judgments and responses are synthetic controls.
+    for (cap, calls, executed_variants) in [("16", 12usize, 5usize), ("4", 2, 0)] {
+        let root = live_workspace();
+        let dir = root.join("workspace/.claude/skills/gamma");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("SKILL.md"), "---\nname: gamma\ndescription: Runs and repairs failing rust tests.\n---\nDifferent body.\n").unwrap();
+        let listing: Value =
+            serde_json::from_slice(&run_sr(&root, &["roster", "--json"]).stdout).unwrap();
+        let alpha = listing["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|skill| skill["invocation_name"] == "alpha")
+            .unwrap()["skill_id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let (cases, labels) = live_inputs(&root, &[("roster-case", &[alpha])]);
+        let base = physical_manifest(&root, "base-roster.json", &["alpha"]);
+        let decoy = physical_manifest(&root, "decoy-roster.json", &["alpha", "beta"]);
+        let lookalike = physical_manifest(&root, "lookalike-roster.json", &["alpha", "gamma"]);
+        let before: Vec<_> = ["alpha", "beta", "gamma"]
+            .iter()
+            .map(|name| {
+                fs::read(
+                    root.join("workspace/.claude/skills")
+                        .join(name)
+                        .join("SKILL.md"),
+                )
+                .unwrap()
+            })
+            .collect();
+        let provider = LiveProvider::start(&root, "useful");
+        let output = run_live(
+            &root,
+            provider.port,
+            &[
+                "eval",
+                "--dataset",
+                &cases,
+                "--labels",
+                &labels,
+                "--online",
+                "--allow-network",
+                "--max-requests",
+                cap,
+                "--robustness",
+                "--roster",
+                &base,
+                "--decoy-roster",
+                &decoy,
+                "--lookalike-roster",
+                &lookalike,
+                "--json",
+            ],
+        );
+        let served = provider.finish();
+        let report = json_report(&output);
+        assert_eq!(served.len(), calls, "{served:?}");
+        assert_eq!(report["accounting"]["http_attempts"], calls);
+        assert_eq!(report["accounting"]["requests"], calls);
+        assert_eq!(report["accounting"]["unknown_usage_attempts"], 0);
+        assert_eq!(report["completeness"]["cases_requested"], 1);
+        assert_eq!(report["metrics"]["judged_cases"], 1);
+        assert_eq!(report["cases"][0]["family_id"], "fam-roster-case");
+        assert_eq!(report["loss_summary"]["attempted_cases"], 1);
+        assert_eq!(report["actionable"], false);
+        assert_eq!(report["gate_status"], "not-established");
+        let frozen = &report["disclosure_preflight"];
+        assert_eq!(frozen["cases_checked"], 1);
+        assert_eq!(frozen["roster_variants_checked"], 2);
+        assert_eq!(frozen["roster_variants_refused"], 0);
+        let snapshots = frozen["roster_snapshots"].as_object().unwrap();
+        assert_eq!(snapshots.len(), 3);
+        assert!(
+            snapshots
+                .values()
+                .all(|digest| digest.as_str().unwrap().len() == 64)
+        );
+        assert_ne!(snapshots["baseline"], snapshots["decoy-roster"]);
+        assert_ne!(snapshots["decoy-roster"], snapshots["lookalike-roster"]);
+        let robustness = &report["baselines"]["robustness"];
+        let variants = robustness["variants"].as_array().unwrap();
+        assert_eq!(variants.len(), 5);
+        assert_eq!(
+            variants
+                .iter()
+                .map(|score| score["cases"].as_u64().unwrap())
+                .sum::<u64>(),
+            executed_variants as u64
+        );
+        assert_eq!(variants[0]["kind"], "decoy-roster");
+        assert_eq!(variants[1]["kind"], "lookalike-roster");
+        assert!(
+            !robustness["not_computed"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|note| note.as_str().unwrap().contains("roster"))
+        );
+        if calls > 2 {
+            // Changed candidate sets use new requests, rather than the baseline response.
+            assert_eq!(served[0]["options"].as_u64().unwrap(), 2);
+            assert_eq!(served[2]["options"].as_u64().unwrap(), 3);
+            assert_eq!(served[4]["options"].as_u64().unwrap(), 3);
+            for score in &variants[..2] {
+                assert_eq!(score["admitted_coverage"]["cases"], 1);
+                assert_eq!(score["intrinsic_shortlist_coverage"]["cases"], 1);
+            }
+        } else {
+            assert!(variants.iter().all(|score| score["not_run"] == 1));
+        }
+        for (i, name) in ["alpha", "beta", "gamma"].iter().enumerate() {
+            assert_eq!(
+                before[i],
+                fs::read(
+                    root.join("workspace/.claude/skills")
+                        .join(name)
+                        .join("SKILL.md")
+                )
+                .unwrap()
+            );
+        }
+    }
+}
+
+#[test]
+fn invalid_roster_variants_fail_before_any_provider_request() {
+    for (kind, members) in [
+        ("--decoy-roster", vec!["beta"]), // Cannot replace a baseline member.
+        ("--decoy-roster", vec!["alpha"]), // Must add an actual candidate.
+        ("--lookalike-roster", vec!["alpha", "beta"]), // Different descriptions.
+    ] {
+        let root = live_workspace();
+        let ids = roster_ids(&root);
+        let (cases, labels) = live_inputs(&root, &[("invalid", &ids)]);
+        let base = physical_manifest(&root, "base-roster.json", &["alpha"]);
+        let varied = physical_manifest(&root, "invalid-roster.json", &members);
+        let provider = LiveProvider::start(&root, "useful");
+        let out = run_live(
+            &root,
+            provider.port,
+            &[
+                "eval",
+                "--dataset",
+                &cases,
+                "--labels",
+                &labels,
+                "--online",
+                "--allow-network",
+                "--max-requests",
+                "16",
+                "--robustness",
+                "--roster",
+                &base,
+                kind,
+                &varied,
+                "--json",
+            ],
+        );
+        assert_eq!(out.status.code(), Some(2), "{out:?}");
+        assert!(provider.finish().is_empty());
+    }
+    let root = live_workspace();
+    // Required modes are rejected before trying to read a manifest or dataset.
+    for args in [
+        vec!["eval", "--dataset", "/missing", "--roster", "/missing"],
+        vec![
+            "eval",
+            "--dataset",
+            "/missing",
+            "--decoy-roster",
+            "/missing",
+        ],
+    ] {
+        assert_eq!(run_sr(&root, &args).status.code(), Some(2));
+    }
+}
+
+#[test]
+fn automatic_live_evaluation_keeps_harness_specific_configured_inventory() {
+    let root = live_workspace();
+    // These exist alongside Claude's distinct alpha/beta inventory.
+    for name in ["gamma", "delta"] {
+        let dir = root.join("workspace/shared").join(name);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: Repair rust tests.\n---\nBody.\n"),
+        )
+        .unwrap();
+    }
+    fs::create_dir_all(root.join("workspace/.sr")).unwrap();
+    fs::write(
+        root.join("workspace/.sr/config.toml"),
+        "[roster]\nroots = [\"shared\"]\n",
+    )
+    .unwrap();
+    let listing: Value =
+        serde_json::from_slice(&run_sr(&root, &["roster", "--json"]).stdout).unwrap();
+    let ids: Vec<String> = listing["records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|record| {
+            record["source"]
+                .as_str()
+                .is_some_and(|source| source.starts_with("configured."))
+        })
+        .map(|record| record["skill_id"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(ids.len(), 2, "{listing}");
+    let (cases, labels) = live_inputs(&root, &[("configured", &ids)]);
+    let mut case: Value = serde_json::from_str(&fs::read_to_string(&cases).unwrap()).unwrap();
+    // General normalized input; this is not a native Codex hook qualification.
+    case["context"]["harness"] = Value::String("codex".into());
+    fs::write(&cases, format!("{case}\n")).unwrap();
+    let provider = LiveProvider::start(&root, "useful");
+    let output = run_live(
+        &root,
+        provider.port,
+        &[
+            "eval",
+            "--dataset",
+            &cases,
+            "--labels",
+            &labels,
+            "--online",
+            "--allow-network",
+            "--max-requests",
+            "4",
+            "--json",
+        ],
+    );
+    let served = provider.finish();
+    let report = json_report(&output);
+    assert_eq!(served.len(), 2, "{report}");
+    assert_eq!(served[0]["options"], 3); // Two configured candidates plus none.
+    assert_eq!(report["accounting"]["http_attempts"], 2);
+    assert_eq!(report["completeness"]["cases_completed"], 1);
+    assert_eq!(report["loss_summary"]["total_loss"], 0);
+    assert_eq!(report["disclosure_preflight"]["cases_refused"], 0);
+    assert_eq!(
+        report["disclosure_preflight"]["roster_snapshots"],
+        serde_json::json!({})
+    );
+}

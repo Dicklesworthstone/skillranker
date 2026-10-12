@@ -543,6 +543,25 @@ pub enum WidePreview {
     /// The preview ended locally and sent nothing, so any wide request now
     /// is one nobody previewed and is refused.
     NoRequest,
+    /// Exact preview plus the independently frozen local candidate inventory.
+    Bound {
+        request: Option<[u8; 32]>,
+        roster: [u8; 32],
+    },
+    /// A changed-context arm permits different request bytes, while retaining
+    /// the frozen physical roster and its eligibility/content identities.
+    Roster([u8; 32]),
+}
+
+/// Local-only digest of the complete roster evidence, not provider text or
+/// an option map. Equal descriptions cannot hide changed skill identities.
+pub fn evaluation_roster_digest(roster: &ResolvedRoster) -> [u8; 32] {
+    *blake3::hash(
+        crate::roster::evidence::snapshot_id(roster)
+            .as_str()
+            .as_bytes(),
+    )
+    .as_bytes()
 }
 
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -1712,6 +1731,23 @@ async fn rank_once(
         // Both operations have drained before propagating a roster error.
         (loaded?, Some(signals))
     };
+
+    if let Some(
+        WidePreview::Bound {
+            roster: expected, ..
+        }
+        | WidePreview::Roster(expected),
+    ) = progress.expected_wide_digest
+        && evaluation_roster_digest(&roster) != expected
+    {
+        if let Some(evidence) = progress.stage_evidence.as_mut() {
+            evidence.preview_refused = true;
+        }
+        return Err(failure(
+            ErrorKind::Superseded,
+            "The roster changed since evaluation preflight; not sent",
+        ));
+    }
 
     let (warnings, warnings_omitted) =
         roster_warnings(&roster, progress.evaluated.source_warning.as_ref());
@@ -3003,6 +3039,10 @@ async fn rank_once(
                 Some(WidePreview::Digest(expected)) => {
                     *blake3::hash(&wide_wire).as_bytes() != expected
                 }
+                Some(WidePreview::Bound { request, .. }) => {
+                    request.is_none_or(|expected| *blake3::hash(&wide_wire).as_bytes() != expected)
+                }
+                Some(WidePreview::Roster(_)) => false,
             };
             if unpreviewed {
                 // Refused before any attempt: nothing was sent or charged.

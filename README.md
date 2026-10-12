@@ -403,7 +403,10 @@ request or runtime limit is reached and reports unfinished cases.
 | `--online` | Off | With `--labels`, rank each case's request context fresh against the current roster when network access is separately authorized |
 | `--max-requests N` | Required for live runs | Maximum HTTP attempts across the batch, including retries |
 | `--max-runtime-ms N` | `600000` | Overall batch deadline, in addition to per-case deadlines |
-| `--robustness` | Off | Also rank whitespace, long-distraction and hostile-instruction variants of each judged case on the budget left after the main rankings, and report decision and coverage changes outside every denominator |
+| `--robustness` | Off | Rank request variants and supplied roster arms on the remaining live budget; report paired decision and coverage changes within the original families |
+| `--roster FILE` | Discovery | Authorized file-backed baseline inventory for `--online` |
+| `--decoy-roster FILE` | None | With `--robustness --roster`, add already existing authorized candidates to the baseline |
+| `--lookalike-roster FILE` | None | With `--robustness --roster`, add authorized candidates whose descriptions duplicate a baseline description, ignoring whitespace |
 | `--sample-size N` | Full supplied frame | Select a bounded sample of task-family representatives |
 | `--seed S` | Fresh recorded random seed when sampling | Deterministic diagnostic selection or reproduction of a recorded sample; a fixed seed alone is not probability-sampling evidence |
 | `--explain` | Off | Include equations, substituted values, assumptions, and interpretation in the report |
@@ -1286,10 +1289,20 @@ exact local parsing/scoring invariants. `sr eval --online --robustness` ranks
 equivalent-whitespace, distracting-text, and hostile-instruction variants on the
 remaining live budget. It reports top-one changes and paired admitted/top-M
 coverage changes, with missing stage evidence counted as unknown. Low-gate wide
-answers retain their intrinsic top-M coverage. Duplicate-looking descriptions
-and added decoy rosters appear explicitly under `not_computed`; the command does
-not generate those roster variants. Jev comparisons measure changes rather than
-demand identical probabilities from a stochastic, candidate-dependent model.
+answers retain their intrinsic top-M coverage. Supply `--roster BASE`, then
+`--decoy-roster EXPANDED` or `--lookalike-roster EXPANDED` to generate additional
+paired arms from authorized file-backed manifests. Each expanded roster must
+retain every baseline candidate unchanged and add invocable candidates; every
+lookalike addition must duplicate a nonempty baseline description, ignoring
+whitespace. These flags select existing skills and never create or edit them.
+Choose irrelevant decoys using independent judgments; the command cannot infer
+that an added skill is irrelevant merely because it was absent from the baseline.
+Unsupplied arms remain under `not_computed`. Configured roster arms run before
+request variants, after main rankings and ablations. Their wide requests get
+separate network-free previews. With an explicit baseline, all arms retain its
+frozen roster identities, content and eligibility. Changed inventory is refused
+before sending. Jev comparisons measure changes rather than demand identical
+probabilities from a stochastic, candidate-dependent model.
 New provider inputs require new responses and consume the live budget. Related
 variants retain their original task family and split.
 
