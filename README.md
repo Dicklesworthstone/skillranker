@@ -1281,14 +1281,17 @@ prompts, policy, runtime, and returned model identities/time ranges. Related
 sessions and task variants stay in one split. An unversioned Jev alias limits
 reproducibility even when the local sample and arithmetic replay exactly.
 
-Robustness evaluation includes option-order permutations, opaque-ID renaming,
-equivalent whitespace, duplicate-looking descriptions, irrelevant decoys, long
-distracting text, and hostile ranking instructions. Local transformations with
-unchanged semantics have exact parsing/scoring invariants. Jev comparisons report
-decision and coverage changes rather than demanding identical probabilities from
-a stochastic, candidate-dependent model. New provider inputs require new
-responses and consume the live budget. Related variants retain their original
-task family and split.
+Robustness evaluation tests option-order permutations and opaque-ID renaming as
+exact local parsing/scoring invariants. `sr eval --online --robustness` ranks
+equivalent-whitespace, distracting-text, and hostile-instruction variants on the
+remaining live budget. It reports top-one changes and paired admitted/top-M
+coverage changes, with missing stage evidence counted as unknown. Low-gate wide
+answers retain their intrinsic top-M coverage. Duplicate-looking descriptions
+and added decoy rosters appear explicitly under `not_computed`; the command does
+not generate those roster variants. Jev comparisons measure changes rather than
+demand identical probabilities from a stochastic, candidate-dependent model.
+New provider inputs require new responses and consume the live budget. Related
+variants retain their original task family and split.
 
 ### Spend the evaluation budget deliberately
 

@@ -1302,6 +1302,30 @@ pub fn execute_live_frame_evaluation<L: BufRead>(
                         },
                     ));
                 }
+                if positive_case(label) {
+                    let base = evidence_by_case.get(&record.key);
+                    let varied = outcome.evidence.as_ref();
+                    let admitted = |stages: Option<&crate::pipeline::StageEvidence>| {
+                        stages
+                            .filter(|stages| !stages.admitted.is_empty())
+                            .map(|stages| {
+                                stages.admitted.iter().any(|id| acceptable_for(label, id))
+                            })
+                    };
+                    let intrinsic = |stages: Option<&crate::pipeline::StageEvidence>| {
+                        stages.and_then(|stages| stages.wide.as_ref()).map(|wide| {
+                            wide.intrinsic_shortlist
+                                .iter()
+                                .any(|id| acceptable_for(label, id))
+                        })
+                    };
+                    score
+                        .admitted_coverage
+                        .record(admitted(base), admitted(varied));
+                    score
+                        .intrinsic_shortlist_coverage
+                        .record(intrinsic(base), intrinsic(varied));
+                }
                 if outcome.decision == "unavailable" {
                     score.failures += 1;
                     continue;
@@ -2386,9 +2410,44 @@ pub struct VariantScore {
     /// The base top suggestion was acceptable and the variant's was not.
     pub hit_lost: usize,
     pub hit_gained: usize,
+    /// Paired coverage of judged positive cases with observed admission on
+    /// both arms. Missing or empty admission evidence remains unknown.
+    #[serde(default)]
+    pub admitted_coverage: PairedStageCoverage,
+    /// Paired top-M coverage from wide answers, including low-gate answers.
+    /// A missing wide answer remains unknown rather than a coverage miss.
+    #[serde(default)]
+    pub intrinsic_shortlist_coverage: PairedStageCoverage,
     pub failures: usize,
     /// Variants not sent: no request text, or no budget or time left.
     pub not_run: usize,
+}
+
+/// Descriptive paired stage counts within the original task families, not
+/// additional independent samples. Failed variants can still have observed
+/// stage evidence; unknown stages never enter the paired denominator.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PairedStageCoverage {
+    pub cases: usize,
+    pub base_covered: usize,
+    pub variant_covered: usize,
+    pub lost: usize,
+    pub gained: usize,
+    pub unknown: usize,
+}
+
+impl PairedStageCoverage {
+    fn record(&mut self, base: Option<bool>, varied: Option<bool>) {
+        if let (Some(base), Some(varied)) = (base, varied) {
+            self.cases += 1;
+            self.base_covered += usize::from(base);
+            self.variant_covered += usize::from(varied);
+            self.lost += usize::from(base && !varied);
+            self.gained += usize::from(!base && varied);
+        } else {
+            self.unknown += 1;
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

@@ -1330,7 +1330,170 @@ fn robustness_variants_report_decision_changes_on_leftover_budget() {
     let robustness = report.baselines.unwrap().robustness.unwrap();
     let not_run: usize = robustness.variants.iter().map(|score| score.not_run).sum();
     assert_eq!(not_run, 5);
+    assert_eq!(robustness.variants[0].admitted_coverage.unknown, 1);
+    assert_eq!(robustness.variants[1].admitted_coverage.unknown, 0);
     assert_eq!(report.run_status, RunStatus::Complete);
+}
+
+#[test]
+fn robustness_coverage_pairs_stage_evidence_without_inventing_misses_or_families() {
+    use skillranker::evaluation::batch::{
+        LiveBatchLimits, LiveRankOutcome, PairedStageCoverage, VariantScore,
+        execute_live_frame_evaluation,
+    };
+    use skillranker::pipeline::{StageEvidence, WideEvidence};
+    let ids = [
+        "loss",
+        "gain",
+        "shortlist-loss",
+        "shortlist-gain",
+        "low-gate",
+        "missing-base",
+        "missing-wide",
+        "failed-stage",
+        "failed-unknown",
+        "empty-admission",
+        "no-match",
+        "explicit",
+    ];
+    let cases: Vec<_> = ids.iter().map(|id| {
+        let mut case = live_case(id);
+        case.context = json!({"current_request": {"event_id": "e", "text": "profile endpoint"}, "events": []});
+        case
+    }).collect();
+    let labels: String = ids
+        .iter()
+        .map(|id| {
+            let mut label = json!({"schema_version": 1, "case_id": id, "revision": 1,
+            "acceptable_skills": ["s_alpha"], "adjudicator": "synthetic-control",
+            "created_at_unix_ms": 1u64});
+            if *id == "no-match" {
+                label["acceptable_skills"] = json!([]);
+                label["no_skill_needed"] = json!(true);
+            } else if *id == "explicit" {
+                label["explicit_directive"] = json!("s_alpha");
+            }
+            label.to_string() + "\n"
+        })
+        .collect();
+    let calls = std::cell::Cell::new(0);
+    let report = execute_live_frame_evaluation(
+        cases.clone(),
+        Cursor::new(labels.into_bytes()),
+        None,
+        &std::collections::BTreeSet::from(["s_alpha".to_owned()]),
+        LiveBatchLimits {
+            max_requests: 200,
+            max_runtime_ms: 60_000,
+            attempts_per_case: 4,
+            fit_threshold: 0.3,
+            gate_threshold: 0.3,
+            robustness_variants: true,
+        },
+        &EntryClock::capture().unwrap(),
+        0,
+        |_| Ok(None),
+        |case| {
+            calls.set(calls.get() + 1);
+            let original = cases.iter().find(|base| base.key == case.key).unwrap();
+            assert_eq!(case.split, original.split);
+            let variant = case.context != original.context;
+            let id = case.key.case_id.as_str();
+            let admitted_hit = match id {
+                "loss" => !variant,
+                "gain" => variant,
+                _ => true,
+            };
+            let shortlist_hit = match id {
+                "loss" | "shortlist-loss" => !variant,
+                "gain" | "shortlist-gain" => variant,
+                _ => true,
+            };
+            let admitted = if admitted_hit { "s_alpha" } else { "s_other" };
+            let shortlisted = if shortlist_hit { "s_alpha" } else { "s_other" };
+            let mut stages = StageEvidence {
+                admitted: vec![admitted.into()],
+                wide: Some(WideEvidence {
+                    // Intrinsic coverage exists even when the gate stops rerank.
+                    low_need: id == "low-gate" && variant,
+                    intrinsic_shortlist: vec![shortlisted.into()],
+                    ..Default::default()
+                }),
+                ..Default::default()
+            };
+            if variant && id == "missing-wide" {
+                stages.wide = None;
+            }
+            if variant && id == "empty-admission" {
+                stages = StageEvidence::default();
+            }
+            let evidence =
+                if (id == "missing-base" && !variant) || (id == "failed-unknown" && variant) {
+                    None
+                } else {
+                    Some(stages)
+                };
+            let failed = variant && matches!(id, "failed-stage" | "failed-unknown");
+            LiveRankOutcome {
+                decision: if failed { "unavailable" } else { "ranked" }.into(),
+                // Top-one stays fixed while stage coverage changes.
+                suggested_skills: if failed {
+                    vec![]
+                } else {
+                    vec!["s_alpha".into()]
+                },
+                http_attempts: 2,
+                evidence,
+                ..Default::default()
+            }
+        },
+    )
+    .unwrap();
+    assert_eq!(calls.get(), 45); // 12 primary + 11 advisory * 3 variants.
+    assert_eq!(report.accounting.http_attempts, 90);
+    assert_eq!(report.completeness.cases_requested, 12);
+    assert_eq!(report.loss_summary.attempted_cases, 11); // Explicit requests have no advisory loss.
+    report.to_document().unwrap();
+    let robustness = report.baselines.unwrap().robustness.unwrap();
+    for score in robustness.variants {
+        assert_eq!((score.cases, score.failures, score.not_run), (9, 2, 0));
+        assert_eq!(
+            (score.top1_changed, score.hit_lost, score.hit_gained),
+            (0, 0, 0)
+        );
+        assert_eq!(
+            score.admitted_coverage,
+            PairedStageCoverage {
+                cases: 7,
+                base_covered: 6,
+                variant_covered: 6,
+                lost: 1,
+                gained: 1,
+                unknown: 3,
+            }
+        );
+        assert_eq!(
+            score.intrinsic_shortlist_coverage,
+            PairedStageCoverage {
+                cases: 6,
+                base_covered: 4,
+                variant_covered: 4,
+                lost: 2,
+                gained: 2,
+                unknown: 4,
+            }
+        );
+        let encoded = serde_json::to_value(&score).unwrap();
+        assert_eq!(encoded["admitted_coverage"]["cases"], 7);
+        assert_eq!(encoded["intrinsic_shortlist_coverage"]["unknown"], 4);
+    }
+    // These schema-v1 additions do not invalidate historical variant reports.
+    let old: VariantScore = serde_json::from_value(json!({
+        "kind": "equivalent-whitespace", "cases": 2, "top1_changed": 1,
+        "hit_lost": 1, "hit_gained": 0, "failures": 0, "not_run": 0,
+    }))
+    .unwrap();
+    assert_eq!(old.admitted_coverage, PairedStageCoverage::default());
 }
 
 #[test]

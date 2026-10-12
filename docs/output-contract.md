@@ -168,6 +168,22 @@ validation is not a secret scanner or a terminal renderer.
 
 ## Non-actionable artifacts
 
+Live evaluation's `baselines.robustness.variants` keeps decision comparisons
+(`cases`, `top1_changed`, `hit_lost`, `hit_gained`, `failures`, `not_run`) separate
+from `admitted_coverage` and `intrinsic_shortlist_coverage`. Each coverage object
+has unsigned `cases`, `base_covered`, `variant_covered`, `lost`, `gained`, and
+`unknown` counts. Only judged positive advisory cases with observed stage evidence
+on both arms enter that stage's paired denominator. Absent/empty admission
+evidence and absent wide answers count as unknown, not misses. Intrinsic top-M
+coverage uses the wide answer even when the gate stops rerank. An operationally
+failed variant may still supply valid earlier-stage evidence; its decision
+failure remains counted separately. Unsent variants count only under `not_run`.
+These are descriptive within-family comparisons, not additional independent
+samples or a passed quality gate. Missing coverage fields in older schema-v1
+variant records deserialize to empty counters; they establish no observed pairs.
+`not_computed` names unsupported roster variants and exact local invariants
+that do not require paid model comparisons.
+
 Artifacts require `schema_version: 1`, `kind: demo|replay|report|preview`,
 and `actionable: false`. Previews are described in
 [stateless dry-run previews](#stateless-dry-run-previews); the rules below
