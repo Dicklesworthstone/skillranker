@@ -176,11 +176,24 @@ class DependencyBoundaryTests(unittest.TestCase):
         self.assertIn('src/sqlite_engine.rs', source)
         self.assertIn('src/storage/platform.rs', source)
         self.assertIn('src/platform_path.rs', source)
+        self.assertIn('src/filesystem_policy.rs', source)
+        self.assertIn('filesystem_policy::require_persistent(&directory)', source)
         for excluded in ("filesystem.rs", "ledger.rs", "mod storage;", "mod replay;", "mod cli;"):
             self.assertNotIn(excluded, source)
         self.assertIn("platform::DirectoryIdentity", source)
         self.assertIn("platform::local_filesystem(&stat)", source)
         self.assertIn('#![forbid(unsafe_code)]', source)
+
+    def test_all_imported_modules_are_frozen_in_the_source_snapshot(self):
+        self.assertEqual(set(boundary.SOURCE_PATHS), {
+            "src/sqlite_engine.rs", "src/storage/platform.rs",
+            "src/platform_path.rs", "src/filesystem_policy.rs",
+        })
+        source = boundary.slice_source(Path("/synthetic/snapshot"))
+        for path in boundary.SOURCE_PATHS:
+            self.assertEqual(source.count(path), 1)
+        self.assertNotIn("mod allowance;", source)
+        self.assertNotIn('target_os = "linux"))]\nmod filesystem_policy;', source)
 
     def test_rust_path_literal_handles_quotes_without_injection(self):
         literal = boundary.rust_path(Path('/synthetic/with"#quote/source.rs'))

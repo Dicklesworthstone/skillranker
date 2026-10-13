@@ -5,6 +5,7 @@
 //! shared-memory bookkeeping. Revalidation detects ordinary replacement; hostile
 //! same-uid mutation and uninterruptible kernel calls are outside this boundary.
 use super::{ACCOUNTING_MAX_BYTES, AllowanceError, read_meta, state};
+use crate::filesystem_policy::require_persistent;
 use nix::errno::Errno;
 use nix::fcntl::{AtFlags, OFlag, open, openat};
 use nix::sys::stat::{FileStat, Mode, SFlag, fstat, fstatat, mkdirat};
@@ -75,6 +76,7 @@ fn parent(path: &Path, create: bool, writable: bool) -> Result<Option<File>, All
         handle = match openat(&handle, part.as_os_str(), flags, Mode::empty()) {
             Err(Errno::ENOENT) if !create => return Ok(None),
             Err(Errno::ENOENT) => {
+                require_persistent(&handle).map_err(state)?;
                 match mkdirat(&handle, part.as_os_str(), Mode::from_bits_truncate(0o700)) {
                     Ok(()) | Err(Errno::EEXIST) => {}
                     Err(_) => return Err(refused()),
@@ -89,6 +91,9 @@ fn parent(path: &Path, create: bool, writable: bool) -> Result<Option<File>, All
             index + 2 == parts.len(),
             writable,
         )?;
+    }
+    if create {
+        require_persistent(&handle).map_err(state)?;
     }
     Ok(Some(handle.into()))
 }
@@ -151,6 +156,7 @@ impl Files {
             }
             return Ok(None);
         }
+        require_persistent(&directory).map_err(state)?;
         let flags = (if writable {
             OFlag::O_RDWR
         } else {
@@ -183,6 +189,8 @@ impl Files {
 
     pub(super) fn verify(&self) -> Result<(), AllowanceError> {
         let current = parent(&self.path, false, self.writable)?.ok_or_else(refused)?;
+        require_persistent(&self.directory).map_err(state)?;
+        require_persistent(&self.file).map_err(state)?;
         let held_dir = fstat(&self.directory).map_err(|_| refused())?;
         let named_dir = fstat(&current).map_err(|_| refused())?;
         if (held_dir.st_dev, held_dir.st_ino) != (named_dir.st_dev, named_dir.st_ino) {
@@ -211,6 +219,11 @@ impl Files {
             ) {
                 Ok(stat) => {
                     regular(&stat, self.writable)?;
+                    // Sidecars are ordinary siblings. A separate mounted file
+                    // must not bypass the held directory's filesystem policy.
+                    if stat.st_dev != held_dir.st_dev {
+                        return Err(refused());
+                    }
                     bytes = bytes.checked_add(stat.st_size).ok_or_else(capacity)?;
                     if bytes > FAMILY_MAX_BYTES {
                         return Err(capacity());

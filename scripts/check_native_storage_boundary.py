@@ -21,7 +21,10 @@ import tempfile
 import tomllib
 
 SLICE_NAME = "skillranker-native-storage-boundary"
-SOURCE_PATHS = ("src/sqlite_engine.rs", "src/storage/platform.rs", "src/platform_path.rs")
+SOURCE_PATHS = (
+    "src/sqlite_engine.rs", "src/storage/platform.rs", "src/platform_path.rs",
+    "src/filesystem_policy.rs",
+)
 
 
 def native_target(verbose: str, system: str, machine: str) -> str:
@@ -128,6 +131,7 @@ def slice_source(root: Path) -> str:
         f'#[path = {rust_path(root / SOURCE_PATHS[0])}]\nmod sqlite_engine;\n'
         f'#[path = {rust_path(root / SOURCE_PATHS[1])}]\nmod platform;\n'
         f'#[path = {rust_path(root / SOURCE_PATHS[2])}]\nmod platform_path;\n'
+        f'#[path = {rust_path(root / SOURCE_PATHS[3])}]\nmod filesystem_policy;\n'
         + r'''
 fn native_identity(stat: &nix::sys::stat::FileStat) -> platform::DirectoryIdentity {
     (stat.st_dev, stat.st_ino)
@@ -155,6 +159,11 @@ fn native_statfs_calls_the_production_filesystem_admission_boundary() {
     #[cfg(target_os = "macos")]
     let expected = matches!(stat.filesystem_type_name(), "apfs" | "hfs");
     assert_eq!(platform::local_filesystem(&stat), expected);
+    #[cfg(target_os = "linux")]
+    let persistent = expected && stat.filesystem_type() != nix::sys::statfs::TMPFS_MAGIC;
+    #[cfg(target_os = "macos")]
+    let persistent = expected;
+    assert_eq!(filesystem_policy::require_persistent(&directory).is_ok(), persistent);
     let current = std::env::current_dir().unwrap();
     assert!(platform::storage_path(current).is_absolute());
 }

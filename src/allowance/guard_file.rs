@@ -6,6 +6,7 @@
 //! itself. Revalidation still rejects ordinary replacement races.
 
 use super::{AllowanceError, AllowancePaths, COUNTER, GUARD_FILE_MAX_BYTES, Guard, state};
+use crate::filesystem_policy::require_persistent;
 use nix::errno::Errno;
 use nix::fcntl::{AtFlags, Flock, FlockArg, OFlag, open, openat, renameat};
 use nix::sys::stat::{FileStat, Mode, SFlag, fstat, fstatat, mkdirat};
@@ -93,6 +94,7 @@ impl Parent {
             let opened = match openat(&handle, part.as_os_str(), flags, Mode::empty()) {
                 Err(Errno::ENOENT) if !create => return Ok(None),
                 Err(Errno::ENOENT) => {
+                    require_persistent(&handle).map_err(state)?;
                     match mkdirat(&handle, part.as_os_str(), Mode::from_bits_truncate(0o700)) {
                         Ok(()) | Err(Errno::EEXIST) => {}
                         Err(_) => return Err(unavailable()),
@@ -107,6 +109,9 @@ impl Parent {
                 index + 2 == parts.len(),
             )?;
             handle = opened;
+        }
+        if create {
+            require_persistent(&handle).map_err(state)?;
         }
         Ok(Some((
             Self {
@@ -143,6 +148,8 @@ impl Parent {
 
     fn verify(&self, name: &OsStr, file: &File, kind: Kind) -> Result<(), AllowanceError> {
         self.revalidate()?;
+        require_persistent(&self.handle).map_err(state)?;
+        require_persistent(file).map_err(state)?;
         let held = fstat(file).map_err(|_| unavailable())?;
         let named =
             fstatat(&self.handle, name, AtFlags::AT_SYMLINK_NOFOLLOW).map_err(|_| unavailable())?;
@@ -298,6 +305,8 @@ fn publish_named(
     tmp: &str,
     bytes: &[u8],
 ) -> Result<(), AllowanceError> {
+    parent.revalidate()?;
+    require_persistent(&parent.handle).map_err(state)?;
     let flags = OFlag::O_WRONLY
         | OFlag::O_CREAT
         | OFlag::O_EXCL
@@ -308,6 +317,7 @@ fn publish_named(
         .map_err(|_| unavailable())?
         .into();
     let result = (|| {
+        parent.verify(OsStr::new(tmp), &file, Kind::Guard)?;
         file.write_all(bytes)
             .map_err(|_| state("the guard cannot be written"))?;
         file.sync_all()
