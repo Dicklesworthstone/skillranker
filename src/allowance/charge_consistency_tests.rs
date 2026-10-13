@@ -39,11 +39,13 @@ fn verified(db: &mut Connection, origin: &str, window: u64) -> Result<u32, Allow
 }
 
 fn paths() -> AllowancePaths {
-    let root = std::env::temp_dir().join(format!(
-        "sr-charge-consistency-{}-{}",
-        std::process::id(),
-        COUNTER.fetch_add(1, Ordering::Relaxed)
-    ));
+    let root = std::fs::canonicalize("/tmp")
+        .expect("resolve trusted system temporary directory")
+        .join(format!(
+            "sr-charge-consistency-{}-{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
     AllowancePaths::new(&root.join("config"), &root.join("cache"))
 }
 
@@ -61,7 +63,11 @@ fn verification_requires_a_snapshot_and_keeps_empty_windows_usable() {
     let mut db = database();
     assert!(verified_charged(&db, "o", 0).is_err());
     assert_eq!(verified(&mut db, "o", 0).unwrap(), 0);
-    assert_eq!(db.total_changes(), 1, "verification must not create counters");
+    assert_eq!(
+        db.total_changes(),
+        1,
+        "verification must not create counters"
+    );
 }
 
 #[test]
@@ -76,9 +82,16 @@ fn a_missing_or_reduced_total_cannot_erase_retained_attempts() {
                 .unwrap(),
         };
         let before = db.total_changes();
-        assert!(matches!(verified(&mut db, "o", 0), Err(AllowanceError::State(_))));
+        assert!(matches!(
+            verified(&mut db, "o", 0),
+            Err(AllowanceError::State(_))
+        ));
         assert_eq!(total_receipts(&db), 3);
-        assert_eq!(db.total_changes(), before, "never reconstruct the total implicitly");
+        assert_eq!(
+            db.total_changes(),
+            before,
+            "never reconstruct the total implicitly"
+        );
     }
 }
 
@@ -94,7 +107,11 @@ fn a_total_without_matching_receipts_is_not_verified_evidence() {
         .unwrap();
         let before = db.total_changes();
         assert!(verified(&mut db, "o", 0).is_err());
-        assert_eq!(charged(&db, "o", 0).unwrap(), 3, "do not refund lost receipts");
+        assert_eq!(
+            charged(&db, "o", 0).unwrap(),
+            3,
+            "do not refund lost receipts"
+        );
         assert_eq!(db.total_changes(), before);
     }
 }
@@ -110,8 +127,11 @@ fn exact_origin_and_window_match_but_all_stages_and_generations_count() {
     assert_eq!(verified(&mut db, "other", 0).unwrap(), 3);
     assert_eq!(verified(&mut db, "new", 0).unwrap(), 0);
     assert_eq!(verified(&mut db, "o", 2 * WINDOW_MS).unwrap(), 0);
-    db.execute("DELETE FROM allowance_charges WHERE origin='o' AND window_start_unix_ms=0", [])
-        .unwrap();
+    db.execute(
+        "DELETE FROM allowance_charges WHERE origin='o' AND window_start_unix_ms=0",
+        [],
+    )
+    .unwrap();
     assert!(verified(&mut db, "o", 0).is_err());
     assert_eq!(verified(&mut db, "o", WINDOW_MS).unwrap(), 2);
     assert_eq!(verified(&mut db, "other", 0).unwrap(), 3);
@@ -135,13 +155,15 @@ fn failed_partial_mutation_rolls_back_without_losing_verified_charges() {
 fn invalid_numeric_totals_still_fail_before_receipt_verification() {
     let mut db = database();
     seed(&db, "o", 0, 1);
-    db.pragma_update(None, "ignore_check_constraints", true).unwrap();
+    db.pragma_update(None, "ignore_check_constraints", true)
+        .unwrap();
     for total in [-1, i64::from(u32::MAX) + 1, i64::MAX] {
         db.execute("UPDATE allowance_charges SET attempts=?1", [total])
             .unwrap();
         assert!(verified(&mut db, "o", 0).is_err());
     }
-    db.execute("UPDATE allowance_charges SET attempts=1", []).unwrap();
+    db.execute("UPDATE allowance_charges SET attempts=1", [])
+        .unwrap();
     assert!(verified(&mut db, "o", u64::MAX).is_err());
     assert_eq!(verified(&mut db, "o", 0).unwrap(), 1);
 }
@@ -157,22 +179,43 @@ fn missing_total_blocks_real_admission_and_restoration_preserves_exhaustion() {
     let db = Connection::open(&paths.accounting).unwrap();
     db.execute("DELETE FROM allowance_charges", []).unwrap();
     let before = db.total_changes();
-    assert!(matches!(debit(&paths, RankingStage::Rerank), Err(AllowanceError::State(_))));
-    let report = inspect(&paths, &CanonicalOrigin::production(), wall_clock_ms().unwrap());
+    assert!(matches!(
+        debit(&paths, RankingStage::Rerank),
+        Err(AllowanceError::State(_))
+    ));
+    let report = inspect(
+        &paths,
+        &CanonicalOrigin::production(),
+        wall_clock_ms().unwrap(),
+    );
     assert_eq!(report.health, "invalid");
     assert_eq!(report.charged_attempts, None);
     assert_eq!(report.remaining(), None);
     assert_eq!(total_receipts(&db), 1);
-    assert_eq!(charged(&db, CanonicalOrigin::production().as_str(), first.window_start_unix_ms).unwrap(), 0);
+    assert_eq!(
+        charged(
+            &db,
+            CanonicalOrigin::production().as_str(),
+            first.window_start_unix_ms
+        )
+        .unwrap(),
+        0
+    );
     assert_eq!(db.total_changes(), before);
     assert_eq!(fs::read(&paths.guard).unwrap(), guard_before);
     // Explicitly restore the fixture's lost total. Production never repairs it.
     db.execute(
         "INSERT INTO allowance_charges VALUES (?1, ?2, 1)",
-        params![CanonicalOrigin::production().as_str(), first.window_start_unix_ms as i64],
+        params![
+            CanonicalOrigin::production().as_str(),
+            first.window_start_unix_ms as i64
+        ],
     )
     .unwrap();
-    assert!(matches!(debit(&paths, RankingStage::Rerank), Err(AllowanceError::Exhausted { .. })));
+    assert!(matches!(
+        debit(&paths, RankingStage::Rerank),
+        Err(AllowanceError::Exhausted { .. })
+    ));
     apply_setup(&paths, 2, LOCK, None).unwrap();
     let Admission::Debited(second) = debit(&paths, RankingStage::Rerank).unwrap() else {
         panic!("the remaining allowance must still work")
@@ -193,7 +236,10 @@ fn snapshot_verification_ignores_a_peer_commit_until_the_next_read() {
         read_meta(db)?.unwrap(); // Establish the WAL snapshot before the peer writes.
         let peer = Connection::open(&paths.accounting).unwrap();
         peer.execute("DELETE FROM allowance_charges", []).unwrap();
-        assert_eq!(verified_charged(db, origin.as_str(), first.window_start_unix_ms)?, 1);
+        assert_eq!(
+            verified_charged(db, origin.as_str(), first.window_start_unix_ms)?,
+            1
+        );
         Ok(())
     })
     .unwrap()
@@ -208,9 +254,14 @@ fn snapshot_verification_ignores_a_peer_commit_until_the_next_read() {
 fn normal_debits_and_limit_changes_keep_one_count_across_every_stage() {
     let paths = paths();
     apply_setup(&paths, 2, LOCK, None).unwrap();
-    for (index, stage) in [RankingStage::Wide, RankingStage::Rerank, RankingStage::Probe, RankingStage::Evaluation]
-        .into_iter()
-        .enumerate()
+    for (index, stage) in [
+        RankingStage::Wide,
+        RankingStage::Rerank,
+        RankingStage::Probe,
+        RankingStage::Evaluation,
+    ]
+    .into_iter()
+    .enumerate()
     {
         if index == 2 {
             apply_setup(&paths, 4, LOCK, None).unwrap();
@@ -219,14 +270,24 @@ fn normal_debits_and_limit_changes_keep_one_count_across_every_stage() {
             panic!("expected debit")
         };
         assert_eq!(receipt.charged_attempts, index as u32 + 1);
-        let report = inspect(&paths, &CanonicalOrigin::production(), wall_clock_ms().unwrap());
+        let report = inspect(
+            &paths,
+            &CanonicalOrigin::production(),
+            wall_clock_ms().unwrap(),
+        );
         assert_eq!(report.health, "ready");
         assert_eq!(report.charged_attempts, Some(index as u32 + 1));
     }
-    assert!(matches!(debit(&paths, RankingStage::Wide), Err(AllowanceError::Exhausted { .. })));
+    assert!(matches!(
+        debit(&paths, RankingStage::Wide),
+        Err(AllowanceError::Exhausted { .. })
+    ));
     let another_origin = CanonicalOrigin::parse("https://other.example").unwrap();
     assert!(matches!(
         admit(&paths, &another_origin, RankingStage::Wide, true, LOCK).unwrap(),
-        Admission::Debited(Debit { charged_attempts: 1, .. })
+        Admission::Debited(Debit {
+            charged_attempts: 1,
+            ..
+        })
     ));
 }
