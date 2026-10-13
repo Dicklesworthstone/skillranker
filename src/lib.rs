@@ -15,6 +15,7 @@ pub mod demo;
 pub mod effects;
 pub mod eligibility;
 pub mod evaluation;
+mod filesystem_policy;
 pub mod identity;
 pub mod installer;
 pub mod jev;
