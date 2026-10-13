@@ -5,6 +5,7 @@
 //! shared-memory bookkeeping. Revalidation detects ordinary replacement; hostile
 //! same-uid mutation and uninterruptible kernel calls are outside this boundary.
 use super::{ACCOUNTING_MAX_BYTES, AllowanceError, read_meta, state};
+use super::admission_budget::{AdmissionBudget, checkpoint};
 use crate::filesystem_policy::require_persistent;
 use nix::errno::Errno;
 use nix::fcntl::{AtFlags, OFlag, open, openat};
@@ -48,7 +49,13 @@ fn regular(stat: &FileStat, writable: bool) -> Result<(), AllowanceError> {
     Ok(())
 }
 
-fn parent(path: &Path, create: bool, writable: bool) -> Result<Option<File>, AllowanceError> {
+fn parent(
+    path: &Path,
+    create: bool,
+    writable: bool,
+    budget: Option<AdmissionBudget>,
+) -> Result<Option<File>, AllowanceError> {
+    checkpoint(budget)?;
     if !path.is_absolute() || path.as_os_str().len() > 4096 {
         return Err(refused());
     }
@@ -62,10 +69,12 @@ fn parent(path: &Path, create: bool, writable: bool) -> Result<Option<File>, All
     let mut handle = open(Path::new("/"), flags, Mode::empty()).map_err(|_| refused())?;
     directory(&fstat(&handle).map_err(|_| refused())?, parts.len() == 2, writable)?;
     for (index, part) in parts.iter().enumerate().take(parts.len() - 1).skip(1) {
+        checkpoint(budget)?;
         handle = match openat(&handle, part.as_os_str(), flags, Mode::empty()) {
             Err(Errno::ENOENT) if !create => return Ok(None),
             Err(Errno::ENOENT) => {
                 require_persistent(&handle).map_err(state)?;
+                checkpoint(budget)?;
                 match mkdirat(&handle, part.as_os_str(), Mode::from_bits_truncate(0o700)) {
                     Ok(()) | Err(Errno::EEXIST) => {}
                     Err(_) => return Err(refused()),
@@ -80,6 +89,7 @@ fn parent(path: &Path, create: bool, writable: bool) -> Result<Option<File>, All
     if create {
         require_persistent(&handle).map_err(state)?;
     }
+    checkpoint(budget)?;
     Ok(Some(handle.into()))
 }
 
@@ -89,12 +99,23 @@ pub(super) struct Files {
     directory: File,
     file: File,
     writable: bool,
+    budget: Option<AdmissionBudget>,
 }
 
 impl Files {
     fn open(path: &Path, create: bool, writable: bool) -> Result<Option<Self>, AllowanceError> {
+        Self::open_with_budget(path, create, writable, None)
+    }
+
+    fn open_with_budget(
+        path: &Path,
+        create: bool,
+        writable: bool,
+        budget: Option<AdmissionBudget>,
+    ) -> Result<Option<Self>, AllowanceError> {
+        checkpoint(budget)?;
         let path = crate::platform_path::storage_path(path.to_path_buf());
-        let Some(directory) = parent(&path, create, writable)? else {
+        let Some(directory) = parent(&path, create, writable, budget)? else {
             return Ok(None);
         };
         let name = path.file_name().ok_or_else(refused)?;
@@ -112,6 +133,7 @@ impl Files {
         // Orphaned WAL/journal files may contain enforcement history. Never
         // attach them to a newly created empty database or call them absence.
         for suffix in ["-wal", "-shm", "-journal"] {
+            checkpoint(budget)?;
             let mut sidecar = name.to_os_string();
             sidecar.push(suffix);
             match fstatat(&directory, sidecar.as_os_str(), AtFlags::AT_SYMLINK_NOFOLLOW) {
@@ -126,7 +148,7 @@ impl Files {
             }
         }
         if !exists && !create {
-            let current = parent(&path, false, writable)?.ok_or_else(refused)?;
+            let current = parent(&path, false, writable, budget)?.ok_or_else(refused)?;
             let held = fstat(&directory).map_err(|_| refused())?;
             let named = fstat(&current).map_err(|_| refused())?;
             if (held.st_dev, held.st_ino) != (named.st_dev, named.st_ino) {
@@ -135,6 +157,7 @@ impl Files {
             return Ok(None);
         }
         require_persistent(&directory).map_err(state)?;
+        checkpoint(budget)?;
         let flags = (if writable { OFlag::O_RDWR } else { OFlag::O_RDONLY })
             | OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK | OFlag::O_CLOEXEC;
         let opened = if exists {
@@ -145,13 +168,14 @@ impl Files {
             openat(&directory, name, flags | OFlag::O_CREAT | OFlag::O_EXCL, Mode::from_bits_truncate(0o600))
         }
         .map_err(|_| refused())?;
-        let files = Self { path, directory, file: opened.into(), writable };
+        let files = Self { path, directory, file: opened.into(), writable, budget };
         files.verify()?;
         Ok(Some(files))
     }
 
     pub(super) fn verify(&self) -> Result<(), AllowanceError> {
-        let current = parent(&self.path, false, self.writable)?.ok_or_else(refused)?;
+        checkpoint(self.budget)?;
+        let current = parent(&self.path, false, self.writable, self.budget)?.ok_or_else(refused)?;
         require_persistent(&self.directory).map_err(state)?;
         require_persistent(&self.file).map_err(state)?;
         let held_dir = fstat(&self.directory).map_err(|_| refused())?;
@@ -171,6 +195,7 @@ impl Files {
         }
         let mut bytes = held.st_size;
         for suffix in ["-wal", "-shm", "-journal"] {
+            checkpoint(self.budget)?;
             let mut sidecar = name.to_os_string();
             sidecar.push(suffix);
             match fstatat(&self.directory, sidecar.as_os_str(), AtFlags::AT_SYMLINK_NOFOLLOW) {
@@ -190,7 +215,7 @@ impl Files {
                 Err(_) => return Err(refused()),
             }
         }
-        Ok(())
+        checkpoint(self.budget)
     }
 }
 
@@ -207,9 +232,23 @@ impl std::ops::DerefMut for Store {
     fn deref_mut(&mut self) -> &mut Connection { &mut self.connection }
 }
 
-fn configure(connection: &Connection) -> Result<(), AllowanceError> {
+fn refresh_busy_wait(
+    connection: &Connection,
+    budget: Option<AdmissionBudget>,
+) -> Result<(), AllowanceError> {
+    match budget {
+        Some(budget) => budget.refresh_busy_wait(connection),
+        None => connection.busy_timeout(Duration::from_millis(25))
+            .map_err(|_| state("the accounting busy wait cannot be configured")),
+    }
+}
+
+fn configure(connection: &Connection, budget: Option<AdmissionBudget>) -> Result<(), AllowanceError> {
     let fail = |_| state("the accounting SQLite connection cannot be configured");
-    connection.busy_timeout(Duration::from_millis(25)).map_err(fail)?;
+    refresh_busy_wait(connection, budget)?;
+    if let Some(budget) = budget {
+        budget.install_progress_handler(connection)?;
+    }
     for (setting, expected) in [
         (DbConfig::SQLITE_DBCONFIG_DEFENSIVE, true),
         (DbConfig::SQLITE_DBCONFIG_TRUSTED_SCHEMA, false),
@@ -229,7 +268,7 @@ fn configure(connection: &Connection) -> Result<(), AllowanceError> {
         connection.set_limit(limit, value).map_err(fail)?;
     }
     connection.pragma_update(None, "temp_store", "MEMORY").map_err(fail)?;
-    Ok(())
+    checkpoint(budget)
 }
 
 fn flags() -> OpenFlags {
@@ -243,7 +282,7 @@ pub(super) fn read<T>(
     let Some(files) = Files::open(path, false, false)? else { return Ok(None); };
     let mut connection = Connection::open_with_flags(&files.path, flags() | OpenFlags::SQLITE_OPEN_READ_ONLY)
         .map_err(|_| state("the accounting database cannot be read"))?;
-    configure(&connection)?;
+    configure(&connection, None)?;
     connection.pragma_update(None, "query_only", true).map_err(|_| refused())?;
     files.verify()?;
     let tx = connection.transaction_with_behavior(TransactionBehavior::Deferred).map_err(|_| refused())?;
@@ -254,30 +293,41 @@ pub(super) fn read<T>(
 }
 
 pub(super) fn open_writer(path: &Path, create: bool) -> Result<Store, AllowanceError> {
+    open_writer_with_budget(path, create, None)
+}
+
+pub(super) fn open_writer_with_budget(
+    path: &Path,
+    create: bool,
+    budget: Option<AdmissionBudget>,
+) -> Result<Store, AllowanceError> {
+    checkpoint(budget)?;
     crate::sqlite_engine::linked_engine()
         .map_err(|_| state("the linked SQLite engine is not qualified for accounting writes"))?;
-    let files = Files::open(path, create, true)?
+    let files = Files::open_with_budget(path, create, true, budget)?
         .ok_or_else(|| state("the accounting database is missing"))?;
     // Validate identity in a read snapshot before opening writable SQLite or
     // selecting journal mode. Empty first-activation remnants remain retryable.
     {
         let mut probe = Connection::open_with_flags(&files.path, flags() | OpenFlags::SQLITE_OPEN_READ_ONLY)
             .map_err(|_| refused())?;
-        configure(&probe)?;
+        configure(&probe, budget)?;
         let tx = probe.transaction_with_behavior(TransactionBehavior::Deferred).map_err(|_| refused())?;
         if read_meta(&tx)?.is_none() && !create { return Err(state("the accounting database is not initialized")); }
+        refresh_busy_wait(&tx, budget)?;
         tx.commit().map_err(|_| refused())?;
     }
     files.verify()?;
     let connection = Connection::open_with_flags(&files.path, flags() | OpenFlags::SQLITE_OPEN_READ_WRITE)
         .map_err(|_| state("the accounting database is unavailable"))?;
     let store = Store { connection, files };
-    configure(&store.connection)?;
+    configure(&store.connection, budget)?;
     store.files.verify()?;
     if read_meta(&store.connection)?.is_none() && !create {
         return Err(state("the accounting database is not initialized"));
     }
     let fail = |_| state("the accounting writer cannot guarantee durable debits");
+    refresh_busy_wait(&store.connection, budget)?;
     let mode: String = store.query_row("PRAGMA journal_mode=WAL", [], |r| r.get(0)).map_err(fail)?;
     store.pragma_update(None, "synchronous", "FULL").map_err(fail)?;
     let synchronous: i64 = store.pragma_query_value(None, "synchronous", |r| r.get(0)).map_err(fail)?;
@@ -285,6 +335,7 @@ pub(super) fn open_writer(path: &Path, create: bool) -> Result<Store, AllowanceE
     let page_size: i64 = store.pragma_query_value(None, "page_size", |r| r.get(0)).map_err(fail)?;
     if !(512..=65536).contains(&page_size) { return Err(refused()); }
     let pages = ACCOUNTING_MAX_BYTES / page_size;
+    refresh_busy_wait(&store.connection, budget)?;
     store.pragma_update(None, "max_page_count", pages).map_err(fail)?;
     let applied: i64 = store.pragma_query_value(None, "max_page_count", |r| r.get(0)).map_err(fail)?;
     if applied != pages { return Err(refused()); }
