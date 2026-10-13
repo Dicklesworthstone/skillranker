@@ -90,7 +90,8 @@ def read_request(stream):
     raw = b""
     while b"\r\n\r\n" not in raw:
         block = stream.recv(4096)
-        assert block
+        if not block:
+            raise EOFError("incomplete request headers")
         raw += block
         assert len(raw) <= 128 * 1024
     headers, body = raw.split(b"\r\n\r\n", 1)
@@ -101,7 +102,8 @@ def read_request(stream):
     assert 0 <= length <= 96 * 1024
     while len(body) < length:
         block = stream.recv(min(4096, length - len(body)))
-        assert block
+        if not block:
+            raise EOFError("incomplete request body")
         body += block
     assert lines[0] == "POST /v1/systemone HTTP/1.1"
     assert fields["content-type"] == "application/json"
@@ -122,17 +124,31 @@ stages = []
 while True:
     connection, _ = listener.accept()
     connection.settimeout(10)
-    if connection.recv(4, socket.MSG_PEEK) == b"DONE":
+    try:
+        prefix = connection.recv(4, socket.MSG_PEEK)
+    except (ConnectionError, socket.timeout):
+        print("client closed before a complete request", file=sys.stderr, flush=True)
+        connection.close()
+        continue
+    if prefix == b"DONE":
         connection.close()
         break
     try:
         stream = context.wrap_socket(connection, server_side=True)
-    except (ssl.SSLError, ConnectionResetError):
+    except (ssl.SSLError, ConnectionError):
         # A client that does not trust the fixture CA ends the handshake.
         emit({"handshake_rejected": True})
         connection.close()
         continue
-    fields, request, length, body_text = read_request(stream)
+    try:
+        fields, request, length, body_text = read_request(stream)
+    except (ssl.SSLError, ConnectionError, EOFError, socket.timeout):
+        # A killed/deadline-expired client can close before a complete POST.
+        # Do not count or answer a request that was never fully received.
+        # Complete malformed requests still fail the assertions/parser above.
+        print("client closed before a complete request", file=sys.stderr, flush=True)
+        stream.close()
+        continue
     questions = request["questions"]
     stage = "wide" if "which" in questions else "rerank" if "rerank" in questions else "other"
     stages.append(stage)

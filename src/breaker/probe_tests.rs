@@ -200,7 +200,9 @@ fn public_process_local_breaker_preserves_recovery_after_expired_outcomes() {
 
 #[test]
 fn shared_wal_reopen_preserves_successors_lease_after_stale_retry_after() {
-    let path = std::env::temp_dir()
+    // Keep this shared-WAL success case outside RCH's writable TMPDIR ancestry.
+    let path = std::fs::canonicalize("/tmp")
+        .expect("resolve trusted system temporary directory")
         .join(format!(
             "sr-breaker-probe-fence-{}-{}",
             std::process::id(),

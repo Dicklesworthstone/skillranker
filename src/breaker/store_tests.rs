@@ -360,3 +360,122 @@ fn private_new_store_still_shares_failures_and_recovery() {
     assert_eq!(first.protection(), Protection::Shared);
     assert_eq!(second.protection(), Protection::Shared);
 }
+
+fn stored_row(path: &Path, assignment: &str) {
+    let store = open(path, BUSY, true).unwrap().unwrap();
+    store
+        .connection
+        .execute(
+            "INSERT INTO breaker_state VALUES ('o',0,0,0,0,0,NULL,0,0)",
+            [],
+        )
+        .unwrap();
+    // Every assignment below is a fixed test literal, never runtime input.
+    store
+        .connection
+        .execute(
+            &format!("UPDATE breaker_state SET {assignment} WHERE origin='o'"),
+            [],
+        )
+        .unwrap();
+}
+
+#[test]
+fn malformed_numeric_rows_degrade_without_panicking_or_rewriting_state() {
+    for assignment in [
+        "generation=-1, failures=2",
+        "failures=-1",
+        "failures=4294967295",
+        "failures=4294967296",
+        "cooldown_ms=-1, open=1",
+        "cooldown_ms=9223372036854775807, open=1",
+        "open_until_ms=-1",
+        "probe_expires_ms=-1",
+        "retry_after_until_ms=-1",
+    ] {
+        let path = home().join(BREAKER_FILE);
+        stored_row(&path, assignment);
+        let before = fs::read(&path).unwrap();
+        let breaker = Breaker::new(Some(path.clone()), "o");
+        let ticket = breaker.admit(0, 3000).expect(assignment);
+        breaker.settle(
+            &ticket,
+            Outcome::Transient {
+                retry_after_ms: None,
+            },
+            0,
+        );
+        assert_eq!(
+            breaker.protection(),
+            Protection::ProcessLocal,
+            "{assignment}"
+        );
+        assert_eq!(fs::read(path).unwrap(), before, "{assignment}");
+    }
+}
+
+#[test]
+fn valid_two_failure_row_still_opens_shared_circuit_at_sqlite_integer_boundary() {
+    let path = home().join(BREAKER_FILE);
+    stored_row(&path, "generation=9223372036854775806, failures=2");
+    let breaker = Breaker::new(Some(path.clone()), "o");
+    let ticket = breaker.admit(0, 3000).unwrap();
+    breaker.settle(
+        &ticket,
+        Outcome::Transient {
+            retry_after_ms: None,
+        },
+        0,
+    );
+    assert_eq!(breaker.protection(), Protection::Shared);
+    assert_eq!(
+        breaker.admit(1, 3000),
+        Err(Refusal::CoolingDown {
+            until_unix_ms: BASE_COOLDOWN_MS
+        })
+    );
+    let store = open(&path, BUSY, false).unwrap().unwrap();
+    let generation: i64 = store
+        .connection
+        .query_row(
+            "SELECT generation FROM breaker_state WHERE origin='o'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(generation, i64::MAX);
+}
+
+#[test]
+fn unrepresentable_generation_write_refuses_instead_of_wrapping_the_database() {
+    let path = home().join(BREAKER_FILE);
+    stored_row(&path, "generation=9223372036854775807, failures=2");
+    let before = fs::read(&path).unwrap();
+    let breaker = Breaker::new(Some(path.clone()), "o");
+    let ticket = breaker.admit(0, 3000).unwrap();
+    breaker.settle(
+        &ticket,
+        Outcome::Transient {
+            retry_after_ms: None,
+        },
+        0,
+    );
+    assert_eq!(breaker.protection(), Protection::ProcessLocal);
+    assert_eq!(fs::read(path).unwrap(), before);
+    for now in 1..=3 {
+        let ticket = breaker.admit(now, 3000).unwrap();
+        breaker.settle(
+            &ticket,
+            Outcome::Transient {
+                retry_after_ms: None,
+            },
+            now,
+        );
+    }
+    assert_eq!(
+        breaker.admit(4, 3000),
+        Err(Refusal::CoolingDown {
+            until_unix_ms: 3 + BASE_COOLDOWN_MS
+        })
+    );
+}

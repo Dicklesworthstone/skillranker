@@ -599,9 +599,45 @@ fn live_evaluation_sends_are_charged_like_rankings() {
 }
 
 #[test]
+fn provider_survives_incomplete_tls_requests_and_then_answers_real_ranking() {
+    let home = Home::new();
+    let provider = Provider::start(&home);
+    let port = provider.port;
+    let aborted = Command::new("/usr/bin/python3")
+        .arg("-c")
+        .arg(
+            r#"import socket, ssl, sys
+context = ssl.create_default_context(cafile=sys.argv[2])
+context.set_alpn_protocols(['http/1.1'])
+partial = b'POST /v1/systemone HTTP/1.1\r\nContent-Type: application/json\r\nContent-Length: 12\r\n\r\n{}'
+for payload in [b'', partial]:
+    with socket.create_connection(('127.0.0.1', int(sys.argv[1])), timeout=3) as raw:
+        with context.wrap_socket(raw, server_hostname='localhost') as stream:
+            if payload:
+                stream.sendall(payload)
+"#,
+        )
+        .arg(port.to_string())
+        .arg(home.root.join("fixture-ca.pem"))
+        .env_clear()
+        .output()
+        .unwrap();
+    assert!(aborted.status.success(), "{}", describe(&aborted));
+    let ranked = home.run(port, &Home::rank_args(&home.context("after-abort"), &[]));
+    assert!(ranked.status.success(), "{}", describe(&ranked));
+    let decision: Value = serde_json::from_slice(&ranked.stdout).unwrap();
+    assert_eq!(decision["decision"], "ranked");
+    assert_eq!(
+        provider.finish(),
+        2,
+        "abandoned requests are not complete requests"
+    );
+}
+
+#[test]
 fn a_killed_process_keeps_its_charge() {
-    // The wide request is admitted, charged and sent; the process is then
-    // killed while the provider sits on it. The charge is never refunded.
+    // The wide attempt is durably admitted, then its process is killed. It
+    // may not yet have sent a complete HTTP request; admissions stay charged.
     // This is a process-kill test, not power-loss proof.
     let home = Home::new();
     home.budget(1, &["--max-attempts", "10", "--window", "1h", "--apply"]);
@@ -614,8 +650,8 @@ fn a_killed_process_keeps_its_charge() {
         .stderr(Stdio::null())
         .spawn()
         .unwrap();
-    // Kill only once the debit is durable, while the provider still holds the
-    // request (it answers after three seconds).
+    // Kill only once the debit is durable. If a request reaches the provider,
+    // its three-second delay keeps the client alive for this kill control.
     let charged = || home.budget(port, &[])["charged_attempts"].as_u64();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     while charged() != Some(1) && std::time::Instant::now() < deadline {

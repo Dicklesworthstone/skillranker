@@ -316,15 +316,32 @@ fn transact<T>(
              FROM breaker_state WHERE origin = ?1",
             [origin],
             |r| {
+                let unsigned = |index| {
+                    let value = r.get::<_, i64>(index)?;
+                    u64::try_from(value)
+                        .map_err(|_| rusqlite::Error::IntegralValueOutOfRange(index, value))
+                };
+                let failures = unsigned(2)?;
+                let cooldown_ms = unsigned(3)?;
+                // These are transition invariants, not just integer widths.
+                // Three failures open and reset the streak; cooldown doubling
+                // assumes the stored value is already within the policy cap.
+                if failures >= u64::from(OPEN_AFTER_FAILURES) || cooldown_ms > MAX_COOLDOWN_MS {
+                    return Err(rusqlite::Error::InvalidQuery);
+                }
                 Ok(Row {
-                    generation: r.get::<_, i64>(0)? as u64,
-                    open: r.get::<_, i64>(1)? != 0,
-                    failures: r.get::<_, i64>(2)? as u32,
-                    cooldown_ms: r.get::<_, i64>(3)? as u64,
-                    open_until_ms: r.get::<_, i64>(4)? as u64,
+                    generation: unsigned(0)?,
+                    open: match r.get::<_, i64>(1)? {
+                        0 => false,
+                        1 => true,
+                        _ => return Err(rusqlite::Error::InvalidQuery),
+                    },
+                    failures: u32::try_from(failures).map_err(|_| rusqlite::Error::InvalidQuery)?,
+                    cooldown_ms,
+                    open_until_ms: unsigned(4)?,
                     probe_token: r.get(5)?,
-                    probe_expires_ms: r.get::<_, i64>(6)? as u64,
-                    retry_after_until_ms: r.get::<_, i64>(7)? as u64,
+                    probe_expires_ms: unsigned(6)?,
+                    retry_after_until_ms: unsigned(7)?,
                 })
             },
         )
@@ -344,20 +361,27 @@ fn transact<T>(
                  retry_after_until_ms = excluded.retry_after_until_ms",
             params![
                 origin,
-                row.generation as i64,
+                sqlite_integer(row.generation)?,
                 i64::from(row.open),
                 i64::from(row.failures),
-                row.cooldown_ms as i64,
-                row.open_until_ms as i64,
+                sqlite_integer(row.cooldown_ms)?,
+                sqlite_integer(row.open_until_ms)?,
                 row.probe_token,
-                row.probe_expires_ms as i64,
-                row.retry_after_until_ms as i64
+                sqlite_integer(row.probe_expires_ms)?,
+                sqlite_integer(row.retry_after_until_ms)?
             ],
         )?;
     }
     tx.commit()?;
     store.verify()?;
     Ok(Some(value))
+}
+
+// Refuse the optional write rather than wrapping an unsigned transition into
+// negative persisted state. The transaction rolls back and the caller retains
+// its existing process-local degradation behavior.
+fn sqlite_integer(value: u64) -> rusqlite::Result<i64> {
+    i64::try_from(value).map_err(|_| rusqlite::Error::InvalidQuery)
 }
 
 #[cfg(test)]
@@ -370,7 +394,10 @@ mod tests {
     const LEASE: u64 = 3_000;
 
     fn temp() -> PathBuf {
-        std::env::temp_dir()
+        // RCH's TMPDIR can have a group-writable ancestor. A shared-store
+        // success fixture must use an admissible root, not local fallback.
+        std::fs::canonicalize("/tmp")
+            .expect("resolve trusted system temporary directory")
             .join(format!(
                 "sr-breaker-{}-{}",
                 std::process::id(),
