@@ -35,7 +35,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 mod accounting;
+mod admission_budget;
 mod guard_file;
+use admission_budget::AdmissionBudget;
 use guard_file::GuardLock;
 
 /// Relative to the trusted user configuration root.
@@ -691,6 +693,13 @@ pub enum Admission {
 /// transaction. The lock is released before the caller sends anything.
 /// `persistent` is false when persistence is disabled: then no shared state
 /// may be created or used, so a configured guard refuses the attempt.
+///
+/// For an enabled guard, `lock_budget` bounds the whole admission, not a fresh
+/// allowance for each lock or connection. Guard reads, path admission, SQLite
+/// scans, lock waits and commit verification share one monotonic start time.
+/// Expiry before commit rolls back; expiry after a possible commit withholds
+/// admission without refund. Unconfigured/stateless behavior is unchanged.
+/// These are cooperative checks, not interruption of a kernel filesystem wait.
 pub fn admit(
     paths: &AllowancePaths,
     origin: &CanonicalOrigin,
@@ -698,6 +707,7 @@ pub fn admit(
     persistent: bool,
     lock_budget: Duration,
 ) -> Result<Admission, AllowanceError> {
+    let budget = AdmissionBudget::start(lock_budget);
     if !persistent {
         // The final trusted read admits only when no guard is configured.
         return match read_guard(paths)? {
@@ -712,8 +722,13 @@ pub fn admit(
     if read_guard(paths)?.is_none() {
         return Ok(Admission::Unguarded);
     }
-    let _lock = GuardLock::acquire(paths, lock_budget)?;
-    let Some(guard) = read_guard(paths)? else {
+    let _lock = GuardLock::acquire(paths, budget.remaining()?)?;
+    budget.check()?;
+    let guard = read_guard(paths)?;
+    budget.check()?;
+    let Some(guard) = guard else {
+        drop(_lock);
+        budget.check()?;
         return Ok(Admission::Unguarded);
     };
     if guard.phase == GuardPhase::Intent {
@@ -721,8 +736,10 @@ pub fn admit(
             "allowance setup is incomplete; rerun sr budget --apply to finish it",
         ));
     }
-    let mut accounting = open_accounting(&paths.accounting, false)?;
+    let mut accounting =
+        accounting::open_writer_with_budget(&paths.accounting, false, Some(budget))?;
     accounting.files.verify()?;
+    budget.refresh_busy_wait(&accounting.connection)?;
     let tx = accounting
         .connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -734,6 +751,7 @@ pub fn admit(
             "the accounting generation does not match the guard; rerun sr budget --apply",
         ));
     }
+    budget.check()?;
     let now = wall_clock_ms().ok_or_else(|| state("the wall clock reads before 1970"))?;
     if now < last_charge {
         return Err(state(
@@ -742,6 +760,7 @@ pub fn admit(
     }
     let (window_start, window_end) = window_bounds(now);
     let used = verified_charged(&tx, origin.as_str(), window_start)?;
+    budget.check()?;
     if used >= guard.max_attempts {
         return Err(AllowanceError::Exhausted {
             max_attempts: guard.max_attempts,
@@ -795,11 +814,19 @@ pub fn admit(
     accounting.files.verify()?;
     write().map_err(|_| state("the debit cannot be recorded; storage may be full"))?;
     accounting.files.verify()?;
+    budget.refresh_busy_wait(&tx)?;
     tx.commit()
         .map_err(|_| state("the debit cannot be committed durably"))?;
     // If post-commit identity verification fails, withhold the send. A charge
     // that may already be durable is never refunded.
     accounting.files.verify()?;
+    // Closing the final SQLite connection can checkpoint the WAL. Include
+    // connection cleanup and guard unlock before the final admission check,
+    // not in implicit destructors after constructing a successful result.
+    drop(accounting);
+    drop(_lock);
+    // A completed debit is never refunded, even when it returned too late.
+    budget.check()?;
     Ok(Admission::Debited(Debit {
         attempt_id,
         guard_generation: guard.generation,
