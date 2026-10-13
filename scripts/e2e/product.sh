@@ -32,7 +32,9 @@ printf '{"schema_version":1,"suite":"%s","tier":"rust-product-integration","stag
 # RCH keeps its job/source/worker diagnostics in the files below. Exit 103 is an
 # infrastructure refusal, never a local fallback or a successful product test.
 result=0
-RCH_REQUIRE_REMOTE=1 rch --json exec -- cargo test --locked -j 2 "$@" -- --nocapture \
+# One Cargo build job fits the shared fleet's single-slot workers. This does
+# not set Rust test threads or change the suite's cases and assertions.
+RCH_REQUIRE_REMOTE=1 rch --json exec -- cargo test --locked -j 1 "$@" -- --nocapture \
     > "$artifact_dir/remote-result.json" 2> "$artifact_dir/tests.log" || result=$?
 cat "$artifact_dir/remote-result.json"
 cat "$artifact_dir/tests.log" >&2
