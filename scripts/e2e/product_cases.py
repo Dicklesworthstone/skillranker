@@ -100,6 +100,18 @@ def canonical_bytes(value):
                        allow_nan=False, separators=(',', ':')) + '\n').encode('ascii')
 
 
+def case_phases(catalog):
+    """Declared coverage phases, never inferred runtime observations."""
+    matrix = tomllib.loads(bounded_bytes(MATRIX, MAX_ARTIFACT).decode('utf-8'))
+    phases = {case['id']: set() for case in catalog['cases']}
+    for row in matrix['boundaries']:
+        if row['e2e_suite'] == catalog['suite']:
+            for case in row['e2e_cases']:
+                if case in phases:
+                    phases[case].add(row['phase'])
+    return {case: sorted(values) for case, values in phases.items()}
+
+
 def artifact_write(path, value):
     data = canonical_bytes(value)
     if len(data) > MAX_ARTIFACT:
@@ -173,6 +185,8 @@ def product_artifact_record(catalog_path, directory, exit_code):
     if elapsed < 0:
         raise ValueError('monotonic-clock')
     catalog = load_catalog(catalog_path)
+    phases = case_phases(catalog)
+    run_phases = sorted({phase for values in phases.values() for phase in values})
     raw_log = bounded_bytes(directory / 'tests.log', MAX_LOG)
     raw_remote = bounded_bytes(directory / 'remote-result.json', MAX_ARTIFACT)
     # This fixed synthetic marker is only a detector control, never a credential.
@@ -250,8 +264,10 @@ def product_artifact_record(catalog_path, directory, exit_code):
             binary = {'blake3': next(iter(binaries)), 'platform': next(iter(platforms)),
                       'role': 'actual-cargo-built-sr'}
     events = [{'schema_version': 1, 'suite': catalog['suite'], 'kind': 'run',
+               'phases': run_phases, 'stage': 'remote-product-tests',
                'step': 'remote-product-tests', 'expected': {'exit': 0, 'remote': True},
-               'actual': {'exit': exit_code, 'remote_completed': executed},
+               'actual': {'exit': exit_code, 'signal': None, 'signal_observed': False,
+                          'remote_completed': executed},
                'elapsed_ns': elapsed, 'identity': started['identity'], 'binary': binary,
                'fault_reached': None, 'raw_log_sha256': hashlib.sha256(raw_log).hexdigest()}]
     for case, record in zip(catalog['cases'], records, strict=True):
@@ -259,11 +275,13 @@ def product_artifact_record(catalog_path, directory, exit_code):
         observed = {ref: results.get(ref.partition('::')[2], 'missing') for ref in refs}
         for assertion in case['assertions']:
             events.append({'schema_version': 1, 'suite': catalog['suite'], 'case': case['id'],
+                           'phases': phases[case['id']], 'stage': 'mapped-rust-controls',
                            'step': 'mapped-rust-controls', 'assertion': assertion,
                            'expected': {'status': 'passed', 'complete_run': True},
                            'actual': {'status': record['status'], 'tests': observed},
                            'status': record['status'], 'elapsed_ns': None, 'fault_reached': None})
     events.extend({'schema_version': 1, 'suite': catalog['suite'], 'case': 'prespecified-wire-variants',
+                   'phases': run_phases, 'stage': 'actual-cli-tls-control',
                    'step': 'actual-cli-tls-control', 'control': control} for control in controls)
     encoded = b''.join(canonical_bytes(event) for event in events)
     if len(encoded) > MAX_ARTIFACT:
@@ -274,11 +292,13 @@ def product_artifact_record(catalog_path, directory, exit_code):
     accepted = (executed and identity_stable and leak_free and controls_complete
                 and passed == len(records) and bool(records))
     summary = {'schema_version': 1, 'suite': catalog['suite'], 'tier': 'rust-product-integration',
+               'phases': run_phases, 'stage': 'finalized',
                'status': 'passed' if accepted else 'failed', 'cases': len(records),
                'cases_passed': passed, 'assertions': sum(len(c['assertions']) for c in catalog['cases']),
                'identity': started['identity'], 'binary': binary, 'identity_stable': identity_stable,
                'leak_free': leak_free, 'controls_complete': controls_complete, 'elapsed_ns': elapsed,
-               'exit': exit_code, 'events_sha256': hashlib.sha256(encoded).hexdigest(),
+               'exit': exit_code, 'signal': None, 'signal_observed': False,
+               'events_sha256': hashlib.sha256(encoded).hexdigest(),
                'quality_gate': 'not-established', 'live_provider': False, 'native_harness': False}
     artifact_write(directory / 'summary.json', summary)
     return 0 if accepted else 1

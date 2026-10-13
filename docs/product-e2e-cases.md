@@ -60,6 +60,9 @@ Artifacts are private to their owner. `started.json` freezes the local source,
 lockfile, toolchain, catalog and TLS fixture identities before RCH. Bounded
 `events.jsonl` and `summary.json` retain expected and actual mapped test results,
 the observed suite duration, and failed or missing cases even when RCH fails.
+Phase lists come from the contract matrix; stage labels identify the recorded
+step. The RCH command exit is observed, but a child signal is not available on
+this boundary: `signal` remains null with `signal_observed: false`.
 Individual test timings and fault markers remain null unless instrumented; the
 P5 CLI/TLS controls report their actual binary digest, compiler identities,
 attempt counts, canary checks and reached stale-handle fault. Structured records

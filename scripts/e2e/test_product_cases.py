@@ -126,6 +126,9 @@ class CatalogTests(unittest.TestCase):
         for path in sorted((Path(__file__).parent / "product").glob("*.json")):
             catalog = product_cases.load_catalog(path)
             self.assertEqual(product_cases.check(catalog), [], path.name)
+            if path.name == 'replay.json':
+                self.assertEqual(product_cases.case_phases(catalog),
+                                 {case['id']: ['P5'] for case in catalog['cases']})
 
     def test_a_declared_ignored_test_must_really_be_ignored_and_cannot_back_a_case(self):
         catalog = product_cases.load_catalog(Path(__file__).parent / "product/roster.json")
@@ -188,10 +191,17 @@ class ProductArtifactTests(unittest.TestCase):
         self.assertEqual(summary['cases_passed'], 2)
         self.assertEqual(summary['assertions'], 2)
         self.assertEqual(summary['quality_gate'], 'not-established')
+        self.assertEqual(summary['stage'], 'finalized')
+        self.assertEqual(summary['phases'], [])  # This synthetic catalog has no matrix row.
+        self.assertIsNone(summary['signal'])
+        self.assertFalse(summary['signal_observed'])
         self.assertFalse(summary['identity']['remote_inputs_verified'])
         self.assertEqual(summary['events_sha256'], hashlib.sha256((directory / 'events.jsonl').read_bytes()).hexdigest())
         events = [json.loads(line) for line in (directory / 'events.jsonl').read_text().splitlines()]
         self.assertEqual(events[1]['actual']['tests'], {'alpha::one': 'ok', 'beta::two': 'ok'})
+        self.assertEqual(events[0]['stage'], 'remote-product-tests')
+        self.assertEqual(events[1]['stage'], 'mapped-rust-controls')
+        self.assertEqual(events[1]['phases'], [])
         self.assertIsNone(events[1]['elapsed_ns'])
         self.assertIsNone(events[1]['fault_reached'])
         self.assertGreater(summary['elapsed_ns'], 0)
@@ -206,6 +216,8 @@ class ProductArtifactTests(unittest.TestCase):
             self.assertEqual(summary['cases_passed'], 0)
             self.assertEqual(summary['exit'], 101)
             self.assertEqual(summary['status'], 'failed')
+            self.assertIsNone(summary['signal'])
+            self.assertFalse(summary['signal_observed'])
             self.assertTrue((directory / 'events.jsonl').is_file())
 
     def test_remote_acknowledgment_and_unchanged_identity_are_required(self):
