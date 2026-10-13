@@ -25,14 +25,16 @@
 //! never refunded, whatever happens to the request afterwards.
 
 use crate::jev::{CanonicalOrigin, RankingStage};
-use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::Deserialize;
 use std::fmt;
+#[cfg(test)]
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+mod accounting;
 mod guard_file;
 use guard_file::GuardLock;
 
@@ -234,6 +236,7 @@ pub fn read_guard(paths: &AllowancePaths) -> Result<Option<Guard>, AllowanceErro
     guard_file::read(&paths.guard)
 }
 
+#[cfg(test)]
 fn create_private_dir(dir: &Path) -> Result<(), AllowanceError> {
     let mut builder = fs::DirBuilder::new();
     builder.recursive(true);
@@ -254,103 +257,17 @@ fn publish_guard(paths: &AllowancePaths, guard: &Guard) -> Result<(), AllowanceE
 
 /// Opens the accounting database with the durability enforcement requires:
 /// WAL and `synchronous=FULL`, each read back, a page quota and defensive mode.
-fn open_accounting(path: &Path, create: bool) -> Result<Connection, AllowanceError> {
-    // NOFOLLOW refuses a symlink anywhere in the path, so spell macOS's
-    // trusted /tmp and /var aliases as their /private targets first.
-    let path = &crate::platform_path::storage_path(path.to_path_buf());
-    let fail = |_| state("the accounting database is unavailable");
-    if let Some(parent) = path.parent() {
-        create_private_dir(parent)?;
-    }
-    if !create && !path.exists() {
-        return Err(state("the accounting database is missing"));
-    }
-    if fs::symlink_metadata(path).is_ok_and(|meta| !meta.file_type().is_file()) {
-        return Err(state("the accounting path is not a regular file"));
-    }
-    let mut flags = OpenFlags::SQLITE_OPEN_READ_WRITE
-        | OpenFlags::SQLITE_OPEN_NO_MUTEX
-        | OpenFlags::SQLITE_OPEN_NOFOLLOW;
-    if create {
-        flags |= OpenFlags::SQLITE_OPEN_CREATE;
-    }
-    let connection = Connection::open_with_flags(path, flags).map_err(fail)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o600))
-            .map_err(|_| state("the accounting database permissions cannot be restricted"))?;
-    }
-    connection
-        .busy_timeout(Duration::from_millis(25))
-        .map_err(fail)?;
-    connection
-        .set_db_config(rusqlite::config::DbConfig::SQLITE_DBCONFIG_DEFENSIVE, true)
-        .map_err(fail)?;
-    let mode: String = connection
-        .query_row("PRAGMA journal_mode=WAL", [], |row| row.get(0))
-        .map_err(fail)?;
-    connection
-        .pragma_update(None, "synchronous", "FULL")
-        .map_err(fail)?;
-    let synchronous: i64 = connection
-        .pragma_query_value(None, "synchronous", |row| row.get(0))
-        .map_err(fail)?;
-    // FULL is 2. NORMAL can lose a committed debit on power loss.
-    if mode != "wal" || synchronous != 2 {
-        return Err(state(
-            "the accounting database cannot guarantee durable debits",
-        ));
-    }
-    let page_size: i64 = connection
-        .pragma_query_value(None, "page_size", |row| row.get(0))
-        .map_err(fail)?;
-    if page_size <= 0 {
-        return Err(state("the accounting database reports no page size"));
-    }
-    connection
-        .pragma_update(None, "max_page_count", ACCOUNTING_MAX_BYTES / page_size)
-        .map_err(fail)?;
-    Ok(connection)
+fn open_accounting(path: &Path, create: bool) -> Result<accounting::Store, AllowanceError> {
+    accounting::open_writer(path, create)
 }
 
-/// Inspect accounting in a single read-only snapshot. Never create directories,
-/// change permissions, select WAL, or configure a writer merely to report state.
+/// Inspect one read-only snapshot without writer configuration or path creation.
 /// SQLite may still maintain WAL shared-memory bookkeeping on a read-only open.
 fn read_accounting<T>(
     path: &Path,
     inspect: impl FnOnce(&Connection) -> Result<T, AllowanceError>,
 ) -> Result<Option<T>, AllowanceError> {
-    let path = crate::platform_path::storage_path(path.to_path_buf());
-    match fs::symlink_metadata(&path) {
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(_) => return Err(state("the accounting database cannot be inspected")),
-        Ok(meta) if !meta.file_type().is_file() => {
-            return Err(state("the accounting path is not a regular file"));
-        }
-        Ok(_) => {}
-    }
-    let mut connection = Connection::open_with_flags(
-        &path,
-        OpenFlags::SQLITE_OPEN_READ_ONLY
-            | OpenFlags::SQLITE_OPEN_NO_MUTEX
-            | OpenFlags::SQLITE_OPEN_NOFOLLOW
-            | OpenFlags::SQLITE_OPEN_PRIVATE_CACHE,
-    )
-    .map_err(|_| state("the accounting database cannot be read"))?;
-    connection
-        .busy_timeout(Duration::from_millis(25))
-        .map_err(|_| state("the accounting reader cannot be configured"))?;
-    connection
-        .pragma_update(None, "query_only", true)
-        .map_err(|_| state("the accounting reader cannot be configured"))?;
-    let tx = connection
-        .transaction_with_behavior(TransactionBehavior::Deferred)
-        .map_err(|_| state("the accounting read snapshot cannot be opened"))?;
-    let result = inspect(&tx)?;
-    tx.commit()
-        .map_err(|_| state("the accounting read snapshot cannot be closed"))?;
-    Ok(Some(result))
+    accounting::read(path, inspect)
 }
 
 const ACCOUNTING_DDL: &str = "
@@ -662,8 +579,8 @@ pub fn apply_setup(
             && guard.generation == 1
             && guard.max_attempts == max_attempts
     });
-    let mut connection = open_accounting(&paths.accounting, create)?;
-    let accounting_generation = read_meta(&connection)?.map_or(0, |(_, g, _)| g);
+    let mut accounting = open_accounting(&paths.accounting, create)?;
+    let accounting_generation = read_meta(&accounting.connection)?.map_or(0, |(_, g, _)| g);
     let plan = plan_setup(previous, accounting_generation, max_attempts)?;
     if plan.unchanged {
         return Ok(plan);
@@ -680,7 +597,8 @@ pub fn apply_setup(
         return Ok(plan);
     }
     // 2. Accounting at the intent's generation, keeping every charge.
-    let tx = connection
+    accounting.files.verify()?;
+    let tx = accounting.connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|_| state("the accounting database is busy"))?;
     // Recheck inside the writer transaction before any IF NOT EXISTS could
@@ -688,6 +606,7 @@ pub fn apply_setup(
     if read_meta(&tx)?.map_or(0, |(_, generation, _)| generation) != accounting_generation {
         return Err(state("the accounting generation changed during setup"));
     }
+    accounting.files.verify()?;
     tx.execute_batch(ACCOUNTING_DDL)
         .map_err(|_| state("the accounting schema cannot be created"))?;
     tx.execute(
@@ -697,8 +616,10 @@ pub fn apply_setup(
         params![ACCOUNTING_SCHEMA_VERSION, plan.target.generation as i64],
     )
     .map_err(|_| state("the accounting generation cannot be recorded"))?;
+    accounting.files.verify()?;
     tx.commit()
         .map_err(|_| state("the accounting generation cannot be committed"))?;
+    accounting.files.verify()?;
     if interrupt == Some(SetupStep::AccountingReady) {
         return Ok(plan);
     }
@@ -761,8 +682,9 @@ pub fn admit(
             "allowance setup is incomplete; rerun sr budget --apply to finish it",
         ));
     }
-    let mut connection = open_accounting(&paths.accounting, false)?;
-    let tx = connection
+    let mut accounting = open_accounting(&paths.accounting, false)?;
+    accounting.files.verify()?;
+    let tx = accounting.connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|_| state("the accounting database is busy"))?;
     let (_, generation, last_charge) =
@@ -830,9 +752,14 @@ pub fn admit(
         )?;
         Ok(())
     };
+    accounting.files.verify()?;
     write().map_err(|_| state("the debit cannot be recorded; storage may be full"))?;
+    accounting.files.verify()?;
     tx.commit()
         .map_err(|_| state("the debit cannot be committed durably"))?;
+    // If post-commit identity verification fails, withhold the send. A charge
+    // that may already be durable is never refunded.
+    accounting.files.verify()?;
     Ok(Admission::Debited(Debit {
         attempt_id,
         guard_generation: guard.generation,
