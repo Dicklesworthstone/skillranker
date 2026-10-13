@@ -137,6 +137,7 @@ impl Guard {
         if record.schema_version != GUARD_SCHEMA_VERSION
             || record.window != WINDOW_TEXT
             || record.generation == 0
+            || record.generation > i64::MAX as u64
             || !(1..=MAX_ATTEMPTS_LIMIT).contains(&record.max_attempts)
         {
             return Err(state("the guard file is outside its supported schema"));
@@ -337,32 +338,75 @@ CREATE TABLE IF NOT EXISTS allowance_attempts (
 ";
 
 /// `(schema_version, ready_generation, last_charge_unix_ms)`, if initialized.
+/// Only a genuinely empty database is uninitialized. A partial schema or a
+/// missing singleton may represent lost enforcement history, never a new budget.
 fn read_meta(connection: &Connection) -> Result<Option<(i64, u64, u64)>, AllowanceError> {
-    let exists: i64 = connection
+    let objects: i64 = connection
         .query_row(
-            "SELECT count(*) FROM sqlite_schema WHERE type = 'table' AND name = 'allowance_meta'",
+            "SELECT count(*) FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*'",
             [],
             |row| row.get(0),
         )
         .map_err(|_| state("the accounting database cannot be read"))?;
-    if exists == 0 {
+    // This schema stores its version in allowance_meta; it never assigns either
+    // header identifier. A foreign/newer database is not initialization input.
+    for pragma in ["application_id", "user_version"] {
+        let value: i64 = connection
+            .pragma_query_value(None, pragma, |row| row.get(0))
+            .map_err(|_| state("the accounting database cannot be inspected"))?;
+        if value != 0 {
+            return Err(state("the accounting database has an unsupported identity"));
+        }
+    }
+    if objects == 0 {
         return Ok(None);
     }
-    connection
+    if objects != 3 {
+        return Err(state("the accounting schema is incomplete or incompatible"));
+    }
+    // Compare against the very DDL used by setup, not a second schema copy.
+    // SQLite strips IF NOT EXISTS and the terminal semicolon when storing DDL.
+    for (name, ddl) in ["allowance_meta", "allowance_charges", "allowance_attempts"]
+        .into_iter()
+        .zip(ACCOUNTING_DDL.split(';'))
+    {
+        let expected = ddl
+            .trim()
+            .replacen("CREATE TABLE IF NOT EXISTS", "CREATE TABLE", 1);
+        let actual: Option<String> = connection
+            .query_row(
+                "SELECT sql FROM sqlite_schema WHERE type='table' AND name=?1",
+                [name],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|_| state("the accounting schema cannot be read"))?;
+        if actual.as_deref() != Some(expected.as_str()) {
+            return Err(state("the accounting schema is incomplete or incompatible"));
+        }
+    }
+    let count: i64 = connection
+        .query_row("SELECT count(*) FROM allowance_meta", [], |row| row.get(0))
+        .map_err(|_| state("the accounting metadata cannot be read"))?;
+    if count != 1 {
+        return Err(state(
+            "the accounting metadata singleton is missing or duplicated",
+        ));
+    }
+    let (schema, generation, last): (i64, i64, i64) = connection
         .query_row(
             "SELECT schema_version, ready_generation, last_charge_unix_ms FROM allowance_meta \
              WHERE id = 1",
             [],
-            |row| {
-                Ok((
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, i64>(1)? as u64,
-                    row.get::<_, i64>(2)? as u64,
-                ))
-            },
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
-        .optional()
-        .map_err(|_| state("the accounting database cannot be read"))
+        .map_err(|_| state("the accounting metadata cannot be read"))?;
+    if schema != ACCOUNTING_SCHEMA_VERSION || generation <= 0 || last < 0 {
+        return Err(state(
+            "the accounting metadata is outside its supported schema",
+        ));
+    }
+    Ok(Some((schema, generation as u64, last as u64)))
 }
 
 fn charged(
@@ -370,15 +414,20 @@ fn charged(
     origin: &str,
     window_start: u64,
 ) -> Result<u32, AllowanceError> {
-    connection
+    let window_start = i64::try_from(window_start)
+        .map_err(|_| state("the accounting window is outside its supported range"))?;
+    let attempts: i64 = connection
         .query_row(
             "SELECT attempts FROM allowance_charges WHERE origin = ?1 AND window_start_unix_ms = ?2",
-            params![origin, window_start as i64],
-            |row| row.get::<_, i64>(0),
+            params![origin, window_start],
+            |row| row.get(0),
         )
         .optional()
-        .map(|n| n.unwrap_or(0).clamp(0, i64::from(u32::MAX)) as u32)
-        .map_err(|_| state("the accounting database cannot be read"))
+        .map_err(|_| state("the accounting database cannot be read"))?
+        .unwrap_or(0);
+    // Invalid enforcement state is not free allowance. A real missing row is
+    // still a fresh origin/window; stored negative or oversized counts are not.
+    u32::try_from(attempts).map_err(|_| state("the stored attempt count is invalid"))
 }
 
 /// Setup steps, in order, for crash tests.
@@ -398,22 +447,59 @@ pub struct SetupPlan {
     pub resumes_intent: bool,
 }
 
-fn plan_setup(previous: Option<Guard>, accounting_generation: u64, max_attempts: u32) -> SetupPlan {
-    let next = previous
-        .map_or(0, |guard| guard.generation)
-        .max(accounting_generation)
-        + 1;
+fn validate_setup_limit(max_attempts: u32) -> Result<(), AllowanceError> {
+    if !(1..=MAX_ATTEMPTS_LIMIT).contains(&max_attempts) {
+        return Err(AllowanceError::InvalidRequest(format!(
+            "--max-attempts must be an integer from 1 to {MAX_ATTEMPTS_LIMIT}"
+        )));
+    }
+    Ok(())
+}
+
+fn plan_setup(
+    previous: Option<Guard>,
+    accounting_generation: u64,
+    max_attempts: u32,
+) -> Result<SetupPlan, AllowanceError> {
+    validate_setup_limit(max_attempts)?;
+    if accounting_generation > i64::MAX as u64
+        || previous.is_some_and(|guard| guard.generation == 0 || guard.generation > i64::MAX as u64)
+    {
+        return Err(state(
+            "the allowance generation is outside its supported range",
+        ));
+    }
+    if accounting_generation == 0
+        && let Some(guard) = previous
+        && !(guard.phase == GuardPhase::Intent
+            && guard.generation == 1
+            && guard.max_attempts == max_attempts)
+    {
+        return Err(state(
+            "existing allowance accounting is missing; restore its history instead of resetting charges",
+        ));
+    }
+    // Compute a successor only when one is needed. An unchanged ready guard,
+    // or the exact interrupted intent, remains usable at the last generation.
+    let next = || {
+        previous
+            .map_or(0, |guard| guard.generation)
+            .max(accounting_generation)
+            .checked_add(1)
+            .filter(|generation| *generation <= i64::MAX as u64)
+            .ok_or_else(|| state("the allowance generation cannot be advanced"))
+    };
     let (generation, unchanged, resumes_intent) = match previous {
         Some(guard) if guard.max_attempts == max_attempts => match guard.phase {
             GuardPhase::Ready if accounting_generation == guard.generation => {
                 (guard.generation, true, false)
             }
             GuardPhase::Intent => (guard.generation.max(accounting_generation), false, true),
-            GuardPhase::Ready => (next, false, false),
+            GuardPhase::Ready => (next()?, false, false),
         },
-        _ => (next, false, false),
+        _ => (next()?, false, false),
     };
-    SetupPlan {
+    Ok(SetupPlan {
         previous,
         target: Guard {
             phase: GuardPhase::Ready,
@@ -422,7 +508,7 @@ fn plan_setup(previous: Option<Guard>, accounting_generation: u64, max_attempts:
         },
         unchanged,
         resumes_intent,
-    }
+    })
 }
 
 /// What `sr budget` reports: guard, accounting health and the current window.
@@ -513,13 +599,14 @@ pub fn preview_setup(
     paths: &AllowancePaths,
     max_attempts: u32,
 ) -> Result<SetupPlan, AllowanceError> {
+    validate_setup_limit(max_attempts)?;
     let previous = read_guard(paths)?;
     let accounting_generation = if paths.accounting.exists() {
         read_meta(&open_accounting(&paths.accounting, false)?)?.map_or(0, |(_, g, _)| g)
     } else {
         0
     };
-    Ok(plan_setup(previous, accounting_generation, max_attempts))
+    plan_setup(previous, accounting_generation, max_attempts)
 }
 
 /// Applies setup in its three durable steps under the guard lock. `interrupt`
@@ -530,11 +617,20 @@ pub fn apply_setup(
     lock_budget: Duration,
     interrupt: Option<SetupStep>,
 ) -> Result<SetupPlan, AllowanceError> {
+    validate_setup_limit(max_attempts)?;
     let _lock = GuardLock::acquire(paths, lock_budget)?;
     let previous = read_guard(paths)?;
-    let mut connection = open_accounting(&paths.accounting, true)?;
+    // A ready guard proves accounting has existed. Do not turn a missing file
+    // into fresh allowance. Only first activation (including its exact initial
+    // intent retry, before any debit was possible) can create accounting.
+    let create = previous.is_none_or(|guard| {
+        guard.phase == GuardPhase::Intent
+            && guard.generation == 1
+            && guard.max_attempts == max_attempts
+    });
+    let mut connection = open_accounting(&paths.accounting, create)?;
     let accounting_generation = read_meta(&connection)?.map_or(0, |(_, g, _)| g);
-    let plan = plan_setup(previous, accounting_generation, max_attempts);
+    let plan = plan_setup(previous, accounting_generation, max_attempts)?;
     if plan.unchanged {
         return Ok(plan);
     }
@@ -553,6 +649,11 @@ pub fn apply_setup(
     let tx = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|_| state("the accounting database is busy"))?;
+    // Recheck inside the writer transaction before any IF NOT EXISTS could
+    // reconstruct missing history after the preflight read.
+    if read_meta(&tx)?.map_or(0, |(_, generation, _)| generation) != accounting_generation {
+        return Err(state("the accounting generation changed during setup"));
+    }
     tx.execute_batch(ACCOUNTING_DDL)
         .map_err(|_| state("the accounting schema cannot be created"))?;
     tx.execute(
@@ -915,3 +1016,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "allowance/integrity_tests.rs"]
+mod integrity_tests;
