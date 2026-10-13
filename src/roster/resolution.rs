@@ -908,6 +908,26 @@ impl<'a> OptionMap<'a> {
             .collect::<Result<_, _>>()?;
         Ok(Self { entries })
     }
+    /// A prespecified bijection for evaluation. Eligibility, canonical-file
+    /// deduplication, stable bindings and content are identical to `new`.
+    pub(crate) fn new_renamed(
+        roster: &'a ResolvedRoster,
+        selected: &[SkillId],
+    ) -> Result<Self, ResolutionError> {
+        let canonical = Self::new(roster, selected)?;
+        let entries = canonical
+            .entries
+            .into_values()
+            .rev()
+            .enumerate()
+            .map(|(index, skill)| {
+                OptionId::new(format!("r{index:03}"))
+                    .map(|id| (id, skill))
+                    .map_err(|_| ResolutionError::InvalidBinding)
+            })
+            .collect::<Result<_, _>>()?;
+        Ok(Self { entries })
+    }
     pub fn entries(&self) -> &BTreeMap<OptionId, AdvisorySkill<'a>> {
         &self.entries
     }

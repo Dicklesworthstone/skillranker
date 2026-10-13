@@ -4,6 +4,7 @@
 # log. Never runner-child scenarios. See docs/product-e2e-cases.md.
 set -eu
 set +x
+umask 077
 usage() {
     echo 'Usage: scripts/e2e/product.sh --suite NAME --artifacts EXISTING_DIRECTORY' >&2
     exit 2
@@ -21,6 +22,7 @@ artifact_dir=$(mktemp -d "$artifact_parent/sr-$suite-XXXXXXXX")
 cd "$project_dir"
 # A stale or incomplete mapping fails before anything runs.
 python3 -I -B scripts/e2e/product_cases.py check "$catalog"
+python3 -I -B scripts/e2e/product_cases.py snapshot "$catalog" "$artifact_dir"
 set --
 for target in $(python3 -I -B scripts/e2e/product_cases.py targets "$catalog"); do
     set -- "$@" --test "$target"
@@ -34,16 +36,22 @@ RCH_REQUIRE_REMOTE=1 rch --json exec -- cargo test --locked -j 2 "$@" -- --nocap
     > "$artifact_dir/remote-result.json" 2> "$artifact_dir/tests.log" || result=$?
 cat "$artifact_dir/remote-result.json"
 cat "$artifact_dir/tests.log" >&2
-if [ "$result" -ne 0 ]; then
-    printf '{"schema_version":1,"suite":"%s","status":"failed","product_gate":"not-accepted"}\n' "$suite"
-    exit "$result"
-fi
 # Each case passes only if every real test mapped to it ran and passed in this
 # log, and the whole run was complete.
 cases=0
 python3 -I -B scripts/e2e/product_cases.py evaluate "$catalog" "$artifact_dir/tests.log" \
     > "$artifact_dir/cases.jsonl" || cases=$?
 cat "$artifact_dir/cases.jsonl"
+recorded=0
+python3 -I -B scripts/e2e/product_cases.py record "$catalog" "$artifact_dir" "$result" || recorded=$?
+if [ "$result" -ne 0 ]; then
+    printf '{"schema_version":1,"suite":"%s","status":"failed","product_gate":"not-accepted"}\n' "$suite"
+    exit "$result"
+fi
+if [ "$recorded" -ne 0 ]; then
+    printf '{"schema_version":1,"suite":"%s","status":"failed","product_gate":"not-accepted","reason":"artifact-evidence"}\n' "$suite"
+    exit 1
+fi
 if [ "$cases" -ne 0 ]; then
     printf '{"schema_version":1,"suite":"%s","status":"failed","product_gate":"not-accepted","reason":"case-evidence"}\n' "$suite"
     exit 1

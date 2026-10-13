@@ -172,7 +172,8 @@ fn stateless_pipeline_previews_match_actual_tls_wire_and_evaluation_admission() 
     use crate::effects::{EffectGate, Scope};
     use crate::identity::{LogicalSkillKey, SkillId, SourceId};
     use crate::pipeline::{
-        RankArgs, StageEvidence, WidePreview, execute_pipeline, execute_pipeline_with_context,
+        EvaluationInput, RankArgs, StageEvidence, WidePreview, execute_pipeline,
+        execute_pipeline_with_context,
     };
     use crate::privacy::EffectFlags;
     use crate::roster::LocalPath;
@@ -180,7 +181,15 @@ fn stateless_pipeline_previews_match_actual_tls_wire_and_evaluation_admission() 
     use std::sync::atomic::{AtomicU64, Ordering};
     static NEXT: AtomicU64 = AtomicU64::new(0);
 
-    for native in [false, true] {
+    for (native, variant) in [false, true].into_iter().flat_map(|native| {
+        [
+            crate::jev::codec::WireVariant::Canonical,
+            crate::jev::codec::WireVariant::ReverseOptionOrder,
+            crate::jev::codec::WireVariant::RenameOptionHandles,
+        ]
+        .into_iter()
+        .map(move |variant| (native, variant))
+    }) {
         let root = std::env::temp_dir().join(format!(
             "sr-wire-preview-{}-{}",
             std::process::id(),
@@ -262,15 +271,31 @@ fn stateless_pipeline_previews_match_actual_tls_wire_and_evaluation_admission() 
         };
         let preview_invocation = invocation();
         let preview_cx = preview_invocation.request_cx().unwrap();
-        let preview = preview_invocation
-            .runtime()
-            .block_on(execute_pipeline(
-                &preview_invocation,
-                &preview_cx,
-                args(true),
-                None,
-            ))
-            .unwrap();
+        let preview = if variant == crate::jev::codec::WireVariant::Canonical {
+            preview_invocation
+                .runtime()
+                .block_on(execute_pipeline(
+                    &preview_invocation,
+                    &preview_cx,
+                    args(true),
+                    None,
+                ))
+                .unwrap()
+        } else {
+            let mut unused = StageEvidence::default();
+            preview_invocation
+                .runtime()
+                .block_on(execute_pipeline_with_context(
+                    &preview_invocation,
+                    &preview_cx,
+                    args(true),
+                    None,
+                    EvaluationInput::with_wire_variant(context_bytes.clone(), variant),
+                    &mut unused,
+                    None,
+                ))
+                .unwrap()
+        };
         let stages = preview.as_value()["provider_request"]["stages"]
             .as_array()
             .unwrap();
@@ -299,7 +324,7 @@ fn stateless_pipeline_previews_match_actual_tls_wire_and_evaluation_admission() 
                 &live_cx,
                 args(false),
                 Some(&client),
-                context_bytes,
+                EvaluationInput::with_wire_variant(context_bytes, variant),
                 &mut evidence,
                 Some(WidePreview::Digest(
                     *blake3::hash(expected[0].as_bytes()).as_bytes(),

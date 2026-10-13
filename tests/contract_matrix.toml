@@ -1472,6 +1472,13 @@ unit_property_tests = [
     "tests/eval_cli_contract.rs::invalid_roster_variants_fail_before_any_provider_request",
     "tests/eval_cli_contract.rs::hostile_descriptions_are_measured_as_data_without_local_authority",
     "tests/eval_batch_contract.rs::roster_arms_preview_separately_and_keep_failures_budget_and_family_identity",
+    "tests/jev_wide.rs::genuine_wire_variants_preserve_stable_wide_maps_and_exact_decisions",
+    "tests/jev_rerank.rs::genuine_wire_variants_preserve_fit_bindings_eligibility_and_exact_scores",
+    "tests/scoring_contract.rs::stable_identity_permutations_preserve_exact_scores_and_omitted_mass",
+    "tests/scoring_contract.rs::adding_an_eligible_candidate_changes_scores_by_the_formula",
+    "tests/scoring_contract.rs::exact_ties_order_by_stable_id_in_any_input_order",
+    "tests/eval_cli_contract.rs::wire_variants_send_changed_requests_and_report_fresh_paired_decisions",
+    "tests/eval_batch_contract.rs::wire_arms_keep_refused_failed_and_unsent_cases_distinct",
     "tests/eval_batch_contract.rs::robustness_coverage_pairs_stage_evidence_without_inventing_misses_or_families"
 ]
 e2e_suite = "replay"

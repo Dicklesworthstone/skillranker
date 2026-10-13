@@ -1321,6 +1321,20 @@ fn robustness_variants_report_decision_changes_on_leftover_budget() {
             .iter()
             .any(|note| note.starts_with("decoy"))
     );
+    for name in ["option-order:", "option-handle-renaming:"] {
+        assert!(
+            robustness
+                .not_computed
+                .iter()
+                .any(|note| note.starts_with(name))
+        );
+    }
+    assert!(
+        robustness
+            .variants
+            .iter()
+            .all(|score| !score.kind.unwrap().is_wire_variant())
+    );
     // Variants never enter the main report's denominators.
     assert_eq!(report.completeness.cases_requested, 2);
     assert_eq!(report.loss_summary.attempted_cases, 2);
@@ -1664,6 +1678,181 @@ fn a_live_batch_reports_memory_and_projects_main_ranking_use() {
 }
 
 #[test]
+fn wire_arms_keep_refused_failed_and_unsent_cases_distinct() {
+    use skillranker::evaluation::batch::{
+        LiveBatchLimits, LiveRankOutcome, VariantKind,
+        execute_live_frame_evaluation_with_roster_variants,
+    };
+    use skillranker::pipeline::{StageEvidence, WideEvidence};
+    use std::collections::{BTreeMap, BTreeSet};
+    for (mode, cap, expected_attempts, order_run, handles_run) in [
+        ("success", 16, 12, true, true),
+        ("refused", 16, 10, false, true),
+        ("failed", 16, 14, true, true),
+        ("unsent", 12, 10, true, false),
+    ] {
+        let mut case = live_case("wire");
+        case.context = json!({"current_request": {"text": "repair rust tests"}, "events": []});
+        let checked = std::cell::RefCell::new(Vec::new());
+        let calls = std::cell::RefCell::new(Vec::new());
+        let report = execute_live_frame_evaluation_with_roster_variants(
+            vec![case.clone()],
+            live_labels(&["wire"]),
+            None,
+            &BTreeSet::from(["s_alpha".into(), "s_beta".into()]),
+            &BTreeMap::new(),
+            LiveBatchLimits {
+                max_requests: cap,
+                max_runtime_ms: 60_000,
+                attempts_per_case: 4,
+                fit_threshold: 0.3,
+                gate_threshold: 0.3,
+                robustness_variants: true,
+            },
+            &EntryClock::capture().unwrap(),
+            0,
+            |preview, kind| {
+                assert_eq!(preview.key, case.key);
+                assert_eq!(preview.split, case.split);
+                // Wire variants do not mutate context or invent case identities.
+                assert_eq!(preview.context, case.context);
+                checked.borrow_mut().push(kind);
+                if mode == "refused" && kind == Some(VariantKind::OptionOrder) {
+                    Err("superseded".into())
+                } else {
+                    Ok(Some(
+                        json!({"disclosed_bytes": 10, "wide_request_bytes": 20}),
+                    ))
+                }
+            },
+            |arm, kind| {
+                assert_eq!(
+                    checked.borrow().len(),
+                    3,
+                    "every preview precedes every send"
+                );
+                assert_eq!(arm.key, case.key);
+                assert_eq!(arm.split, case.split);
+                if kind.is_some() {
+                    assert_eq!(arm.context, case.context);
+                }
+                calls.borrow_mut().push(kind);
+                if mode == "failed" && kind == Some(VariantKind::OptionOrder) {
+                    return LiveRankOutcome {
+                        decision: "unavailable".into(),
+                        requests: 1,
+                        http_attempts: 1,
+                        attempts_unknown: true,
+                        error_kind: Some("timeout".into()),
+                        ..Default::default()
+                    };
+                }
+                let suggested = match kind {
+                    Some(VariantKind::OptionOrder) => vec!["s_beta".into()],
+                    Some(VariantKind::OptionHandleRenaming) => vec![],
+                    _ => vec!["s_alpha".into()],
+                };
+                LiveRankOutcome {
+                    decision: if suggested.is_empty() {
+                        "abstain"
+                    } else {
+                        "ranked"
+                    }
+                    .into(),
+                    suggested_skills: suggested,
+                    requests: 2,
+                    http_attempts: 2,
+                    evidence: Some(StageEvidence {
+                        admitted: vec!["s_alpha".into(), "s_beta".into()],
+                        wide: Some(WideEvidence {
+                            intrinsic_shortlist: vec!["s_alpha".into(), "s_beta".into()],
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            *checked.borrow(),
+            vec![
+                None,
+                Some(VariantKind::OptionOrder),
+                Some(VariantKind::OptionHandleRenaming)
+            ]
+        );
+        assert_eq!(
+            calls.borrow().contains(&Some(VariantKind::OptionOrder)),
+            order_run
+        );
+        assert_eq!(
+            calls
+                .borrow()
+                .contains(&Some(VariantKind::OptionHandleRenaming)),
+            handles_run
+        );
+        assert_eq!(report.accounting.http_attempts, expected_attempts);
+        assert_eq!(
+            report.accounting.unknown_usage_attempts,
+            if mode == "failed" { 4 } else { 0 }
+        );
+        assert_eq!(
+            report.accounting.requests,
+            if mode == "failed" {
+                11
+            } else {
+                expected_attempts
+            }
+        );
+        assert_eq!(report.completeness.cases_requested, 1);
+        assert_eq!(report.completeness.cases_completed, 1);
+        assert_eq!(report.loss_summary.attempted_cases, 1);
+        assert_eq!(report.loss_summary.total_loss, 0);
+        assert_eq!(report.metrics.as_ref().unwrap().judged_cases, 1);
+        assert_eq!(report.gate_status, GateStatus::NotEstablished);
+        let preflight = report.disclosure_preflight.unwrap();
+        assert_eq!(preflight.wire_variants_checked, 2);
+        assert_eq!(
+            preflight.wire_variants_refused,
+            usize::from(mode == "refused")
+        );
+        let robustness = report.baselines.unwrap().robustness.unwrap();
+        let order = robustness
+            .variants
+            .iter()
+            .find(|score| score.kind == Some(VariantKind::OptionOrder))
+            .unwrap();
+        assert_eq!(order.failures, usize::from(mode == "failed"));
+        assert_eq!(order.preflight_refused, usize::from(mode == "refused"));
+        assert_eq!(order.not_run, usize::from(mode == "refused"));
+        assert_eq!(
+            order.cases,
+            usize::from(mode != "refused" && mode != "failed")
+        );
+        assert_eq!(
+            order.intrinsic_shortlist_coverage.unknown,
+            usize::from(mode == "failed")
+        );
+        let handles = robustness
+            .variants
+            .iter()
+            .find(|score| score.kind == Some(VariantKind::OptionHandleRenaming))
+            .unwrap();
+        assert_eq!(handles.not_run, usize::from(mode == "unsent"));
+        assert_eq!(handles.failures, 0);
+        assert_eq!(handles.cases, usize::from(handles_run));
+        assert_eq!(handles.hit_lost, usize::from(handles_run));
+        assert_eq!(
+            handles.intrinsic_shortlist_coverage.cases,
+            usize::from(handles_run)
+        );
+        assert_eq!(handles.intrinsic_shortlist_coverage.lost, 0);
+    }
+}
+
+#[test]
 fn roster_arms_preview_separately_and_keep_failures_budget_and_family_identity() {
     use skillranker::evaluation::batch::{
         LiveBatchLimits, LiveRankOutcome, VariantKind,
@@ -1714,7 +1903,7 @@ fn roster_arms_preview_separately_and_keep_failures_budget_and_family_identity()
             }
         },
         |arm, kind| {
-            assert_eq!(checked.borrow().len(), 3, "all previews precede every send");
+            assert_eq!(checked.borrow().len(), 5, "all previews precede every send");
             assert_eq!(arm.key, case.key);
             assert_eq!(arm.split, case.split);
             calls.borrow_mut().push(kind);
@@ -1744,22 +1933,26 @@ fn roster_arms_preview_separately_and_keep_failures_budget_and_family_identity()
         vec![
             None,
             Some(VariantKind::DecoyRoster),
-            Some(VariantKind::LookalikeRoster)
+            Some(VariantKind::LookalikeRoster),
+            Some(VariantKind::OptionOrder),
+            Some(VariantKind::OptionHandleRenaming)
         ]
     );
-    assert_eq!(calls.borrow().len(), 5);
+    assert_eq!(calls.borrow().len(), 7);
     assert!(!calls.borrow().contains(&Some(VariantKind::LookalikeRoster)));
     assert_eq!(report.completeness.cases_requested, 1);
     assert_eq!(report.metrics.as_ref().unwrap().judged_cases, 1);
-    assert_eq!(report.accounting.http_attempts, 12);
-    assert_eq!(report.accounting.requests, 9);
+    assert_eq!(report.accounting.http_attempts, 16);
+    assert_eq!(report.accounting.requests, 13);
     assert_eq!(report.accounting.unknown_usage_attempts, 4);
     let preview = report.disclosure_preflight.unwrap();
     assert_eq!(preview.cases_checked, 1);
     assert_eq!(preview.roster_variants_checked, 2);
     assert_eq!(preview.roster_variants_refused, 1);
-    assert_eq!(preview.disclosed_bytes, 40);
-    assert_eq!(preview.previewed_wide_request_bytes, 60);
+    assert_eq!(preview.wire_variants_checked, 2);
+    assert_eq!(preview.wire_variants_refused, 0);
+    assert_eq!(preview.disclosed_bytes, 80);
+    assert_eq!(preview.previewed_wide_request_bytes, 120);
     let scores = report.baselines.unwrap().robustness.unwrap().variants;
     assert_eq!(scores[0].failures, 1);
     assert_eq!(scores[0].admitted_coverage.unknown, 1);

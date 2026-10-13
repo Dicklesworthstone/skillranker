@@ -160,5 +160,160 @@ class CatalogTests(unittest.TestCase):
                             in p for p in product_cases.check(added)))
 
 
+class ProductArtifactTests(unittest.TestCase):
+    """Mechanics only: synthetic libtest/RCH receipts never qualify a product."""
+    def files(self, text=None, catalog=None, exit_code=0):
+        import json
+        import tempfile
+        directory = Path(tempfile.mkdtemp(prefix='sr-product-artifact-test-'))
+        catalog_path = directory / 'catalog.json'
+        catalog_path.write_text(json.dumps(catalog or CATALOG))
+        product_cases.product_artifact_start(catalog_path, directory)
+        (directory / 'tests.log').write_text(text or log('test one ... ok', 'test two ... ok'))
+        (directory / 'remote-result.json').write_text(json.dumps({
+            'location': 'remote', 'outcome': 'completed', 'remote_exit_code': exit_code,
+            'admission': {'strict_remote': True, 'terminal_acknowledged': True}}))
+        return directory, catalog_path
+
+    def read(self, directory):
+        import json
+        return json.loads((directory / 'summary.json').read_text())
+
+    def test_complete_case_logs_are_private_and_bound_to_actual_local_inputs(self):
+        import hashlib
+        import json
+        directory, catalog = self.files()
+        self.assertEqual(product_cases.product_artifact_record(catalog, directory, 0), 0)
+        summary = self.read(directory)
+        self.assertEqual(summary['cases_passed'], 2)
+        self.assertEqual(summary['assertions'], 2)
+        self.assertEqual(summary['quality_gate'], 'not-established')
+        self.assertFalse(summary['identity']['remote_inputs_verified'])
+        self.assertEqual(summary['events_sha256'], hashlib.sha256((directory / 'events.jsonl').read_bytes()).hexdigest())
+        events = [json.loads(line) for line in (directory / 'events.jsonl').read_text().splitlines()]
+        self.assertEqual(events[1]['actual']['tests'], {'alpha::one': 'ok', 'beta::two': 'ok'})
+        self.assertIsNone(events[1]['elapsed_ns'])
+        self.assertIsNone(events[1]['fault_reached'])
+        self.assertGreater(summary['elapsed_ns'], 0)
+        for name in ('started.json', 'events.jsonl', 'summary.json'):
+            self.assertEqual((directory / name).stat().st_mode & 0o077, 0)
+
+    def test_failed_or_unstarted_run_retains_missing_case_evidence(self):
+        for text in ('', 'test one ... FAILED\n'):
+            directory, catalog = self.files(text='placeholder' if not text else text, exit_code=101)
+            self.assertEqual(product_cases.product_artifact_record(catalog, directory, 101), 1)
+            summary = self.read(directory)
+            self.assertEqual(summary['cases_passed'], 0)
+            self.assertEqual(summary['exit'], 101)
+            self.assertEqual(summary['status'], 'failed')
+            self.assertTrue((directory / 'events.jsonl').is_file())
+
+    def test_remote_acknowledgment_and_unchanged_identity_are_required(self):
+        import json
+        directory, catalog = self.files()
+        (directory / 'remote-result.json').write_text(json.dumps({'location': 'local', 'outcome': 'completed', 'remote_exit_code': 0}))
+        self.assertEqual(product_cases.product_artifact_record(catalog, directory, 0), 1)
+        directory, catalog = self.files()
+        with catalog.open('a') as stream:
+            stream.write('\n')
+        self.assertEqual(product_cases.product_artifact_record(catalog, directory, 0), 1)
+        self.assertFalse(self.read(directory)['identity_stable'])
+
+    def test_planted_leak_detector_has_success_and_violation_controls(self):
+        directory, catalog = self.files()
+        with (directory / 'tests.log').open('ab') as stream:
+            stream.write(product_cases.CANARY + b'\n')
+        self.assertEqual(product_cases.product_artifact_record(catalog, directory, 0), 1)
+        self.assertFalse(self.read(directory)['leak_free'])
+        self.assertNotIn(product_cases.CANARY, (directory / 'events.jsonl').read_bytes())
+        self.assertNotIn(product_cases.CANARY, (directory / 'summary.json').read_bytes())
+        directory, catalog = self.files()
+        self.assertEqual(product_cases.product_artifact_record(catalog, directory, 0), 0)
+        self.assertTrue(self.read(directory)['leak_free'])
+
+    def test_p5_needs_real_binary_control_receipts_not_only_case_names(self):
+        import json
+        catalog = dict(CATALOG, suite='replay')
+        directory, catalog_path = self.files(catalog=catalog)
+        self.assertEqual(product_cases.product_artifact_record(catalog_path, directory, 0), 1)
+        self.assertFalse(self.read(directory)['controls_complete'])
+        directory, catalog_path = self.files(catalog=catalog)
+        commit = json.loads((directory / 'started.json').read_text())['identity']['git_commit']
+        receipts = []
+        for scenario, cap, calls, unknown, fault in [('useful', '16', 12, 0, False), ('stale-renamed-option', '16', 11, 1, True), ('useful', '12', 10, 0, False), ('useful', '4', 2, 0, False)]:
+            receipts.append({'case': 'prespecified-wire-variants', 'scenario': scenario, 'attempt_cap': cap,
+                             'compiled_source': commit, 'binary_blake3': 'a' * 64, 'platform': 'linux-x86_64',
+                             'computation_digest': 'b' * 64, 'numeric_build_digest': 'c' * 64,
+                             'elapsed_ns': 1, 'http_attempts': calls, 'unknown_usage_attempts': unknown,
+                             'fault_reached': fault, 'leak_detector_checked': True})
+        with (directory / 'tests.log').open('a') as stream:
+            for receipt in receipts:
+                stream.write(json.dumps(receipt, separators=(',', ':')) + '\n')
+        self.assertEqual(product_cases.product_artifact_record(catalog_path, directory, 0), 0)
+        self.assertEqual(self.read(directory)['binary']['blake3'], 'a' * 64)
+        # A malicious diagnostic resembling a receipt cannot copy its text to
+        # private structured artifacts or rescue the missing real controls.
+        directory, catalog_path = self.files(catalog=catalog)
+        receipts[0]['compiled_source'] = 'untrusted-secret-text'
+        with (directory / 'tests.log').open('a') as stream:
+            stream.write(json.dumps(receipts[0], separators=(',', ':')) + '\n')
+        self.assertEqual(product_cases.product_artifact_record(catalog_path, directory, 0), 1)
+        self.assertNotIn(b'untrusted-secret-text', (directory / 'events.jsonl').read_bytes())
+
+    def test_artifact_input_bounds_and_duplicate_unicode_definitions_are_strict(self):
+        for data in (b'{"same":1,"s\\u0061me":2}', b'{"x":NaN}', b'{"x":1e999}',
+                     b'{"x":"\\ud800"}', b'[' * 66 + b'0' + b']' * 66,
+                     b' ' * (product_cases.MAX_ARTIFACT + 1)):
+            with self.assertRaises((ValueError, UnicodeError, RecursionError)):
+                product_cases.artifact_json(data)
+        self.assertEqual(product_cases.artifact_json(b'{"same":1}'), {'same': 1})
+
+    def test_p5_foreign_source_cannot_pass_by_sharing_the_head_prefix(self):
+        import json
+        directory, catalog = self.files(catalog=dict(CATALOG, suite='replay'))
+        commit = json.loads((directory / 'started.json').read_text())['identity']['git_commit']
+        # A valid-looking 64-hex marker, not this checkout's 40-hex commit.
+        self.assertEqual(len(commit), 40)
+        foreign = commit + '0' * 24
+        with (directory / 'tests.log').open('a') as stream:
+            for scenario, cap, calls, unknown, fault in [('useful', '16', 12, 0, False), ('stale-renamed-option', '16', 11, 1, True), ('useful', '12', 10, 0, False), ('useful', '4', 2, 0, False)]:
+                stream.write(json.dumps({'case': 'prespecified-wire-variants',
+                    'scenario': scenario, 'attempt_cap': cap, 'compiled_source': foreign,
+                    'binary_blake3': 'a' * 64, 'platform': 'linux-x86_64',
+                    'computation_digest': 'b' * 64, 'numeric_build_digest': 'c' * 64,
+                    'elapsed_ns': 1, 'http_attempts': calls, 'unknown_usage_attempts': unknown,
+                    'fault_reached': fault, 'leak_detector_checked': True}, separators=(',', ':')) + '\n')
+        self.assertEqual(product_cases.product_artifact_record(catalog, directory, 0), 1)
+        self.assertFalse(self.read(directory)['controls_complete'])
+
+    def test_changed_artifact_directory_privacy_fails_before_new_logs(self):
+        directory, catalog = self.files()
+        directory.chmod(0o755)
+        try:
+            with self.assertRaises(ValueError):
+                product_cases.product_artifact_record(catalog, directory, 0)
+            self.assertFalse((directory / 'events.jsonl').exists())
+        finally:
+            directory.chmod(0o700)
+
+    def test_artifact_reads_reject_fifo_symlink_and_oversize_with_regular_success(self):
+        import os
+        import tempfile
+        directory = Path(tempfile.mkdtemp(prefix='sr-artifact-read-test-'))
+        regular = directory / 'regular'
+        regular.write_bytes(b'OK')
+        self.assertEqual(product_cases.bounded_bytes(regular, 2), b'OK')
+        with self.assertRaises(ValueError):
+            product_cases.bounded_bytes(regular, 1)
+        link = directory / 'link'
+        link.symlink_to(regular)
+        with self.assertRaises(OSError):
+            product_cases.bounded_bytes(link, 2)
+        fifo = directory / 'fifo'
+        os.mkfifo(fifo, 0o600)
+        with self.assertRaises(ValueError):
+            product_cases.bounded_bytes(fifo, 2)
+
+
 if __name__ == "__main__":
     unittest.main()

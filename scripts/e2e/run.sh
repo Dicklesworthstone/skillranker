@@ -21,7 +21,7 @@ if [ "${1-}" = "--suite" ] && [ "${2-}" = "parser-corpus" ]; then
     shift 2
     exec "$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)/parser-corpus.sh" "$@"
 fi
-if [ "${1-}" = "--suite" ] && [ "${2-}" = "replay" ]; then
+if [ "${1-}" = "--suite" ] && { [ "${2-}" = "replay" ] || [ "${2-}" = "evaluation" ]; }; then
     shift 2
     exec "$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)/replay.sh" "$@"
 fi

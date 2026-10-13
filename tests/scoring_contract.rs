@@ -56,6 +56,58 @@ fn returned_ids<'a>(ranking: &Ranking, inputs: &[Input<'a>]) -> Vec<&'a SkillId>
 }
 
 #[test]
+fn stable_identity_permutations_preserve_exact_scores_and_omitted_mass() {
+    let ids = ids(3);
+    let permutations = [
+        [0, 1, 2],
+        [0, 2, 1],
+        [1, 0, 2],
+        [1, 2, 0],
+        [2, 0, 1],
+        [2, 1, 0],
+    ];
+    for (probabilities, sum) in [
+        ([0.7, 0.2, 0.1], 1.0),
+        ([0.45, 0.45, 0.1], 1.0),
+        ([0.6, 0.3, 0.09], 0.99),
+    ] {
+        for top in [2, 3] {
+            let mut expected = None;
+            for permutation in permutations {
+                let inputs: Vec<_> = permutation
+                    .iter()
+                    .map(|&i| input(&ids[i], probabilities[i], 0.5))
+                    .collect();
+                let ranking = rank(&inputs, Weights::DEFAULT, top).unwrap();
+                let mapped: Vec<_> = ranking
+                    .returned
+                    .iter()
+                    .map(|scored| {
+                        let id = inputs[scored.index].id;
+                        let i = ids.iter().position(|value| value == id).unwrap();
+                        // Independent ratio oracle, alongside the stricter exact
+                        // permutation invariant. No prior/phase or fit bonus.
+                        assert!(close(scored.rank_score, probabilities[i] / sum));
+                        (
+                            id.as_str().to_owned(),
+                            scored.utility.to_bits(),
+                            scored.rank_score.to_bits(),
+                        )
+                    })
+                    .collect();
+                assert_eq!(ranking.eligible, 3);
+                let actual = (mapped, ranking.omitted_mass.to_bits());
+                if let Some(expected) = &expected {
+                    assert_eq!(&actual, expected, "permutation {permutation:?}, top={top}");
+                } else {
+                    expected = Some(actual);
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn documented_formula_is_recomputed_not_hard_coded() {
     let id = ids(3);
     let inputs = [

@@ -131,11 +131,7 @@ fn default_state() -> RenderedContextPayload {
 
 /// A provider answer shaped for this request: `which` probabilities by option,
 /// the three gates, and a phase distribution.
-fn respond(
-    wide: &WideRequest<'_>,
-    which: &BTreeMap<String, f64>,
-    gates: (f64, f64, f64),
-) -> skillranker::jev::codec::Response {
+fn wide_response_body(which: &BTreeMap<String, f64>, gates: (f64, f64, f64)) -> Vec<u8> {
     let choice = which
         .iter()
         .max_by(|a, b| a.1.total_cmp(b.1).then_with(|| b.0.cmp(a.0)))
@@ -155,8 +151,16 @@ fn respond(
         },
         "usage": {"input_tokens": 10, "output_tokens": 5}
     });
+    serde_json::to_vec(&body).unwrap()
+}
+
+fn respond(
+    wide: &WideRequest<'_>,
+    which: &BTreeMap<String, f64>,
+    gates: (f64, f64, f64),
+) -> skillranker::jev::codec::Response {
     wide.request()
-        .decode_response(&serde_json::to_vec(&body).unwrap())
+        .decode_response(&wide_response_body(which, gates))
         .unwrap()
 }
 
@@ -696,6 +700,45 @@ fn a_stable_skill_identity_change_invalidates_the_local_map() {
         records
     };
     assert_eq!(content(&original), content(&rebound));
+    // Even if descriptions and wire questions happen to be identical, a
+    // real source rebinding must invalidate request/cache provenance. Hold
+    // all the other fingerprint inputs fixed to isolate this requirement.
+    let fingerprint = |roster: &ResolvedRoster| {
+        use skillranker::cache::{
+            CacheKey, CacheNamespace, CandidateDigest, RequestFingerprintInput, RequestStage,
+            compute_request_fingerprint,
+        };
+        let candidates: Vec<_> = roster
+            .advisory()
+            .map(|skill| CandidateDigest {
+                skill_id: skill.binding.id.clone(),
+                content_hash: skill.record.source_content.clone(),
+                excerpt_hash: None,
+            })
+            .collect();
+        compute_request_fingerprint(
+            &CacheKey::from_bytes([42; 32]),
+            &CacheNamespace::new(
+                skillranker::identity::HarnessId::new("claude_code").unwrap(),
+                1,
+            ),
+            &RequestFingerprintInput {
+                stage: RequestStage::Wide,
+                canonical_redacted_state: b"same synthetic request",
+                candidates: &candidates,
+                questions_digest: [7; 32],
+                endpoint_url: "https://api.typesafe.ai/v1/systemone",
+                model: "jev-latest",
+                prompt_version: "wide-questions-v1",
+                adapter_version: "fixture-v1",
+                privacy_policy_version: "v1",
+                excerpt_strategy: "default",
+                paired_wide: None,
+            },
+        )
+    };
+    assert_eq!(fingerprint(&original), fingerprint(&original));
+    assert_ne!(fingerprint(&original), fingerprint(&rebound));
     assert!(matches!(
         OptionMap::new(&rebound, &old_ids),
         Err(ResolutionError::IneligibleOption)
@@ -708,4 +751,215 @@ fn a_stable_skill_identity_change_invalidates_the_local_map() {
             .values()
             .all(|skill| new_ids.contains(&skill.binding.id))
     );
+}
+
+#[test]
+fn genuine_wire_variants_preserve_stable_wide_maps_and_exact_decisions() {
+    use skillranker::jev::codec::{Answer, CodecError, Question, RequestFormat, WireVariant};
+    use skillranker::jev::wide::build_with_variant;
+    let root = tree();
+    let roster = roster_with(&root, &plain(3));
+    let selected = ids(&roster);
+    let canonical = build(&roster, &selected, &default_state(), "typesafe/jev", false).unwrap();
+    let bindings = |wide: &WideRequest<'_>| {
+        wide.options()
+            .entries()
+            .values()
+            .map(|skill| {
+                (
+                    skill.binding.id.as_str().to_owned(),
+                    (
+                        skill.binding.invocation.as_str().to_owned(),
+                        skill.record.source_content.as_str().to_owned(),
+                    ),
+                )
+            })
+            .collect::<BTreeMap<_, _>>()
+    };
+    let canonical_bindings = bindings(&canonical);
+    for variant in [
+        WireVariant::ReverseOptionOrder,
+        WireVariant::RenameOptionHandles,
+    ] {
+        let varied = build_with_variant(
+            &roster,
+            &selected,
+            &default_state(),
+            "typesafe/jev",
+            false,
+            variant,
+        )
+        .unwrap();
+        assert_eq!(bindings(&canonical), bindings(&varied));
+        for format in [RequestFormat::TypeSafe, RequestFormat::Cloudflare] {
+            let before = canonical.request().to_wire_json(format).unwrap();
+            let after = varied.request().to_wire_json(format).unwrap();
+            assert_ne!(before, after);
+            assert_eq!(before.len(), after.len());
+            if variant == WireVariant::ReverseOptionOrder {
+                assert_eq!(options(&canonical), options(&varied));
+                assert_eq!(
+                    serde_json::from_slice::<Value>(&before).unwrap(),
+                    serde_json::from_slice::<Value>(&after).unwrap()
+                );
+                let Question::Choice { criteria, .. } = &canonical.request().questions()["which"]
+                else {
+                    unreachable!()
+                };
+                let original = serde_json::to_string(criteria).unwrap();
+                let reversed = format!(
+                    "{{{}}}",
+                    criteria
+                        .iter()
+                        .rev()
+                        .map(|(key, text)| format!(
+                            "{}:{}",
+                            serde_json::to_string(key).unwrap(),
+                            serde_json::to_string(text).unwrap()
+                        ))
+                        .collect::<Vec<_>>()
+                        .join(",")
+                );
+                let before = String::from_utf8(before).unwrap();
+                assert_eq!(before.matches(&original).count(), 1);
+                assert_eq!(
+                    String::from_utf8(after).unwrap(),
+                    before.replacen(&original, &reversed, 1)
+                );
+            } else {
+                assert!(
+                    options(&canonical)
+                        .iter()
+                        .all(|old| !options(&varied).contains(old))
+                );
+                for skill in &selected {
+                    let old = canonical
+                        .options()
+                        .entries()
+                        .iter()
+                        .find(|(_, s)| &s.binding.id == skill)
+                        .unwrap();
+                    let new = varied
+                        .options()
+                        .entries()
+                        .iter()
+                        .find(|(_, s)| &s.binding.id == skill)
+                        .unwrap();
+                    assert_ne!(old.0, new.0);
+                    assert_eq!(old.1.record.description_full, new.1.record.description_full);
+                }
+            }
+        }
+        for (probabilities, none) in [
+            ([0.7, 0.2, 0.1], 0.0),
+            ([0.45, 0.45, 0.1], 0.0),
+            ([0.6, 0.3, 0.09], 0.0),
+            ([0.3, 0.2, 0.1], 0.4),
+        ] {
+            let by_name: BTreeMap<_, _> = (0..3)
+                .map(|i| (format!("skill{i:03}"), probabilities[i]))
+                .collect();
+            let body = |wide: &WideRequest<'_>| {
+                let mut values: BTreeMap<_, _> = wide
+                    .options()
+                    .entries()
+                    .iter()
+                    .map(|(option, skill)| {
+                        (
+                            option.as_str().to_owned(),
+                            by_name[skill.binding.invocation.as_str()],
+                        )
+                    })
+                    .collect();
+                values.insert(NONE_OPTION.to_owned(), none);
+                wide_response_body(&values, (0.9, 0.9, 0.1))
+            };
+            let before = body(&canonical);
+            let after = body(&varied);
+            for native in [false, true] {
+                let decode = |wide: &WideRequest<'_>, bytes: &[u8]| {
+                    if native {
+                        let wire: Value = serde_json::from_slice(bytes).unwrap();
+                        skillranker::jev::cloudflare_codec::decode_response(
+                            wide.request(),
+                            &serde_json::to_vec(&json!({"success":true,"result":{"result":wire}}))
+                                .unwrap(),
+                        )
+                    } else {
+                        wide.request().decode_response(bytes)
+                    }
+                };
+                let a = decode(&canonical, &before).unwrap();
+                let b = decode(&varied, &after).unwrap();
+                for (wide, response) in [(&canonical, &a), (&varied, &b)] {
+                    let Answer::Choice(choice) = &response.answers["which"] else {
+                        unreachable!()
+                    };
+                    for (option, skill) in wide.options().entries() {
+                        assert_eq!(
+                            choice.raw_probabilities()[option.as_str()].to_bits(),
+                            by_name[skill.binding.invocation.as_str()].to_bits()
+                        );
+                    }
+                }
+                let evaluated = |wide, response| {
+                    let outcome = evaluate(wide, response, 0.3, Sizes::default()).unwrap();
+                    let actual: Vec<_> = outcome
+                        .intrinsic_shortlist
+                        .iter()
+                        .map(|s| {
+                            (
+                                s.skill.binding.id.as_str().to_owned(),
+                                s.wide_probability.to_bits(),
+                            )
+                        })
+                        .collect();
+                    let expected_total = if probabilities[2] == 0.09 { 0.99 } else { 1.0 };
+                    for shortlisted in &outcome.intrinsic_shortlist {
+                        let name = shortlisted.skill.binding.invocation.as_str();
+                        assert!(
+                            (shortlisted.wide_probability - by_name[name] / expected_total).abs()
+                                < 1e-12
+                        );
+                    }
+                    assert!((outcome.none_probability - none / expected_total).abs() < 1e-12);
+                    let mut expected: Vec<_> = selected
+                        .iter()
+                        .map(|id| {
+                            let (name, _) = &canonical_bindings[id.as_str()];
+                            (id.as_str().to_owned(), by_name[name])
+                        })
+                        .collect();
+                    expected.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+                    assert_eq!(
+                        actual.iter().map(|(id, _)| id).collect::<Vec<_>>(),
+                        expected.iter().map(|(id, _)| id).collect::<Vec<_>>()
+                    );
+                    assert_eq!(shortlist_names(&outcome.decision).len(), 3);
+                    (
+                        actual,
+                        outcome.none_probability.to_bits(),
+                        outcome.needs_skill.to_bits(),
+                    )
+                };
+                assert_eq!(evaluated(&canonical, &a), evaluated(&varied, &b));
+                let mut foreign: Value = serde_json::from_slice(&after).unwrap();
+                foreign["answers"]["which"]["choice"] = json!("foreign-handle");
+                assert_eq!(
+                    decode(&varied, &serde_json::to_vec(&foreign).unwrap()).err(),
+                    Some(CodecError::InvalidChoice)
+                );
+                if variant == WireVariant::RenameOptionHandles {
+                    assert_eq!(
+                        decode(&varied, &before).err(),
+                        Some(CodecError::OptionMismatch)
+                    );
+                    assert_eq!(
+                        decode(&canonical, &after).err(),
+                        Some(CodecError::OptionMismatch)
+                    );
+                }
+            }
+        }
+    }
 }

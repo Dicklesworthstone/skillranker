@@ -1298,6 +1298,14 @@ lookalike addition must duplicate a nonempty baseline description, ignoring
 whitespace. These flags select existing skills and never create or edit them.
 Choose irrelevant decoys using independent judgments; the command cannot infer
 that an added skill is irrelevant merely because it was absent from the baseline.
+`--robustness` also compares two prespecified wire changes: reversed skill
+Choice option order and a bijection of opaque option handles, including rerank
+fit-question keys. Both retain stable skill identities, content and eligibility,
+freeze the baseline inventory, get separately bound wide previews, and consume
+fresh responses from the same
+attempt/runtime allowance after the request-text arms. Changed Jev decisions
+are measured within the original family; identical probabilities are not required.
+
 Unsupplied arms remain under `not_computed`. `--hostile-roster EXPANDED` tests
 hostile instructions in added skill descriptions separately from hostile text
 appended to a request. The

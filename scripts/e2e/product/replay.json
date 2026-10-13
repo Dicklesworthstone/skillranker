@@ -7,6 +7,8 @@
     "eval_cli_contract",
     "evaluation_design_weighted_contract",
     "evaluation_manifest_semantics",
+    "hook_contract",
+    "jev_contract",
     "jev_rerank",
     "jev_wide",
     "ledger_exposure_lifecycle_contract",
@@ -17,10 +19,12 @@
     "ledger_retention_contract",
     "ledger_schema_contract",
     "observation_contract",
+    "p5_gate",
     "replay_case_completeness",
     "replay_cli_contract",
     "replay_contract",
     "save_case_contract",
+    "scoring_contract",
     "stats_value_report_contract"
   ],
   "cases": [
@@ -246,7 +250,14 @@
         "eval_cli_contract::invalid_roster_variants_fail_before_any_provider_request",
         "eval_cli_contract::hostile_descriptions_are_measured_as_data_without_local_authority",
         "eval_batch_contract::roster_arms_preview_separately_and_keep_failures_budget_and_family_identity",
-        "eval_batch_contract::robustness_coverage_pairs_stage_evidence_without_inventing_misses_or_families"
+        "eval_batch_contract::robustness_coverage_pairs_stage_evidence_without_inventing_misses_or_families",
+        "jev_wide::genuine_wire_variants_preserve_stable_wide_maps_and_exact_decisions",
+        "jev_rerank::genuine_wire_variants_preserve_fit_bindings_eligibility_and_exact_scores",
+        "scoring_contract::stable_identity_permutations_preserve_exact_scores_and_omitted_mass",
+        "eval_cli_contract::wire_variants_send_changed_requests_and_report_fresh_paired_decisions",
+        "eval_batch_contract::wire_arms_keep_refused_failed_and_unsent_cases_distinct",
+        "scoring_contract::adding_an_eligible_candidate_changes_scores_by_the_formula",
+        "scoring_contract::exact_ties_order_by_stable_id_in_any_input_order"
       ]
     },
     {

@@ -352,7 +352,7 @@ fn command() -> Command {
                 .arg(
                     Arg::new("robustness")
                         .long("robustness")
-                        .help("Also rank request variants and supplied roster arms on leftover budget")
+                        .help("Also rank request and wire variants and supplied roster arms on leftover budget")
                         .requires("online")
                         .action(ArgAction::SetTrue),
                 )
@@ -3915,7 +3915,7 @@ fn eval_live_command(
     let mut variant_manifests = std::collections::BTreeMap::new();
     let mut variant_rosters = std::collections::BTreeMap::new();
     let mut roster_digests = std::collections::BTreeMap::new();
-    if baseline_manifest.is_some() {
+    if baseline_manifest.is_some() || eval_matches.get_flag("robustness") {
         roster_digests.insert(None, crate::pipeline::evaluation_roster_digest(&roster));
     }
     for (flag, kind) in [
@@ -4032,7 +4032,10 @@ fn eval_live_command(
                 case,
                 &previews,
                 variant,
-                roster_digests.get(&variant).copied(),
+                roster_digests
+                    .get(&variant)
+                    .or_else(|| roster_digests.get(&None))
+                    .copied(),
             )
         },
         |case, variant| {
@@ -4047,6 +4050,7 @@ fn eval_live_command(
                 .or_else(|| {
                     roster_digests
                         .get(&variant)
+                        .or_else(|| roster_digests.get(&None))
                         .copied()
                         .map(crate::pipeline::WidePreview::Roster)
                 });
@@ -4056,6 +4060,9 @@ fn eval_live_command(
                 case_args(case, variant, gate),
                 case,
                 expected,
+                variant.map_or(crate::jev::codec::WireVariant::Canonical, |kind| {
+                    kind.wire_variant()
+                }),
             )
         },
     )
@@ -4089,6 +4096,7 @@ fn run_case_pipeline(
     case: &crate::evaluation::batch::LiveEvaluationCase,
     evidence: &mut crate::pipeline::StageEvidence,
     expected_wide_digest: Option<crate::pipeline::WidePreview>,
+    wire_variant: crate::jev::codec::WireVariant,
 ) -> Result<OutputDocument, &'static str> {
     let remaining = batch.remaining_until_expiry().as_millis();
     let total = per_case_ms.min(remaining);
@@ -4117,7 +4125,7 @@ fn run_case_pipeline(
                     &cx,
                     args,
                     None,
-                    context,
+                    crate::pipeline::EvaluationInput::with_wire_variant(context, wire_variant),
                     evidence,
                     expected_wide_digest,
                 ),
@@ -4155,6 +4163,9 @@ fn preview_live_case(
         case,
         &mut unused,
         roster_digest.map(crate::pipeline::WidePreview::Roster),
+        variant.map_or(crate::jev::codec::WireVariant::Canonical, |kind| {
+            kind.wire_variant()
+        }),
     )?;
     let value = document.as_value();
     // The exact wide request this preview would send binds the live send.
@@ -4203,6 +4214,7 @@ fn rank_live_case(
     args: crate::pipeline::RankArgs,
     case: &crate::evaluation::batch::LiveEvaluationCase,
     expected_wide_digest: Option<crate::pipeline::WidePreview>,
+    wire_variant: crate::jev::codec::WireVariant,
 ) -> crate::evaluation::batch::LiveRankOutcome {
     let started = std::time::Instant::now();
     let elapsed = || u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
@@ -4214,6 +4226,7 @@ fn rank_live_case(
         case,
         &mut evidence,
         expected_wide_digest,
+        wire_variant,
     );
     live_rank_outcome(document, evidence, elapsed())
 }

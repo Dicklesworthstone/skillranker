@@ -11,7 +11,7 @@
 //! older context and then description excerpts are trimmed in a fixed order;
 //! admitted candidates and the sentinel are never dropped.
 
-use super::codec::{Answer, CodecError, Question, Request, Response};
+use super::codec::{Answer, CodecError, Question, Request, Response, WireVariant};
 use crate::context::RenderedContextPayload;
 use crate::identity::SkillId;
 use crate::output::ErrorKind;
@@ -267,13 +267,36 @@ pub fn build<'a>(
     model: &str,
     include_stuck: bool,
 ) -> Result<WideRequest<'a>, WideError> {
+    build_with_variant(
+        roster,
+        admitted,
+        state,
+        model,
+        include_stuck,
+        WireVariant::Canonical,
+    )
+}
+
+/// Evaluation-only wire perturbation over the same eligible stable bindings.
+pub fn build_with_variant<'a>(
+    roster: &'a ResolvedRoster,
+    admitted: &[SkillId],
+    state: &RenderedContextPayload,
+    model: &str,
+    include_stuck: bool,
+    variant: WireVariant,
+) -> Result<WideRequest<'a>, WideError> {
     if admitted.is_empty() {
         return Err(WideError::NoCandidates);
     }
     if admitted.len() > MAX_REAL_OPTIONS {
         return Err(WideError::TooManyCandidates);
     }
-    let options = OptionMap::new(roster, admitted).map_err(|error| match error {
+    let options = match variant {
+        WireVariant::RenameOptionHandles => OptionMap::new_renamed(roster, admitted),
+        _ => OptionMap::new(roster, admitted),
+    }
+    .map_err(|error| match error {
         ResolutionError::Limit => WideError::TooManyCandidates,
         _ => WideError::IneligibleCandidate,
     })?;
@@ -290,6 +313,13 @@ pub fn build<'a>(
         loop {
             match assemble(model, &trimmed, criteria.clone(), include_stuck) {
                 Ok(request) => {
+                    let request = if variant == WireVariant::ReverseOptionOrder {
+                        request
+                            .with_reversed_choice(WHICH)
+                            .map_err(WideError::Codec)?
+                    } else {
+                        request
+                    };
                     let bytes = request.to_json().map_err(WideError::Codec)?;
                     Redactor::default()
                         .inspect_payload(&bytes)
@@ -318,7 +348,7 @@ pub fn build<'a>(
     Err(WideError::RequestTooLarge)
 }
 
-/// One real candidate kept for the detailed rerank, with its raw wide value.
+/// One real candidate kept for the detailed rerank, with its normalized wide value.
 #[derive(Clone, Copy, Debug)]
 pub struct Shortlisted<'a> {
     pub skill: AdvisorySkill<'a>,
@@ -329,7 +359,7 @@ pub struct Shortlisted<'a> {
 pub enum WideDecision<'a> {
     /// `needs_skill` fell below the gate: `abstain / low-need`, no rerank.
     LowNeed,
-    /// The best `M_effective` real candidates, highest raw probability first,
+    /// The best `M_effective` real candidates, highest normalized probability first,
     /// ties by stable skill ID. The sentinel never takes a slot.
     Shortlist(Vec<Shortlisted<'a>>),
 }
@@ -338,13 +368,13 @@ pub enum WideDecision<'a> {
 pub struct WideOutcome<'a> {
     /// Mean of the three oriented gates; a heuristic, not a probability.
     pub needs_skill: f64,
-    /// The sentinel's raw wide probability, kept as evidence.
+    /// The sentinel's normalized wide probability; the codec retains raw values.
     pub none_probability: f64,
     pub choice_confidence: f64,
     pub phase: BTreeMap<String, f64>,
     pub top: usize,
     pub decision: WideDecision<'a>,
-    /// The best `M_effective` candidates by raw probability whatever the gate
+    /// The best `M_effective` candidates by normalized probability whatever the gate
     /// decided: intrinsic shortlist evidence for evaluation, never a decision.
     pub intrinsic_shortlist: Vec<Shortlisted<'a>>,
 }

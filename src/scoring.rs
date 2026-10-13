@@ -91,7 +91,8 @@ impl Weights {
 #[derive(Clone, Copy, Debug)]
 pub struct Input<'a> {
     pub id: &'a SkillId,
-    /// The candidate's own raw rerank Choice probability.
+    /// The candidate's validated rerank Choice probability, as supplied by
+    /// eligibility (the production codec renormalizes accepted distributions).
     pub rerank: f64,
     pub fit: f64,
     /// Finite centered prior adjustment; zero when priors are disabled.
@@ -171,7 +172,12 @@ pub fn rank(inputs: &[Input<'_>], weights: Weights, top_k: usize) -> Result<Rank
     }
     let max = utilities.iter().copied().fold(f64::NEG_INFINITY, f64::max);
     let exps: Vec<f64> = utilities.iter().map(|u| (u - max).exp()).collect();
-    let total: f64 = exps.iter().sum();
+    // Floating-point addition is order-sensitive. Canonicalize only the
+    // reduction, so a permutation of the same inputs cannot change scores;
+    // caller indices and the stable-ID tie rule remain intact.
+    let mut summands = exps.clone();
+    summands.sort_by(f64::total_cmp);
+    let total: f64 = summands.iter().sum();
     let mut scored: Vec<Scored> = utilities
         .iter()
         .zip(&exps)

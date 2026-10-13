@@ -56,6 +56,19 @@ unambiguous.
 - it runs every catalog target remotely through RCH, with no test-name filter;
 - it writes per-case records to `cases.jsonl` in its artifact directory.
 
+Artifacts are private to their owner. `started.json` freezes the local source,
+lockfile, toolchain, catalog and TLS fixture identities before RCH. Bounded
+`events.jsonl` and `summary.json` retain expected and actual mapped test results,
+the observed suite duration, and failed or missing cases even when RCH fails.
+Individual test timings and fault markers remain null unless instrumented; the
+P5 CLI/TLS controls report their actual binary digest, compiler identities,
+attempt counts, canary checks and reached stale-handle fault. Structured records
+omit raw bodies and artifact paths. A planted canary has both leak and clean
+mechanics controls. Source stability, remote completion and complete control
+receipts are required alongside the case results. The local source snapshot
+does not establish the remote input hashes: retain that separate executing-worker
+proof. These artifacts never establish independent quality.
+
 The suite passes only if every case passes. Catalogs live in
 `scripts/e2e/product/`. `scripts/e2e/run.sh --suite roster` delegates to this
 runner for the P2 catalog, and `--suite shadow-hook` does the same for P6:
@@ -65,6 +78,13 @@ runner for the P2 catalog, and `--suite shadow-hook` does the same for P6:
 
 That chain drives the hook with fixture payloads, so it is not native Claude
 Code evidence.
+
+`scripts/e2e/run.sh --suite evaluation [--binary PATH] --artifacts DIR`
+uses the same P5 production catalog as `--suite replay`. Its receipts identify
+the catalog as `replay`; it runs the evaluation, sampling, scoring, storage,
+observation, replay and P5 acceptance targets together. Cargo builds the tested
+binary from the current source through RCH; the optional `--binary` argument is
+accepted for compatibility and does not select an installed binary.
 
 `scripts/e2e/test_product_cases.py` shows that missing, failed, undeclared
 ignored, duplicated, incomplete, filtered and empty runs never pass a case. It

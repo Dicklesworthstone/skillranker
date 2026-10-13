@@ -33,7 +33,11 @@ pub fn encode_request(request: &Request) -> Result<Vec<u8>, CodecError> {
     // The wrapper also adds nesting. A valid inner request at the depth limit
     // must not exceed the same bound when transmitted in its native envelope.
     check_depth(&native, 0).map_err(|_| CodecError::InvalidJson)?;
-    let body = serde_json::to_vec(&native).map_err(|_| CodecError::TooLarge)?;
+    let body = if request.has_reversed_choice() {
+        request.ordered_native_json()?
+    } else {
+        serde_json::to_vec(&native).map_err(|_| CodecError::TooLarge)?
+    };
     // The intermediate serialization is bounded by the validated request plus
     // the fixed wrapper. An over-limit request must fail before attempt debit.
     if body.len() > MAX_REQUEST_BYTES {

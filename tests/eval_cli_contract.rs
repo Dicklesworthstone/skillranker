@@ -1037,7 +1037,7 @@ fn a_failed_live_variant_keeps_its_observed_wide_coverage_and_paid_usage() {
     let variants = report["baselines"]["robustness"]["variants"]
         .as_array()
         .unwrap();
-    assert_eq!(variants.len(), 3);
+    assert_eq!(variants.len(), 5);
     let paired = serde_json::json!({
         "cases": 1, "base_covered": 1, "variant_covered": 1,
         "lost": 0, "gained": 0, "unknown": 0
@@ -1255,7 +1255,7 @@ fn physical_manifest(root: &std::path::Path, name: &str, skills: &[&str]) -> Str
 #[test]
 fn authorized_roster_variants_send_fresh_requests_without_adding_families() {
     // Actual local files/TLS/CLI; descriptions, judgments and responses are synthetic controls.
-    for (cap, calls, executed_variants) in [("16", 12usize, 5usize), ("4", 2, 0)] {
+    for (cap, calls, executed_variants) in [("16", 14usize, 6usize), ("4", 2, 0)] {
         let root = live_workspace();
         let dir = root.join("workspace/.claude/skills/gamma");
         fs::create_dir_all(&dir).unwrap();
@@ -1337,7 +1337,7 @@ fn authorized_roster_variants_send_fresh_requests_without_adding_families() {
         assert_ne!(snapshots["decoy-roster"], snapshots["lookalike-roster"]);
         let robustness = &report["baselines"]["robustness"];
         let variants = robustness["variants"].as_array().unwrap();
-        assert_eq!(variants.len(), 5);
+        assert_eq!(variants.len(), 7);
         assert_eq!(
             variants
                 .iter()
@@ -1524,12 +1524,240 @@ fn automatic_live_evaluation_keeps_harness_specific_configured_inventory() {
 }
 
 #[test]
+fn wire_variants_send_changed_requests_and_report_fresh_paired_decisions() {
+    // Synthetic judgments and an order-sensitive TLS provider establish the
+    // mechanics, not independent Jev quality or stochastic robustness.
+    let mut binary_hasher = blake3::Hasher::new();
+    binary_hasher
+        .update_reader(fs::File::open(env!("CARGO_BIN_EXE_sr")).unwrap())
+        .unwrap();
+    let binary_digest = binary_hasher.finalize().to_hex().to_string();
+    let canary = "DO_NOT_LOG_PRODUCT_CANARY_7c391826";
+    let contains_canary = |bytes: &[u8]| {
+        bytes
+            .windows(canary.len())
+            .any(|part| part == canary.as_bytes())
+    };
+    assert!(contains_canary(canary.as_bytes())); // Deliberately violating observer control.
+    for (scenario, cap, calls, order_completed, handles_completed, handles_failed) in [
+        ("useful", "16", 12usize, true, true, false),
+        ("stale-renamed-option", "16", 11, true, false, true),
+        ("useful", "12", 10, true, false, false),
+        ("useful", "4", 2, false, false, false),
+    ] {
+        let started = std::time::Instant::now();
+        let root = live_workspace();
+        let ids = roster_ids(&root);
+        let (cases, labels) = live_inputs(&root, &[("wire", &ids)]);
+        let mut case: Value = serde_json::from_str(&fs::read_to_string(&cases).unwrap()).unwrap();
+        case["context"]["current_request"]["text"] = Value::String(format!(
+            "{}\nTYPESAFE_API_KEY={canary}",
+            case["context"]["current_request"]["text"].as_str().unwrap()
+        ));
+        fs::write(&cases, format!("{case}\n")).unwrap();
+        let before: Vec<_> = ["alpha", "beta"]
+            .into_iter()
+            .map(|name| {
+                let path = root
+                    .join("workspace/.claude/skills")
+                    .join(name)
+                    .join("SKILL.md");
+                let bytes = fs::read(&path).unwrap();
+                (path, bytes)
+            })
+            .collect();
+        let provider = LiveProvider::start(&root, scenario);
+        let output = run_live(
+            &root,
+            provider.port,
+            &[
+                "eval",
+                "--dataset",
+                &cases,
+                "--labels",
+                &labels,
+                "--online",
+                "--allow-network",
+                "--max-requests",
+                cap,
+                "--robustness",
+                "--json",
+            ],
+        );
+        let served = provider.finish();
+        let report = json_report(&output);
+        let artifact = root.join("wire-evaluation-report.json");
+        fs::write(&artifact, serde_json::to_vec_pretty(&report).unwrap()).unwrap();
+        assert_eq!(served.len(), calls, "{report}");
+        assert_eq!(report["accounting"]["http_attempts"], calls);
+        assert_eq!(report["accounting"]["requests"], calls);
+        assert_eq!(
+            report["accounting"]["unknown_usage_attempts"],
+            usize::from(handles_failed)
+        );
+        assert_eq!(report["completeness"]["cases_requested"], 1);
+        assert_eq!(report["completeness"]["cases_completed"], 1);
+        assert_eq!(report["metrics"]["judged_cases"], 1);
+        assert_eq!(report["cases"][0]["family_id"], "fam-wire");
+        assert_eq!(report["loss_summary"]["attempted_cases"], 1);
+        assert_eq!(report["loss_summary"]["total_loss"], 0);
+        assert_eq!(report["actionable"], false);
+        assert_eq!(report["gate_status"], "not-established");
+        assert!(report["disclosure_preflight"]["roster_snapshots"]["baseline"].is_string());
+        assert_eq!(report["disclosure_preflight"]["wire_variants_checked"], 2);
+        assert_eq!(report["disclosure_preflight"]["wire_variants_refused"], 0);
+        let robustness = &report["baselines"]["robustness"];
+        let variants = robustness["variants"].as_array().unwrap();
+        assert_eq!(variants.len(), 5);
+        for (name, completed, failed) in [
+            ("option-order", order_completed, false),
+            ("option-handle-renaming", handles_completed, handles_failed),
+        ] {
+            let score = variants.iter().find(|score| score["kind"] == name).unwrap();
+            assert_eq!(score["cases"], usize::from(completed));
+            assert_eq!(score["failures"], usize::from(failed));
+            assert_eq!(score["not_run"], usize::from(!completed && !failed));
+            assert_eq!(score["preflight_refused"], 0);
+            assert_eq!(score["top1_changed"], usize::from(completed));
+            assert_eq!(score["hit_lost"], 0);
+            assert_eq!(score["hit_gained"], 0);
+            let coverage = &score["intrinsic_shortlist_coverage"];
+            assert_eq!(coverage["cases"], usize::from(completed));
+            assert_eq!(coverage["unknown"], usize::from(failed));
+            if completed {
+                assert_eq!(coverage["base_covered"], 1);
+                assert_eq!(coverage["variant_covered"], 1);
+                assert_eq!(coverage["lost"], 0);
+                assert_eq!(coverage["gained"], 0);
+            }
+            assert!(
+                !robustness["not_computed"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|note| note.as_str().unwrap().starts_with(&format!("{name}:")))
+            );
+        }
+        if order_completed {
+            // Both stages must really reverse the wire criteria, while every
+            // other byte stays fixed. Parsed JSON alone would hide ordering.
+            for (base, reversed, question) in [(0, 8, "which"), (1, 9, "rerank")] {
+                let original = served[base]["body"].as_str().unwrap();
+                let changed = served[reversed]["body"].as_str().unwrap();
+                let value: Value = serde_json::from_str(original).unwrap();
+                assert_eq!(serde_json::from_str::<Value>(changed).unwrap(), value);
+                let criteria = value["questions"][question]["criteria"]
+                    .as_object()
+                    .unwrap();
+                let canonical = serde_json::to_string(criteria).unwrap();
+                let reverse = format!(
+                    "{{{}}}",
+                    criteria
+                        .iter()
+                        .rev()
+                        .map(|(key, value)| format!(
+                            "{}:{}",
+                            serde_json::to_string(key).unwrap(),
+                            serde_json::to_string(value).unwrap()
+                        ))
+                        .collect::<Vec<_>>()
+                        .join(",")
+                );
+                assert_eq!(original.matches(&canonical).count(), 1);
+                assert_ne!(original, changed);
+                assert_eq!(changed, original.replacen(&canonical, &reverse, 1));
+            }
+        }
+        if handles_completed || handles_failed {
+            let baseline: Value =
+                serde_json::from_str(served[0]["body"].as_str().unwrap()).unwrap();
+            let renamed: Value =
+                serde_json::from_str(served[10]["body"].as_str().unwrap()).unwrap();
+            let old = baseline["questions"]["which"]["criteria"]
+                .as_object()
+                .unwrap();
+            let new = renamed["questions"]["which"]["criteria"]
+                .as_object()
+                .unwrap();
+            assert!(
+                old.keys()
+                    .filter(|key| key.as_str() != "__none__")
+                    .all(|key| key.starts_with('o'))
+            );
+            assert!(
+                new.keys()
+                    .filter(|key| key.as_str() != "__none__")
+                    .all(|key| key.starts_with('r'))
+            );
+            let mut old_meanings: Vec<_> = old.values().map(Value::to_string).collect();
+            let mut new_meanings: Vec<_> = new.values().map(Value::to_string).collect();
+            old_meanings.sort();
+            new_meanings.sort();
+            assert_eq!(old_meanings, new_meanings);
+            assert_ne!(served[0]["body"], served[10]["body"]);
+            if handles_completed {
+                let rerank: Value =
+                    serde_json::from_str(served[11]["body"].as_str().unwrap()).unwrap();
+                let questions = rerank["questions"].as_object().unwrap();
+                assert!(!questions.keys().any(|key| key.starts_with("fits::o")));
+                for option in questions["rerank"]["criteria"]
+                    .as_object()
+                    .unwrap()
+                    .keys()
+                    .filter(|key| key.as_str() != "__none__")
+                {
+                    assert!(questions.contains_key(&format!("fits::{option}")));
+                }
+            }
+        }
+        for (path, bytes) in before {
+            assert_eq!(fs::read(path).unwrap(), bytes);
+        }
+        assert!(!contains_canary(&output.stdout));
+        assert!(!contains_canary(&output.stderr));
+        for request in &served {
+            assert!(!contains_canary(
+                request["body"].as_str().unwrap().as_bytes()
+            ));
+        }
+        assert!(!contains_canary(&fs::read(&artifact).unwrap()));
+        assert_eq!(
+            served.iter().filter(|r| r["fault_reached"] == true).count(),
+            usize::from(handles_failed)
+        );
+        if handles_failed {
+            assert_eq!(served[10]["fault_reached"], true);
+        }
+        println!(
+            "{}",
+            serde_json::json!({
+                "schema_version": 1, "case": "prespecified-wire-variants",
+                "stage": "synthetic-local-tls-evaluation", "scenario": scenario,
+                "attempt_cap": cap, "artifact": artifact,
+                "compiled_source": option_env!("RCH_BUILD_SOURCE").unwrap_or("unbound"),
+                "binary_blake3": &binary_digest,
+                "platform": format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH),
+                "computation_digest": env!("SKILLRANKER_REPLAY_COMPUTATION_DIGEST"),
+                "numeric_build_digest": env!("SKILLRANKER_NUMERIC_BUILD_DIGEST"),
+                "elapsed_ns": started.elapsed().as_nanos(),
+                "http_attempts": report["accounting"]["http_attempts"],
+                "unknown_usage_attempts": report["accounting"]["unknown_usage_attempts"],
+                "fault_reached": served.iter().any(|r| r["fault_reached"] == true),
+                "leak_detector_checked": true,
+                "independent_quality": false, "public_provider": false,
+                "report": &report,
+            })
+        );
+    }
+}
+
+#[test]
 fn hostile_descriptions_are_measured_as_data_without_local_authority() {
     // Actual CLI, authorized files and TLS; synthetic judgments/answers are
     // deliberately not evidence that Jev resists these ranking instructions.
     for (scenario, cap, expected_calls, expected_failures) in [
-        ("useful", "16", 10usize, 0usize),
-        ("foreign-variant-option", "16", 9, 1),
+        ("useful", "16", 14usize, 0usize),
+        ("foreign-variant-option", "16", 13, 1),
         ("useful", "4", 2, 0),
     ] {
         let root = live_workspace();
@@ -1612,7 +1840,7 @@ fn hostile_descriptions_are_measured_as_data_without_local_authority() {
         let variants = report["baselines"]["robustness"]["variants"]
             .as_array()
             .unwrap();
-        assert_eq!(variants.len(), 4);
+        assert_eq!(variants.len(), 6);
         assert_eq!(variants[0]["kind"], "hostile-description-roster");
         assert_eq!(variants[0]["failures"], expected_failures);
         assert!(

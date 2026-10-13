@@ -21,11 +21,123 @@ pub enum RequestFormat {
     TypeSafe,
     Cloudflare,
 }
+
+/// Prespecified evaluation perturbations. Ordinary ranking stays canonical.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum WireVariant {
+    #[default]
+    Canonical,
+    ReverseOptionOrder,
+    RenameOptionHandles,
+}
 /// How far a Choice distribution's total may be from one before it is
 /// rejected as malformed. Accepted answers are renormalized, and the raw
 /// values are kept. The live provider returns totals such as 0.99 for large
 /// Choices, so this is deliberately generous rather than a rounding bound.
 pub const SUM_TOLERANCE: f64 = 0.1;
+
+// Keep every surrounding field's normal provider encoding unchanged. Only
+// the selected skill Choice's criteria entries reverse; phase and fit questions
+// retain their original meaning and ordering. All writes use BoundedBuffer.
+struct OrderedRequest<'a>(&'a Request, RequestFormat);
+struct OrderedInput<'a>(&'a Request);
+struct OrderedQuestions<'a>(&'a Request, RequestFormat);
+struct OrderedQuestion<'a>(&'a Question, bool, RequestFormat);
+struct OrderedCriteria<'a>(&'a BTreeMap<String, String>);
+
+impl Serialize for OrderedRequest<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        match self.1 {
+            RequestFormat::TypeSafe => {
+                let mut map = serializer.serialize_map(Some(3))?;
+                map.serialize_entry("model", &self.0.model)?;
+                map.serialize_entry("state", &self.0.state)?;
+                map.serialize_entry("questions", &OrderedQuestions(self.0, self.1))?;
+                map.end()
+            }
+            RequestFormat::Cloudflare => {
+                let mut map = serializer.serialize_map(Some(2))?;
+                map.serialize_entry("input", &OrderedInput(self.0))?;
+                map.serialize_entry("model", &self.0.model)?;
+                map.end()
+            }
+        }
+    }
+}
+impl Serialize for OrderedInput<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(Some(2))?;
+        map.serialize_entry(
+            "questions",
+            &OrderedQuestions(self.0, RequestFormat::Cloudflare),
+        )?;
+        map.serialize_entry("state", &self.0.state)?;
+        map.end()
+    }
+}
+impl Serialize for OrderedQuestions<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(Some(self.0.questions.len()))?;
+        for (key, question) in &self.0.questions {
+            map.serialize_entry(
+                key,
+                &OrderedQuestion(
+                    question,
+                    self.0.reverse_choice.as_deref() == Some(key.as_str()),
+                    self.1,
+                ),
+            )?;
+        }
+        map.end()
+    }
+}
+impl Serialize for OrderedQuestion<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::{Error, SerializeMap};
+        if self.1
+            && let Question::Choice {
+                instructions,
+                criteria,
+            } = self.0
+        {
+            let mut map = serializer.serialize_map(Some(3))?;
+            match self.2 {
+                RequestFormat::TypeSafe => {
+                    map.serialize_entry("type", "choice")?;
+                    map.serialize_entry("instructions", instructions)?;
+                    map.serialize_entry("criteria", &OrderedCriteria(criteria))?;
+                }
+                RequestFormat::Cloudflare => {
+                    map.serialize_entry("criteria", &OrderedCriteria(criteria))?;
+                    map.serialize_entry("instructions", instructions)?;
+                    map.serialize_entry("type", "choice")?;
+                }
+            }
+            map.end()
+        } else if self.2 == RequestFormat::Cloudflare {
+            // The normal native codec passes through Value, whose object
+            // fields are canonical. Preserve that encoding for other questions.
+            serde_json::to_value(self.0)
+                .map_err(S::Error::custom)?
+                .serialize(serializer)
+        } else {
+            self.0.serialize(serializer)
+        }
+    }
+}
+impl Serialize for OrderedCriteria<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(Some(self.0.len()))?;
+        for (key, value) in self.0.iter().rev() {
+            map.serialize_entry(key, value)?;
+        }
+        map.end()
+    }
+}
 
 /// Errors deliberately contain no input, provider body, keys, or parser details.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -158,6 +270,8 @@ pub struct Request {
     model: String,
     state: Value,
     questions: BTreeMap<String, Question>,
+    #[serde(skip)]
+    reverse_choice: Option<String>,
 }
 impl Request {
     pub fn new(
@@ -175,6 +289,7 @@ impl Request {
             model,
             state,
             questions: map,
+            reverse_choice: None,
         };
         request.to_json()?;
         Ok(request)
@@ -195,8 +310,33 @@ impl Request {
         &self.questions
     }
 
+    pub(crate) fn with_reversed_choice(mut self, question: &str) -> Result<Self, CodecError> {
+        if !matches!(self.questions.get(question), Some(Question::Choice { .. })) {
+            return Err(CodecError::InvalidRequest);
+        }
+        self.reverse_choice = Some(question.to_owned());
+        Ok(self)
+    }
+
+    pub(super) fn has_reversed_choice(&self) -> bool {
+        self.reverse_choice.is_some()
+    }
+
+    // Cloudflare's caller already validated the logical request and native
+    // wrapper depth. This changes only the selected Choice's criteria order.
+    pub(super) fn ordered_native_json(&self) -> Result<Vec<u8>, CodecError> {
+        let mut buffer = BoundedBuffer(Vec::new());
+        serde_json::to_writer(
+            &mut buffer,
+            &OrderedRequest(self, RequestFormat::Cloudflare),
+        )
+        .map_err(|_| CodecError::TooLarge)?;
+        Ok(buffer.0)
+    }
+
     /// Final bounded wire bytes, shared by previews, disclosure admission and
-    /// HTTP. `to_json` remains the logical canonical/cache evidence encoding.
+    /// HTTP. `to_json` is the logical request evidence encoding; evaluation
+    /// order variants preserve their criteria order in those bytes as well.
     pub fn to_wire_json(&self, format: RequestFormat) -> Result<Vec<u8>, CodecError> {
         match format {
             RequestFormat::TypeSafe => self.to_json(),
@@ -223,7 +363,12 @@ impl Request {
             question.validate()?;
         }
         let mut buffer = BoundedBuffer(Vec::new());
-        serde_json::to_writer(&mut buffer, self).map_err(|_| CodecError::TooLarge)?;
+        if self.has_reversed_choice() {
+            serde_json::to_writer(&mut buffer, &OrderedRequest(self, RequestFormat::TypeSafe))
+                .map_err(|_| CodecError::TooLarge)?;
+        } else {
+            serde_json::to_writer(&mut buffer, self).map_err(|_| CodecError::TooLarge)?;
+        }
         // Borrowed depth checks precede serialization; no duplicate value tree is built.
         Ok(buffer.0)
     }

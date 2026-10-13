@@ -160,6 +160,8 @@ pub fn registry() -> Value {
             "replay_computation": crate::replay::frozen::COMPUTATION_VERSION,
         },
         "evaluation": {
+            "wire_variants": ["option-order", "option-handle-renaming"],
+            "wire_variant_source": "prespecified skill Choice reversal or opaque-handle bijection; stable identities/content unchanged",
             "roster_variants": ["decoy-roster", "lookalike-roster", "hostile-description-roster"],
             "roster_source": "explicit authorized file-backed manifests; unchanged baseline plus additions",
             "roster_previews": "separate wide request and complete local inventory bindings",

@@ -209,6 +209,7 @@ struct CaseCapture {
 /// evaluated stages and incurred usage are never dropped.
 #[derive(Default)]
 struct Progress {
+    wire_variant: crate::jev::codec::WireVariant,
     admitted: Option<Admitted>,
     evaluated: Evaluated,
     metrics: ExecutionMetrics,
@@ -436,16 +437,40 @@ pub(crate) async fn execute_pipeline_with_recording(
     execute_pipeline_supplied(invocation, cx, args, transport, None, None, None).await
 }
 
-/// Rank one normalized context already held in memory, such as a case of an
-/// evaluation batch. `args.source_options.context` must name the case (it
-/// selects normalized input); these bytes replace reading that path and meet
-/// the same size bound and parser.
+/// Owned normalized input; wire perturbations are set only by the evaluation
+/// boundary, never by transcript fields, project configuration or ordinary rank.
+pub struct EvaluationInput {
+    bytes: Vec<u8>,
+    wire_variant: crate::jev::codec::WireVariant,
+}
+impl From<Vec<u8>> for EvaluationInput {
+    fn from(bytes: Vec<u8>) -> Self {
+        Self {
+            bytes,
+            wire_variant: crate::jev::codec::WireVariant::Canonical,
+        }
+    }
+}
+impl EvaluationInput {
+    pub(crate) fn with_wire_variant(
+        bytes: Vec<u8>,
+        wire_variant: crate::jev::codec::WireVariant,
+    ) -> Self {
+        Self {
+            bytes,
+            wire_variant,
+        }
+    }
+}
+
+/// Rank one normalized context already held in memory. The named normalized
+/// source is replaced by these bytes, under the same input bound and parser.
 pub async fn execute_pipeline_with_context(
     invocation: &ProcessInvocation,
     cx: &Cx,
     args: RankArgs,
     transport: Option<&dyn JevTransport>,
-    context: Vec<u8>,
+    context: impl Into<EvaluationInput>,
     evidence: &mut StageEvidence,
     expected_wide_digest: Option<WidePreview>,
 ) -> Result<OutputDocument, PipelineFailure> {
@@ -454,7 +479,7 @@ pub async fn execute_pipeline_with_context(
         cx,
         args,
         transport,
-        Some(context),
+        Some(context.into()),
         Some(evidence),
         expected_wide_digest,
     )
@@ -588,7 +613,7 @@ async fn execute_pipeline_supplied(
     cx: &Cx,
     mut args: RankArgs,
     transport: Option<&dyn JevTransport>,
-    supplied_context: Option<Vec<u8>>,
+    supplied_context: Option<EvaluationInput>,
     evidence: Option<&mut StageEvidence>,
     expected_wide_digest: Option<WidePreview>,
 ) -> Result<PipelineOutcome, PipelineFailure> {
@@ -621,8 +646,13 @@ async fn execute_pipeline_supplied(
     }
     let save_case = args.save_case.clone();
     let effects = args.gate.receipt();
+    let (supplied_context, wire_variant) = supplied_context
+        .map_or((None, crate::jev::codec::WireVariant::Canonical), |input| {
+            (Some(input.bytes), input.wire_variant)
+        });
     let mut progress = Progress {
         supplied_context,
+        wire_variant,
         stage_evidence: evidence.is_some().then(StageEvidence::default),
         expected_wide_digest,
         ..Progress::default()
@@ -2660,12 +2690,14 @@ async fn rank_once(
     let mut session: Option<RetrySession<'_>> = None;
 
     // 11. Stage 1 (Wide) Call or Cache Hit
-    let wide_builder = wide::build(
+    let wire_variant = progress.wire_variant;
+    let wide_builder = wide::build_with_variant(
         &roster,
         &candidate_ids,
         &rendered_context,
         effective.model().as_str(),
         false, // include_stuck
+        wire_variant,
     )
     .map_err(|e| failure(e.kind(), format!("Wide build failed: {e:?}")))?;
 
@@ -2686,7 +2718,7 @@ async fn rank_once(
     }
 
     // Final provider bytes include the native wrapper's size and nesting.
-    // Logical builder bytes remain the canonical cache/replay identity below.
+    // Logical builder bytes retain evaluation option order for cache/replay identity below.
     let request_format = match effective.provider() {
         crate::config::Provider::TypeSafe => crate::jev::codec::RequestFormat::TypeSafe,
         crate::config::Provider::Cloudflare => crate::jev::codec::RequestFormat::Cloudflare,
@@ -2715,11 +2747,12 @@ async fn rank_once(
                     format!("Shortlist IDs must be distinct wide candidates, at most {shortlist}"),
                 ));
             }
-            let rerank_builder = rerank::build(
+            let rerank_builder = rerank::build_with_variant(
                 &roster,
                 &args.shortlist_ids,
                 &rendered_context,
                 effective.model().as_str(),
+                wire_variant,
             )
             .map_err(|e| failure(e.kind(), format!("Rerank build failed: {e:?}")))?;
             let rerank_wire = rerank_builder
@@ -2831,7 +2864,14 @@ async fn rank_once(
         let mut rerank = None;
         if let WideDecision::Shortlist(list) = &outcome.decision {
             let ids: Vec<SkillId> = list.iter().map(|s| s.skill.binding.id.clone()).collect();
-            let builder = rerank::build(&roster, &ids, &rendered_context, active_model).ok()?;
+            let builder = rerank::build_with_variant(
+                &roster,
+                &ids,
+                &rendered_context,
+                active_model,
+                wire_variant,
+            )
+            .ok()?;
             // Keyed to this wide answer, so only the rerank recorded with it
             // can complete the pair (sr-z1u0).
             let rerank_fp = fingerprint(
@@ -3245,11 +3285,12 @@ async fn rank_once(
         "rerank",
         shortlisted.iter().map(|s| &s.skill),
     ));
-    let rerank_builder = rerank::build(
+    let rerank_builder = rerank::build_with_variant(
         &roster,
         &shortlist_ids,
         &rendered_context,
         effective.model().as_str(),
+        wire_variant,
     )
     .map_err(|e| failure(e.kind(), format!("Rerank build failed: {e:?}")))?;
 

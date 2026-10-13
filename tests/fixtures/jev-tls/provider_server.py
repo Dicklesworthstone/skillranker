@@ -21,6 +21,7 @@ Scenarios:
   unauthorized    every attempt is a 401
   unauthorized-variant-rerank  only the second rerank is a 401, after its wide answer
   foreign-variant-option  only the second wide answer chooses an invented handle
+  stale-renamed-option  renamed wide chooses an obsolete canonical handle
   slow-wide       like useful; the wide answer is delayed by TEXT seconds
   hold-wide       like useful; write PATH when wide is held, release on stdin
   drift           like useful, but every choice distribution sums to 0.92,
@@ -69,6 +70,9 @@ def answer(key, question, stage):
         choice = "foreign-manufactured-skill" if (
             scenario == "foreign-variant-option" and stage == "wide"
             and key == "which" and stages.count("wide") == 2) else favored
+        if scenario == "stale-renamed-option" and stage == "wide" and key == "which" and any(
+                option.startswith("r") for option in skills):
+            choice = "o000"
         return {"type": "choice", "choice": choice, "probabilities": probabilities,
                 "confidence": 0.8}
     value = 0.5
@@ -154,9 +158,13 @@ while True:
             and stages.count("rerank") == 2):
         status = "401 Unauthorized"
     inputs, outputs = USAGE.get(stage, (1, 1))
+    answers = {key: answer(key, question, stage) for key, question in questions.items()}
+    fault_reached = (scenario == "stale-renamed-option" and stage == "wide"
+                     and answers.get("which", {}).get("choice") == "o000"
+                     and any(key.startswith("r") for key in questions["which"]["criteria"]))
     body = json.dumps({
         "model": "jev-test",
-        "answers": {key: answer(key, question, stage) for key, question in questions.items()},
+        "answers": answers,
         "usage": {"input_tokens": inputs, "output_tokens": outputs},
     }).encode()
     extra = ""
@@ -166,7 +174,8 @@ while True:
     emit({"stage": stage, "status": int(status.split()[0]), "request_bytes": length,
           "options": len(questions.get("which", questions.get("rerank", {"criteria": {}}))[
               "criteria"]),
-          "authorization": "authorization" in fields, "body": body_text})
+          "authorization": "authorization" in fields, "body": body_text,
+          "fault_reached": fault_reached})
     try:
         stream.sendall((f"HTTP/1.1 {status}\r\nContent-Type: application/json\r\n{extra}"
                         f"Content-Length: {len(body)}\r\nConnection: close\r\n\r\n").encode()

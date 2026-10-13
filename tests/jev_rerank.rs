@@ -12,7 +12,7 @@ use skillranker::privacy::ContextProfile;
 use skillranker::roster::resolution::{BindingSpec, ResolvedRoster, SkillEntry};
 use skillranker::roster::{InvocationName, InvocationRestrictions, Visibility};
 use skillranker::runtime::{EntryClock, ProcessInvocation};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -503,4 +503,252 @@ fn shortlist_order_preserves_canonical_handles_and_exact_rerank_estimates() {
         (by_name, outcome.none_probability.to_bits())
     };
     assert_eq!(estimates(&forward), estimates(&reversed));
+}
+
+#[test]
+fn genuine_wire_variants_preserve_fit_bindings_eligibility_and_exact_scores() {
+    use skillranker::eligibility::{LoadedState, after_rerank};
+    use skillranker::jev::codec::{CodecError, Question, RequestFormat, WireVariant};
+    use skillranker::jev::rerank::build_with_variant;
+    use skillranker::scoring::{Input, Weights, rank};
+    let root = tree();
+    let roster = roster_with(&root, &simple(3));
+    let selected = ids(&roster);
+    let canonical = build(&roster, &selected, &plain_state(), "typesafe/jev").unwrap();
+    let bindings = |request: &RerankRequest<'_>| {
+        request
+            .options()
+            .entries()
+            .values()
+            .map(|skill| {
+                (
+                    skill.binding.id.as_str().to_owned(),
+                    (
+                        skill.binding.invocation.as_str().to_owned(),
+                        skill.record.source_content.as_str().to_owned(),
+                    ),
+                )
+            })
+            .collect::<BTreeMap<_, _>>()
+    };
+    let original_bindings = bindings(&canonical);
+    for variant in [
+        WireVariant::ReverseOptionOrder,
+        WireVariant::RenameOptionHandles,
+    ] {
+        let varied =
+            build_with_variant(&roster, &selected, &plain_state(), "typesafe/jev", variant)
+                .unwrap();
+        assert_eq!(original_bindings, bindings(&varied));
+        for (option, skill) in varied.options().entries() {
+            let Question::Noul { instructions, .. } =
+                &varied.request().questions()[&format!("{FIT_PREFIX}{}", option.as_str())]
+            else {
+                unreachable!()
+            };
+            assert!(
+                instructions
+                    .as_str()
+                    .unwrap()
+                    .contains(skill.binding.invocation.as_str())
+            );
+        }
+        for format in [RequestFormat::TypeSafe, RequestFormat::Cloudflare] {
+            let before = canonical.request().to_wire_json(format).unwrap();
+            let after = varied.request().to_wire_json(format).unwrap();
+            assert_ne!(before, after);
+            assert_eq!(before.len(), after.len());
+            if variant == WireVariant::ReverseOptionOrder {
+                assert_eq!(canonical.shortlist_id(), varied.shortlist_id());
+                assert_eq!(
+                    serde_json::from_slice::<Value>(&before).unwrap(),
+                    serde_json::from_slice::<Value>(&after).unwrap()
+                );
+                let Question::Choice { criteria, .. } = &canonical.request().questions()[RERANK]
+                else {
+                    unreachable!()
+                };
+                let original = serde_json::to_string(criteria).unwrap();
+                let reversed = format!(
+                    "{{{}}}",
+                    criteria
+                        .iter()
+                        .rev()
+                        .map(|(key, text)| format!(
+                            "{}:{}",
+                            serde_json::to_string(key).unwrap(),
+                            serde_json::to_string(text).unwrap()
+                        ))
+                        .collect::<Vec<_>>()
+                        .join(",")
+                );
+                let before = String::from_utf8(before).unwrap();
+                assert_eq!(before.matches(&original).count(), 1);
+                assert_eq!(
+                    String::from_utf8(after).unwrap(),
+                    before.replacen(&original, &reversed, 1)
+                );
+            } else {
+                assert_ne!(canonical.shortlist_id(), varied.shortlist_id());
+                assert!(
+                    canonical
+                        .options()
+                        .entries()
+                        .keys()
+                        .all(|old| !varied.options().entries().contains_key(old))
+                );
+                assert!(
+                    varied
+                        .request()
+                        .questions()
+                        .keys()
+                        .all(|key| !key.starts_with("fits::o"))
+                );
+            }
+        }
+        for (probabilities, none) in [
+            ([0.7, 0.2, 0.1], 0.0),
+            ([0.45, 0.45, 0.1], 0.0),
+            ([0.6, 0.3, 0.09], 0.0),
+            ([0.3, 0.2, 0.1], 0.4),
+        ] {
+            let by_name: BTreeMap<_, _> = (0..3)
+                .map(|i| {
+                    (
+                        format!("skill{i:03}"),
+                        (probabilities[i], [0.8, 0.7, 0.9][i]),
+                    )
+                })
+                .collect();
+            let body = |request: &RerankRequest<'_>| {
+                let mut probabilities: Vec<_> = request
+                    .options()
+                    .entries()
+                    .iter()
+                    .map(|(option, skill)| {
+                        (
+                            option.as_str(),
+                            by_name[skill.binding.invocation.as_str()].0,
+                        )
+                    })
+                    .collect();
+                probabilities.push((NONE_OPTION, none));
+                let fits: Vec<_> = request
+                    .options()
+                    .entries()
+                    .values()
+                    .map(|skill| by_name[skill.binding.invocation.as_str()].1)
+                    .collect();
+                response_body(request, &probabilities, &fits)
+            };
+            let before = body(&canonical);
+            let after = body(&varied);
+            for native in [false, true] {
+                let decode = |request: &RerankRequest<'_>, bytes: &[u8]| {
+                    if native {
+                        let wire: Value = serde_json::from_slice(bytes).unwrap();
+                        skillranker::jev::cloudflare_codec::decode_response(
+                            request.request(),
+                            &serde_json::to_vec(
+                                &serde_json::json!({"success":true,"result":{"result":wire}}),
+                            )
+                            .unwrap(),
+                        )
+                    } else {
+                        request.request().decode_response(bytes)
+                    }
+                };
+                let a = decode(&canonical, &before).unwrap();
+                let b = decode(&varied, &after).unwrap();
+                let evaluated = |request: &RerankRequest<'_>, response| {
+                    let outcome = evaluate(request, response).unwrap();
+                    let estimates = outcome.estimates();
+                    let mapped: Vec<_> = estimates
+                        .iter()
+                        .map(|(id, estimate)| {
+                            let name = &original_bindings[id.as_str()].0;
+                            assert_eq!(estimate.fit.to_bits(), by_name[name].1.to_bits());
+                            let expected_total = if probabilities[2] == 0.09 { 0.99 } else { 1.0 };
+                            assert!(
+                                (estimate.rerank - by_name[name].0 / expected_total).abs() < 1e-12
+                            );
+                            (
+                                id.as_str().to_owned(),
+                                estimate.rerank.to_bits(),
+                                estimate.fit.to_bits(),
+                            )
+                        })
+                        .collect();
+                    let candidates: Vec<_> =
+                        request.options().entries().values().copied().collect();
+                    let eligible = after_rerank(
+                        &candidates,
+                        &estimates,
+                        outcome.none_probability,
+                        0.3,
+                        &Default::default(),
+                        LoadedState {
+                            branch: None,
+                            records: &[],
+                        },
+                    );
+                    let mut eligible_ids: Vec<_> = eligible
+                        .eligible
+                        .iter()
+                        .map(|s| s.skill.binding.id.as_str().to_owned())
+                        .collect();
+                    eligible_ids.sort();
+                    assert_eq!(eligible_ids.len(), if none == 0.0 { 3 } else { 0 });
+                    let scores = if eligible.eligible.is_empty() {
+                        None
+                    } else {
+                        let inputs: Vec<_> =
+                            eligible.eligible.iter().map(Input::from_eligible).collect();
+                        let ranking = rank(&inputs, Weights::DEFAULT, 2).unwrap();
+                        Some((
+                            ranking
+                                .returned
+                                .iter()
+                                .map(|s| {
+                                    (
+                                        inputs[s.index].id.as_str().to_owned(),
+                                        s.utility.to_bits(),
+                                        s.rank_score.to_bits(),
+                                    )
+                                })
+                                .collect::<Vec<_>>(),
+                            ranking.omitted_mass.to_bits(),
+                        ))
+                    };
+                    (
+                        mapped,
+                        outcome.none_probability.to_bits(),
+                        eligible_ids,
+                        eligible.verdict,
+                        scores,
+                    )
+                };
+                assert_eq!(evaluated(&canonical, &a), evaluated(&varied, &b));
+                let mut foreign: Value = serde_json::from_slice(&after).unwrap();
+                foreign["answers"][RERANK]["choice"] = serde_json::json!("foreign-handle");
+                assert_eq!(
+                    decode(&varied, &serde_json::to_vec(&foreign).unwrap()).err(),
+                    Some(CodecError::InvalidChoice)
+                );
+                if variant == WireVariant::RenameOptionHandles {
+                    assert_eq!(
+                        decode(&varied, &before).err(),
+                        Some(CodecError::QuestionMismatch)
+                    );
+                    let old: Value = serde_json::from_slice(&before).unwrap();
+                    let mut stale: Value = serde_json::from_slice(&after).unwrap();
+                    stale["answers"][RERANK] = old["answers"][RERANK].clone();
+                    assert_eq!(
+                        decode(&varied, &serde_json::to_vec(&stale).unwrap()).err(),
+                        Some(CodecError::OptionMismatch)
+                    );
+                }
+            }
+        }
+    }
 }

@@ -181,6 +181,14 @@ evidence and absent wide answers count as unknown, not misses. Intrinsic top-M
 coverage uses the wide answer even when the gate stops rerank. An operationally
 failed variant may still supply valid earlier-stage evidence; its decision
 failure remains counted separately. Unsent variants count only under `not_run`.
+`kind` permits `option-order` and `option-handle-renaming` for the prespecified
+wire arms. They retain stable identities and content, use fresh responses and
+separate exact wide previews, and stay within the base family. Preflight reports
+`wire_variants_checked` and `wire_variants_refused` separately from roster-arm
+counts; older reports default these counters to zero. Context-only library
+callbacks report these wire arms under `not_computed`; the variant-aware boundary
+routes them out of band, so imported case text cannot select a wire profile.
+
 `kind` also permits `decoy-roster`, `lookalike-roster`, and
 `hostile-description-roster` when authorized expanded
 file-backed manifests are supplied. Roster arms preserve the baseline candidates
@@ -192,7 +200,8 @@ bytes/redactions include them. `roster_snapshots` maps `baseline` and supplied
 roster-arm names to frozen local inventory digests (identities, content and
 eligibility), with no file paths or skill text. An empty map means no physical
 snapshot evidence was supplied by a library caller, or automatic discovery was
-used without an explicit manifest. A refused roster preview increments its variant
+used without an explicit manifest or robustness arms. CLI wire arms freeze the
+baseline inventory even when it is discovered automatically. A refused roster preview increments its variant
 `preflight_refused` and `not_run`, with no charged attempt or invented stage.
 These new counters default to zero in older schema-v1 reports.
 `--hostile-roster` selects operator-prespecified hostile descriptions in added

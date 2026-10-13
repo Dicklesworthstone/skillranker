@@ -10,7 +10,7 @@
 //! the local option map. Answers resolve only through that map; no text in a
 //! response becomes a skill name, path, command or endpoint.
 
-use super::codec::{Answer, CodecError, Question, Request, Response};
+use super::codec::{Answer, CodecError, Question, Request, Response, WireVariant};
 use super::wide::{NONE_OPTION, WideError};
 use crate::context::RenderedContextPayload;
 use crate::eligibility::Estimate;
@@ -193,13 +193,28 @@ pub fn build<'a>(
     state: &RenderedContextPayload,
     model: &str,
 ) -> Result<RerankRequest<'a>, WideError> {
+    build_with_variant(roster, shortlist, state, model, WireVariant::Canonical)
+}
+
+/// Evaluation-only wire perturbation, including consistently renamed fit keys.
+pub fn build_with_variant<'a>(
+    roster: &'a ResolvedRoster,
+    shortlist: &[SkillId],
+    state: &RenderedContextPayload,
+    model: &str,
+    variant: WireVariant,
+) -> Result<RerankRequest<'a>, WideError> {
     if shortlist.is_empty() {
         return Err(WideError::NoCandidates);
     }
     if shortlist.len() > super::wide::MAX_SIZE {
         return Err(WideError::TooManyCandidates);
     }
-    let options = OptionMap::new(roster, shortlist).map_err(|error| match error {
+    let options = match variant {
+        WireVariant::RenameOptionHandles => OptionMap::new_renamed(roster, shortlist),
+        _ => OptionMap::new(roster, shortlist),
+    }
+    .map_err(|error| match error {
         ResolutionError::Limit => WideError::TooManyCandidates,
         _ => WideError::IneligibleCandidate,
     })?;
@@ -216,6 +231,13 @@ pub fn build<'a>(
         loop {
             match assemble(model, &trimmed, &options, &described) {
                 Ok(request) => {
+                    let request = if variant == WireVariant::ReverseOptionOrder {
+                        request
+                            .with_reversed_choice(RERANK)
+                            .map_err(WideError::Codec)?
+                    } else {
+                        request
+                    };
                     let bytes = request.to_json().map_err(WideError::Codec)?;
                     Redactor::default()
                         .inspect_payload(&bytes)
@@ -245,7 +267,8 @@ pub fn build<'a>(
     Err(WideError::RequestTooLarge)
 }
 
-/// Raw rerank evidence, keyed by skill through the local option map only.
+/// Normalized rerank evidence, keyed through the local option map only.
+/// The validated codec response retains the provider's raw values separately.
 #[derive(Clone, Debug)]
 pub struct RerankOutcome<'a> {
     pub none_probability: f64,
