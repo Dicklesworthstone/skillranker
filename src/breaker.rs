@@ -23,10 +23,13 @@
 //! callers report. Authentication failures do not touch it; no safe shared
 //! credential identity exists, so they stay invocation-local.
 
-use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
+use rusqlite::{OptionalExtension, TransactionBehavior, params};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
+
+#[path = "breaker/store.rs"]
+mod store;
 
 /// Inside the private cache directory, beside the response cache.
 pub const BREAKER_FILE: &str = "breaker.sqlite3";
@@ -271,14 +274,23 @@ impl Breaker {
         }
         // No store yet means no failure was ever recorded: nothing to read,
         // and no reason to create one for a success.
-        if !create && std::fs::symlink_metadata(path).is_err() {
-            return None;
+        if !create {
+            match std::fs::symlink_metadata(path) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
+                Err(_) => {
+                    self.degraded.store(true, Ordering::Relaxed);
+                    return None;
+                }
+                Ok(_) => {}
+            }
         }
-        let result = transact(path, &self.origin, self.busy, change);
-        if result.is_none() {
-            self.degraded.store(true, Ordering::Relaxed);
+        match transact(path, &self.origin, self.busy, create, change) {
+            Ok(value) => value,
+            Err(_) => {
+                self.degraded.store(true, Ordering::Relaxed);
+                None
+            }
         }
-        result
     }
 }
 
@@ -286,12 +298,17 @@ fn transact<T>(
     path: &Path,
     origin: &str,
     busy: Duration,
+    create: bool,
     change: impl FnOnce(&mut Row) -> T,
-) -> Option<T> {
-    let mut connection = open(path, busy).ok()?;
-    let tx = connection
-        .transaction_with_behavior(TransactionBehavior::Immediate)
-        .ok()?;
+) -> rusqlite::Result<Option<T>> {
+    let Some(mut store) = store::open(path, busy, create)? else {
+        return Ok(None);
+    };
+    store.verify()?;
+    let tx = store
+        .connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)?;
+    store::verify_schema(&tx)?;
     let mut row = tx
         .query_row(
             "SELECT generation, open, failures, cooldown_ms, open_until_ms, probe_token,
@@ -311,8 +328,7 @@ fn transact<T>(
                 })
             },
         )
-        .optional()
-        .ok()?
+        .optional()?
         .unwrap_or_default();
     let before = row.clone();
     let value = change(&mut row);
@@ -337,62 +353,11 @@ fn transact<T>(
                 row.probe_expires_ms as i64,
                 row.retry_after_until_ms as i64
             ],
-        )
-        .ok()?;
+        )?;
     }
-    tx.commit().ok()?;
-    Some(value)
-}
-
-fn open(path: &Path, busy: Duration) -> rusqlite::Result<Connection> {
-    // NOFOLLOW refuses a symlink anywhere in the path, so spell macOS's
-    // trusted /tmp and /var aliases as their /private targets first.
-    let path = &crate::platform_path::storage_path(path.to_path_buf());
-    if let Some(parent) = path.parent() {
-        let mut builder = std::fs::DirBuilder::new();
-        builder.recursive(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::DirBuilderExt;
-            builder.mode(0o700);
-        }
-        builder
-            .create(parent)
-            .map_err(|_| rusqlite::Error::InvalidPath(parent.to_path_buf()))?;
-    }
-    let connection = Connection::open_with_flags(
-        path,
-        OpenFlags::SQLITE_OPEN_READ_WRITE
-            | OpenFlags::SQLITE_OPEN_CREATE
-            | OpenFlags::SQLITE_OPEN_NO_MUTEX
-            | OpenFlags::SQLITE_OPEN_NOFOLLOW,
-    )?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
-            .map_err(|_| rusqlite::Error::InvalidPath(path.to_path_buf()))?;
-    }
-    connection.busy_timeout(busy)?;
-    connection.set_db_config(rusqlite::config::DbConfig::SQLITE_DBCONFIG_DEFENSIVE, true)?;
-    let _: String = connection.query_row("PRAGMA journal_mode=WAL", [], |row| row.get(0))?;
-    connection.pragma_update(None, "synchronous", "NORMAL")?;
-    let page_size: i64 = connection.pragma_query_value(None, "page_size", |row| row.get(0))?;
-    connection.pragma_update(None, "max_page_count", MAX_BREAKER_BYTES / page_size.max(1))?;
-    connection.execute_batch(
-        "CREATE TABLE IF NOT EXISTS breaker_state (
-             origin TEXT PRIMARY KEY,
-             generation INTEGER NOT NULL,
-             open INTEGER NOT NULL CHECK(open IN (0, 1)),
-             failures INTEGER NOT NULL,
-             cooldown_ms INTEGER NOT NULL,
-             open_until_ms INTEGER NOT NULL,
-             probe_token TEXT,
-             probe_expires_ms INTEGER NOT NULL,
-             retry_after_until_ms INTEGER NOT NULL
-         ) STRICT;",
-    )?;
-    Ok(connection)
+    tx.commit()?;
+    store.verify()?;
+    Ok(Some(value))
 }
 
 #[cfg(test)]
