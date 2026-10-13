@@ -7,14 +7,70 @@ use super::{
 };
 use crate::runtime::EntryClock;
 use asupersync::Cx;
+use nix::dir::Dir;
 use nix::errno::Errno;
 use nix::fcntl::{AtFlags, OFlag, open, openat};
 use nix::sys::stat::{FileStat, Mode, SFlag, fstat, fstatat, mkdirat};
 use nix::sys::statfs::fstatfs;
 use nix::sys::statvfs::fstatvfs;
-use std::collections::BTreeSet;
 use std::fs::File;
 use std::path::{Component, Path, PathBuf};
+
+// Bound metadata work even when many empty files consume no byte quota. The
+// normal cache has only its database and SQLite sidecars. No file is removed
+// when this limit is exceeded; optional caching is refused instead.
+const MAX_CACHE_DIRECTORY_ENTRIES: usize = 4096;
+
+/// Inspect the held directory, not a second pathname that may name a different
+/// directory. Open a fresh directory stream: dup/try_clone would share an offset
+/// with the held descriptor and concurrent or repeated scans could skip files.
+/// Names remain OS bytes all the way from readdir to no-follow fstatat.
+fn inspect_directory(
+    handle: &File,
+    max_entries: usize,
+    quota_bytes: u64,
+    mut checkpoint: impl FnMut() -> Result<(), StoreError>,
+) -> Result<u64, StoreError> {
+    checkpoint()?;
+    let flags = OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC;
+    let fd = openat(handle, c".", flags, Mode::empty()).map_err(io_error)?;
+    let mut directory = Dir::from_fd(fd).map_err(io_error)?;
+    let mut entries = directory.iter();
+    let uid = nix::unistd::geteuid().as_raw();
+    let mut seen = 0_usize;
+    let mut bytes = 0_u64;
+    loop {
+        checkpoint()?;
+        let Some(entry) = entries.next() else {
+            // The final readdir may itself have consumed the remaining budget.
+            checkpoint()?;
+            return Ok(bytes);
+        };
+        let entry = entry.map_err(io_error)?;
+        let name = entry.file_name();
+        if name.to_bytes() == b"." || name.to_bytes() == b".." {
+            continue;
+        }
+        if seen >= max_entries {
+            return Err(StoreError::Quota);
+        }
+        seen += 1;
+        checkpoint()?;
+        match fstatat(handle, name, AtFlags::AT_SYMLINK_NOFOLLOW) {
+            Ok(stat) => {
+                owned_regular(&stat, uid)?;
+                bytes = bytes
+                    .checked_add(u64::try_from(stat.st_size).map_err(|_| StoreError::Quota)?)
+                    .filter(|total| *total <= quota_bytes)
+                    .ok_or(StoreError::Quota)?;
+            }
+            // SQLite may remove a sidecar during inspection. Count the visited
+            // name against the work cap even when it has just disappeared.
+            Err(Errno::ENOENT) => {}
+            Err(error) => return Err(io_error(error)),
+        }
+    }
+}
 
 pub(super) struct PrivateDirectory {
     pub path: PathBuf,
@@ -270,9 +326,9 @@ impl PrivateDirectory {
             identity: (stat.st_dev, stat.st_ino),
         };
         if create {
-            directory.admit_space()?;
+            directory.admit_space_with(|| check_work(clock, cx))?;
         } else {
-            directory.inspect_files()?;
+            directory.inspect_files_with(|| check_work(clock, cx))?;
         }
         Ok(directory)
     }
@@ -307,53 +363,19 @@ impl PrivateDirectory {
     }
 
     pub fn inspect_files(&self) -> Result<u64, StoreError> {
-        let uid = nix::unistd::geteuid().as_raw();
-        let mut bytes = 0_u64;
-        let mut checked_names = BTreeSet::new();
-        for suffix in ["", "-wal", "-shm", "-journal"] {
-            let name = format!("{CACHE_FILE}{suffix}");
-            match fstatat(&self.handle, name.as_str(), AtFlags::AT_SYMLINK_NOFOLLOW) {
-                Ok(stat) => {
-                    owned_regular(&stat, uid)?;
-                    bytes = bytes
-                        .checked_add(u64::try_from(stat.st_size).map_err(|_| StoreError::Quota)?)
-                        .ok_or(StoreError::Quota)?;
-                    checked_names.insert(name);
-                }
-                Err(Errno::ENOENT) => {}
-                Err(error) => return Err(io_error(error)),
-            }
-        }
-        if let Ok(entries) = std::fs::read_dir(&self.path) {
-            for entry in entries {
-                let entry = entry.map_err(|_| StoreError::Io)?;
-                let file_name = entry.file_name();
-                let name_str = file_name.to_string_lossy();
-                if checked_names.contains(name_str.as_ref()) {
-                    continue;
-                }
-                match fstatat(
-                    &self.handle,
-                    name_str.as_ref(),
-                    AtFlags::AT_SYMLINK_NOFOLLOW,
-                ) {
-                    Ok(stat) => {
-                        owned_regular(&stat, uid)?;
-                        bytes = bytes
-                            .checked_add(
-                                u64::try_from(stat.st_size).map_err(|_| StoreError::Quota)?,
-                            )
-                            .ok_or(StoreError::Quota)?;
-                    }
-                    Err(Errno::ENOENT) => {}
-                    Err(error) => return Err(io_error(error)),
-                }
-            }
-        }
-        if bytes > CACHE_QUOTA_BYTES {
-            return Err(StoreError::Quota);
-        }
-        Ok(bytes)
+        self.inspect_files_with(|| Ok(()))
+    }
+
+    fn inspect_files_with(
+        &self,
+        checkpoint: impl FnMut() -> Result<(), StoreError>,
+    ) -> Result<u64, StoreError> {
+        inspect_directory(
+            &self.handle,
+            MAX_CACHE_DIRECTORY_ENTRIES,
+            CACHE_QUOTA_BYTES,
+            checkpoint,
+        )
     }
 
     pub fn capacity_report(&self) -> Result<CacheCapacityReport, StoreError> {
@@ -386,10 +408,19 @@ impl PrivateDirectory {
     }
 
     pub fn admit_space(&self) -> Result<(), StoreError> {
+        self.admit_space_with(|| Ok(()))
+    }
+
+    fn admit_space_with(
+        &self,
+        mut checkpoint: impl FnMut() -> Result<(), StoreError>,
+    ) -> Result<(), StoreError> {
+        checkpoint()?;
         if !local_filesystem(&fstatfs(&self.handle).map_err(io_error)?) {
             return Err(StoreError::UnsupportedFilesystem);
         }
-        let bytes = self.inspect_files()?;
+        let bytes = self.inspect_files_with(&mut checkpoint)?;
+        checkpoint()?;
         let stat = fstatvfs(&self.handle).map_err(io_error)?;
         let available = u128::from(stat.blocks_available()) * u128::from(stat.fragment_size());
         recording_capacity(bytes, available)
@@ -403,9 +434,9 @@ impl PrivateDirectory {
     ) -> Result<File, StoreError> {
         self.revalidate(clock, cx)?;
         if create {
-            self.admit_space()?;
+            self.admit_space_with(|| check_work(clock, cx))?;
         } else {
-            self.inspect_files()?;
+            self.inspect_files_with(|| check_work(clock, cx))?;
         }
         let flags = OFlag::O_RDWR | OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK | OFlag::O_CLOEXEC;
         let fd = match openat(&self.handle, CACHE_FILE, flags, Mode::empty()) {
@@ -436,7 +467,7 @@ impl PrivateDirectory {
         cx: &Cx,
     ) -> Result<(), StoreError> {
         self.revalidate(clock, cx)?;
-        self.inspect_files()?;
+        self.inspect_files_with(|| check_work(clock, cx))?;
         let held = fstat(file).map_err(io_error)?;
         let current =
             fstatat(&self.handle, CACHE_FILE, AtFlags::AT_SYMLINK_NOFOLLOW).map_err(io_error)?;
@@ -477,3 +508,6 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod scan_tests;
