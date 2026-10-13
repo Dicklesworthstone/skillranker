@@ -28,11 +28,13 @@ use crate::jev::{CanonicalOrigin, RankingStage};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
 use serde::Deserialize;
 use std::fmt;
-use std::fs::{self, File, OpenOptions};
-use std::io::Write;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+mod guard_file;
+use guard_file::GuardLock;
 
 /// Relative to the trusted user configuration root.
 pub const GUARD_FILE: &str = "sr/allowance.toml";
@@ -228,49 +230,7 @@ impl AllowancePaths {
 
 /// Reads the guard without the lock, for inspection and the stateless check.
 pub fn read_guard(paths: &AllowancePaths) -> Result<Option<Guard>, AllowanceError> {
-    match fs::symlink_metadata(&paths.guard) {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(_) => Err(state("the guard file cannot be inspected")),
-        Ok(meta) if !meta.file_type().is_file() || meta.len() > GUARD_FILE_MAX_BYTES => {
-            Err(state("the guard path is not a bounded regular file"))
-        }
-        Ok(_) => {
-            let text = fs::read_to_string(&paths.guard)
-                .map_err(|_| state("the guard file cannot be read"))?;
-            Guard::decode(&text).map(Some)
-        }
-    }
-}
-
-/// The advisory lock that setup and every persistent admission share.
-struct GuardLock {
-    _flock: nix::fcntl::Flock<File>,
-}
-
-impl GuardLock {
-    fn acquire(paths: &AllowancePaths, budget: Duration) -> Result<Self, AllowanceError> {
-        let parent = paths
-            .guard
-            .parent()
-            .ok_or_else(|| state("the guard has no directory"))?;
-        create_private_dir(parent)?;
-        let started = Instant::now();
-        loop {
-            let handle = OpenOptions::new()
-                .create(true)
-                .truncate(false)
-                .write(true)
-                .open(paths.lock_path())
-                .map_err(|_| state("the guard lock cannot be opened"))?;
-            match nix::fcntl::Flock::lock(handle, nix::fcntl::FlockArg::LockExclusiveNonblock) {
-                Ok(flock) => return Ok(Self { _flock: flock }),
-                Err(_) if started.elapsed() < budget => {
-                    std::thread::sleep(Duration::from_millis(2));
-                }
-                Err(_) => return Err(state("the guard lock is busy")),
-            }
-        }
-    }
+    guard_file::read(&paths.guard)
 }
 
 fn create_private_dir(dir: &Path) -> Result<(), AllowanceError> {
@@ -288,32 +248,7 @@ fn create_private_dir(dir: &Path) -> Result<(), AllowanceError> {
 
 /// Replaces the guard durably: temporary file, fsync, rename, directory fsync.
 fn publish_guard(paths: &AllowancePaths, guard: &Guard) -> Result<(), AllowanceError> {
-    let parent = paths
-        .guard
-        .parent()
-        .ok_or_else(|| state("the guard has no directory"))?;
-    let tmp = parent.join(format!(
-        "allowance.toml.sr-tmp.{}_{}",
-        std::process::id(),
-        COUNTER.fetch_add(1, Ordering::Relaxed)
-    ));
-    let write = || -> std::io::Result<()> {
-        let mut handle = OpenOptions::new().create_new(true).write(true).open(&tmp)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600))?;
-        }
-        handle.write_all(guard.encode().as_bytes())?;
-        handle.sync_all()?;
-        fs::rename(&tmp, &paths.guard)?;
-        File::open(parent)?.sync_all()
-    };
-    write().map_err(|_| {
-        // Our own unpublished temporary file, never user data.
-        let _ = fs::remove_file(&tmp);
-        state("the guard could not be published durably")
-    })
+    guard_file::publish(paths, guard)
 }
 
 /// Opens the accounting database with the durability enforcement requires:
