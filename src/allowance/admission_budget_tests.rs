@@ -30,7 +30,7 @@ fn sqlite_wait_is_capped_and_expiry_cannot_reset_the_wait() {
     let db = Connection::open_in_memory().unwrap();
     let live = AdmissionBudget::start(Duration::from_secs(30));
     live.refresh_busy_wait(&db).unwrap();
-    let wait: u64 = db
+    let wait: i64 = db
         .pragma_query_value(None, "busy_timeout", |r| r.get(0))
         .unwrap();
     assert_eq!(wait, 25);
@@ -40,7 +40,7 @@ fn sqlite_wait_is_capped_and_expiry_cannot_reset_the_wait() {
             .refresh_busy_wait(&db)
             .is_err()
     );
-    let after: u64 = db
+    let after: i64 = db
         .pragma_query_value(None, "busy_timeout", |r| r.get(0))
         .unwrap();
     assert_eq!(after, 3, "expiry must not replenish a connection's wait");
