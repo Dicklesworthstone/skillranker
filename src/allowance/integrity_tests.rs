@@ -12,11 +12,13 @@ fn database() -> Connection {
 }
 
 fn paths() -> AllowancePaths {
-    let root = std::env::temp_dir().join(format!(
-        "sr-allowance-integrity-{}-{}",
-        std::process::id(),
-        COUNTER.fetch_add(1, Ordering::Relaxed)
-    ));
+    let root = std::fs::canonicalize("/tmp")
+        .expect("resolve trusted system temporary directory")
+        .join(format!(
+            "sr-allowance-integrity-{}-{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
     AllowancePaths::new(&root.join("config"), &root.join("cache"))
 }
 
@@ -44,7 +46,9 @@ fn empty_database_is_initializable_but_empty_metadata_is_not() {
     assert_eq!(read_meta(&empty).unwrap(), None);
     empty.execute_batch(ACCOUNTING_DDL).unwrap();
     assert!(read_meta(&empty).is_err());
-    empty.execute("INSERT INTO allowance_meta VALUES (1, 1, 1, 0)", []).unwrap();
+    empty
+        .execute("INSERT INTO allowance_meta VALUES (1, 1, 1, 0)", [])
+        .unwrap();
     assert_eq!(read_meta(&empty).unwrap(), Some((1, 1, 0)));
 }
 
@@ -59,35 +63,54 @@ fn metadata_requires_the_supported_version_and_valid_signed_values() {
         (1, 1, -1),
     ] {
         let db = database();
-        db.pragma_update(None, "ignore_check_constraints", true).unwrap();
+        db.pragma_update(None, "ignore_check_constraints", true)
+            .unwrap();
         db.execute(
             "UPDATE allowance_meta SET schema_version=?1, ready_generation=?2, last_charge_unix_ms=?3",
             params![schema, generation, last],
         ).unwrap();
-        db.pragma_update(None, "ignore_check_constraints", false).unwrap();
+        db.pragma_update(None, "ignore_check_constraints", false)
+            .unwrap();
         let before = db.total_changes();
-        assert!(read_meta(&db).is_err(), "invalid metadata {schema}/{generation}/{last}");
-        assert_eq!(db.total_changes(), before, "validation must not repair state");
+        assert!(
+            read_meta(&db).is_err(),
+            "invalid metadata {schema}/{generation}/{last}"
+        );
+        assert_eq!(
+            db.total_changes(),
+            before,
+            "validation must not repair state"
+        );
     }
     let db = database();
     db.execute(
-        "UPDATE allowance_meta SET ready_generation=?1, last_charge_unix_ms=?1", [i64::MAX],
-    ).unwrap();
-    assert_eq!(read_meta(&db).unwrap(), Some((1, i64::MAX as u64, i64::MAX as u64)));
+        "UPDATE allowance_meta SET ready_generation=?1, last_charge_unix_ms=?1",
+        [i64::MAX],
+    )
+    .unwrap();
+    assert_eq!(
+        read_meta(&db).unwrap(),
+        Some((1, i64::MAX as u64, i64::MAX as u64))
+    );
 }
 
 #[test]
 fn deleted_or_extra_metadata_rows_are_not_fresh_setup() {
     let db = database();
-    db.execute("INSERT INTO allowance_charges VALUES ('o', 0, 3)", []).unwrap();
+    db.execute("INSERT INTO allowance_charges VALUES ('o', 0, 3)", [])
+        .unwrap();
     db.execute("DELETE FROM allowance_meta", []).unwrap();
     assert!(read_meta(&db).is_err());
     assert_eq!(charged(&db, "o", 0).unwrap(), 3);
-    db.execute("INSERT INTO allowance_meta VALUES (1, 1, 1, 0)", []).unwrap();
+    db.execute("INSERT INTO allowance_meta VALUES (1, 1, 1, 0)", [])
+        .unwrap();
     assert!(read_meta(&db).is_ok());
-    db.pragma_update(None, "ignore_check_constraints", true).unwrap();
-    db.execute("INSERT INTO allowance_meta VALUES (2, 1, 1, 0)", []).unwrap();
-    db.pragma_update(None, "ignore_check_constraints", false).unwrap();
+    db.pragma_update(None, "ignore_check_constraints", true)
+        .unwrap();
+    db.execute("INSERT INTO allowance_meta VALUES (2, 1, 1, 0)", [])
+        .unwrap();
+    db.pragma_update(None, "ignore_check_constraints", false)
+        .unwrap();
     assert!(read_meta(&db).is_err());
 }
 
@@ -111,7 +134,9 @@ fn partial_foreign_and_extended_schemas_are_refused_without_repair() {
         assert_eq!(db.total_changes(), before);
     }
     let foreign = Connection::open_in_memory().unwrap();
-    foreign.execute_batch("CREATE TABLE unrelated (id INTEGER)").unwrap();
+    foreign
+        .execute_batch("CREATE TABLE unrelated (id INTEGER)")
+        .unwrap();
     assert!(read_meta(&foreign).is_err());
     assert!(read_meta(&database()).is_ok());
 }
@@ -119,15 +144,26 @@ fn partial_foreign_and_extended_schemas_are_refused_without_repair() {
 #[test]
 fn invalid_counts_are_not_clamped_and_valid_counts_are_not_changed() {
     let db = database();
-    assert_eq!(charged(&db, "o", 0).unwrap(), 0, "absent window is still empty");
+    assert_eq!(
+        charged(&db, "o", 0).unwrap(),
+        0,
+        "absent window is still empty"
+    );
     for attempts in [0, 1, 10_000, i64::from(u32::MAX)] {
-        db.execute("INSERT OR REPLACE INTO allowance_charges VALUES ('o', 0, ?1)", [attempts]).unwrap();
+        db.execute(
+            "INSERT OR REPLACE INTO allowance_charges VALUES ('o', 0, ?1)",
+            [attempts],
+        )
+        .unwrap();
         assert_eq!(charged(&db, "o", 0).unwrap(), attempts as u32);
     }
     for attempts in [-1, i64::from(u32::MAX) + 1, i64::MAX] {
-        db.pragma_update(None, "ignore_check_constraints", true).unwrap();
-        db.execute("UPDATE allowance_charges SET attempts=?1", [attempts]).unwrap();
-        db.pragma_update(None, "ignore_check_constraints", false).unwrap();
+        db.pragma_update(None, "ignore_check_constraints", true)
+            .unwrap();
+        db.execute("UPDATE allowance_charges SET attempts=?1", [attempts])
+            .unwrap();
+        db.pragma_update(None, "ignore_check_constraints", false)
+            .unwrap();
         let before = db.total_changes();
         assert!(charged(&db, "o", 0).is_err());
         assert_eq!(db.total_changes(), before);
@@ -196,7 +232,10 @@ fn lost_accounting_cannot_reset_a_ready_allowance_and_restoration_keeps_the_char
     }
     fs::rename(saved, &paths.accounting).unwrap();
     assert!(apply_setup(&paths, 1, LOCK, None).unwrap().unchanged);
-    assert!(matches!(debit(&paths), Err(AllowanceError::Exhausted { .. })));
+    assert!(matches!(
+        debit(&paths),
+        Err(AllowanceError::Exhausted { .. })
+    ));
 }
 
 #[test]
@@ -210,7 +249,10 @@ fn first_activation_resumes_at_both_crash_points_with_a_working_budget() {
         assert!(resumed.resumes_intent);
         assert_eq!(resumed.target.generation, 1);
         assert!(matches!(debit(&paths).unwrap(), Admission::Debited(_)));
-        assert!(matches!(debit(&paths), Err(AllowanceError::Exhausted { .. })));
+        assert!(matches!(
+            debit(&paths),
+            Err(AllowanceError::Exhausted { .. })
+        ));
     }
 }
 
@@ -228,7 +270,11 @@ fn later_intent_cannot_recreate_missing_history() {
     assert_eq!(fs::read(&paths.guard).unwrap(), original_guard);
     fs::rename(saved, &paths.accounting).unwrap();
     assert!(apply_setup(&paths, 3, LOCK, None).unwrap().resumes_intent);
-    let report = inspect(&paths, &CanonicalOrigin::production(), wall_clock_ms().unwrap());
+    let report = inspect(
+        &paths,
+        &CanonicalOrigin::production(),
+        wall_clock_ms().unwrap(),
+    );
     assert_eq!(report.charged_attempts, Some(1));
     assert_eq!(report.remaining(), Some(2));
 }
@@ -240,11 +286,16 @@ fn unknown_schema_blocks_admission_inspection_and_setup_without_new_charges() {
     debit(&paths).unwrap();
     let original_guard = fs::read(&paths.guard).unwrap();
     let db = Connection::open(&paths.accounting).unwrap();
-    db.execute("UPDATE allowance_meta SET schema_version=2", []).unwrap();
+    db.execute("UPDATE allowance_meta SET schema_version=2", [])
+        .unwrap();
     assert!(matches!(debit(&paths), Err(AllowanceError::State(_))));
     assert!(preview_setup(&paths, 4).is_err());
     assert!(apply_setup(&paths, 4, LOCK, None).is_err());
-    let report = inspect(&paths, &CanonicalOrigin::production(), wall_clock_ms().unwrap());
+    let report = inspect(
+        &paths,
+        &CanonicalOrigin::production(),
+        wall_clock_ms().unwrap(),
+    );
     assert_eq!(report.health, "invalid");
     assert_eq!(report.remaining(), None);
     assert_eq!(fs::read(&paths.guard).unwrap(), original_guard);
@@ -253,7 +304,9 @@ fn unknown_schema_blocks_admission_inspection_and_setup_without_new_charges() {
         .unwrap();
     assert_eq!(count, 1);
     let version: i64 = db
-        .query_row("SELECT schema_version FROM allowance_meta", [], |r| r.get(0))
+        .query_row("SELECT schema_version FROM allowance_meta", [], |r| {
+            r.get(0)
+        })
         .unwrap();
     assert_eq!(version, 2, "unsupported version was repaired");
 }
@@ -286,11 +339,18 @@ fn corrupt_count_blocks_the_real_debit_without_repairing_the_counter() {
     apply_setup(&paths, 3, LOCK, None).unwrap();
     debit(&paths).unwrap();
     let db = Connection::open(&paths.accounting).unwrap();
-    db.pragma_update(None, "ignore_check_constraints", true).unwrap();
-    db.execute("UPDATE allowance_charges SET attempts=-1", []).unwrap();
-    db.pragma_update(None, "ignore_check_constraints", false).unwrap();
+    db.pragma_update(None, "ignore_check_constraints", true)
+        .unwrap();
+    db.execute("UPDATE allowance_charges SET attempts=-1", [])
+        .unwrap();
+    db.pragma_update(None, "ignore_check_constraints", false)
+        .unwrap();
     assert!(matches!(debit(&paths), Err(AllowanceError::State(_))));
-    let report = inspect(&paths, &CanonicalOrigin::production(), wall_clock_ms().unwrap());
+    let report = inspect(
+        &paths,
+        &CanonicalOrigin::production(),
+        wall_clock_ms().unwrap(),
+    );
     assert_eq!(report.health, "invalid");
     assert_eq!(report.remaining(), None);
     let used: i64 = db
@@ -302,7 +362,8 @@ fn corrupt_count_blocks_the_real_debit_without_repairing_the_counter() {
         .unwrap();
     assert_eq!(attempts, 1);
     // A deliberate restoration of correct evidence, not production auto-repair.
-    db.execute("UPDATE allowance_charges SET attempts=1", []).unwrap();
+    db.execute("UPDATE allowance_charges SET attempts=1", [])
+        .unwrap();
     let Admission::Debited(next) = debit(&paths).unwrap() else {
         panic!("expected debit")
     };
@@ -313,7 +374,14 @@ fn corrupt_count_blocks_the_real_debit_without_repairing_the_counter() {
 fn invalid_setup_limits_do_not_create_any_state() {
     for limit in [0, MAX_ATTEMPTS_LIMIT + 1, u32::MAX] {
         let paths = paths();
-        let root = paths.guard.parent().unwrap().parent().unwrap().parent().unwrap();
+        let root = paths
+            .guard
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap();
         assert!(preview_setup(&paths, limit).is_err());
         assert!(apply_setup(&paths, limit, LOCK, None).is_err());
         assert!(!root.exists());

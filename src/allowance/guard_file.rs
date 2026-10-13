@@ -81,15 +81,10 @@ impl Parent {
         {
             return Err(unavailable());
         }
-        let name = parts
-            .last()
-            .ok_or_else(unavailable)?
-            .as_os_str()
-            .to_owned();
+        let name = parts.last().ok_or_else(unavailable)?.as_os_str().to_owned();
         let parent_path = path.parent().ok_or_else(unavailable)?.to_owned();
         let flags = OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC;
-        let mut handle =
-            open(Path::new("/"), flags, Mode::empty()).map_err(|_| unavailable())?;
+        let mut handle = open(Path::new("/"), flags, Mode::empty()).map_err(|_| unavailable())?;
         directory(
             &fstat(&handle).map_err(|_| unavailable())?,
             parts.len() == 2,
@@ -98,11 +93,7 @@ impl Parent {
             let opened = match openat(&handle, part.as_os_str(), flags, Mode::empty()) {
                 Err(Errno::ENOENT) if !create => return Ok(None),
                 Err(Errno::ENOENT) => {
-                    match mkdirat(
-                        &handle,
-                        part.as_os_str(),
-                        Mode::from_bits_truncate(0o700),
-                    ) {
+                    match mkdirat(&handle, part.as_os_str(), Mode::from_bits_truncate(0o700)) {
                         Ok(()) | Err(Errno::EEXIST) => {}
                         Err(_) => return Err(unavailable()),
                     }
@@ -153,8 +144,8 @@ impl Parent {
     fn verify(&self, name: &OsStr, file: &File, kind: Kind) -> Result<(), AllowanceError> {
         self.revalidate()?;
         let held = fstat(file).map_err(|_| unavailable())?;
-        let named = fstatat(&self.handle, name, AtFlags::AT_SYMLINK_NOFOLLOW)
-            .map_err(|_| unavailable())?;
+        let named =
+            fstatat(&self.handle, name, AtFlags::AT_SYMLINK_NOFOLLOW).map_err(|_| unavailable())?;
         regular(&held, kind)?;
         regular(&named, kind)?;
         if (held.st_dev, held.st_ino) != (named.st_dev, named.st_ino) {
@@ -211,7 +202,13 @@ impl Reader {
         self.parent.verify(&self.name, &self.file, Kind::Guard)?;
         let after = self.file.metadata().map_err(|_| unavailable())?;
         let version = |m: &Metadata| {
-            (m.len(), m.mtime(), m.mtime_nsec(), m.ctime(), m.ctime_nsec())
+            (
+                m.len(),
+                m.mtime(),
+                m.mtime_nsec(),
+                m.ctime(),
+                m.ctime_nsec(),
+            )
         };
         if version(&self.before) != version(&after) || after.len() != bytes.len() as u64 {
             return Err(state("the guard changed while it was being read"));
@@ -307,14 +304,9 @@ fn publish_named(
         | OFlag::O_NONBLOCK
         | OFlag::O_NOFOLLOW
         | OFlag::O_CLOEXEC;
-    let mut file: File = openat(
-        &parent.handle,
-        tmp,
-        flags,
-        Mode::from_bits_truncate(0o600),
-    )
-    .map_err(|_| unavailable())?
-    .into();
+    let mut file: File = openat(&parent.handle, tmp, flags, Mode::from_bits_truncate(0o600))
+        .map_err(|_| unavailable())?
+        .into();
     let result = (|| {
         file.write_all(bytes)
             .map_err(|_| state("the guard cannot be written"))?;

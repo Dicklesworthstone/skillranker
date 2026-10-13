@@ -108,15 +108,17 @@ struct Fixture {
 impl Fixture {
     // Intentionally retained: repository policy forbids automatic tree deletion.
     fn new(user_config: &str) -> Self {
-        let root = std::env::temp_dir().join(format!(
-            "sr-rank-acceptance-{}-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
+        let root = std::fs::canonicalize("/tmp")
+            .expect("resolve trusted system temporary directory")
+            .join(format!(
+                "sr-rank-acceptance-{}-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
         std::fs::create_dir(&root).unwrap();
         std::fs::create_dir_all(root.join("workspace/.claude/skills")).unwrap();
         std::fs::create_dir_all(root.join("config/sr")).unwrap();

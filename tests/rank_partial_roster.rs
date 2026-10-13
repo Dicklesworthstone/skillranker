@@ -126,8 +126,8 @@ struct Fixture {
 impl Fixture {
     fn new() -> Self {
         static NEXT: AtomicU64 = AtomicU64::new(0);
-        let root = fs::canonicalize(std::env::temp_dir())
-            .unwrap()
+        let root = fs::canonicalize("/tmp")
+            .expect("resolve trusted system temporary directory")
             .join(format!(
                 "sr-rank-partial-{}-{}-{}",
                 std::process::id(),

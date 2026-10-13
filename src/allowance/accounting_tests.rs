@@ -1,9 +1,9 @@
 //! Real files and SQLite; no provider requests or simulated accounting store.
-use super::*;
 use super::super::{
-    ACCOUNTING_FILE, Admission, AllowancePaths, COUNTER, SetupStep, admit, apply_setup,
-    inspect, preview_setup, wall_clock_ms,
+    ACCOUNTING_FILE, Admission, AllowancePaths, COUNTER, SetupStep, admit, apply_setup, inspect,
+    preview_setup, wall_clock_ms,
 };
+use super::*;
 use crate::jev::{CanonicalOrigin, RankingStage};
 use std::fs::{self, OpenOptions};
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt, symlink};
@@ -12,11 +12,13 @@ use std::sync::atomic::Ordering;
 const LOCK: Duration = Duration::from_millis(200);
 
 fn paths() -> AllowancePaths {
-    let root = std::env::temp_dir().join(format!(
-        "sr-accounting-files-{}-{}",
-        std::process::id(),
-        COUNTER.fetch_add(1, Ordering::Relaxed)
-    ));
+    let root = std::fs::canonicalize("/tmp")
+        .expect("resolve trusted system temporary directory")
+        .join(format!(
+            "sr-accounting-files-{}-{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
     fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
     AllowancePaths::new(&root.join("config"), &root.join("cache"))
 }
@@ -29,28 +31,66 @@ fn ready() -> AllowancePaths {
 
 fn private_file(path: &Path, len: u64) {
     use std::os::unix::fs::OpenOptionsExt;
-    let file = OpenOptions::new().create_new(true).write(true).mode(0o600).open(path).unwrap();
+    let file = OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .mode(0o600)
+        .open(path)
+        .unwrap();
     file.set_len(len).unwrap();
 }
 
 fn image(path: &Path) -> (Vec<u8>, u32) {
-    (fs::read(path).unwrap(), fs::metadata(path).unwrap().mode() & 0o7777)
+    (
+        fs::read(path).unwrap(),
+        fs::metadata(path).unwrap().mode() & 0o7777,
+    )
 }
 
 fn report(paths: &AllowancePaths) -> super::super::Inspection {
-    inspect(paths, &CanonicalOrigin::production(), wall_clock_ms().unwrap())
+    inspect(
+        paths,
+        &CanonicalOrigin::production(),
+        wall_clock_ms().unwrap(),
+    )
 }
 
 #[test]
 fn private_creation_retains_real_durable_debits() {
     let paths = ready();
     let writer = open_writer(&paths.accounting, false).unwrap();
-    assert_eq!(writer.pragma_query_value(None, "journal_mode", |r| r.get::<_, String>(0)).unwrap(), "wal");
-    assert_eq!(writer.pragma_query_value(None, "synchronous", |r| r.get::<_, i64>(0)).unwrap(), 2);
-    assert_eq!(fs::metadata(&paths.accounting).unwrap().mode() & 0o7777, 0o600);
-    assert_eq!(fs::metadata(paths.accounting.parent().unwrap()).unwrap().mode() & 0o7777, 0o700);
+    assert_eq!(
+        writer
+            .pragma_query_value(None, "journal_mode", |r| r.get::<_, String>(0))
+            .unwrap(),
+        "wal"
+    );
+    assert_eq!(
+        writer
+            .pragma_query_value(None, "synchronous", |r| r.get::<_, i64>(0))
+            .unwrap(),
+        2
+    );
+    assert_eq!(
+        fs::metadata(&paths.accounting).unwrap().mode() & 0o7777,
+        0o600
+    );
+    assert_eq!(
+        fs::metadata(paths.accounting.parent().unwrap())
+            .unwrap()
+            .mode()
+            & 0o7777,
+        0o700
+    );
     drop(writer);
-    let result = admit(&paths, &CanonicalOrigin::production(), RankingStage::Wide, true, LOCK).unwrap();
+    let result = admit(
+        &paths,
+        &CanonicalOrigin::production(),
+        RankingStage::Wide,
+        true,
+        LOCK,
+    )
+    .unwrap();
     assert!(matches!(result, Admission::Debited(_)));
     assert_eq!(report(&paths).charged_attempts, Some(1));
     assert!(preview_setup(&paths, 3).unwrap().unchanged);
@@ -76,10 +116,15 @@ fn private_read_only_files_remain_inspectable_but_cannot_be_used_as_writers() {
     let paths = ready();
     {
         let db = Connection::open(&paths.accounting).unwrap();
-        db.query_row("PRAGMA journal_mode=DELETE", [], |r| r.get::<_, String>(0)).unwrap();
+        db.query_row("PRAGMA journal_mode=DELETE", [], |r| r.get::<_, String>(0))
+            .unwrap();
     }
     fs::set_permissions(&paths.accounting, fs::Permissions::from_mode(0o400)).unwrap();
-    fs::set_permissions(paths.accounting.parent().unwrap(), fs::Permissions::from_mode(0o500)).unwrap();
+    fs::set_permissions(
+        paths.accounting.parent().unwrap(),
+        fs::Permissions::from_mode(0o500),
+    )
+    .unwrap();
     let before = image(&paths.accounting);
     assert_eq!(report(&paths).health, "ready");
     assert_eq!(report(&paths).charged_attempts, Some(0));
@@ -96,7 +141,10 @@ fn foreign_and_partial_schemas_are_refused_before_writer_reconfiguration() {
         "CREATE TABLE allowance_meta(id INTEGER)",
     ] {
         let paths = paths();
-        fs::DirBuilder::new().mode(0o700).create(paths.accounting.parent().unwrap()).unwrap();
+        fs::DirBuilder::new()
+            .mode(0o700)
+            .create(paths.accounting.parent().unwrap())
+            .unwrap();
         {
             let db = Connection::open(&paths.accounting).unwrap();
             db.execute_batch(sql).unwrap();
@@ -106,8 +154,16 @@ fn foreign_and_partial_schemas_are_refused_before_writer_reconfiguration() {
         assert!(open_writer(&paths.accounting, true).is_err());
         assert!(apply_setup(&paths, 3, LOCK, None).is_err());
         assert_eq!(image(&paths.accounting), before);
-        assert!(!paths.guard.exists(), "foreign accounting must not publish an intent");
-        assert!(!paths.accounting.with_file_name("allowance.sqlite3-wal").exists());
+        assert!(
+            !paths.guard.exists(),
+            "foreign accounting must not publish an intent"
+        );
+        assert!(
+            !paths
+                .accounting
+                .with_file_name("allowance.sqlite3-wal")
+                .exists()
+        );
     }
 }
 
@@ -119,7 +175,9 @@ fn symlink_fifo_and_hardlink_main_files_are_refused_without_opening_them() {
         fs::rename(&paths.accounting, &saved).unwrap();
         match kind {
             "symlink" => symlink(&saved, &paths.accounting).unwrap(),
-            "fifo" => nix::unistd::mkfifo(&paths.accounting, Mode::from_bits_truncate(0o600)).unwrap(),
+            "fifo" => {
+                nix::unistd::mkfifo(&paths.accounting, Mode::from_bits_truncate(0o600)).unwrap()
+            }
             _ => fs::hard_link(&saved, &paths.accounting).unwrap(),
         }
         let before = image(&saved);
@@ -136,7 +194,9 @@ fn every_sqlite_sidecar_is_checked_before_reader_or_writer_access() {
             let paths = ready();
             let target = paths.accounting.with_extension("target");
             private_file(&target, 16);
-            let side = paths.accounting.with_file_name(format!("{ACCOUNTING_FILE}{suffix}"));
+            let side = paths
+                .accounting
+                .with_file_name(format!("{ACCOUNTING_FILE}{suffix}"));
             assert!(!side.exists());
             match kind {
                 "symlink" => symlink(&target, &side).unwrap(),
@@ -161,8 +221,13 @@ fn every_sqlite_sidecar_is_checked_before_reader_or_writer_access() {
 fn orphaned_sidecars_cannot_be_attached_to_fresh_accounting() {
     for suffix in ["-wal", "-shm", "-journal"] {
         let paths = paths();
-        fs::DirBuilder::new().mode(0o700).create(paths.accounting.parent().unwrap()).unwrap();
-        let side = paths.accounting.with_file_name(format!("{ACCOUNTING_FILE}{suffix}"));
+        fs::DirBuilder::new()
+            .mode(0o700)
+            .create(paths.accounting.parent().unwrap())
+            .unwrap();
+        let side = paths
+            .accounting
+            .with_file_name(format!("{ACCOUNTING_FILE}{suffix}"));
         private_file(&side, 16);
         let before = image(&side);
         assert!(open_writer(&paths.accounting, true).is_err());
@@ -212,7 +277,12 @@ fn held_directory_and_database_replacements_are_detected() {
 #[test]
 fn main_and_sidecar_bounds_refuse_before_sqlite_parses_them() {
     let paths = ready();
-    OpenOptions::new().write(true).open(&paths.accounting).unwrap().set_len(ACCOUNTING_MAX_BYTES as u64 + 1).unwrap();
+    OpenOptions::new()
+        .write(true)
+        .open(&paths.accounting)
+        .unwrap()
+        .set_len(ACCOUNTING_MAX_BYTES as u64 + 1)
+        .unwrap();
     assert!(open_writer(&paths.accounting, false).is_err());
     assert!(read(&paths.accounting, read_meta).is_err());
     let paths = ready();
@@ -220,6 +290,14 @@ fn main_and_sidecar_bounds_refuse_before_sqlite_parses_them() {
     private_file(&side, FAMILY_MAX_BYTES as u64 + 1);
     assert!(open_writer(&paths.accounting, false).is_err());
     assert!(read(&paths.accounting, read_meta).is_err());
+    assert!(matches!(
+        open_writer(&paths.accounting, false),
+        Err(AllowanceError::State(message)) if message.contains("storage quota is exhausted")
+    ));
+    assert!(matches!(
+        read(&paths.accounting, read_meta),
+        Err(AllowanceError::State(message)) if message.contains("storage quota is exhausted")
+    ));
 }
 
 #[test]
@@ -227,10 +305,26 @@ fn first_activation_crash_retry_and_limit_changes_keep_existing_charges() {
     for step in [SetupStep::IntentPublished, SetupStep::AccountingReady] {
         let paths = paths();
         let initial = apply_setup(&paths, 3, LOCK, Some(step)).unwrap();
-        assert!(admit(&paths, &CanonicalOrigin::production(), RankingStage::Wide, true, LOCK).is_err());
+        assert!(
+            admit(
+                &paths,
+                &CanonicalOrigin::production(),
+                RankingStage::Wide,
+                true,
+                LOCK
+            )
+            .is_err()
+        );
         let resumed = apply_setup(&paths, 3, LOCK, None).unwrap();
         assert_eq!(initial.target.generation, resumed.target.generation);
-        admit(&paths, &CanonicalOrigin::production(), RankingStage::Wide, true, LOCK).unwrap();
+        admit(
+            &paths,
+            &CanonicalOrigin::production(),
+            RankingStage::Wide,
+            true,
+            LOCK,
+        )
+        .unwrap();
         apply_setup(&paths, 4, LOCK, None).unwrap();
         assert_eq!(report(&paths).charged_attempts, Some(1));
     }

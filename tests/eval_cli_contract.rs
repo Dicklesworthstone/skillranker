@@ -19,15 +19,17 @@ use std::time::{Duration, Instant};
 static FIXTURE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 fn temp_root() -> PathBuf {
-    let root = std::env::temp_dir().join(format!(
-        "sr-eval-cli-{}-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos(),
-        FIXTURE_COUNTER.fetch_add(1, Ordering::Relaxed),
-    ));
+    let root = std::fs::canonicalize("/tmp")
+        .expect("resolve trusted system temporary directory")
+        .join(format!(
+            "sr-eval-cli-{}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+            FIXTURE_COUNTER.fetch_add(1, Ordering::Relaxed),
+        ));
     fs::create_dir_all(root.join("workspace")).unwrap();
     fs::create_dir_all(root.join("config")).unwrap();
     root

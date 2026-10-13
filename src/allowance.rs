@@ -598,7 +598,8 @@ pub fn apply_setup(
     }
     // 2. Accounting at the intent's generation, keeping every charge.
     accounting.files.verify()?;
-    let tx = accounting.connection
+    let tx = accounting
+        .connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|_| state("the accounting database is busy"))?;
     // Recheck inside the writer transaction before any IF NOT EXISTS could
@@ -684,7 +685,8 @@ pub fn admit(
     }
     let mut accounting = open_accounting(&paths.accounting, false)?;
     accounting.files.verify()?;
-    let tx = accounting.connection
+    let tx = accounting
+        .connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|_| state("the accounting database is busy"))?;
     let (_, generation, last_charge) =
@@ -774,11 +776,13 @@ mod tests {
     use super::*;
 
     fn temp_paths() -> (PathBuf, AllowancePaths) {
-        let root = std::env::temp_dir().join(format!(
-            "sr-allowance-{}-{}",
-            std::process::id(),
-            COUNTER.fetch_add(1, Ordering::Relaxed)
-        ));
+        let root = std::fs::canonicalize("/tmp")
+            .expect("resolve trusted system temporary directory")
+            .join(format!(
+                "sr-allowance-{}-{}",
+                std::process::id(),
+                COUNTER.fetch_add(1, Ordering::Relaxed)
+            ));
         let paths = AllowancePaths::new(&root.join("config"), &root.join("cache"));
         (root, paths)
     }

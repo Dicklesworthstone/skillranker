@@ -19,6 +19,10 @@ fn refused() -> AllowanceError {
     state("the accounting database or sidecars are not a private, bounded regular-file location")
 }
 
+fn capacity() -> AllowanceError {
+    state("the accounting storage quota is exhausted; storage may be full")
+}
+
 fn directory(stat: &FileStat, leaf: bool, writable: bool) -> Result<(), AllowanceError> {
     let uid = nix::unistd::geteuid().as_raw();
     let mode = stat.st_mode & 0o7777;
@@ -53,13 +57,20 @@ fn parent(path: &Path, create: bool, writable: bool) -> Result<Option<File>, All
     }
     let parts: Vec<_> = path.components().collect();
     if !(2..=128).contains(&parts.len())
-        || parts.iter().skip(1).any(|part| !matches!(part, Component::Normal(_)))
+        || parts
+            .iter()
+            .skip(1)
+            .any(|part| !matches!(part, Component::Normal(_)))
     {
         return Err(refused());
     }
     let flags = OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC;
     let mut handle = open(Path::new("/"), flags, Mode::empty()).map_err(|_| refused())?;
-    directory(&fstat(&handle).map_err(|_| refused())?, parts.len() == 2, writable)?;
+    directory(
+        &fstat(&handle).map_err(|_| refused())?,
+        parts.len() == 2,
+        writable,
+    )?;
     for (index, part) in parts.iter().enumerate().take(parts.len() - 1).skip(1) {
         handle = match openat(&handle, part.as_os_str(), flags, Mode::empty()) {
             Err(Errno::ENOENT) if !create => return Ok(None),
@@ -73,7 +84,11 @@ fn parent(path: &Path, create: bool, writable: bool) -> Result<Option<File>, All
             result => result,
         }
         .map_err(|_| refused())?;
-        directory(&fstat(&handle).map_err(|_| refused())?, index + 2 == parts.len(), writable)?;
+        directory(
+            &fstat(&handle).map_err(|_| refused())?,
+            index + 2 == parts.len(),
+            writable,
+        )?;
     }
     Ok(Some(handle.into()))
 }
@@ -97,7 +112,7 @@ impl Files {
             Ok(stat) => {
                 regular(&stat, writable)?;
                 if stat.st_size > ACCOUNTING_MAX_BYTES {
-                    return Err(refused());
+                    return Err(capacity());
                 }
                 true
             }
@@ -109,11 +124,18 @@ impl Files {
         for suffix in ["-wal", "-shm", "-journal"] {
             let mut sidecar = name.to_os_string();
             sidecar.push(suffix);
-            match fstatat(&directory, sidecar.as_os_str(), AtFlags::AT_SYMLINK_NOFOLLOW) {
+            match fstatat(
+                &directory,
+                sidecar.as_os_str(),
+                AtFlags::AT_SYMLINK_NOFOLLOW,
+            ) {
                 Ok(stat) => {
                     regular(&stat, writable)?;
-                    if !exists || stat.st_size > FAMILY_MAX_BYTES {
+                    if !exists {
                         return Err(refused());
+                    }
+                    if stat.st_size > FAMILY_MAX_BYTES {
+                        return Err(capacity());
                     }
                 }
                 Err(Errno::ENOENT) => {}
@@ -129,17 +151,32 @@ impl Files {
             }
             return Ok(None);
         }
-        let flags = (if writable { OFlag::O_RDWR } else { OFlag::O_RDONLY })
-            | OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK | OFlag::O_CLOEXEC;
+        let flags = (if writable {
+            OFlag::O_RDWR
+        } else {
+            OFlag::O_RDONLY
+        }) | OFlag::O_NOFOLLOW
+            | OFlag::O_NONBLOCK
+            | OFlag::O_CLOEXEC;
         let opened = if exists {
             openat(&directory, name, flags, Mode::empty())
         } else {
             // Another first-time creator is not overwritten. The next invocation
             // can retry after inspecting whatever it published.
-            openat(&directory, name, flags | OFlag::O_CREAT | OFlag::O_EXCL, Mode::from_bits_truncate(0o600))
+            openat(
+                &directory,
+                name,
+                flags | OFlag::O_CREAT | OFlag::O_EXCL,
+                Mode::from_bits_truncate(0o600),
+            )
         }
         .map_err(|_| refused())?;
-        let files = Self { path, directory, file: opened.into(), writable };
+        let files = Self {
+            path,
+            directory,
+            file: opened.into(),
+            writable,
+        };
         files.verify()?;
         Ok(Some(files))
     }
@@ -153,24 +190,30 @@ impl Files {
         }
         let name = self.path.file_name().ok_or_else(refused)?;
         let held = fstat(&self.file).map_err(|_| refused())?;
-        let named = fstatat(&self.directory, name, AtFlags::AT_SYMLINK_NOFOLLOW).map_err(|_| refused())?;
+        let named =
+            fstatat(&self.directory, name, AtFlags::AT_SYMLINK_NOFOLLOW).map_err(|_| refused())?;
         regular(&held, self.writable)?;
         regular(&named, self.writable)?;
-        if (held.st_dev, held.st_ino) != (named.st_dev, named.st_ino)
-            || held.st_size > ACCOUNTING_MAX_BYTES
-        {
+        if (held.st_dev, held.st_ino) != (named.st_dev, named.st_ino) {
             return Err(refused());
+        }
+        if held.st_size > ACCOUNTING_MAX_BYTES {
+            return Err(capacity());
         }
         let mut bytes = held.st_size;
         for suffix in ["-wal", "-shm", "-journal"] {
             let mut sidecar = name.to_os_string();
             sidecar.push(suffix);
-            match fstatat(&self.directory, sidecar.as_os_str(), AtFlags::AT_SYMLINK_NOFOLLOW) {
+            match fstatat(
+                &self.directory,
+                sidecar.as_os_str(),
+                AtFlags::AT_SYMLINK_NOFOLLOW,
+            ) {
                 Ok(stat) => {
                     regular(&stat, self.writable)?;
-                    bytes = bytes.checked_add(stat.st_size).ok_or_else(refused)?;
+                    bytes = bytes.checked_add(stat.st_size).ok_or_else(capacity)?;
                     if bytes > FAMILY_MAX_BYTES {
-                        return Err(refused());
+                        return Err(capacity());
                     }
                 }
                 Err(Errno::ENOENT) => {}
@@ -188,15 +231,21 @@ pub(super) struct Store {
 }
 impl std::ops::Deref for Store {
     type Target = Connection;
-    fn deref(&self) -> &Connection { &self.connection }
+    fn deref(&self) -> &Connection {
+        &self.connection
+    }
 }
 impl std::ops::DerefMut for Store {
-    fn deref_mut(&mut self) -> &mut Connection { &mut self.connection }
+    fn deref_mut(&mut self) -> &mut Connection {
+        &mut self.connection
+    }
 }
 
 fn configure(connection: &Connection) -> Result<(), AllowanceError> {
     let fail = |_| state("the accounting SQLite connection cannot be configured");
-    connection.busy_timeout(Duration::from_millis(25)).map_err(fail)?;
+    connection
+        .busy_timeout(Duration::from_millis(25))
+        .map_err(fail)?;
     for (setting, expected) in [
         (DbConfig::SQLITE_DBCONFIG_DEFENSIVE, true),
         (DbConfig::SQLITE_DBCONFIG_TRUSTED_SCHEMA, false),
@@ -215,27 +264,39 @@ fn configure(connection: &Connection) -> Result<(), AllowanceError> {
     ] {
         connection.set_limit(limit, value).map_err(fail)?;
     }
-    connection.pragma_update(None, "temp_store", "MEMORY").map_err(fail)?;
+    connection
+        .pragma_update(None, "temp_store", "MEMORY")
+        .map_err(fail)?;
     Ok(())
 }
 
 fn flags() -> OpenFlags {
-    OpenFlags::SQLITE_OPEN_NO_MUTEX | OpenFlags::SQLITE_OPEN_NOFOLLOW | OpenFlags::SQLITE_OPEN_PRIVATE_CACHE
+    OpenFlags::SQLITE_OPEN_NO_MUTEX
+        | OpenFlags::SQLITE_OPEN_NOFOLLOW
+        | OpenFlags::SQLITE_OPEN_PRIVATE_CACHE
 }
 
 pub(super) fn read<T>(
     path: &Path,
     inspect: impl FnOnce(&Connection) -> Result<T, AllowanceError>,
 ) -> Result<Option<T>, AllowanceError> {
-    let Some(files) = Files::open(path, false, false)? else { return Ok(None); };
-    let mut connection = Connection::open_with_flags(&files.path, flags() | OpenFlags::SQLITE_OPEN_READ_ONLY)
-        .map_err(|_| state("the accounting database cannot be read"))?;
+    let Some(files) = Files::open(path, false, false)? else {
+        return Ok(None);
+    };
+    let mut connection =
+        Connection::open_with_flags(&files.path, flags() | OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map_err(|_| state("the accounting database cannot be read"))?;
     configure(&connection)?;
-    connection.pragma_update(None, "query_only", true).map_err(|_| refused())?;
+    connection
+        .pragma_update(None, "query_only", true)
+        .map_err(|_| refused())?;
     files.verify()?;
-    let tx = connection.transaction_with_behavior(TransactionBehavior::Deferred).map_err(|_| refused())?;
+    let tx = connection
+        .transaction_with_behavior(TransactionBehavior::Deferred)
+        .map_err(|_| refused())?;
     let result = inspect(&tx)?;
-    tx.commit().map_err(|_| state("the accounting read snapshot cannot be closed"))?;
+    tx.commit()
+        .map_err(|_| state("the accounting read snapshot cannot be closed"))?;
     files.verify()?;
     Ok(Some(result))
 }
@@ -248,16 +309,22 @@ pub(super) fn open_writer(path: &Path, create: bool) -> Result<Store, AllowanceE
     // Validate identity in a read snapshot before opening writable SQLite or
     // selecting journal mode. Empty first-activation remnants remain retryable.
     {
-        let mut probe = Connection::open_with_flags(&files.path, flags() | OpenFlags::SQLITE_OPEN_READ_ONLY)
-            .map_err(|_| refused())?;
+        let mut probe =
+            Connection::open_with_flags(&files.path, flags() | OpenFlags::SQLITE_OPEN_READ_ONLY)
+                .map_err(|_| refused())?;
         configure(&probe)?;
-        let tx = probe.transaction_with_behavior(TransactionBehavior::Deferred).map_err(|_| refused())?;
-        if read_meta(&tx)?.is_none() && !create { return Err(state("the accounting database is not initialized")); }
+        let tx = probe
+            .transaction_with_behavior(TransactionBehavior::Deferred)
+            .map_err(|_| refused())?;
+        if read_meta(&tx)?.is_none() && !create {
+            return Err(state("the accounting database is not initialized"));
+        }
         tx.commit().map_err(|_| refused())?;
     }
     files.verify()?;
-    let connection = Connection::open_with_flags(&files.path, flags() | OpenFlags::SQLITE_OPEN_READ_WRITE)
-        .map_err(|_| state("the accounting database is unavailable"))?;
+    let connection =
+        Connection::open_with_flags(&files.path, flags() | OpenFlags::SQLITE_OPEN_READ_WRITE)
+            .map_err(|_| state("the accounting database is unavailable"))?;
     let store = Store { connection, files };
     configure(&store.connection)?;
     store.files.verify()?;
@@ -265,16 +332,34 @@ pub(super) fn open_writer(path: &Path, create: bool) -> Result<Store, AllowanceE
         return Err(state("the accounting database is not initialized"));
     }
     let fail = |_| state("the accounting writer cannot guarantee durable debits");
-    let mode: String = store.query_row("PRAGMA journal_mode=WAL", [], |r| r.get(0)).map_err(fail)?;
-    store.pragma_update(None, "synchronous", "FULL").map_err(fail)?;
-    let synchronous: i64 = store.pragma_query_value(None, "synchronous", |r| r.get(0)).map_err(fail)?;
-    if mode != "wal" || synchronous != 2 { return Err(fail(rusqlite::Error::InvalidQuery)); }
-    let page_size: i64 = store.pragma_query_value(None, "page_size", |r| r.get(0)).map_err(fail)?;
-    if !(512..=65536).contains(&page_size) { return Err(refused()); }
+    let mode: String = store
+        .query_row("PRAGMA journal_mode=WAL", [], |r| r.get(0))
+        .map_err(fail)?;
+    store
+        .pragma_update(None, "synchronous", "FULL")
+        .map_err(fail)?;
+    let synchronous: i64 = store
+        .pragma_query_value(None, "synchronous", |r| r.get(0))
+        .map_err(fail)?;
+    if mode != "wal" || synchronous != 2 {
+        return Err(fail(rusqlite::Error::InvalidQuery));
+    }
+    let page_size: i64 = store
+        .pragma_query_value(None, "page_size", |r| r.get(0))
+        .map_err(fail)?;
+    if !(512..=65536).contains(&page_size) {
+        return Err(refused());
+    }
     let pages = ACCOUNTING_MAX_BYTES / page_size;
-    store.pragma_update(None, "max_page_count", pages).map_err(fail)?;
-    let applied: i64 = store.pragma_query_value(None, "max_page_count", |r| r.get(0)).map_err(fail)?;
-    if applied != pages { return Err(refused()); }
+    store
+        .pragma_update(None, "max_page_count", pages)
+        .map_err(fail)?;
+    let applied: i64 = store
+        .pragma_query_value(None, "max_page_count", |r| r.get(0))
+        .map_err(fail)?;
+    if applied != pages {
+        return Err(refused());
+    }
     store.files.verify()?;
     Ok(store)
 }

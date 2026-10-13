@@ -392,7 +392,11 @@ fn concurrent_processes_never_exceed_the_window() {
         .iter()
         .filter(|out| kind(out) == (Some(4), "request-budget".to_owned()))
         .count();
-    assert!(refused >= 1, "demand of 8 attempts met no refusal");
+    assert!(
+        refused >= 1,
+        "demand of 8 attempts met no refusal: served={served}, report={report}, outputs={:?}",
+        outputs.iter().map(describe).collect::<Vec<_>>()
+    );
     for out in &outputs {
         let code = out.status.code();
         assert!(matches!(code, Some(0) | Some(4)), "{}", describe(out));
