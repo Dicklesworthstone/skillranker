@@ -151,6 +151,13 @@ impl Row {
             return;
         }
         let owns_probe = self.open && ticket.probe.is_some() && ticket.probe == self.probe_token;
+        // Fence the entire settlement, including Retry-After. A replaced probe
+        // can share the circuit generation with its successor, and an expired
+        // token is no longer authoritative even before a successor is admitted.
+        // Neither may change cooldowns, close the circuit, or release a lease.
+        if self.open && (!owns_probe || now >= self.probe_expires_ms) {
+            return;
+        }
         match outcome {
             Outcome::Success if owns_probe => {
                 self.generation += 1;
@@ -625,3 +632,7 @@ mod tests {
         ));
     }
 }
+
+#[cfg(test)]
+#[path = "breaker/probe_tests.rs"]
+mod probe_tests;
