@@ -10,8 +10,12 @@ const BUSY: Duration = Duration::from_millis(25);
 
 fn home() -> PathBuf {
     let root = fs::canonicalize("/tmp").unwrap().join(format!(
-        "sr-breaker-store-{}-{}-{}", std::process::id(),
-        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),
+        "sr-breaker-store-{}-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos(),
         NEXT.fetch_add(1, Ordering::Relaxed),
     ));
     fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
@@ -19,12 +23,25 @@ fn home() -> PathBuf {
 }
 
 fn legacy(path: &Path) {
-    let file = OpenOptions::new().create_new(true).write(true).mode(0o600).open(path).unwrap();
+    let file = OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .mode(0o600)
+        .open(path)
+        .unwrap();
     drop(file);
     let db = Connection::open(path).unwrap();
     // Exercise the old initializer, including SQLite's removal of IF NOT EXISTS.
-    db.execute_batch(&format!("{};", DDL.replacen("CREATE TABLE", "CREATE TABLE IF NOT EXISTS", 1))).unwrap();
-    db.execute("INSERT INTO breaker_state VALUES ('o',7,1,0,30000,500,'owner',6000,0)", []).unwrap();
+    db.execute_batch(&format!(
+        "{};",
+        DDL.replacen("CREATE TABLE", "CREATE TABLE IF NOT EXISTS", 1)
+    ))
+    .unwrap();
+    db.execute(
+        "INSERT INTO breaker_state VALUES ('o',7,1,0,30000,500,'owner',6000,0)",
+        [],
+    )
+    .unwrap();
 }
 
 fn unchanged_refusal(path: &Path) {
@@ -40,14 +57,33 @@ fn new_store_is_private_identified_and_uses_verified_wal() {
     let root = home();
     let path = root.join("new").join(BREAKER_FILE);
     assert!(open(&path, BUSY, false).is_err());
-    assert!(!root.join("new").exists(), "a read must not initialize storage");
+    assert!(
+        !root.join("new").exists(),
+        "a read must not initialize storage"
+    );
     let store = open(&path, BUSY, true).unwrap().unwrap();
-    assert_eq!(fs::metadata(&path).unwrap().permissions().mode() & 0o7777, 0o600);
-    assert_eq!(fs::metadata(path.parent().unwrap()).unwrap().permissions().mode() & 0o7777, 0o700);
+    assert_eq!(
+        fs::metadata(&path).unwrap().permissions().mode() & 0o7777,
+        0o600
+    );
+    assert_eq!(
+        fs::metadata(path.parent().unwrap())
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o7777,
+        0o700
+    );
     assert!(schema(&store.connection, false).unwrap() == Schema::Current);
-    let mode: String = store.connection.pragma_query_value(None, "journal_mode", |r| r.get(0)).unwrap();
+    let mode: String = store
+        .connection
+        .pragma_query_value(None, "journal_mode", |r| r.get(0))
+        .unwrap();
     assert_eq!(mode, "wal");
-    let sync: i64 = store.connection.pragma_query_value(None, "synchronous", |r| r.get(0)).unwrap();
+    let sync: i64 = store
+        .connection
+        .pragma_query_value(None, "synchronous", |r| r.get(0))
+        .unwrap();
     assert_eq!(sync, 1, "breaker stays NORMAL, not enforcement accounting");
     store.verify().unwrap();
 }
@@ -66,7 +102,10 @@ fn exact_legacy_adoption_keeps_probe_and_cooldown_across_reopen() {
         assert_eq!(row, (7, "owner".to_owned(), 6000, 500));
     }
     let breaker = Breaker::new(Some(path), "o");
-    assert_eq!(breaker.admit(499, 100), Err(Refusal::CoolingDown { until_unix_ms: 500 }));
+    assert_eq!(
+        breaker.admit(499, 100),
+        Err(Refusal::CoolingDown { until_unix_ms: 500 })
+    );
     assert_eq!(breaker.admit(501, 100), Err(Refusal::ProbeInFlight));
     assert_eq!(breaker.protection(), Protection::Shared);
 }
@@ -94,7 +133,8 @@ fn foreign_headers_schema_and_extra_objects_are_never_repaired() {
     let path = home().join(BREAKER_FILE);
     {
         let db = Connection::open(&path).unwrap();
-        db.execute_batch("CREATE TABLE unrelated (v); INSERT INTO unrelated VALUES (42)").unwrap();
+        db.execute_batch("CREATE TABLE unrelated (v); INSERT INTO unrelated VALUES (42)")
+            .unwrap();
     }
     fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
     unchanged_refusal(&path);
@@ -107,10 +147,18 @@ fn damaged_and_oversized_files_remain_unchanged() {
     fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
     unchanged_refusal(&path);
     let path = home().join(BREAKER_FILE);
-    let file = OpenOptions::new().create_new(true).write(true).mode(0o600).open(&path).unwrap();
+    let file = OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .mode(0o600)
+        .open(&path)
+        .unwrap();
     file.set_len((MAX_BREAKER_BYTES + 1) as u64).unwrap();
     assert!(open(&path, BUSY, true).is_err());
-    assert_eq!(file.metadata().unwrap().len(), (MAX_BREAKER_BYTES + 1) as u64);
+    assert_eq!(
+        file.metadata().unwrap().len(),
+        (MAX_BREAKER_BYTES + 1) as u64
+    );
 }
 
 #[test]
@@ -123,7 +171,10 @@ fn existing_modes_are_refused_not_chmodded() {
     fs::set_permissions(&root, fs::Permissions::from_mode(0o755)).unwrap();
     assert!(open(&root.join(BREAKER_FILE), BUSY, true).is_err());
     assert!(!root.join(BREAKER_FILE).exists());
-    assert_eq!(fs::metadata(root).unwrap().permissions().mode() & 0o7777, 0o755);
+    assert_eq!(
+        fs::metadata(root).unwrap().permissions().mode() & 0o7777,
+        0o755
+    );
 }
 
 #[test]
@@ -141,7 +192,10 @@ fn links_and_special_files_are_refused_before_sqlite() {
         let before = fs::read(&target).unwrap();
         assert!(open(&path, BUSY, true).is_err());
         assert_eq!(fs::read(&target).unwrap(), before);
-        assert_eq!(fs::metadata(&target).unwrap().permissions().mode() & 0o7777, 0o600);
+        assert_eq!(
+            fs::metadata(&target).unwrap().permissions().mode() & 0o7777,
+            0o600
+        );
     }
     let path = home().join(BREAKER_FILE);
     nix::unistd::mkfifo(&path, nix::sys::stat::Mode::from_bits_truncate(0o600)).unwrap();
@@ -186,7 +240,10 @@ fn every_unsafe_sqlite_sidecar_is_refused_without_permission_repair() {
             assert!(open(&path, BUSY, false).is_err());
             assert_eq!(fs::read(&path).unwrap(), before);
             assert_eq!(fs::read(&target).unwrap(), b"keep this data");
-            assert_eq!(fs::metadata(target).unwrap().permissions().mode() & 0o7777, 0o644);
+            assert_eq!(
+                fs::metadata(target).unwrap().permissions().mode() & 0o7777,
+                0o644
+            );
         }
     }
 }
@@ -203,7 +260,12 @@ fn a_held_store_rejects_file_or_parent_replacement() {
         } else {
             fs::rename(&path, root.join("held.sqlite3")).unwrap();
         }
-        OpenOptions::new().create_new(true).write(true).mode(0o600).open(&path).unwrap();
+        OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .mode(0o600)
+            .open(&path)
+            .unwrap();
         assert!(store.verify().is_err());
     }
 }
@@ -211,7 +273,12 @@ fn a_held_store_rejects_file_or_parent_replacement() {
 #[test]
 fn only_failure_initialization_can_recover_an_empty_private_file() {
     let path = home().join(BREAKER_FILE);
-    OpenOptions::new().create_new(true).write(true).mode(0o600).open(&path).unwrap();
+    OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .mode(0o600)
+        .open(&path)
+        .unwrap();
     assert!(open(&path, BUSY, false).unwrap().is_none());
     assert_eq!(fs::metadata(&path).unwrap().len(), 0);
     // Exercise the public lazy path, not just the initialization helper.
@@ -219,12 +286,23 @@ fn only_failure_initialization_can_recover_an_empty_private_file() {
     let ticket = breaker.admit(0, 3000).unwrap();
     assert_eq!(fs::metadata(&path).unwrap().len(), 0);
     assert_eq!(breaker.protection(), Protection::Shared);
-    breaker.settle(&ticket, Outcome::Transient { retry_after_ms: None }, 0);
+    breaker.settle(
+        &ticket,
+        Outcome::Transient {
+            retry_after_ms: None,
+        },
+        0,
+    );
     let store = open(&path, BUSY, false).unwrap().unwrap();
     verify_schema(&store.connection).unwrap();
-    let failures: i64 = store.connection.query_row(
-        "SELECT failures FROM breaker_state WHERE origin='o'", [], |r| r.get(0),
-    ).unwrap();
+    let failures: i64 = store
+        .connection
+        .query_row(
+            "SELECT failures FROM breaker_state WHERE origin='o'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
     assert_eq!(failures, 1);
 }
 
@@ -236,10 +314,21 @@ fn refused_foreign_store_uses_local_breaker_without_modifying_the_file() {
     let breaker = Breaker::new(Some(path.clone()), "o");
     for now in 0..3 {
         let ticket = breaker.admit(now, 3000).unwrap();
-        breaker.settle(&ticket, Outcome::Transient { retry_after_ms: None }, now);
+        breaker.settle(
+            &ticket,
+            Outcome::Transient {
+                retry_after_ms: None,
+            },
+            now,
+        );
     }
     assert_eq!(breaker.protection(), Protection::ProcessLocal);
-    assert_eq!(breaker.admit(3, 3000), Err(Refusal::CoolingDown { until_unix_ms: 2 + BASE_COOLDOWN_MS }));
+    assert_eq!(
+        breaker.admit(3, 3000),
+        Err(Refusal::CoolingDown {
+            until_unix_ms: 2 + BASE_COOLDOWN_MS
+        })
+    );
     assert_eq!(fs::read(path).unwrap(), b"keep foreign state");
 }
 
@@ -249,10 +338,21 @@ fn private_new_store_still_shares_failures_and_recovery() {
     let first = Breaker::new(Some(path.clone()), "o");
     for now in 0..3 {
         let ticket = first.admit(now, 3000).unwrap();
-        first.settle(&ticket, Outcome::Transient { retry_after_ms: None }, now);
+        first.settle(
+            &ticket,
+            Outcome::Transient {
+                retry_after_ms: None,
+            },
+            now,
+        );
     }
     let second = Breaker::new(Some(path), "o");
-    assert_eq!(second.admit(3, 3000), Err(Refusal::CoolingDown { until_unix_ms: 2 + BASE_COOLDOWN_MS }));
+    assert_eq!(
+        second.admit(3, 3000),
+        Err(Refusal::CoolingDown {
+            until_unix_ms: 2 + BASE_COOLDOWN_MS
+        })
+    );
     let at = 2 + BASE_COOLDOWN_MS;
     let ticket = second.admit(at, 3000).unwrap();
     second.settle(&ticket, Outcome::Success, at + 1);

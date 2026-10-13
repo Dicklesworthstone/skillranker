@@ -127,11 +127,7 @@ impl Store {
 
 /// `None` means a private, empty initialization left by a failed creator.
 /// Reading it does not initialize or disable the later failure-only retry.
-pub(super) fn open(
-    path: &Path,
-    busy: Duration,
-    create: bool,
-) -> rusqlite::Result<Option<Store>> {
+pub(super) fn open(path: &Path, busy: Duration, create: bool) -> rusqlite::Result<Option<Store>> {
     #[cfg(not(unix))]
     {
         let _ = (path, busy, create);
@@ -181,16 +177,18 @@ pub(super) fn open(
             tx.commit()?;
         }
         verify_schema(&store.connection)?;
-        let mode: String =
-            store.connection.query_row("PRAGMA journal_mode=WAL", [], |r| r.get(0))?;
+        let mode: String = store
+            .connection
+            .query_row("PRAGMA journal_mode=WAL", [], |r| r.get(0))?;
         if mode != "wal" {
             return Err(refused());
         }
         store
             .connection
             .pragma_update(None, "synchronous", "NORMAL")?;
-        let page_size: i64 =
-            store.connection.pragma_query_value(None, "page_size", |r| r.get(0))?;
+        let page_size: i64 = store
+            .connection
+            .pragma_query_value(None, "page_size", |r| r.get(0))?;
         if !(512..=65536).contains(&page_size) {
             return Err(refused());
         }
@@ -198,8 +196,9 @@ pub(super) fn open(
         store
             .connection
             .pragma_update(None, "max_page_count", pages)?;
-        let applied: i64 =
-            store.connection.pragma_query_value(None, "max_page_count", |r| r.get(0))?;
+        let applied: i64 = store
+            .connection
+            .pragma_query_value(None, "max_page_count", |r| r.get(0))?;
         if applied != pages {
             return Err(refused());
         }
@@ -319,11 +318,7 @@ mod private {
         Ok(fd.into())
     }
 
-    pub(super) fn verify_files(
-        directory: &File,
-        file: &File,
-        path: &Path,
-    ) -> rusqlite::Result<()> {
+    pub(super) fn verify_files(directory: &File, file: &File, path: &Path) -> rusqlite::Result<()> {
         let name = path.file_name().ok_or_else(refused)?;
         let held = fstat(file).map_err(|_| refused())?;
         regular(&held)?;
