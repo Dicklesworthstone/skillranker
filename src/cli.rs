@@ -13,9 +13,9 @@ use std::ffi::OsString;
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
-const HELP: &str = "SkillRanker — provider-backed skill ranking\n\nUsage: sr [rank] [--context FILE | --transcript FILE --harness NAME | --session PATH | --latest]\n                 [--roster FILE] [--require-skill ID] [--dry-run [--shortlist-ids ID,...]]\n                 [--offline | --allow-network] [--json | --table]\n                 [--top N] [--shortlist M] [--gate FLOAT] [--fits FLOAT]\n                 [--explain] [--why-not ID] [--cursor TOKEN] [--no-tools] [--no-cache]\n                 [--save-case FILE]\n       sr doctor [--json | --table] [--offline | --allow-network]\n       sr doctor --config [--json | --table] [--top N] [--shortlist N]\n       sr roster [--json] [--limit N] [--cursor TOKEN]\n       sr roster --snapshot FILE | --diff FILE\n       sr capabilities [--json]\n       sr demo --case <useful|none|explicit|unavailable> [--json | --table]\n       sr replay FILE [--policy FILE] [--compare-policy FILE] [--json | --table]\n       sr eval --dataset FILE [--allow-network] [--max-runtime-ms MS] [--timeout-ms MS] [--policy FILE] [--compare-policy FILE] [--explain] [--json | --table]\n       sr eval --dataset FRAME --labels FILE [--sample-size N [--seed S]] [--online --allow-network --max-requests N [--max-runtime-ms MS] [--roster FILE] [--robustness [--decoy-roster FILE] [--lookalike-roster FILE]]] [--explain] [--json | --table]\n       sr feedback <EVENT_ID> --skill ID [--instead ID] [--verdict <useful|not-useful|unknown>] [--reason CODE] [--provenance TEXT] [--expected-version GEN] [--dir DIR] [--json]\n       sr budget [--max-attempts N --window 1h [--apply]] [--json]\n       sr snooze <EVENT_ID> (--skill ID --for DURATION | --all --for DURATION | --clear) [--apply] [--dir DIR] [--json]\n       sr ledger <init|migrate|status|prune|clear> [--before TIME] [--apply] [--json]\n       sr observe [--context FILE | --transcript FILE --harness NAME | --session PATH] [--branch NAME] [--roster FILE] [--dir DIR] [--json]\n       sr stats [--since DURATION] [--by-skill] [--dir DIR] [--json | --table]\n       sr hook <claude> [--shadow] [--offline | --allow-network] [--dir DIR]\n       sr install-hook <claude> [--settings-file FILE] [--binary-path PATH] [--timeout-secs N] [--apply]\n       sr uninstall-hook <claude> [--settings-file FILE] [--binary-path PATH] [--timeout-secs N] [--apply]\n       sr --help | --version\n\nRank the next step of an agent session using the configured provider.\nTypeSafe is the default; Cloudflare-hosted TypeSafe Jev can be selected with SR_PROVIDER=cloudflare, CLOUDFLARE_ACCOUNT_ID, and CLOUDFLARE_API_TOKEN. Network consent (--allow-network) is still required.\n";
+const HELP: &str = "SkillRanker — provider-backed skill ranking\n\nUsage: sr [rank] [--context FILE | --transcript FILE --harness NAME | --session PATH | --latest]\n                 [--roster FILE] [--require-skill ID] [--dry-run [--shortlist-ids ID,...]]\n                 [--offline | --allow-network] [--json | --table]\n                 [--top N] [--shortlist M] [--gate FLOAT] [--fits FLOAT]\n                 [--explain] [--why-not ID] [--cursor TOKEN] [--no-tools] [--no-cache]\n                 [--save-case FILE]\n       sr doctor [--json | --table] [--offline | --allow-network]\n       sr doctor --config [--json | --table] [--top N] [--shortlist N]\n       sr roster [--json] [--limit N] [--cursor TOKEN]\n       sr roster --snapshot FILE | --diff FILE\n       sr capabilities [--json]\n       sr demo --case <useful|none|explicit|unavailable> [--json | --table]\n       sr replay FILE [--policy FILE] [--compare-policy FILE] [--json | --table]\n       sr eval --dataset FILE [--allow-network] [--max-runtime-ms MS] [--timeout-ms MS] [--policy FILE] [--compare-policy FILE] [--explain] [--json | --table]\n       sr eval --dataset FRAME --labels FILE [--sample-size N [--seed S]] [--online --allow-network --max-requests N [--max-runtime-ms MS] [--roster FILE] [--robustness [--decoy-roster FILE] [--lookalike-roster FILE] [--hostile-roster FILE]]] [--explain] [--json | --table]\n       sr feedback <EVENT_ID> --skill ID [--instead ID] [--verdict <useful|not-useful|unknown>] [--reason CODE] [--provenance TEXT] [--expected-version GEN] [--dir DIR] [--json]\n       sr budget [--max-attempts N --window 1h [--apply]] [--json]\n       sr snooze <EVENT_ID> (--skill ID --for DURATION | --all --for DURATION | --clear) [--apply] [--dir DIR] [--json]\n       sr ledger <init|migrate|status|prune|clear> [--before TIME] [--apply] [--json]\n       sr observe [--context FILE | --transcript FILE --harness NAME | --session PATH] [--branch NAME] [--roster FILE] [--dir DIR] [--json]\n       sr stats [--since DURATION] [--by-skill] [--dir DIR] [--json | --table]\n       sr hook <claude> [--shadow] [--offline | --allow-network] [--dir DIR]\n       sr install-hook <claude> [--settings-file FILE] [--binary-path PATH] [--timeout-secs N] [--apply]\n       sr uninstall-hook <claude> [--settings-file FILE] [--binary-path PATH] [--timeout-secs N] [--apply]\n       sr --help | --version\n\nRank the next step of an agent session using the configured provider.\nTypeSafe is the default; Cloudflare-hosted TypeSafe Jev can be selected with SR_PROVIDER=cloudflare, CLOUDFLARE_ACCOUNT_ID, and CLOUDFLARE_API_TOKEN. Network consent (--allow-network) is still required.\n";
 
-const EVAL_HELP: &str = "sr eval --dataset FILE [--allow-network] [--max-runtime-ms MS] [--timeout-ms MS] [--policy FILE] [--compare-policy FILE] [--explain] [--json | --table]\n       sr eval --dataset FRAME --labels FILE [--sample-size N [--seed S]] [--online --allow-network --max-requests N [--max-runtime-ms MS] [--roster FILE] [--robustness [--decoy-roster FILE] [--lookalike-roster FILE]]] [--explain] [--json | --table]\n\nEvaluate recorded or synthetic replay batches against local or comparison policies with bounded runtime and explicit accounting.\nWith --labels, score a labeled case frame against independent judgments, optionally over a stratified sample frozen before labels are joined.\n";
+const EVAL_HELP: &str = "sr eval --dataset FILE [--allow-network] [--max-runtime-ms MS] [--timeout-ms MS] [--policy FILE] [--compare-policy FILE] [--explain] [--json | --table]\n       sr eval --dataset FRAME --labels FILE [--sample-size N [--seed S]] [--online --allow-network --max-requests N [--max-runtime-ms MS] [--roster FILE] [--robustness [--decoy-roster FILE] [--lookalike-roster FILE] [--hostile-roster FILE]]] [--explain] [--json | --table]\n\nEvaluate recorded or synthetic replay batches against local or comparison policies with bounded runtime and explicit accounting.\nWith --labels, score a labeled case frame against independent judgments, optionally over a stratified sample frozen before labels are joined.\n";
 
 const STATS_HELP: &str = "sr stats [--since DURATION] [--by-skill] [--dir DIR] [--json | --table]\n\nReport observation and operational metrics across honest cohorts (evaluations, suggestions, abstentions, latency, loads, judgments, tokens, and cost).\n";
 
@@ -352,7 +352,7 @@ fn command() -> Command {
                 .arg(
                     Arg::new("robustness")
                         .long("robustness")
-                        .help("Also rank whitespace, distraction and hostile-instruction variants of each judged case on leftover budget")
+                        .help("Also rank request variants and supplied roster arms on leftover budget")
                         .requires("online")
                         .action(ArgAction::SetTrue),
                 )
@@ -364,6 +364,9 @@ fn command() -> Command {
                     .requires_all(["robustness", "roster"]).action(ArgAction::Set))
                 .arg(Arg::new("lookalike-roster").long("lookalike-roster").value_name("FILE")
                     .help("Authorized strict-superset roster whose additions duplicate baseline descriptions")
+                    .requires_all(["robustness", "roster"]).action(ArgAction::Set))
+                .arg(Arg::new("hostile-roster").long("hostile-roster").value_name("FILE")
+                    .help("Authorized strict-superset roster with prespecified hostile descriptions")
                     .requires_all(["robustness", "roster"]).action(ArgAction::Set))
                 .arg(
                     Arg::new("max-requests")
@@ -3924,6 +3927,10 @@ fn eval_live_command(
             "lookalike-roster",
             crate::evaluation::batch::VariantKind::LookalikeRoster,
         ),
+        (
+            "hostile-roster",
+            crate::evaluation::batch::VariantKind::HostileDescriptionRoster,
+        ),
     ] {
         if let Some(path) = eval_matches.get_one::<String>(flag) {
             let path = PathBuf::from(path);
@@ -4059,6 +4066,9 @@ fn eval_live_command(
                 None => "baseline",
                 Some(crate::evaluation::batch::VariantKind::DecoyRoster) => "decoy-roster",
                 Some(crate::evaluation::batch::VariantKind::LookalikeRoster) => "lookalike-roster",
+                Some(crate::evaluation::batch::VariantKind::HostileDescriptionRoster) => {
+                    "hostile-description-roster"
+                }
                 Some(_) => continue,
             };
             preflight.roster_snapshots.insert(

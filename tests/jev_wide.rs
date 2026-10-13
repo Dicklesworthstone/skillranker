@@ -10,7 +10,9 @@ use skillranker::jev::wide::{
 use skillranker::limits::{DurationMillis, SKILL_FILE_BYTES};
 use skillranker::output::ContextQuality;
 use skillranker::privacy::ContextProfile;
-use skillranker::roster::resolution::{BindingSpec, ResolvedRoster, SkillEntry};
+use skillranker::roster::resolution::{
+    BindingSpec, OptionMap, ResolutionError, ResolvedRoster, SkillEntry,
+};
 use skillranker::roster::{InvocationName, InvocationRestrictions, Visibility};
 use skillranker::runtime::{EntryClock, ProcessInvocation};
 use std::collections::BTreeMap;
@@ -40,6 +42,10 @@ fn tree() -> PathBuf {
 }
 
 fn roster_with(root: &Path, descriptions: &[String]) -> ResolvedRoster {
+    roster_with_source(root, descriptions, "fixture")
+}
+
+fn roster_with_source(root: &Path, descriptions: &[String], source: &str) -> ResolvedRoster {
     let clock = EntryClock::capture_with(
         DurationMillis::new("test", 30_000, 30_000).unwrap(),
         DurationMillis::new("cleanup", 500, 30_000).unwrap(),
@@ -61,7 +67,7 @@ fn roster_with(root: &Path, descriptions: &[String]) -> ResolvedRoster {
             .unwrap();
             SkillEntry::from_read(
                 BindingSpec {
-                    source: SourceId::new("fixture").unwrap(),
+                    source: SourceId::new(source).unwrap(),
                     logical_key: LogicalSkillKey::new(name.as_str()).unwrap(),
                     invocation: InvocationName::new(name.as_str()).unwrap(),
                     priority: Some(1),
@@ -560,7 +566,7 @@ fn respond_by_skill(
 }
 
 #[test]
-fn candidate_order_and_handle_assignment_cannot_change_the_decision() {
+fn candidate_order_preserves_canonical_handles_and_the_decision() {
     let root = tree();
     let roster = roster_with(&root, &plain(6));
     let forward = ids(&roster);
@@ -569,6 +575,22 @@ fn candidate_order_and_handle_assignment_cannot_change_the_decision() {
     let build_with =
         |order: &[SkillId]| build(&roster, order, &default_state(), "jev-latest", false).unwrap();
     let (a, b) = (build_with(&forward), build_with(&reversed));
+    // Canonicalization preserves the wire request and handle bindings. This
+    // is an array-order control, not a nontrivial provider-handle bijection.
+    assert_eq!(a.bytes(), b.bytes());
+    let handles = |wide: &WideRequest<'_>| {
+        wide.options()
+            .entries()
+            .iter()
+            .map(|(option, skill)| {
+                (
+                    option.as_str().to_owned(),
+                    skill.binding.id.as_str().to_owned(),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(handles(&a), handles(&b));
     // Distinct probabilities, plus a tie between skill001 and skill004 that
     // only the stable skill ID may break.
     let by_skill: BTreeMap<String, f64> = [
@@ -614,7 +636,7 @@ fn candidate_order_and_handle_assignment_cannot_change_the_decision() {
         "skill004"
     };
     assert_eq!(from_a[1], expected_first, "{from_a:?}");
-    // Both requests offer the same skills under a bijection of handles.
+    // Both requests offer the same skills under unchanged canonical handles.
     let skills = |wide: &WideRequest<'_>| {
         let mut names: Vec<String> = wide
             .options()
@@ -630,7 +652,7 @@ fn candidate_order_and_handle_assignment_cannot_change_the_decision() {
 }
 
 #[test]
-fn a_real_skill_identity_change_changes_the_request() {
+fn a_skill_content_change_changes_the_request() {
     let root = tree();
     let original = roster_with(&root, &plain(3));
     let request = |roster: &ResolvedRoster| {
@@ -645,5 +667,45 @@ fn a_real_skill_identity_change_changes_the_request() {
     // A changed description is new provider input, never a cached equivalent.
     let mut changed = plain(3);
     changed[1] = "Now drafts release notes instead.".into();
-    assert_ne!(before, request(&roster_with(&root, &changed)));
+    let changed = roster_with(&root, &changed);
+    assert_eq!(ids(&original), ids(&changed));
+    assert_ne!(before, request(&changed));
+}
+
+#[test]
+fn a_stable_skill_identity_change_invalidates_the_local_map() {
+    let root = tree();
+    let original = roster_with(&root, &plain(3));
+    let rebound = roster_with_source(&root, &plain(3), "fixture-rebound");
+    let old_ids = ids(&original);
+    let new_ids = ids(&rebound);
+    assert_eq!(old_ids.len(), 3);
+    assert_eq!(new_ids.len(), 3);
+    assert!(old_ids.iter().all(|id| !new_ids.contains(id)));
+    let content = |roster: &ResolvedRoster| {
+        let mut records: Vec<_> = roster
+            .advisory()
+            .map(|skill| {
+                (
+                    skill.binding.invocation.as_str().to_owned(),
+                    skill.record.source_content.clone(),
+                )
+            })
+            .collect();
+        records.sort();
+        records
+    };
+    assert_eq!(content(&original), content(&rebound));
+    assert!(matches!(
+        OptionMap::new(&rebound, &old_ids),
+        Err(ResolutionError::IneligibleOption)
+    ));
+    let current = OptionMap::new(&rebound, &new_ids).unwrap();
+    assert_eq!(current.entries().len(), 3);
+    assert!(
+        current
+            .entries()
+            .values()
+            .all(|skill| new_ids.contains(&skill.binding.id))
+    );
 }

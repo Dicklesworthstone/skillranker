@@ -258,13 +258,16 @@ impl Request {
                         return Err(CodecError::OptionMismatch);
                     }
                     probability(confidence)?;
-                    let mut sum = 0.0;
                     let mut maximum = 0.0_f64;
-                    for &value in probabilities.values() {
+                    let mut values: Vec<_> = probabilities.values().copied().collect();
+                    for &value in &values {
                         probability(value)?;
-                        sum += value;
                         maximum = maximum.max(value);
                     }
+                    // Opaque handles carry no numerical order. Canonical value
+                    // order preserves totals and normalized bits under renaming.
+                    values.sort_unstable_by(f64::total_cmp);
+                    let sum = values.into_iter().fold(0.0, |sum, value| sum + value);
                     if sum <= 0.0 || (sum - 1.0).abs() > SUM_TOLERANCE {
                         return Err(CodecError::InvalidDistribution);
                     }
@@ -409,7 +412,9 @@ impl ChoiceAnswer {
     pub fn has_tie(&self) -> bool {
         self.argmax_options().len() > 1
     }
-    /// Deterministic choice broken by stable skill ID (lexicographically smallest option among argmax candidates).
+    /// Lexicographically first option among the maxima. Opaque handles are not
+    /// stable skill identities; ranking callers must resolve their local map
+    /// before applying a stable-skill-ID tie break.
     pub fn deterministic_choice(&self) -> &str {
         self.argmax_options()
             .into_iter()

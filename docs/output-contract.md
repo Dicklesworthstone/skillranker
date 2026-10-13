@@ -75,6 +75,9 @@ does not renormalize its displayed subset. The schema cannot recompute a scoring
 formula or validate the complete provider distribution from this selected subset.
 `choice_confidence` and `none_probability` are both null before rerank evaluation.
 Zero is an evaluated estimate, never an encoding for an unevaluated stage.
+Validated Choice totals are accumulated in numeric order so opaque-handle
+renaming cannot change normalization. Raw estimates and the `0.1` distribution
+sum tolerance remain distinct from normalized probabilities.
 
 `quality` requires five booleans: `prompt_complete`, `task_anchor_known`,
 `history_windowed`, `attachments_omitted`, and `source_gaps`. Summary values are
@@ -178,7 +181,8 @@ evidence and absent wide answers count as unknown, not misses. Intrinsic top-M
 coverage uses the wide answer even when the gate stops rerank. An operationally
 failed variant may still supply valid earlier-stage evidence; its decision
 failure remains counted separately. Unsent variants count only under `not_run`.
-`kind` also permits `decoy-roster` and `lookalike-roster` when authorized expanded
+`kind` also permits `decoy-roster`, `lookalike-roster`, and
+`hostile-description-roster` when authorized expanded
 file-backed manifests are supplied. Roster arms preserve the baseline candidates
 and use fresh responses, under the same attempt/runtime caps. Their previews are
 bound separately to request bytes and the frozen physical inventory.
@@ -191,6 +195,10 @@ snapshot evidence was supplied by a library caller, or automatic discovery was
 used without an explicit manifest. A refused roster preview increments its variant
 `preflight_refused` and `not_run`, with no charged attempt or invented stage.
 These new counters default to zero in older schema-v1 reports.
+`--hostile-roster` selects operator-prespecified hostile descriptions in added
+candidates, retaining every baseline candidate unchanged. It measures this
+specific candidate-set perturbation; it is distinct from `hostile-instruction`,
+which changes request text. It does not classify hostility or alter source files.
 
 These are descriptive within-family comparisons, not additional independent
 samples or a passed quality gate. Missing coverage fields in older schema-v1

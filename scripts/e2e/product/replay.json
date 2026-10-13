@@ -237,9 +237,16 @@
         "eval_cli_contract::a_fresh_os_seed_is_recorded_and_supports_design_weighted_loss",
         "evaluation_manifest_semantics::supported_designs_replay_exact_membership_and_order",
         "evaluation_manifest_semantics::supplied_seed_cannot_acquire_probability_design_by_resealing",
-        "jev_wide::candidate_order_and_handle_assignment_cannot_change_the_decision",
-        "jev_wide::a_real_skill_identity_change_changes_the_request",
-        "jev_rerank::shortlist_order_and_handle_assignment_cannot_change_rerank_estimates"
+        "jev_wide::candidate_order_preserves_canonical_handles_and_the_decision",
+        "jev_wide::a_skill_content_change_changes_the_request",
+        "jev_wide::a_stable_skill_identity_change_invalidates_the_local_map",
+        "jev_rerank::shortlist_order_preserves_canonical_handles_and_exact_rerank_estimates",
+        "jev_contract::opaque_handle_bijections_preserve_exact_distribution_normalization",
+        "eval_cli_contract::authorized_roster_variants_send_fresh_requests_without_adding_families",
+        "eval_cli_contract::invalid_roster_variants_fail_before_any_provider_request",
+        "eval_cli_contract::hostile_descriptions_are_measured_as_data_without_local_authority",
+        "eval_batch_contract::roster_arms_preview_separately_and_keep_failures_budget_and_family_identity",
+        "eval_batch_contract::robustness_coverage_pairs_stage_evidence_without_inventing_misses_or_families"
       ]
     },
     {

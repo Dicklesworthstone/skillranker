@@ -432,12 +432,33 @@ fn empty_and_oversized_shortlists_build_nothing() {
 }
 
 #[test]
-fn shortlist_order_and_handle_assignment_cannot_change_rerank_estimates() {
+fn shortlist_order_preserves_canonical_handles_and_exact_rerank_estimates() {
     let root = tree();
     let roster = roster_with(&root, &simple(4));
     let forward = ids(&roster);
     let mut reversed = forward.clone();
     reversed.reverse();
+    let (a, b) = (
+        build(&roster, &forward, &plain_state(), "jev-latest").unwrap(),
+        build(&roster, &reversed, &plain_state(), "jev-latest").unwrap(),
+    );
+    assert_eq!(a.bytes(), b.bytes());
+    let handles = |rerank: &RerankRequest<'_>| {
+        rerank
+            .options()
+            .entries()
+            .iter()
+            .map(|(option, skill)| {
+                (
+                    option.as_str().to_owned(),
+                    skill.binding.id.as_str().to_owned(),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(handles(&a), handles(&b));
+    // Reversing selection does not change these handles. A distinct handle
+    // bijection remains a separate required control.
     // A provider answering by skill: each skill's probability and fit follow
     // it to whatever option handle the request assigned.
     let by_skill = |name: &str| match name {
@@ -473,13 +494,13 @@ fn shortlist_order_and_handle_assignment_cannot_change_rerank_estimates() {
             .map(|(skill, estimate)| {
                 (
                     skill.binding.invocation.as_str().to_owned(),
-                    (estimate.rerank * 1e9).round() as u64,
-                    (estimate.fit * 1e9).round() as u64,
+                    estimate.rerank.to_bits(),
+                    estimate.fit.to_bits(),
                 )
             })
             .collect();
         by_name.sort();
-        (by_name, (outcome.none_probability * 1e9).round() as u64)
+        (by_name, outcome.none_probability.to_bits())
     };
     assert_eq!(estimates(&forward), estimates(&reversed));
 }

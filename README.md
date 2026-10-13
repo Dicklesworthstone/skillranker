@@ -407,6 +407,7 @@ request or runtime limit is reached and reports unfinished cases.
 | `--roster FILE` | Discovery | Authorized file-backed baseline inventory for `--online` |
 | `--decoy-roster FILE` | None | With `--robustness --roster`, add already existing authorized candidates to the baseline |
 | `--lookalike-roster FILE` | None | With `--robustness --roster`, add authorized candidates whose descriptions duplicate a baseline description, ignoring whitespace |
+| `--hostile-roster FILE` | None | With `--robustness --roster`, add authorized candidates with prespecified hostile ranking instructions in their descriptions |
 | `--sample-size N` | Full supplied frame | Select a bounded sample of task-family representatives |
 | `--seed S` | Fresh recorded random seed when sampling | Deterministic diagnostic selection or reproduction of a recorded sample; a fixed seed alone is not probability-sampling evidence |
 | `--explain` | Off | Include equations, substituted values, assumptions, and interpretation in the report |
@@ -1297,9 +1298,15 @@ lookalike addition must duplicate a nonempty baseline description, ignoring
 whitespace. These flags select existing skills and never create or edit them.
 Choose irrelevant decoys using independent judgments; the command cannot infer
 that an added skill is irrelevant merely because it was absent from the baseline.
-Unsupplied arms remain under `not_computed`. Configured roster arms run before
-request variants, after main rankings and ablations. Their wide requests get
-separate network-free previews. With an explicit baseline, all arms retain its
+Unsupplied arms remain under `not_computed`. `--hostile-roster EXPANDED` tests
+hostile instructions in added skill descriptions separately from hostile text
+appended to a request. The
+operator prespecifies that inventory; `sr` does not classify hostility or edit
+descriptions. Baseline files remain unchanged, so this arm measures the effect of
+added hostile candidates rather than rewriting a baseline skill's identity.
+Configured roster arms run before request variants, after main rankings and
+ablations. Their wide requests get separate network-free previews. With an
+explicit baseline, all arms retain its
 frozen roster identities, content and eligibility. Changed inventory is refused
 before sending. Jev comparisons measure changes rather than demand identical
 probabilities from a stochastic, candidate-dependent model.

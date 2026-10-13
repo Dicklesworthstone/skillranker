@@ -1463,8 +1463,16 @@ unit_property_tests = [
     "tests/eval_cli_contract.rs::a_supplied_seed_reproduces_a_diagnostic_selection_without_design_weights",
     "tests/eval_cli_contract.rs::a_fresh_os_seed_is_recorded_and_supports_design_weighted_loss",
     "tests/evaluation_manifest_semantics.rs::supported_designs_replay_exact_membership_and_order",
-    "tests/jev_wide.rs::candidate_order_and_handle_assignment_cannot_change_the_decision",
-    "tests/jev_rerank.rs::shortlist_order_and_handle_assignment_cannot_change_rerank_estimates"
+    "tests/jev_wide.rs::candidate_order_preserves_canonical_handles_and_the_decision",
+    "tests/jev_rerank.rs::shortlist_order_preserves_canonical_handles_and_exact_rerank_estimates",
+    "tests/jev_wide.rs::a_skill_content_change_changes_the_request",
+    "tests/jev_wide.rs::a_stable_skill_identity_change_invalidates_the_local_map",
+    "tests/jev_contract.rs::opaque_handle_bijections_preserve_exact_distribution_normalization",
+    "tests/eval_cli_contract.rs::authorized_roster_variants_send_fresh_requests_without_adding_families",
+    "tests/eval_cli_contract.rs::invalid_roster_variants_fail_before_any_provider_request",
+    "tests/eval_cli_contract.rs::hostile_descriptions_are_measured_as_data_without_local_authority",
+    "tests/eval_batch_contract.rs::roster_arms_preview_separately_and_keep_failures_budget_and_family_identity",
+    "tests/eval_batch_contract.rs::robustness_coverage_pairs_stage_evidence_without_inventing_misses_or_families"
 ]
 e2e_suite = "replay"
 e2e_cases = ["loss-denominators-exact"]

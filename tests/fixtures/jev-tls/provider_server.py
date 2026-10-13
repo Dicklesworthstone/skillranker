@@ -20,6 +20,7 @@ Scenarios:
   always-503      every attempt is a 503 with Retry-After: 0
   unauthorized    every attempt is a 401
   unauthorized-variant-rerank  only the second rerank is a 401, after its wide answer
+  foreign-variant-option  only the second wide answer chooses an invented handle
   slow-wide       like useful; the wide answer is delayed by TEXT seconds
   hold-wide       like useful; write PATH when wide is held, release on stdin
   drift           like useful, but every choice distribution sums to 0.92,
@@ -65,7 +66,10 @@ def answer(key, question, stage):
         probabilities = distribution(options, favored)
         if scenario == "drift":
             probabilities = {option: p * 0.92 for option, p in probabilities.items()}
-        return {"type": "choice", "choice": favored, "probabilities": probabilities,
+        choice = "foreign-manufactured-skill" if (
+            scenario == "foreign-variant-option" and stage == "wide"
+            and key == "which" and stages.count("wide") == 2) else favored
+        return {"type": "choice", "choice": choice, "probabilities": probabilities,
                 "confidence": 0.8}
     value = 0.5
     if key.startswith("gate::"):

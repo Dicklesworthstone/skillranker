@@ -90,6 +90,139 @@ fn decode_val(req: &Request, val: &Value) -> Result<Response, CodecError> {
     req.decode_response(&serde_json::to_vec(val).unwrap())
 }
 
+#[test]
+fn opaque_handle_bijections_preserve_exact_distribution_normalization() {
+    // These names stand for fixed local identities. Only their request-local
+    // handles change; descriptions, raw estimates and the sentinel stay fixed.
+    let names = ["alpha", "beta", "gamma"];
+    let bijections = [
+        ["o002", "o001", "o000"],
+        ["r000", "r001", "r002"],
+        ["r000", "r002", "r001"],
+        ["r001", "r000", "r002"],
+        ["r001", "r002", "r000"],
+        ["r002", "r000", "r001"],
+        ["r002", "r001", "r000"],
+    ];
+    for (values, expected_sum, expected_winners) in [
+        ([0.7_f64, 0.2, 0.1], 1.0_f64, &["alpha"][..]),
+        ([0.45, 0.45, 0.1], 1.0, &["alpha", "beta"][..]),
+        ([0.6, 0.3, 0.09], 0.99, &["alpha"][..]),
+    ] {
+        let mut baseline = None;
+        let mut original_response = None;
+        for (index, handles) in bijections.iter().enumerate() {
+            let request = Request::new(
+                "synthetic-model".into(),
+                json!({"task": "fixed synthetic handle control"}),
+                [(
+                    "rank".into(),
+                    Question::choice(
+                        json!("Rank the fixed candidates"),
+                        handles
+                            .iter()
+                            .zip(names)
+                            .map(|(handle, name)| {
+                                ((*handle).to_owned(), format!("Description of {name}"))
+                            })
+                            .chain(std::iter::once((
+                                "__none__".into(),
+                                "No useful skill".into(),
+                            ))),
+                    )
+                    .unwrap(),
+                )],
+            )
+            .unwrap();
+            let probabilities = handles
+                .iter()
+                .zip(values)
+                .map(|(handle, value)| ((*handle).to_owned(), value))
+                .chain(std::iter::once(("__none__".into(), 0.0)))
+                .collect::<std::collections::BTreeMap<_, _>>();
+            let wire = json!({
+                "model": "synthetic-model-resolved",
+                "answers": {"rank": {
+                    "type": "choice", "choice": handles[0],
+                    "probabilities": probabilities, "confidence": 0.85
+                }},
+                "usage": {"input_tokens": 1, "output_tokens": 1}
+            });
+            for cloudflare in [false, true] {
+                let decode = |wire: &Value| {
+                    if cloudflare {
+                        skillranker::jev::cloudflare_codec::decode_response(
+                            &request,
+                            &serde_json::to_vec(
+                                &json!({"success": true, "result": {"result": wire}}),
+                            )
+                            .unwrap(),
+                        )
+                    } else {
+                        decode_val(&request, wire)
+                    }
+                };
+                let response = decode(&wire).expect("a consistent bijection must decode");
+                let answer = response
+                    .answers
+                    .get("rank")
+                    .and_then(|answer| match answer {
+                        Answer::Choice(choice) => Some(choice),
+                        _ => None,
+                    })
+                    .expect("the Choice request must have a Choice answer");
+                assert_eq!(answer.choice(), handles[0]);
+                let normalized = answer.normalized_probabilities();
+                let mapped: Vec<_> = handles
+                    .iter()
+                    .enumerate()
+                    .map(|(i, handle)| {
+                        let raw = answer.raw_probabilities()[*handle];
+                        assert_eq!(raw.to_bits(), values[i].to_bits());
+                        let probability = answer.normalized_probability(handle).unwrap();
+                        assert_eq!(probability.to_bits(), normalized[*handle].to_bits());
+                        (names[i], raw.to_bits(), probability.to_bits())
+                    })
+                    .collect();
+                assert_eq!(
+                    answer.raw_probabilities()["__none__"].to_bits(),
+                    0.0_f64.to_bits()
+                );
+                assert_eq!(normalized["__none__"].to_bits(), 0.0_f64.to_bits());
+                let mut winners: Vec<_> = answer
+                    .argmax_options()
+                    .iter()
+                    .map(|option| {
+                        let i = handles.iter().position(|handle| handle == option).unwrap();
+                        names[i]
+                    })
+                    .collect();
+                winners.sort();
+                assert_eq!(winners, expected_winners);
+                assert_eq!(answer.raw_sum().to_bits(), expected_sum.to_bits());
+                let actual = (mapped, answer.raw_sum().to_bits(), winners);
+                if let Some(expected) = &baseline {
+                    assert_eq!(
+                        &actual, expected,
+                        "bijection {index}, cloudflare={cloudflare}"
+                    );
+                } else {
+                    baseline = Some(actual);
+                }
+                if let Some(original) = &original_response {
+                    assert_eq!(expect_err(decode(original)), CodecError::OptionMismatch);
+                }
+                let mut foreign = wire.clone();
+                foreign["answers"]["rank"]["choice"] = json!("foreign-manufactured-handle");
+                assert_eq!(expect_err(decode(&foreign)), CodecError::InvalidChoice);
+            }
+            if index == 0 {
+                original_response = Some(wire);
+            }
+        }
+    }
+}
+
 // -----------------------------------------------------------------------------
 // 1. Boundary: p1_distribution_validation
 // Unit Property Test: tests/jev_contract.rs::distribution_sum_and_confidence
