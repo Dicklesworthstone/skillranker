@@ -386,6 +386,40 @@ fn charged(
     u32::try_from(attempts).map_err(|_| state("the stored attempt count is invalid"))
 }
 
+/// Both counters are written and pruned in the same debit transaction. Missing
+/// or altered totals are not an empty budget while receipt evidence remains.
+/// Call only inside the enclosing inspection snapshot or debit transaction so
+/// a peer commit cannot make the two reads disagree spuriously.
+fn verified_charged(
+    connection: &Connection,
+    origin: &str,
+    window_start: u64,
+) -> Result<u32, AllowanceError> {
+    if connection.is_autocommit() {
+        return Err(state("charge verification requires an accounting snapshot"));
+    }
+    let attempts = charged(connection, origin, window_start)?;
+    let window_start = i64::try_from(window_start)
+        .map_err(|_| state("the accounting window is outside its supported range"))?;
+    // One excess receipt suffices to reject an undercount. Do not collect IDs,
+    // expose receipt contents, or add an index to the existing exact schema.
+    // Normal scans remain bounded by the accounting store's existing size cap.
+    let receipts: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM (SELECT 1 FROM allowance_attempts \
+             WHERE origin=?1 AND window_start_unix_ms=?2 LIMIT ?3)",
+            params![origin, window_start, i64::from(attempts) + 1],
+            |row| row.get(0),
+        )
+        .map_err(|_| state("the accounting attempt receipts cannot be read"))?;
+    if receipts != i64::from(attempts) {
+        return Err(state(
+            "the accounting charge total disagrees with its attempt receipts; restore consistent history",
+        ));
+    }
+    Ok(attempts)
+}
+
 /// Setup steps, in order, for crash tests.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SetupStep {
@@ -512,7 +546,11 @@ pub fn inspect(paths: &AllowancePaths, origin: &CanonicalOrigin, now_unix_ms: u6
     let accounting = read_accounting(&paths.accounting, |connection| {
         let meta = read_meta(connection)?;
         let charged = match meta {
-            Some(_) => Some(charged(connection, origin.as_str(), window_start_unix_ms)?),
+            Some(_) => Some(verified_charged(
+                connection,
+                origin.as_str(),
+                window_start_unix_ms,
+            )?),
             None => None,
         };
         Ok((meta, charged))
@@ -701,7 +739,7 @@ pub fn admit(
         ));
     }
     let (window_start, window_end) = window_bounds(now);
-    let used = charged(&tx, origin.as_str(), window_start)?;
+    let used = verified_charged(&tx, origin.as_str(), window_start)?;
     if used >= guard.max_attempts {
         return Err(AllowanceError::Exhausted {
             max_attempts: guard.max_attempts,
@@ -985,3 +1023,7 @@ mod integrity_tests;
 #[cfg(all(test, unix))]
 #[path = "allowance/inspection_tests.rs"]
 mod inspection_tests;
+
+#[cfg(test)]
+#[path = "allowance/charge_consistency_tests.rs"]
+mod charge_consistency_tests;

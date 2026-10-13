@@ -135,7 +135,15 @@ fn metadata_and_charges_share_one_wal_snapshot() {
     let result = read_accounting(&paths.accounting, |db| {
         let before = read_meta(db)?.unwrap(); // Establish the reader snapshot.
         let writer = Connection::open(&paths.accounting).unwrap();
-        writer.execute_batch("BEGIN IMMEDIATE; UPDATE allowance_meta SET ready_generation=2; UPDATE allowance_charges SET attempts=2; COMMIT;").unwrap();
+        writer.execute_batch(
+            "BEGIN IMMEDIATE;
+             UPDATE allowance_meta SET ready_generation=2;
+             UPDATE allowance_charges SET attempts=2;
+             INSERT INTO allowance_attempts
+                 SELECT attempt_id || '-peer', origin, window_start_unix_ms,
+                        2, stage, charged_at_unix_ms FROM allowance_attempts;
+             COMMIT;",
+        ).unwrap();
         assert_eq!(read_meta(db)?.unwrap(), before);
         assert_eq!(charged(db, CanonicalOrigin::production().as_str(), start)?, 1);
         Ok(())
@@ -154,10 +162,21 @@ fn read_only_wal_inspection_includes_committed_uncheckpointed_charges() {
     let writer = Connection::open(&paths.accounting).unwrap();
     writer.pragma_update(None, "wal_autocheckpoint", 0).unwrap();
     let now = wall_clock_ms().unwrap();
+    // Keep both parts of the debit evidence in the same WAL commit, just as
+    // admission does. The report must see receipts, not an invented total.
+    writer.execute_batch("BEGIN IMMEDIATE").unwrap();
     writer.execute(
         "INSERT INTO allowance_charges VALUES (?1, ?2, 2)",
         params![CanonicalOrigin::production().as_str(), window_bounds(now).0 as i64],
     ).unwrap();
+    for id in ["wal-first", "wal-second"] {
+        writer.execute(
+            "INSERT INTO allowance_attempts VALUES (?1, ?2, ?3, 1, 'wide', ?4)",
+            params![id, CanonicalOrigin::production().as_str(), window_bounds(now).0 as i64, now as i64],
+        ).unwrap();
+    }
+    writer.execute("UPDATE allowance_meta SET last_charge_unix_ms=?1", [now as i64]).unwrap();
+    writer.execute_batch("COMMIT").unwrap();
     assert_eq!(report(&paths).charged_attempts, Some(2));
     assert_eq!(report(&paths).remaining(), Some(1));
     assert!(preview_setup(&paths, 3).unwrap().unchanged);
