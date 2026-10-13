@@ -106,7 +106,11 @@ fn raw_filename_symlink_is_not_skipped() {
     let name = std::ffi::OsStr::from_bytes(b"link-\xff");
     symlink("absent-private-target", dir.path.join(name)).unwrap();
     assert_eq!(dir.inspect_files(), Err(StoreError::UnsafePath));
-    assert!(fs::symlink_metadata(dir.path.join(name)).unwrap().is_symlink());
+    assert!(
+        fs::symlink_metadata(dir.path.join(name))
+            .unwrap()
+            .is_symlink()
+    );
 }
 
 #[test]
