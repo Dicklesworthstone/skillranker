@@ -314,6 +314,45 @@ fn open_accounting(path: &Path, create: bool) -> Result<Connection, AllowanceErr
     Ok(connection)
 }
 
+/// Inspect accounting in a single read-only snapshot. Never create directories,
+/// change permissions, select WAL, or configure a writer merely to report state.
+/// SQLite may still maintain WAL shared-memory bookkeeping on a read-only open.
+fn read_accounting<T>(
+    path: &Path,
+    inspect: impl FnOnce(&Connection) -> Result<T, AllowanceError>,
+) -> Result<Option<T>, AllowanceError> {
+    let path = crate::platform_path::storage_path(path.to_path_buf());
+    match fs::symlink_metadata(&path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err(state("the accounting database cannot be inspected")),
+        Ok(meta) if !meta.file_type().is_file() => {
+            return Err(state("the accounting path is not a regular file"));
+        }
+        Ok(_) => {}
+    }
+    let mut connection = Connection::open_with_flags(
+        &path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY
+            | OpenFlags::SQLITE_OPEN_NO_MUTEX
+            | OpenFlags::SQLITE_OPEN_NOFOLLOW
+            | OpenFlags::SQLITE_OPEN_PRIVATE_CACHE,
+    )
+    .map_err(|_| state("the accounting database cannot be read"))?;
+    connection
+        .busy_timeout(Duration::from_millis(25))
+        .map_err(|_| state("the accounting reader cannot be configured"))?;
+    connection
+        .pragma_update(None, "query_only", true)
+        .map_err(|_| state("the accounting reader cannot be configured"))?;
+    let tx = connection
+        .transaction_with_behavior(TransactionBehavior::Deferred)
+        .map_err(|_| state("the accounting read snapshot cannot be opened"))?;
+    let result = inspect(&tx)?;
+    tx.commit()
+        .map_err(|_| state("the accounting read snapshot cannot be closed"))?;
+    Ok(Some(result))
+}
+
 const ACCOUNTING_DDL: &str = "
 CREATE TABLE IF NOT EXISTS allowance_meta (
     id INTEGER PRIMARY KEY CHECK(id = 1),
@@ -553,18 +592,15 @@ pub fn inspect(paths: &AllowancePaths, origin: &CanonicalOrigin, now_unix_ms: u6
         }
     };
     report.guard = guard;
-    let accounting = if paths.accounting.exists() {
-        open_accounting(&paths.accounting, false).and_then(|connection| {
-            let meta = read_meta(&connection)?;
-            let charged = match meta {
-                Some(_) => Some(charged(&connection, origin.as_str(), window_start_unix_ms)?),
-                None => None,
-            };
-            Ok((meta, charged))
-        })
-    } else {
-        Ok((None, None))
-    };
+    let accounting = read_accounting(&paths.accounting, |connection| {
+        let meta = read_meta(connection)?;
+        let charged = match meta {
+            Some(_) => Some(charged(connection, origin.as_str(), window_start_unix_ms)?),
+            None => None,
+        };
+        Ok((meta, charged))
+    })
+    .map(|found| found.unwrap_or((None, None)));
     let (meta, charged) = match accounting {
         Ok(found) => found,
         Err(error) => {
@@ -601,11 +637,9 @@ pub fn preview_setup(
 ) -> Result<SetupPlan, AllowanceError> {
     validate_setup_limit(max_attempts)?;
     let previous = read_guard(paths)?;
-    let accounting_generation = if paths.accounting.exists() {
-        read_meta(&open_accounting(&paths.accounting, false)?)?.map_or(0, |(_, g, _)| g)
-    } else {
-        0
-    };
+    let accounting_generation = read_accounting(&paths.accounting, read_meta)?
+        .flatten()
+        .map_or(0, |(_, generation, _)| generation);
     plan_setup(previous, accounting_generation, max_attempts)
 }
 
@@ -1020,3 +1054,7 @@ mod tests {
 #[cfg(test)]
 #[path = "allowance/integrity_tests.rs"]
 mod integrity_tests;
+
+#[cfg(all(test, unix))]
+#[path = "allowance/inspection_tests.rs"]
+mod inspection_tests;
