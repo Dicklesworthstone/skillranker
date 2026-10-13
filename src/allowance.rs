@@ -25,14 +25,18 @@
 //! never refunded, whatever happens to the request afterwards.
 
 use crate::jev::{CanonicalOrigin, RankingStage};
-use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::Deserialize;
 use std::fmt;
-use std::fs::{self, File, OpenOptions};
-use std::io::Write;
+#[cfg(test)]
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+mod accounting;
+mod guard_file;
+use guard_file::GuardLock;
 
 /// Relative to the trusted user configuration root.
 pub const GUARD_FILE: &str = "sr/allowance.toml";
@@ -135,6 +139,7 @@ impl Guard {
         if record.schema_version != GUARD_SCHEMA_VERSION
             || record.window != WINDOW_TEXT
             || record.generation == 0
+            || record.generation > i64::MAX as u64
             || !(1..=MAX_ATTEMPTS_LIMIT).contains(&record.max_attempts)
         {
             return Err(state("the guard file is outside its supported schema"));
@@ -228,51 +233,10 @@ impl AllowancePaths {
 
 /// Reads the guard without the lock, for inspection and the stateless check.
 pub fn read_guard(paths: &AllowancePaths) -> Result<Option<Guard>, AllowanceError> {
-    match fs::symlink_metadata(&paths.guard) {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(_) => Err(state("the guard file cannot be inspected")),
-        Ok(meta) if !meta.file_type().is_file() || meta.len() > GUARD_FILE_MAX_BYTES => {
-            Err(state("the guard path is not a bounded regular file"))
-        }
-        Ok(_) => {
-            let text = fs::read_to_string(&paths.guard)
-                .map_err(|_| state("the guard file cannot be read"))?;
-            Guard::decode(&text).map(Some)
-        }
-    }
+    guard_file::read(&paths.guard)
 }
 
-/// The advisory lock that setup and every persistent admission share.
-struct GuardLock {
-    _flock: nix::fcntl::Flock<File>,
-}
-
-impl GuardLock {
-    fn acquire(paths: &AllowancePaths, budget: Duration) -> Result<Self, AllowanceError> {
-        let parent = paths
-            .guard
-            .parent()
-            .ok_or_else(|| state("the guard has no directory"))?;
-        create_private_dir(parent)?;
-        let started = Instant::now();
-        loop {
-            let handle = OpenOptions::new()
-                .create(true)
-                .truncate(false)
-                .write(true)
-                .open(paths.lock_path())
-                .map_err(|_| state("the guard lock cannot be opened"))?;
-            match nix::fcntl::Flock::lock(handle, nix::fcntl::FlockArg::LockExclusiveNonblock) {
-                Ok(flock) => return Ok(Self { _flock: flock }),
-                Err(_) if started.elapsed() < budget => {
-                    std::thread::sleep(Duration::from_millis(2));
-                }
-                Err(_) => return Err(state("the guard lock is busy")),
-            }
-        }
-    }
-}
-
+#[cfg(test)]
 fn create_private_dir(dir: &Path) -> Result<(), AllowanceError> {
     let mut builder = fs::DirBuilder::new();
     builder.recursive(true);
@@ -288,94 +252,22 @@ fn create_private_dir(dir: &Path) -> Result<(), AllowanceError> {
 
 /// Replaces the guard durably: temporary file, fsync, rename, directory fsync.
 fn publish_guard(paths: &AllowancePaths, guard: &Guard) -> Result<(), AllowanceError> {
-    let parent = paths
-        .guard
-        .parent()
-        .ok_or_else(|| state("the guard has no directory"))?;
-    let tmp = parent.join(format!(
-        "allowance.toml.sr-tmp.{}_{}",
-        std::process::id(),
-        COUNTER.fetch_add(1, Ordering::Relaxed)
-    ));
-    let write = || -> std::io::Result<()> {
-        let mut handle = OpenOptions::new().create_new(true).write(true).open(&tmp)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600))?;
-        }
-        handle.write_all(guard.encode().as_bytes())?;
-        handle.sync_all()?;
-        fs::rename(&tmp, &paths.guard)?;
-        File::open(parent)?.sync_all()
-    };
-    write().map_err(|_| {
-        // Our own unpublished temporary file, never user data.
-        let _ = fs::remove_file(&tmp);
-        state("the guard could not be published durably")
-    })
+    guard_file::publish(paths, guard)
 }
 
 /// Opens the accounting database with the durability enforcement requires:
 /// WAL and `synchronous=FULL`, each read back, a page quota and defensive mode.
-fn open_accounting(path: &Path, create: bool) -> Result<Connection, AllowanceError> {
-    // NOFOLLOW refuses a symlink anywhere in the path, so spell macOS's
-    // trusted /tmp and /var aliases as their /private targets first.
-    let path = &crate::platform_path::storage_path(path.to_path_buf());
-    let fail = |_| state("the accounting database is unavailable");
-    if let Some(parent) = path.parent() {
-        create_private_dir(parent)?;
-    }
-    if !create && !path.exists() {
-        return Err(state("the accounting database is missing"));
-    }
-    if fs::symlink_metadata(path).is_ok_and(|meta| !meta.file_type().is_file()) {
-        return Err(state("the accounting path is not a regular file"));
-    }
-    let mut flags = OpenFlags::SQLITE_OPEN_READ_WRITE
-        | OpenFlags::SQLITE_OPEN_NO_MUTEX
-        | OpenFlags::SQLITE_OPEN_NOFOLLOW;
-    if create {
-        flags |= OpenFlags::SQLITE_OPEN_CREATE;
-    }
-    let connection = Connection::open_with_flags(path, flags).map_err(fail)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o600))
-            .map_err(|_| state("the accounting database permissions cannot be restricted"))?;
-    }
-    connection
-        .busy_timeout(Duration::from_millis(25))
-        .map_err(fail)?;
-    connection
-        .set_db_config(rusqlite::config::DbConfig::SQLITE_DBCONFIG_DEFENSIVE, true)
-        .map_err(fail)?;
-    let mode: String = connection
-        .query_row("PRAGMA journal_mode=WAL", [], |row| row.get(0))
-        .map_err(fail)?;
-    connection
-        .pragma_update(None, "synchronous", "FULL")
-        .map_err(fail)?;
-    let synchronous: i64 = connection
-        .pragma_query_value(None, "synchronous", |row| row.get(0))
-        .map_err(fail)?;
-    // FULL is 2. NORMAL can lose a committed debit on power loss.
-    if mode != "wal" || synchronous != 2 {
-        return Err(state(
-            "the accounting database cannot guarantee durable debits",
-        ));
-    }
-    let page_size: i64 = connection
-        .pragma_query_value(None, "page_size", |row| row.get(0))
-        .map_err(fail)?;
-    if page_size <= 0 {
-        return Err(state("the accounting database reports no page size"));
-    }
-    connection
-        .pragma_update(None, "max_page_count", ACCOUNTING_MAX_BYTES / page_size)
-        .map_err(fail)?;
-    Ok(connection)
+fn open_accounting(path: &Path, create: bool) -> Result<accounting::Store, AllowanceError> {
+    accounting::open_writer(path, create)
+}
+
+/// Inspect one read-only snapshot without writer configuration or path creation.
+/// SQLite may still maintain WAL shared-memory bookkeeping on a read-only open.
+fn read_accounting<T>(
+    path: &Path,
+    inspect: impl FnOnce(&Connection) -> Result<T, AllowanceError>,
+) -> Result<Option<T>, AllowanceError> {
+    accounting::read(path, inspect)
 }
 
 const ACCOUNTING_DDL: &str = "
@@ -402,32 +294,75 @@ CREATE TABLE IF NOT EXISTS allowance_attempts (
 ";
 
 /// `(schema_version, ready_generation, last_charge_unix_ms)`, if initialized.
+/// Only a genuinely empty database is uninitialized. A partial schema or a
+/// missing singleton may represent lost enforcement history, never a new budget.
 fn read_meta(connection: &Connection) -> Result<Option<(i64, u64, u64)>, AllowanceError> {
-    let exists: i64 = connection
+    let objects: i64 = connection
         .query_row(
-            "SELECT count(*) FROM sqlite_schema WHERE type = 'table' AND name = 'allowance_meta'",
+            "SELECT count(*) FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*'",
             [],
             |row| row.get(0),
         )
         .map_err(|_| state("the accounting database cannot be read"))?;
-    if exists == 0 {
+    // This schema stores its version in allowance_meta; it never assigns either
+    // header identifier. A foreign/newer database is not initialization input.
+    for pragma in ["application_id", "user_version"] {
+        let value: i64 = connection
+            .pragma_query_value(None, pragma, |row| row.get(0))
+            .map_err(|_| state("the accounting database cannot be inspected"))?;
+        if value != 0 {
+            return Err(state("the accounting database has an unsupported identity"));
+        }
+    }
+    if objects == 0 {
         return Ok(None);
     }
-    connection
+    if objects != 3 {
+        return Err(state("the accounting schema is incomplete or incompatible"));
+    }
+    // Compare against the very DDL used by setup, not a second schema copy.
+    // SQLite strips IF NOT EXISTS and the terminal semicolon when storing DDL.
+    for (name, ddl) in ["allowance_meta", "allowance_charges", "allowance_attempts"]
+        .into_iter()
+        .zip(ACCOUNTING_DDL.split(';'))
+    {
+        let expected = ddl
+            .trim()
+            .replacen("CREATE TABLE IF NOT EXISTS", "CREATE TABLE", 1);
+        let actual: Option<String> = connection
+            .query_row(
+                "SELECT sql FROM sqlite_schema WHERE type='table' AND name=?1",
+                [name],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|_| state("the accounting schema cannot be read"))?;
+        if actual.as_deref() != Some(expected.as_str()) {
+            return Err(state("the accounting schema is incomplete or incompatible"));
+        }
+    }
+    let count: i64 = connection
+        .query_row("SELECT count(*) FROM allowance_meta", [], |row| row.get(0))
+        .map_err(|_| state("the accounting metadata cannot be read"))?;
+    if count != 1 {
+        return Err(state(
+            "the accounting metadata singleton is missing or duplicated",
+        ));
+    }
+    let (schema, generation, last): (i64, i64, i64) = connection
         .query_row(
             "SELECT schema_version, ready_generation, last_charge_unix_ms FROM allowance_meta \
              WHERE id = 1",
             [],
-            |row| {
-                Ok((
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, i64>(1)? as u64,
-                    row.get::<_, i64>(2)? as u64,
-                ))
-            },
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
-        .optional()
-        .map_err(|_| state("the accounting database cannot be read"))
+        .map_err(|_| state("the accounting metadata cannot be read"))?;
+    if schema != ACCOUNTING_SCHEMA_VERSION || generation <= 0 || last < 0 {
+        return Err(state(
+            "the accounting metadata is outside its supported schema",
+        ));
+    }
+    Ok(Some((schema, generation as u64, last as u64)))
 }
 
 fn charged(
@@ -435,15 +370,20 @@ fn charged(
     origin: &str,
     window_start: u64,
 ) -> Result<u32, AllowanceError> {
-    connection
+    let window_start = i64::try_from(window_start)
+        .map_err(|_| state("the accounting window is outside its supported range"))?;
+    let attempts: i64 = connection
         .query_row(
             "SELECT attempts FROM allowance_charges WHERE origin = ?1 AND window_start_unix_ms = ?2",
-            params![origin, window_start as i64],
-            |row| row.get::<_, i64>(0),
+            params![origin, window_start],
+            |row| row.get(0),
         )
         .optional()
-        .map(|n| n.unwrap_or(0).clamp(0, i64::from(u32::MAX)) as u32)
-        .map_err(|_| state("the accounting database cannot be read"))
+        .map_err(|_| state("the accounting database cannot be read"))?
+        .unwrap_or(0);
+    // Invalid enforcement state is not free allowance. A real missing row is
+    // still a fresh origin/window; stored negative or oversized counts are not.
+    u32::try_from(attempts).map_err(|_| state("the stored attempt count is invalid"))
 }
 
 /// Setup steps, in order, for crash tests.
@@ -463,22 +403,59 @@ pub struct SetupPlan {
     pub resumes_intent: bool,
 }
 
-fn plan_setup(previous: Option<Guard>, accounting_generation: u64, max_attempts: u32) -> SetupPlan {
-    let next = previous
-        .map_or(0, |guard| guard.generation)
-        .max(accounting_generation)
-        + 1;
+fn validate_setup_limit(max_attempts: u32) -> Result<(), AllowanceError> {
+    if !(1..=MAX_ATTEMPTS_LIMIT).contains(&max_attempts) {
+        return Err(AllowanceError::InvalidRequest(format!(
+            "--max-attempts must be an integer from 1 to {MAX_ATTEMPTS_LIMIT}"
+        )));
+    }
+    Ok(())
+}
+
+fn plan_setup(
+    previous: Option<Guard>,
+    accounting_generation: u64,
+    max_attempts: u32,
+) -> Result<SetupPlan, AllowanceError> {
+    validate_setup_limit(max_attempts)?;
+    if accounting_generation > i64::MAX as u64
+        || previous.is_some_and(|guard| guard.generation == 0 || guard.generation > i64::MAX as u64)
+    {
+        return Err(state(
+            "the allowance generation is outside its supported range",
+        ));
+    }
+    if accounting_generation == 0
+        && let Some(guard) = previous
+        && !(guard.phase == GuardPhase::Intent
+            && guard.generation == 1
+            && guard.max_attempts == max_attempts)
+    {
+        return Err(state(
+            "existing allowance accounting is missing; restore its history instead of resetting charges",
+        ));
+    }
+    // Compute a successor only when one is needed. An unchanged ready guard,
+    // or the exact interrupted intent, remains usable at the last generation.
+    let next = || {
+        previous
+            .map_or(0, |guard| guard.generation)
+            .max(accounting_generation)
+            .checked_add(1)
+            .filter(|generation| *generation <= i64::MAX as u64)
+            .ok_or_else(|| state("the allowance generation cannot be advanced"))
+    };
     let (generation, unchanged, resumes_intent) = match previous {
         Some(guard) if guard.max_attempts == max_attempts => match guard.phase {
             GuardPhase::Ready if accounting_generation == guard.generation => {
                 (guard.generation, true, false)
             }
             GuardPhase::Intent => (guard.generation.max(accounting_generation), false, true),
-            GuardPhase::Ready => (next, false, false),
+            GuardPhase::Ready => (next()?, false, false),
         },
-        _ => (next, false, false),
+        _ => (next()?, false, false),
     };
-    SetupPlan {
+    Ok(SetupPlan {
         previous,
         target: Guard {
             phase: GuardPhase::Ready,
@@ -487,7 +464,7 @@ fn plan_setup(previous: Option<Guard>, accounting_generation: u64, max_attempts:
         },
         unchanged,
         resumes_intent,
-    }
+    })
 }
 
 /// What `sr budget` reports: guard, accounting health and the current window.
@@ -532,18 +509,15 @@ pub fn inspect(paths: &AllowancePaths, origin: &CanonicalOrigin, now_unix_ms: u6
         }
     };
     report.guard = guard;
-    let accounting = if paths.accounting.exists() {
-        open_accounting(&paths.accounting, false).and_then(|connection| {
-            let meta = read_meta(&connection)?;
-            let charged = match meta {
-                Some(_) => Some(charged(&connection, origin.as_str(), window_start_unix_ms)?),
-                None => None,
-            };
-            Ok((meta, charged))
-        })
-    } else {
-        Ok((None, None))
-    };
+    let accounting = read_accounting(&paths.accounting, |connection| {
+        let meta = read_meta(connection)?;
+        let charged = match meta {
+            Some(_) => Some(charged(connection, origin.as_str(), window_start_unix_ms)?),
+            None => None,
+        };
+        Ok((meta, charged))
+    })
+    .map(|found| found.unwrap_or((None, None)));
     let (meta, charged) = match accounting {
         Ok(found) => found,
         Err(error) => {
@@ -578,13 +552,12 @@ pub fn preview_setup(
     paths: &AllowancePaths,
     max_attempts: u32,
 ) -> Result<SetupPlan, AllowanceError> {
+    validate_setup_limit(max_attempts)?;
     let previous = read_guard(paths)?;
-    let accounting_generation = if paths.accounting.exists() {
-        read_meta(&open_accounting(&paths.accounting, false)?)?.map_or(0, |(_, g, _)| g)
-    } else {
-        0
-    };
-    Ok(plan_setup(previous, accounting_generation, max_attempts))
+    let accounting_generation = read_accounting(&paths.accounting, read_meta)?
+        .flatten()
+        .map_or(0, |(_, generation, _)| generation);
+    plan_setup(previous, accounting_generation, max_attempts)
 }
 
 /// Applies setup in its three durable steps under the guard lock. `interrupt`
@@ -595,11 +568,20 @@ pub fn apply_setup(
     lock_budget: Duration,
     interrupt: Option<SetupStep>,
 ) -> Result<SetupPlan, AllowanceError> {
+    validate_setup_limit(max_attempts)?;
     let _lock = GuardLock::acquire(paths, lock_budget)?;
     let previous = read_guard(paths)?;
-    let mut connection = open_accounting(&paths.accounting, true)?;
-    let accounting_generation = read_meta(&connection)?.map_or(0, |(_, g, _)| g);
-    let plan = plan_setup(previous, accounting_generation, max_attempts);
+    // A ready guard proves accounting has existed. Do not turn a missing file
+    // into fresh allowance. Only first activation (including its exact initial
+    // intent retry, before any debit was possible) can create accounting.
+    let create = previous.is_none_or(|guard| {
+        guard.phase == GuardPhase::Intent
+            && guard.generation == 1
+            && guard.max_attempts == max_attempts
+    });
+    let mut accounting = open_accounting(&paths.accounting, create)?;
+    let accounting_generation = read_meta(&accounting.connection)?.map_or(0, |(_, g, _)| g);
+    let plan = plan_setup(previous, accounting_generation, max_attempts)?;
     if plan.unchanged {
         return Ok(plan);
     }
@@ -615,9 +597,16 @@ pub fn apply_setup(
         return Ok(plan);
     }
     // 2. Accounting at the intent's generation, keeping every charge.
-    let tx = connection
+    accounting.files.verify()?;
+    let tx = accounting.connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|_| state("the accounting database is busy"))?;
+    // Recheck inside the writer transaction before any IF NOT EXISTS could
+    // reconstruct missing history after the preflight read.
+    if read_meta(&tx)?.map_or(0, |(_, generation, _)| generation) != accounting_generation {
+        return Err(state("the accounting generation changed during setup"));
+    }
+    accounting.files.verify()?;
     tx.execute_batch(ACCOUNTING_DDL)
         .map_err(|_| state("the accounting schema cannot be created"))?;
     tx.execute(
@@ -627,8 +616,10 @@ pub fn apply_setup(
         params![ACCOUNTING_SCHEMA_VERSION, plan.target.generation as i64],
     )
     .map_err(|_| state("the accounting generation cannot be recorded"))?;
+    accounting.files.verify()?;
     tx.commit()
         .map_err(|_| state("the accounting generation cannot be committed"))?;
+    accounting.files.verify()?;
     if interrupt == Some(SetupStep::AccountingReady) {
         return Ok(plan);
     }
@@ -691,8 +682,9 @@ pub fn admit(
             "allowance setup is incomplete; rerun sr budget --apply to finish it",
         ));
     }
-    let mut connection = open_accounting(&paths.accounting, false)?;
-    let tx = connection
+    let mut accounting = open_accounting(&paths.accounting, false)?;
+    accounting.files.verify()?;
+    let tx = accounting.connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|_| state("the accounting database is busy"))?;
     let (_, generation, last_charge) =
@@ -760,9 +752,14 @@ pub fn admit(
         )?;
         Ok(())
     };
+    accounting.files.verify()?;
     write().map_err(|_| state("the debit cannot be recorded; storage may be full"))?;
+    accounting.files.verify()?;
     tx.commit()
         .map_err(|_| state("the debit cannot be committed durably"))?;
+    // If post-commit identity verification fails, withhold the send. A charge
+    // that may already be durable is never refunded.
+    accounting.files.verify()?;
     Ok(Admission::Debited(Debit {
         attempt_id,
         guard_generation: guard.generation,
@@ -980,3 +977,11 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "allowance/integrity_tests.rs"]
+mod integrity_tests;
+
+#[cfg(all(test, unix))]
+#[path = "allowance/inspection_tests.rs"]
+mod inspection_tests;
