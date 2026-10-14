@@ -1355,3 +1355,33 @@ the confirmation to look for.
   requirements, independent corpus/cohort gates and historical timeout cause
   remain open. Raw receipts, failures and rollback binding:
   `/scratch/tmp/skillranker-membership-activation-92xd0x0y`.
+
+## Redeployment — 2026-10-12 UTC (BeigeCompass, stats adoption and label coverage)
+
+- Activated source `9ee3a96b087a95c919896d91251aafee8380c639` at
+  `2026-10-12 03:24:41 UTC` (`~/.local/state/sr/deployments/20261012T032441Z-fd6f1dd/receipt.json`,
+  recorded in `42cffa2`). Installed `sr stats` counts adoption (`21f2a35`) and
+  label coverage (`76dcd0d`) within the emitted recommendation cohort rather
+  than inflating denominators with unemitted shadow or abstained turns.
+- Installed SHA256
+  `ed2d868ae32ac4ee78dab61c3d3be17eabb4e5f64128977a4f0b31f372cb193d`,
+  25,447,776 bytes, mode `0755`. Previous `fd6f1dd` is preserved at
+  `~/.local/state/sr/deployments/20261012T032441Z-fd6f1dd/sr`, SHA256
+  `84c93043091371e1116c90e0f6891ad0d7b6172cd1df008425704f80e5287168`.
+- Source qualification at `9ee3a96` passed locked all-target check, strict Clippy,
+  full default suite (1,650 passed, zero failed, eleven unchanged opt-in ignores)
+  and 19-target replay suite (275 passed, zero failed, zero ignored).
+- All four configuration SHA256 identities (`~/.local/libexec/skillranker/sr`,
+  `~/.config/sr/config.toml`, `.claude/settings.local.json`,
+  `~/.claude/settings.json`), live install/uninstall previews, budget state
+  (`disabled`) and non-clock ledger totals remained invariant: 170 evaluated
+  turns (167 shadow, three CLI), zero emitted suggestions or independent
+  judgments, 234 provider attempts (220 completed, fourteen unknown usage) and
+  2,394,033 known tokens.
+- Later source commits (`21eb2ad`..`3d34707`, including evaluation wire/roster
+  robustness variants and `sr-xq2u` allowance/breaker filesystem/fencing
+  repairs) are published in source at `3d34707` (`1,786` parent passes plus one
+  nested pass, zero failures, eleven opt-in ignores at `f0268f3`) but are not yet
+  activated in `~/.local/bin/sr`. Original `sr-1uf4` representative 500-turn
+  traffic, per-stratum latency/fallback/memory evidence, independent corpus/harm
+  cohorts and `sr-9fzp` historical cause remain open.

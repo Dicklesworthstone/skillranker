@@ -93,13 +93,16 @@ has zero coverage. These denominator checks do not establish independent label
 provenance or satisfy the corpus, paired-outcome or P5 acceptance gates.
 
 Behavior that must match the registry:
-- `eval --online --robustness` evaluates whitespace, distraction and hostile-text
-  variants on the remaining batch budget. Its non-actionable report includes
-  paired admitted and intrinsic top-M coverage, preserving unknown stage evidence,
-  failed decisions and unsent variants separately. Variants keep the original
-  family/split and never increase primary quality denominators. Decoy/lookalike
-  roster variants remain explicitly `not_computed`; original task
-  `sr-roadmap-l1i.6.24` and parent P5 remain open for that missing behavior.
+- `eval --online --robustness` evaluates whitespace, distraction, hostile-text,
+  prespecified Choice wire variants (`option-order`, `option-handle-renaming`),
+  and authorized file-backed roster variants (`--decoy-roster`,
+  `--lookalike-roster`, `--hostile-roster`) on the remaining batch budget.
+  Unconfigured roster arms remain explicitly `not_computed`. Its non-actionable
+  report includes paired admitted and intrinsic top-M coverage, preserving
+  unknown stage evidence, failed decisions and unsent variants separately.
+  Variants keep the original family/split and never increase primary quality
+  denominators. Source-bound P5 gates (`sr-roadmap-l1i.6.24`, `.6.29`, `.6`) are
+  closed, while independent quality and promotion gates remain `not-established`.
 - Every implemented command answers `--help`.
 - A planned command is refused as `invalid-usage` (exit 2). It is never
   partially run.

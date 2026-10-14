@@ -133,9 +133,16 @@ placed on APFS. However, released RCH `2.1.16` (`4b2f1fa398ec`) refused the
 before compilation: its source lock requires GNU `flock --no-fork`, which the
 worker's macOS `flock 0.4.0` does not implement. RCH's native lock fix exists in
 upstream commit `30f413465748b79af07a94c9e0f23a85a6b6be4b`, but the latest
-published release checked on that date predates it. Source locks and required
+published release checked on that date predates it. On October 14, 2026 at
+source `3d34707e61c9f02339b877831c62f2b928f0c017`, a follow-up requalification
+attempt with released RCH `2.1.24` (`e612d300e81b`) selected `mac-mini-old`
+(`aarch64-apple-darwin`) and progressed past the former `flock` gate, but RCH
+refused worker source-namespace initialization before compilation (`status
+Some(73): RCH: source namespace: conflicting alias base; RCH: durable source
+ownership: topology initialization failed` because `/data/projects/skillranker`
+and `/dp/skillranker` alias on the host). Source locks and required
 remote execution were preserved; no local compilation fallback was used.
-This attempt establishes neither current native behavior nor a linked macOS
+Neither attempt establishes current native behavior or a linked macOS
 SQLite engine identity. Both available Macs are ARM64; physical Intel
 qualification and the original release matrix remain unmet on `.5.23`.
 

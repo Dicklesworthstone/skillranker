@@ -1,10 +1,213 @@
 # SkillRanker reality check and bridge plan
 
-Assessment snapshot: 2026-10-08 UTC, source `78ad66094193b32592b414ad253882b9cec0edef`.
+Assessment snapshot: 2026-10-14 UTC, source `3d34707e61c9f02339f877831c62f2b928f0c017`.
 Earlier reviews and receipts remain below as history. Source, installed artifact,
 provider qualification and recommendation quality are separate claims.
 
-## Implementation follow-up — 2026-10-08 22:26 UTC
+## Assessment snapshot — 2026-10-14 UTC
+
+**Six of the ten phase epics (P0, P1, P2, P3, P5, P6) are now closed with
+source-bound verification, and the core CLI, evaluation harness, replay engine
+and allowance/breaker storage boundaries are deeply hardened (`1,786` passing
+parent tests plus one nested pass at `f0268f3`). However, the product's central
+promise — that Jev-ranked next-step skill recommendations measurably improve
+live agent work within latency, harm and availability gates — remains
+`not-established`.** Furthermore, live host inspection uncovered three concrete
+drifts between the repository and the running environment: (1) the installed
+`~/.local/bin/sr` binary (`9ee3a96`, SHA256 `ed2d868a...`) predates the Oct
+12–13 evaluation robustness (`21eb2ad`..`9faf53c`) and `sr-xq2u`
+allowance/breaker (`b554a32`..`f0268f3`) commits and lacked its Oct 12 receipt
+in `docs/self-host-shadow-deployment.md`; (2) `docs/capabilities.md` still
+described decoy/lookalike roster arms and `.6.24`/P5 as unimplemented/open; and
+(3) the host's installed `cass` binary upgraded to `0.10.0` while
+`src/context/cass.rs` hardcodes `QUALIFIED_VERSION = "0.8.0"`, causing live
+`sr rank --session PATH` and `sr observe --session PATH` to fail closed with
+exit 7 (`unsupported-input`, now tracked in `sr-roadmap-l1i.11`).
+
+### Scope and evidence boundary
+
+Read all 682 lines of `AGENTS.md`, all 2,141 lines of `README.md`, and all 1,368
+lines of `COMPREHENSIVE_PLAN_TO_DESIGN_SKILLRANKER.md`, plus the capability,
+configuration, allowance-filesystem, paired-harm, relevance-corpus, product-e2e
+and shadow-deployment contracts. Audited the 69,979-line Rust codebase (`src/`),
+the 343-issue Beads graph (`.beads/issues.jsonl`), the deployed binary
+(`~/.local/bin/sr`), deployment receipts (`~/.local/state/sr/deployments/`),
+and live read-only ledger/budget/doctor state.
+
+No credential was printed or transmitted, no live Jev network call was made, and
+no hook settings, installed binary, allowance configuration or ledger contents
+were mutated. Reconciled stale statements in `docs/capabilities.md` and
+`docs/self-host-shadow-deployment.md`, created `sr-roadmap-l1i.11` for `cass
+0.10.0` adapter qualification, and executed the fast Python contract, policy,
+dependency-graph and 249-test unit suites.
+
+### Vision checklist: implementation versus acceptance
+
+`WORKING` means an implemented code path backed by source-bound unit/integration
+tests and CLI verification. `PARTIAL`, `UNPROVEN` and `NOT_STARTED` describe the
+specific goal's end-to-end product/evidence state, never a fabricated completion
+percentage.
+
+| # | Testable goal from README/plan | Status and implementation evidence | Remaining boundary and owner |
+|---|---|---|---|
+| 1 | Standalone Rust 2024 CLI (`sr`) + pure library, `#![forbid(unsafe_code)]`, Jev required | WORKING: single package, 16 implemented subcommands, pinned `Cargo.lock` and `rust-toolchain.toml` (`nightly-2026-08-31`) | Multi-target DSR release packaging remains `.8.7` |
+| 2 | Exact session/branch identity and authoritative hook prompt overlay | WORKING in local contracts: `src/context/`, missing-parent first-prompt repair (`b5445ca`), side-branch pruning | Native Claude conformance across all 9 dimensions at installed `2.1.299` remains `.8.10` |
+| 3 | Local explicit resolution (`$skill`, `/skill`, `--require-skill`) and exclusion precedence | WORKING: resolves before redaction/truncation/Quill with zero HTTP attempts; exclusions prevail | Preserve positive and conflicting-directive controls in experimental advisory trials |
+| 4 | Harness-specific visible roster discovery, collision/shadowing and revalidation | WORKING for bounded local contracts: `src/roster/`, per-name authority withholding (`sr-fzia`), snapshot/diff | Live Claude invocation/visibility proof at pinned version remains `.8.10` |
+| 5 | Deterministic in-memory Quill BM25 overflow prefilter (`>254` eligible skills) | WORKING mechanics: `frankensearch-quill` (`default-features = false`), literal escaped disjunctions, 0/1/254/255+ controls | Held-out ≥98% coverage at 254 on ≥50 positive overflow cases remains `sr-uv2v` → `.8.1` |
+| 6 | Sequential wide + rerank Jev protocol, 255-option cap (`254 + __none__`), 0.1 sum tolerance | WORKING on TypeSafe origin: strict decoder, renormalization with raw retention, bounded retries | Optional Cloudflare live qualification (HTTP 402 / billing-read 403 blocker) remains `.2.14` |
+| 7 | Per-candidate beat-`__none__`, fit threshold (`0.30`), reference suppression, finite softmax | WORKING: `src/eligibility.rs`, `src/scoring.rs`; `1e-6` clipping, full-shortlist normalization, omitted mass | Empirical superiority over always-abstain and wide-only baselines awaits `.8.1` |
+| 8 | Consent-gated networking, secret redaction before truncation, strict config/env registry | WORKING: `src/config.rs`, `src/privacy/`, `src/effects.rs`, boundary revalidation projections | Maintain zero-leak invariants across future P8/P9 surfaces |
+| 9 | Monotonic 3,000 ms entry deadline (200 ms reserve), owned Asupersync cancellation & child reaping | PARTIAL: root-region drain (`3f5c18b`), pipeline completion instant (`78ad660`), pre-callback blocking admission (`e7e2acd`) | Historical intermittent mixed-load `in-flight` overrun cause remains open under `sr-9fzp` |
+| 10 | Namespaced keyed BLAKE3 response cache and fenced single-flight leases | WORKING: `CacheStore` schema v2, producer/agent/branch/epoch isolation, 10-minute receipt TTL | Live shadow ledger currently has 0 cache-served turns; representative cache stratum awaits `.8.4` |
+| 11 | Durable SQLite 3.51.3+ ledger, atomic observation cursors, feedback and cohort stats | WORKING mechanics: `src/ledger.rs`, `src/observe.rs` (`fd6f1dd`), emitted-cohort adoption/label stats (`21f2a35`, `76dcd0d`), per-channel p99 (`40d320e`) | Zero independent usefulness judgments in live ledger; real exposures require `.8.9`/`.8.10` |
+| 12 | Faithful schema-v2 case capture, offline replay and budgeted online/robustness evaluation | WORKING mechanics: `src/replay/`, `src/evaluation/`, wire variants (`9faf53c`) and decoy/lookalike/hostile roster arms (`21eb2ad`, `3a76325`); P5 (`.6`, `.6.24`, `.6.29`) closed | Activated `~/.local/bin/sr` (`9ee3a96`) predates wire/roster robustness commits; quality gates remain `not-established` |
+| 13 | Capability-checked optional `cass` archive adapter (`--session PATH`) | PARTIAL: `src/context/cass.rs` implements bounded `0.8.0` adapter, but host `cass` upgraded to `0.10.0`, causing live `--session` calls to fail closed (exit 7) | Qualify `cass 0.10.0` capabilities/sessions/export in newly filed `sr-cass-010-qual` |
+| 14 | Fail-quiet Claude shadow hook, reversible installer and session-scoped snoozes | WORKING in shadow mode: `src/hook.rs`, `src/installer.rs`, `src/snooze.rs` | Native advisory delivery remains gated off (`UnverifiedHarness`) until `.8.9`/`.8.10` |
+| 15 | Durable shared attempt allowance and fenced circuit breaker on persistent local filesystems | WORKING in source (`3d34707` / `sr-xq2u`): `fstatfs` persistent-FS enforcement, probe-fenced breaker, receipt-verified charges | Not yet activated in `~/.local/bin/sr`; live `sr budget` remains `disabled` until configured before scaling `sr-1uf4` |
+| 16 | Controlled experimental advisory trials and provider-independent return to shadow | NOT_STARTED as an accepted capability | `.8.2` → `.8.9` → `.8.10` |
+| 17 | Held-out relevance & abstention promotion gate (≥300 primary families, ≥90% top-1 precision) | UNPROVEN: rubric v2, validator (`scripts/validate_corpus.py`) and frame exporter (`scripts/export_corpus_frame.py`) exist; 0 human promotion labels | `sr-uv2v` corpus acquisition and human adjudication → `.8.1` |
+| 18 | Paired controlled agent harm gate (95% upper bound ≤2.0% new harm-or-unresolved) | UNPROVEN: `scripts/harm_cohort.py` binds `participants_digest` and explicit binomial model (`8cfc900`); no frozen real cohort | `.8.2` prospective freeze and blinded review → `.8.3` |
+| 19 | Operational availability (≤5% fallback over ≥500 representative hooks) and manual trial | UNPROVEN: 167 historical shadow turns (57 unavailable, 8 unfinished); stagnant since late September | `sr-1uf4` shadow soak → `.8.4` and `.8.5` |
+| 20 | Measured latency targets (cache p95 ≤100 ms; warm network p50 ≤600 ms, p95 ≤1,500 ms) | PARTIAL: shadow historical median 1,132 ms, p95 2,230 ms, p99 2,569 ms; quiet synthetic cache p95 ~117 ms | `.8.4` representative cold/warm/cache/network strata |
+| 21 | Dual-platform (Linux + macOS) release qualification and DSR distribution | PARTIAL: Linux x86_64 DSR/RCH path works; macOS `.5.23` blocked on RCH 2.1.16 Darwin `flock --no-fork` | `.5.23` (blocked on RCH Darwin release) and `.8.7` |
+| 22 | `sr calibrate` (`--apply`, `--rollback`) and centered shrunk usefulness priors | NOT_STARTED as CLI subcommand (refuses as planned P8); `ManagedPolicyMutation` contract exists in `src/config.rs` | P8 `.9.1`–`.9.4`, `.9.8`, `.9.9` |
+| 23 | Sequential composite-risk monitoring (`tau = 0.05`, nonrefundable restart alpha) | NOT_STARTED as integrated runtime/CLI surface | P8 `.9.5`–`.9.9` |
+| 24 | Optional 9-row inline FrankenTUI (`sr tui`) and per-session `--watch` refresh | NOT_STARTED: `tui = []` in `Cargo.toml` is a reserved empty feature (`implemented: false`) | P9 `.10.6`, `.10.7`, `.10.24` |
+| 25 | `sr doctor --descriptions`, description overlays and `sr gaps` | NOT_STARTED: refused as planned P9 | P9 `.10.3`–`.10.5`, `.10.22`, `.10.23`, `.10.32` |
+| 26 | Equal-budget passage, multi-view Quill, chunk, suppression and sampling experiments | NOT_STARTED | P9 `.10.1`, `.10.2`, `.10.9`–`.10.11`, `.10.14`, `.10.21`, `.10.25`, `.10.26`, `.10.30`, `.10.31` |
+| 27 | Additional native harness adapters (Codex, omp/pi, Grok) and FrankenSQLite evaluation | NOT_STARTED / DEFERRED: non-Claude native sessions rightly refuse without `--roster` | P9 `.10.8`, `.10.12`, `.10.15`–`.10.20` (6 deferred), `.10.27`–`.10.29` |
+
+### What changed since the October 8 (`78ad660` / `a5a27c2`) snapshot
+
+1. **P5 (`sr-roadmap-l1i.6`) and `.6.24`, `.6.28`, `.6.29` are now closed (`1026da3`, Oct 13):**
+   - `sr eval --online --robustness` now implements prespecified Choice wire variants (`option-order`, `option-handle-renaming`, commit `9faf53c`) and authorized file-backed roster variants (`--decoy-roster`, `--lookalike-roster`, `--hostile-roster`, commits `21eb2ad`, `3a76325`), plus paired robustness stage coverage (`f890633`) and retained usage/stages after cleanup failure (`bd90934`).
+   - All 15 P5 contract-matrix boundaries (143 test references), 23 targets (325 tests) and 19 product cases (21 assertions) were verified at `8011720` with compatible synthetic benchmark reports whose `gate_status` remains `not-established`.
+2. **Allowance and circuit-breaker storage hardening (`sr-xq2u`, closed Oct 13 at `3d34707`):**
+   - Commits `b554a32`..`f0268f3` fenced every breaker outcome by live probe ownership, qualified private storage before opening writable SQLite, bound guard reads/locking/publication to trusted descriptors, rejected corrupt accounting and signed overflow, enforced persistent local filesystems via `fstatfs` (`src/filesystem_policy.rs`, refusing Linux `tmpfs` for enforced allowance while keeping `tmpfs` allowed for cache), verified charge totals against retained attempt receipts, and bounded complete admission with one monotonic budget (`1,786` parent passes + 1 nested pass, 0 failures, 11 opt-in ignores at `f0268f3`).
+3. **Observation, stats, first-prompt and evidence-boundary repairs (`b5445ca`..`9ee3a96`):**
+   - `b5445ca` fixed Claude 2.1.295+ first-prompt submission before native workspace transcript directory creation.
+   - `e7e2acd` rechecked cancellation and work deadlines before starting queued blocking callbacks.
+   - `b35f90e` enforced strict JSON whitespace, surrogate and decoded duplicate-key rejection across Python and Rust evidence readers.
+   - `8cfc900` bound `participants_digest` (agent, selector and adjudicator registry) in `scripts/harm_cohort.py`.
+   - `40d320e` added `p99_ms`, `measured_turns` and `latency_by_channel` to `sr stats`.
+   - `11ed1c5`..`fd6f1dd` repaired `sr observe` lineage resolution, producer/agent/branch/epoch isolation, invocation-time attribution and emitted-candidate membership checks.
+   - `21f2a35` and `76dcd0d` restricted `sr stats` adoption and label-coverage denominators to the emitted recommendation cohort.
+
+### Deployed binary, live host environment and ledger state
+
+- **Installed binary vs HEAD (`3d34707`):** `~/.local/bin/sr` has SHA256
+  `ed2d868ae32ac4ee78dab61c3d3be17eabb4e5f64128977a4f0b31f372cb193d` (25,447,776
+  bytes), installed at `2026-10-12 03:24:41 UTC` from source `9ee3a96` per
+  `~/.local/state/sr/deployments/20261012T032441Z-fd6f1dd/receipt.json`. It
+  activates fixes through `9ee3a96` (including emitted-cohort adoption and label
+  coverage), so `~/.local/bin/sr capabilities --json` still reports
+  `"evaluation": null` and lacks the Oct 12–13 robustness (`21eb2ad`..`9faf53c`)
+  and `sr-xq2u` allowance/breaker (`b554a32`..`f0268f3`) source commits.
+  `docs/self-host-shadow-deployment.md` has now been updated with the missing
+  `2026-10-12` receipt.
+- **Host tool version drift (`cass 0.10.0` and `Claude 2.1.299`):**
+  - `/home/ubuntu/.local/bin/cass` is now `cass 0.10.0` (`api_version: 1`,
+    `contract_version: "1"`). Because `src/context/cass.rs:21` pins
+    `QUALIFIED_VERSION = "0.8.0"`, live `sr rank --session PATH` and `sr observe
+    --session PATH` fail closed with exit 7 (`unsupported-input`). Newly created
+    `sr-cass-010-qual` tracks qualifying `cass 0.10.0`.
+  - `claude --version` is now `2.1.299 (Claude Code)`. `tested_versions` in the
+    capability registry remains empty (`unverified`), gating off native advisory
+    hook emission until `.8.9`/`.8.10`.
+- **Live ledger and budget (`sr stats --json`, `sr budget --json`, `sr doctor --json`):**
+  - Totals remain unchanged at **170 evaluated turns** (167 shadow, 3 CLI):
+    0 emitted suggestions, 30 valid abstentions, 73 muted/suppressed, 59
+    operational failures (31 `credential-absent`, 14 `authentication`, 7
+    `ambiguous-branch`, 4 `unsupported-input`, 2 `cache-miss`, 1
+    `invalid-provider-response`), 8 `in_flight_or_killed`.
+  - Latency across 159 measured shadow turns: mean 1,077 ms, median 1,132 ms,
+    p95 2,230 ms, p99 2,569 ms (8 unfinished excluded).
+  - Provider accounting: 234 total attempts (220 completed, 14 unknown usage),
+    2,394,033 known tokens, 0 cache-served events, 0 judgments.
+  - Hook entry counter: 312 counted at entry, 135 recorded, 154 non-turn
+    deliveries, 23 unrecorded (upper bound).
+  - Shared attempt allowance (`sr budget --json`): `health: "disabled"`.
+  - Local readiness (`sr doctor --json`): configuration `valid`, credential
+    `present`, network `authorized` (`trusted-user`), roster `ready` (205
+    unverified skills), ledger `ready` (1 unreferenced snapshot cleanup debt).
+
+### Tracker inventory and the five Phase 1 questions
+
+1. **What IS working right now?**
+   All 16 implemented CLI commands (`rank`, `roster`, `doctor`, `capabilities`,
+   `demo`, `hook`, `install-hook`, `uninstall-hook`, `stats`, `observe`,
+   `feedback`, `snooze`, `budget`, `replay`, `eval`, `ledger`), 6 closed phase
+   epics (P0–P3, P5, P6), the Python corpus/cohort/frame/contract validators
+   (249/249 unit tests passing), and the contract/matrix/dependency-graph checks
+   (98/98 coverage declarations, 4/4 locked feature graphs).
+2. **What is NOT working or unimplemented?**
+   - Planned CLI surfaces (`calibrate`, `tui`, `gaps`, `doctor --descriptions`)
+     and P8/P9 features (`22`–`27` in the checklist).
+   - Live `sr rank --session PATH` / `sr observe --session PATH` on this host due
+     to `cass 0.10.0` vs hardcoded `0.8.0` (`sr-cass-010-qual`).
+   - `~/.local/bin/sr` activation of Oct 12–13 source commits (`21eb2ad`..`3d34707`).
+   - All P7 empirical promotion gates (`gate_status: not-established`).
+3. **What is blocking us?**
+   - **External human/empirical evidence (primary critical path):** independent
+     human relevance corpus (`sr-uv2v` → `.8.1`), prospectively ratified paired
+     harm cohort and blinded adjudication (`.8.2` → `.8.3`), and ≥500
+     representative shadow/hook invocations (`sr-1uf4` → `.8.4`).
+   - **External infrastructure/entitlement blockers:** Cloudflare HTTP 402 /
+     billing-read 403 (`.2.14`, `blocked`) and RCH 2.1.16 Darwin `flock --no-fork`
+     incompatibility on macOS workers (`.5.23`, `blocked`, keeping P4 `.5` open).
+   - **Open technical investigation:** historical mixed-load overrun/stalled-leaf
+     causality (`sr-9fzp`).
+4. **If we implement all open/in-progress beads (`66` non-closed of `343` total: `57` open, `1` in_progress, `2` blocked, `6` deferred), would that close the gap completely?**
+   Only if "complete" includes the external human-adjudicated data collection,
+   blinded paired trials, live harness conformance and external infra unblocks
+   embedded in those beads' acceptance criteria. Writing code alone cannot
+   satisfy `sr-uv2v`, `.8.1`–`.8.5`, `.8.8`, or `.9.9`.
+5. **Are there vision goals with NO bead coverage?**
+   Prior to this pass, **1 new environment drift gap had `NO_BEAD`**: `cass
+   0.10.0` host upgrade vs `QUALIFIED_VERSION = "0.8.0"`, now tracked as
+   `sr-cass-010-qual`. All other 26 vision goals have explicit bead chains.
+
+### Bridge plan, ambition rounds and refinement passes
+
+| Order | Work item and owner | Concrete exit artifact |
+|---|---|---|
+| 1 | Activate `3d34707` in `~/.local/bin/sr` via DSR/RCH (`sr-1uf4`) and qualify `cass 0.10.0` (`sr-cass-010-qual`) | Updated binary receipt in `docs/self-host-shadow-deployment.md`; `sr capabilities --json` exposes `evaluation`; `sr rank --session` works with `cass 0.10.0` |
+| 2 | Configure an explicit shared attempt allowance (`sr budget --apply`) and resume organic shadow soak (`sr-1uf4`) | Active persistent-FS allowance guard; accumulating current-revision shadow turns toward ≥500 representative invocations (`.8.4`) |
+| 3 | Execute human-adjudicated relevance pilot (15–25 cases) under rubric v2 (`sr-uv2v`) and export via `scripts/export_corpus_frame.py` | Validated corpus manifest (`scripts/validate_corpus.py`), measured human labeling cost and agreement rate, decision on full 300-case vs declared narrower population (`.8.1`) |
+| 4 | Ratify prospective paired cohort design (`.8.2`), implement scoped experimental advisory opt-in (`.8.9`) and qualify native Claude `2.1.299` delivery/rollback (`.8.10`) | Frozen cohort manifest with `participants_digest`; verified 9-dimension Claude conformance and outage-safe return to shadow |
+| 5 | Run paired harm gate (`.8.3`), representative availability gate (`.8.4`), manual trial (`.8.5`) and held-out promotion evaluation (`.8.1`) | Complete promotion receipts meeting precision, coverage, needless-advice, ≤2% harm and ≤5% fallback bounds |
+| 6 | Resolve external blockers (`.5.23` macOS RCH Darwin lock, `.2.14` Cloudflare billing/entitlement) and package release (`.8.6`–`.8.8`) | DSR release artifacts with explicit platform/provider dispositions |
+| 7 | Implement P8 learning (`.9.1`–`.9.9`) and selected equal-budget P9 experiments (`.10.*`) | `sr calibrate` and sequential monitoring proven on untouched holdout; per-feature P9 dispositions |
+
+**Ambition rounds (3 passes):**
+1. *Evidence-per-hour leverage:* Use the already-built `scripts/export_corpus_frame.py` and `sr rank --save-case` on real shadow turns so human adjudicators only label candidate acceptability rather than hand-crafting JSON fixtures.
+2. *Zero-drift environment hygiene:* Pair deployed-binary activation checks (`sr capabilities --json` vs `src/capabilities.rs`) and host adapter version checks (`cass --version`, `claude --version`) in every reality check so host upgrades never silently break adapters.
+3. *Strict separation of code closure from empirical promotion:* With P5 closed in source (`1026da3`), hold the line that `gate_status: not-established` remains prominent until `sr-uv2v` and `.8.1`–`.8.5` complete with human/blinded evidence.
+
+**Plan-space refinement (5 passes):**
+1. Verified every vision goal against `.beads/issues.jsonl` (`277` closed, `57` open, `1` in_progress, `2` blocked, `6` deferred).
+2. Reconciled `docs/capabilities.md` with `src/capabilities.rs` and `README.md` after P5/`.6.24` closure.
+3. Added the missing `2026-10-12` (`9ee3a96`) deployment receipt to `docs/self-host-shadow-deployment.md`.
+4. Filed `sr-cass-010-qual` for `cass 0.10.0` qualification and verified `br dep cycles` reports zero cycles.
+5. Re-ran public contract, contract matrix, dependency graph, eval policy, product catalog and all 249 Python unit tests.
+
+### Fresh verification in this assessment (2026-10-14 UTC at `3d34707`)
+
+| Check | Result |
+|---|---|
+| `python3 -B scripts/validate_public_contracts.py` | **Passed** (`status: passed`, 47 local links, 19 capability phases, 2 compared examples, 5 JSON, 22 shell, 1 TOML example) |
+| `python3 -B scripts/validate_contract_matrix.py` | **Passed** (`validated 98 coverage declarations; unit execution and product acceptance not certified`) |
+| `python3 -B scripts/check_dependency_graph.py` | **Passed** (`status: passed`, 4 feature graphs, 284 packages each, pinned Asupersync `81fb7b57` and Quill `39047c44`) |
+| `python3 -B scripts/validate_eval_policy.py` | **Passed** (`validated evaluation policy fixtures: 12 synthetic cases`) |
+| `python3 -B scripts/e2e/product_cases.py check scripts/e2e/product/*.json` | **Passed** across all 7 product suite catalogs (`cache`, `context`, `core-cli`, `parser-corpus`, `replay`, `roster`, `shadow-hook`) |
+| Python unit test suites (`scripts/test_*.py` + `scripts/e2e/test_*.py`) | **249 passed, 0 failed** (`96` in corpus/harm/product_cases + `153` in export/matrix/eval_policy/native_storage/dependency/runner suites) |
+| Live read-only CLI & ledger probes (`~/.local/bin/sr`) | `stats --json`, `budget --json`, `doctor --json`, `capabilities --json` exited 0; `rank --session ... --no-persist` reproduced exit 7 (`cass 0.10.0` unqualified) |
+| `br dep cycles` | **Passed** (`✓ No dependency cycles detected`) |
+
+## Historical assessment — 2026-10-08 UTC
+
+### Implementation follow-up — 2026-10-08 22:26 UTC
 
 Three high-value implementation gaps from the assessment below are now closed:
 
