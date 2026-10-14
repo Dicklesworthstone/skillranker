@@ -19,6 +19,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 pub const QUALIFIED_VERSION: &str = "0.8.0";
+pub const QUALIFIED_VERSIONS: &[&str] = &[QUALIFIED_VERSION, "0.10.0"];
 pub const CAPABILITIES_BYTES: usize = 256 * 1024;
 pub const EXPORT_BYTES: usize = crate::limits::CASS_STDOUT_BYTES.max();
 pub const MAX_MESSAGES: usize = 10_000;
@@ -85,7 +86,8 @@ impl fmt::Debug for CassConfig {
 ///   directory;
 /// - the database is `database` when given (from `CASS_DB_PATH`), else cass's
 ///   own default under the data directory (`$XDG_DATA_HOME` or
-///   `~/.local/share`);
+///   `~/.local/share`, preferring `coding-agent-search/agent_search.db` when
+///   present as a regular file and falling back to `cass/cass.db`);
 /// - the digest is BLAKE3 over the executable's bytes, streamed and bounded.
 pub fn default_config(
     home: Option<&Path>,
@@ -106,12 +108,19 @@ pub fn default_config(
     let executable = TrustedExecutable::resolve(&path, std::slice::from_ref(bin))?;
     let database = match database.filter(|path| path.is_absolute()) {
         Some(path) => path.to_path_buf(),
-        None => data_home
-            .filter(|path| path.is_absolute())
-            .map(Path::to_path_buf)
-            .or_else(|| home.map(|home| home.join(".local/share")))
-            .ok_or(CassError::InvalidRequest)?
-            .join("cass/cass.db"),
+        None => {
+            let base = data_home
+                .filter(|path| path.is_absolute())
+                .map(Path::to_path_buf)
+                .or_else(|| home.map(|home| home.join(".local/share")))
+                .ok_or(CassError::InvalidRequest)?;
+            let agent_search = base.join("coding-agent-search/agent_search.db");
+            if agent_search.is_file() {
+                agent_search
+            } else {
+                base.join("cass/cass.db")
+            }
+        }
     };
     let mut hasher = blake3::Hasher::new();
     let file = std::fs::File::open(&path).map_err(|_| CassError::InvalidRequest)?;
@@ -367,8 +376,12 @@ pub fn validate_capabilities(
     binary_digest: ContentHash,
 ) -> Result<CassProducer, CassError> {
     let value = bounded_json(bytes, CAPABILITIES_BYTES)?;
-    if value.get("crate_version").and_then(Value::as_str) != Some(QUALIFIED_VERSION)
-        || value.get("api_version").and_then(Value::as_u64) != Some(1)
+    let crate_version = value
+        .get("crate_version")
+        .and_then(Value::as_str)
+        .filter(|version| QUALIFIED_VERSIONS.contains(version))
+        .ok_or(CassError::UnsupportedProducer)?;
+    if value.get("api_version").and_then(Value::as_u64) != Some(1)
         || value.get("contract_version").and_then(Value::as_str) != Some("1")
     {
         return Err(CassError::UnsupportedProducer);
@@ -435,8 +448,7 @@ pub fn validate_capabilities(
         }
     }
     let producer = CassProducer {
-        version: AdapterVersion::new(QUALIFIED_VERSION)
-            .map_err(|_| CassError::UnsupportedProducer)?,
+        version: AdapterVersion::new(crate_version).map_err(|_| CassError::UnsupportedProducer)?,
         api_version: 1,
         contract_version: 1,
         build_commit: value
@@ -463,7 +475,7 @@ pub fn decode_export(
     producer
         .validate_support_claim()
         .map_err(|_| CassError::UnsupportedProducer)?;
-    if producer.version.as_str() != QUALIFIED_VERSION
+    if !QUALIFIED_VERSIONS.contains(&producer.version.as_str())
         || producer.api_version != 1
         || producer.contract_version != 1
     {

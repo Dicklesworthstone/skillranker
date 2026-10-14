@@ -16,7 +16,8 @@ use skillranker::adapter::CassProducer;
 use skillranker::adapter::{ClaudeUserPromptSubmit, UnknownFieldPolicy};
 #[cfg(unix)]
 use skillranker::context::cass::{
-    ArchiveSelection, CassError, QUALIFIED_VERSION, decode_export, validate_capabilities,
+    ArchiveSelection, CassError, QUALIFIED_VERSION, QUALIFIED_VERSIONS, decode_export,
+    validate_capabilities,
 };
 use skillranker::context::jsonl::{CursorKind, JsonlError, SkipKind, parse_line, snapshot_jsonl};
 use skillranker::context::overlay::{
@@ -736,37 +737,39 @@ fn context_failure_cases() {
         // Assertion: safe_context_rejection
         // ---------------------------------------------------------------------
         {
-            let bad_version_caps = json!({
-                "crate_version": "0.7.9", // qualified is 0.8.0
-                "api_version": 1,
-                "contract_version": "1",
-                "global_flags": [{"name": "db"}],
-                "features": ["json_output", "export_command", "self_describing_capabilities"],
-                "commands": [
-                    {
-                        "name": "export",
-                        "arguments": [
-                            {"name": "path"},
-                            {"name": "source"},
-                            {"name": "format", "enum_values": ["json"]},
-                            {"name": "include-tools"}
-                        ]
-                    },
-                    {
-                        "name": "sessions",
-                        "arguments": [
-                            {"name": "workspace"},
-                            {"name": "limit"},
-                            {"name": "json"}
-                        ]
-                    }
-                ]
-            });
-            let bytes = serde_json::to_vec(&bad_version_caps).unwrap();
-            let digest = ContentHash::from_bytes(b"cass_digest_01");
-            let err = validate_capabilities(&bytes, digest)
-                .expect_err("cass version != 0.8.0 must be rejected");
-            assert_eq!(err, CassError::UnsupportedProducer);
+            for bad_version in ["0.7.9", "0.9.0", "0.10.1"] {
+                let bad_version_caps = json!({
+                    "crate_version": bad_version, // qualified are 0.8.0 and 0.10.0
+                    "api_version": 1,
+                    "contract_version": "1",
+                    "global_flags": [{"name": "db"}],
+                    "features": ["json_output", "export_command", "self_describing_capabilities"],
+                    "commands": [
+                        {
+                            "name": "export",
+                            "arguments": [
+                                {"name": "path"},
+                                {"name": "source"},
+                                {"name": "format", "enum_values": ["json"]},
+                                {"name": "include-tools"}
+                            ]
+                        },
+                        {
+                            "name": "sessions",
+                            "arguments": [
+                                {"name": "workspace"},
+                                {"name": "limit"},
+                                {"name": "json"}
+                            ]
+                        }
+                    ]
+                });
+                let bytes = serde_json::to_vec(&bad_version_caps).unwrap();
+                let digest = ContentHash::from_bytes(b"cass_digest_01");
+                let err = validate_capabilities(&bytes, digest)
+                    .expect_err("unqualified cass version must be rejected");
+                assert_eq!(err, CassError::UnsupportedProducer);
+            }
         }
 
         // ---------------------------------------------------------------------
@@ -797,84 +800,86 @@ fn context_failure_cases() {
         // Assertion: context_accepted
         // ---------------------------------------------------------------------
         {
-            let valid_caps = json!({
-                "crate_version": QUALIFIED_VERSION,
-                "api_version": 1,
-                "contract_version": "1",
-                "build_commit": "unknown",
-                "global_flags": [{"name": "db"}],
-                "features": ["json_output", "export_command", "self_describing_capabilities"],
-                "commands": [
+            for &qualified_version in QUALIFIED_VERSIONS {
+                let valid_caps = json!({
+                    "crate_version": qualified_version,
+                    "api_version": 1,
+                    "contract_version": "1",
+                    "build_commit": "unknown",
+                    "global_flags": [{"name": "db"}],
+                    "features": ["json_output", "export_command", "self_describing_capabilities"],
+                    "commands": [
+                        {
+                            "name": "export",
+                            "arguments": [
+                                {"name": "path"},
+                                {"name": "source"},
+                                {"name": "format", "enum_values": ["json"]},
+                                {"name": "include-tools"}
+                            ]
+                        },
+                        {
+                            "name": "sessions",
+                            "arguments": [
+                                {"name": "workspace"},
+                                {"name": "limit"},
+                                {"name": "json"}
+                            ]
+                        }
+                    ]
+                });
+                let caps_bytes = serde_json::to_vec(&valid_caps).unwrap();
+                let digest = ContentHash::from_bytes(b"cass_digest_qualified");
+                let mut producer = validate_capabilities(&caps_bytes, digest)
+                    .expect("valid capabilities JSON must parse");
+                assert_eq!(producer.version.as_str(), qualified_version);
+                producer.source_id = Some(SourceId::new("local").unwrap());
+
+                // Test valid export JSON decoding with tool filtering
+                let export_json = json!([
                     {
-                        "name": "export",
-                        "arguments": [
-                            {"name": "path"},
-                            {"name": "source"},
-                            {"name": "format", "enum_values": ["json"]},
-                            {"name": "include-tools"}
-                        ]
+                        "role": "user",
+                        "message": {
+                            "role": "user",
+                            "content": "Can you analyze this project?"
+                        }
                     },
                     {
-                        "name": "sessions",
-                        "arguments": [
-                            {"name": "workspace"},
-                            {"name": "limit"},
-                            {"name": "json"}
-                        ]
-                    }
-                ]
-            });
-            let caps_bytes = serde_json::to_vec(&valid_caps).unwrap();
-            let digest = ContentHash::from_bytes(b"cass_digest_qualified");
-            let mut producer = validate_capabilities(&caps_bytes, digest)
-                .expect("valid capabilities JSON must parse");
-            assert_eq!(producer.version.as_str(), QUALIFIED_VERSION);
-            producer.source_id = Some(SourceId::new("local").unwrap());
-
-            // Test valid export JSON decoding with tool filtering
-            let export_json = json!([
-                {
-                    "role": "user",
-                    "message": {
-                        "role": "user",
-                        "content": "Can you analyze this project?"
-                    }
-                },
-                {
-                    "role": "assistant",
-                    "message": {
                         "role": "assistant",
-                        "content": "Sure, I will inspect the cargo files."
-                    }
-                },
-                {
-                    "role": "tool",
-                    "message": {
+                        "message": {
+                            "role": "assistant",
+                            "content": "Sure, I will inspect the cargo files."
+                        }
+                    },
+                    {
                         "role": "tool",
-                        "content": "Running cargo check..."
+                        "message": {
+                            "role": "tool",
+                            "content": "Running cargo check..."
+                        }
                     }
-                }
-            ]);
-            let export_bytes = serde_json::to_vec(&export_json).unwrap();
+                ]);
+                let export_bytes = serde_json::to_vec(&export_json).unwrap();
 
-            // When include_tools = true, all 3 records preserved
-            let export_with_tools = decode_export(&export_bytes, producer.clone(), true)
-                .expect("decode_export with tools should succeed");
-            assert_eq!(export_with_tools.records.len(), 3);
-            assert!(export_with_tools.tool_content_included);
-            assert_eq!(
-                export_with_tools.provenance(),
-                SourceProvenance::Cass {
-                    source: Some(SourceId::new("local").unwrap()),
-                    version: AdapterVersion::new(QUALIFIED_VERSION).unwrap(),
-                }
-            );
+                // When include_tools = true, all 3 records preserved
+                let export_with_tools = decode_export(&export_bytes, producer.clone(), true)
+                    .expect("decode_export with tools should succeed");
+                assert_eq!(export_with_tools.records.len(), 3);
+                assert!(export_with_tools.tool_content_included);
+                assert_eq!(
+                    export_with_tools.provenance(),
+                    SourceProvenance::Cass {
+                        source: Some(SourceId::new("local").unwrap()),
+                        version: AdapterVersion::new(qualified_version).unwrap(),
+                    }
+                );
 
-            // When include_tools = false, tool record dropped by text_only projection
-            let export_text_only = decode_export(&export_bytes, producer.clone(), false)
-                .expect("decode_export text-only should succeed");
-            assert_eq!(export_text_only.records.len(), 2);
-            assert!(!export_text_only.tool_content_included);
+                // When include_tools = false, tool record dropped by text_only projection
+                let export_text_only = decode_export(&export_bytes, producer.clone(), false)
+                    .expect("decode_export text-only should succeed");
+                assert_eq!(export_text_only.records.len(), 2);
+                assert!(!export_text_only.tool_content_included);
+            }
         }
     }
 
@@ -891,14 +896,19 @@ fn context_failure_cases() {
             harness: HarnessId::new("claude_code").unwrap(),
             schema_version: 1,
         };
-        let prov_cass = SourceProvenance::Cass {
+        let prov_cass_080 = SourceProvenance::Cass {
             source: Some(SourceId::new("local").unwrap()),
             version: AdapterVersion::new("0.8.0").unwrap(),
         };
+        let prov_cass_010 = SourceProvenance::Cass {
+            source: Some(SourceId::new("local").unwrap()),
+            version: AdapterVersion::new("0.10.0").unwrap(),
+        };
 
-        // All 3 provenances are distinct
+        // All provenances (including distinct cass producer versions) are distinct
         assert_ne!(prov_native, prov_normalized);
-        assert_ne!(prov_native, prov_cass);
-        assert_ne!(prov_normalized, prov_cass);
+        assert_ne!(prov_native, prov_cass_080);
+        assert_ne!(prov_normalized, prov_cass_080);
+        assert_ne!(prov_cass_080, prov_cass_010);
     }
 }

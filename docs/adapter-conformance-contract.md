@@ -57,7 +57,7 @@ The purpose of the conformance suite is to ensure that:
 
 ### Invariant 7: Policy and Capability Conformance for Cass
 - **Policy Gates**: `CassAdapter` can only be invoked when `SourcePolicy::cass_allowed()` is true. It is strictly disabled under `--offline`, `--dry-run`, or `--local-only` policies (`CassError::UnsupportedSourceMode`).
-- **Qualified Version**: Only cass version `0.8.0` (`QUALIFIED_VERSION`) with API version 1 and contract version 1 is supported. Mismatched versions or incomplete feature flags fail with `CassError::UnsupportedProducer`.
+- **Qualified Version**: Only cass versions `0.8.0` and `0.10.0` (`QUALIFIED_VERSIONS`) with API version 1 and contract version 1 are supported. Mismatched versions or incomplete feature flags fail with `CassError::UnsupportedProducer`.
 - **Local Sources Only**: `ArchiveSelection::local` strictly requires `source_id == "local"`. Remote sources (e.g., cluster endpoints, network shares) are rejected with `CassError::RemoteSource`.
 - **Tool Filtering**: `decode_export` validates records and projects clean text streams when `include_tools == false`, dropping raw tool blocks and functions without relying on external trust.
 
@@ -82,7 +82,7 @@ The purpose of the conformance suite is to ensure that:
 | `schema-unsupported`| Normalized | `schema_version != 1` | `ContextError::UnsupportedSchema` | `safe_context_rejection` |
 | `cass-offline` | Cass | `SourcePolicy { offline: true, .. }`| `CassError::UnsupportedSourceMode` | `safe_context_rejection` |
 | `cass-remote` | Cass | Non-local archive source | `CassError::RemoteSource` | `safe_context_rejection` |
-| `cass-bad-version` | Cass | Version != `0.8.0` | `CassError::UnsupportedProducer` | `safe_context_rejection` |
+| `cass-bad-version` | Cass | Version not in `{"0.8.0", "0.10.0"}` | `CassError::UnsupportedProducer` | `safe_context_rejection` |
 | `native-first-turn` | Native / Claude | Missing file on first prompt | Ok(`ContextQuality::PromptOnly`) | `context_accepted` |
 | `native-multiturn` | Native / Claude | Valid JSONL transcript + prompt | Ok(`events.len() > 1`, prompt overlaid) | `context_accepted` |
 | `normalized-valid` | Normalized | Valid v1 envelope | Ok(`NormalizedContext`, valid definitions) | `context_accepted` |

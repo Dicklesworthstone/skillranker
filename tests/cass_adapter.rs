@@ -96,7 +96,27 @@ fn selection() -> ArchiveSelection {
 
 #[test]
 fn qualified_capabilities_require_exact_version_and_commands() {
+    assert_eq!(QUALIFIED_VERSIONS, &["0.8.0", "0.10.0"]);
     assert!(producer().validate_support_claim().is_ok());
+    let bytes = include_bytes!("fixtures/cass-export.json");
+    let mut provenances = Vec::new();
+    for version in QUALIFIED_VERSIONS {
+        let mut value = caps();
+        value["crate_version"] = (*version).into();
+        let mut p = validate_capabilities(
+            &serde_json::to_vec(&value).unwrap(),
+            ContentHash::from_bytes(b"fixture-not-live-binary"),
+        )
+        .unwrap();
+        assert_eq!(p.version.as_str(), *version);
+        p.source_id = Some(SourceId::new("local").unwrap());
+        let export = decode_export(bytes, p, true).unwrap();
+        assert_eq!(export.producer.version.as_str(), *version);
+        provenances.push(export.provenance());
+    }
+    assert_eq!(provenances.len(), 2);
+    assert_ne!(provenances[0], provenances[1]);
+
     for field in [
         "crate_version",
         "api_version",
@@ -115,16 +135,24 @@ fn qualified_capabilities_require_exact_version_and_commands() {
             CassError::UnsupportedProducer
         );
     }
-    let mut value = caps();
-    value["crate_version"] = "0.9.0".into();
-    assert_eq!(
-        validate_capabilities(
-            &serde_json::to_vec(&value).unwrap(),
-            ContentHash::from_bytes(b"x")
-        )
-        .unwrap_err(),
-        CassError::UnsupportedProducer
-    );
+    for bad_version in ["0.7.9", "0.9.0", "0.10.1"] {
+        let mut value = caps();
+        value["crate_version"] = bad_version.into();
+        assert_eq!(
+            validate_capabilities(
+                &serde_json::to_vec(&value).unwrap(),
+                ContentHash::from_bytes(b"x")
+            )
+            .unwrap_err(),
+            CassError::UnsupportedProducer
+        );
+        let mut bad_producer = producer();
+        bad_producer.version = skillranker::identity::AdapterVersion::new(bad_version).unwrap();
+        assert_eq!(
+            decode_export(bytes, bad_producer, true).unwrap_err(),
+            CassError::UnsupportedProducer
+        );
+    }
 }
 
 #[test]
@@ -386,7 +414,7 @@ fn provider_credentials_and_routing_environment_are_not_forwarded() {
 }
 
 #[test]
-#[ignore = "requires SR_TEST_CASS pointing to the actual installed cass 0.8.0 binary"]
+#[ignore = "requires SR_TEST_CASS pointing to a qualified installed cass binary (0.8.0 or 0.10.0)"]
 fn actual_installed_cass_exports_synthetic_session() {
     let path = PathBuf::from(std::env::var_os("SR_TEST_CASS").expect("explicit real cass path"))
         .canonicalize()
@@ -564,4 +592,49 @@ fn duplicate_listing_and_missing_json_format_support_are_refused() {
         .unwrap_err(),
         CassError::UnsupportedProducer
     );
+}
+
+#[test]
+fn default_config_prefers_coding_agent_search_db_and_falls_back_to_cass_db() {
+    let root = dir();
+    let home = root.join("home");
+    let bin = home.join(".local/bin");
+    let data_home = root.join("data");
+    let workspace = root.join("work");
+    fs::create_dir_all(&bin).unwrap();
+    fs::create_dir_all(&data_home).unwrap();
+    fs::create_dir_all(&workspace).unwrap();
+
+    let cass_bin = bin.join("cass");
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&cass_bin)
+        .unwrap();
+    writeln!(file, "#!/bin/sh\nexit 0").unwrap();
+    file.set_permissions(fs::Permissions::from_mode(0o700))
+        .unwrap();
+
+    // Fallback when coding-agent-search/agent_search.db does not exist
+    let fallback_cfg = default_config(Some(&home), Some(&data_home), None, &workspace).unwrap();
+    assert_eq!(fallback_cfg.database, data_home.join("cass/cass.db"));
+
+    // Prefer coding-agent-search/agent_search.db when it exists as a regular file
+    let agent_search_dir = data_home.join("coding-agent-search");
+    fs::create_dir_all(&agent_search_dir).unwrap();
+    let agent_search_db = agent_search_dir.join("agent_search.db");
+    fs::write(&agent_search_db, b"sqlite").unwrap();
+    let preferred_cfg = default_config(Some(&home), Some(&data_home), None, &workspace).unwrap();
+    assert_eq!(preferred_cfg.database, agent_search_db);
+
+    // Explicit database path (CASS_DB_PATH) overrides both defaults
+    let explicit_db = root.join("explicit-override.db");
+    let explicit_cfg = default_config(
+        Some(&home),
+        Some(&data_home),
+        Some(&explicit_db),
+        &workspace,
+    )
+    .unwrap();
+    assert_eq!(explicit_cfg.database, explicit_db);
 }

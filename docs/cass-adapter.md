@@ -12,8 +12,9 @@ from the local installation and trusted environment, never transcript text.
 `default_config` needs no setup:
 - the executable is the first regular `cass` in `~/.local/bin`, `~/.cargo/bin`,
   `/usr/local/bin` or `/usr/bin`, trusted within that directory;
-- the database is `CASS_DB_PATH`, or cass's default `cass/cass.db` under
-  `$XDG_DATA_HOME` or `~/.local/share`;
+- the database is `CASS_DB_PATH`, or cass's default under `$XDG_DATA_HOME` or
+  `~/.local/share` (preferring `coding-agent-search/agent_search.db` when
+  present as a regular file and falling back to `cass/cass.db`);
 - the digest is BLAKE3 over the executable's bytes, streamed and capped at
   512 MiB.
 
@@ -26,10 +27,13 @@ The caller is responsible for keeping executable provenance current.
 
 ## Producer and process boundary
 
-Only the observed cass 0.8.0 / API 1 / contract 1 combination is accepted. Its
-capabilities must advertise JSON output, export, self-description, and the
-required sessions/export arguments. Future versions require new qualification.
-An unsupported producer fails before export; there is no format guessing.
+Only the qualified cass `0.8.0` and `0.10.0` / API 1 / contract 1 combinations
+are accepted (`QUALIFIED_VERSIONS`). Their capabilities must advertise JSON
+output, export, self-description, and the required sessions/export arguments,
+and `CassProducer.version` records the exact reported `crate_version` so cache
+and observation namespaces preserve producer version provenance. Future versions
+require new qualification. An unsupported producer fails before export; there is
+no format guessing.
 
 Arguments are separate argv elements. Every child has an empty environment;
 provider credentials, proxies, HOME, PATH, and loader settings are not inherited.
@@ -52,7 +56,7 @@ uses `SourceProvenance::Cass`, never the native adapter or normalized-input
 namespace. A listing result is a candidate, not a grant of filesystem authority
 or proof that a session is live. The selecting caller must authorize the source.
 
-The actual 0.8.0 JSON export preserves native message envelopes. The checked-in
+The actual 0.8.0 and 0.10.0 JSON exports preserve native message envelopes. The checked-in
 synthetic input and exported output were obtained by running the installed cass
 binary with an empty environment; they contain no user session or secret.
 The ignored `actual_installed_cass_exports_synthetic_session` test additionally

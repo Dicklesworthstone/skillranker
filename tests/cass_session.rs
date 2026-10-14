@@ -133,3 +133,44 @@ fn a_cass_session_from_another_agent_needs_a_supplied_roster() {
     assert_eq!(code, Some(5), "{value}");
     assert_eq!(value["error"]["kind"], "unusable-roster", "{value}");
 }
+
+#[test]
+fn a_cass_0_10_0_session_with_agent_search_db_is_ranked() {
+    let f = Fixture::new();
+    let agent_search_dir = f.root.join("home/.local/share/coding-agent-search");
+    fs::create_dir_all(&agent_search_dir).unwrap();
+    let agent_search_db = agent_search_dir.join("agent_search.db");
+    fs::write(&agent_search_db, b"sqlite").unwrap();
+
+    let mut caps_010 = caps();
+    caps_010["crate_version"] = "0.10.0".into();
+    let listing = json!({"sessions": [{"path": f.session(), "workspace": f.workspace(),
+        "agent": "claude_code", "source_id": "local", "origin_host": null}]});
+    let export = json!([{"type": "user", "uuid": "u1", "parentUuid": null,
+        "message": {"role": "user", "content": "Please use skill alpha to fix this."}}]);
+    let body = format!(
+        "[ \"$1\" = --db ] && [ \"$2\" = '{}' ] || exit 12\n\
+         case \"$3\" in\ncapabilities) /bin/cat <<'CAPS'\n{}\nCAPS\n;;\n\
+         sessions) /bin/cat <<'LIST'\n{}\nLIST\n;;\n\
+         export) /bin/cat <<'EXPORT'\n{}\nEXPORT\n;;\nesac",
+        agent_search_db.display(),
+        caps_010,
+        listing,
+        export
+    );
+    let path = f.root.join("home/.local/bin/cass");
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .unwrap();
+    writeln!(file, "#!/bin/sh\n{body}").unwrap();
+    file.set_permissions(fs::Permissions::from_mode(0o700))
+        .unwrap();
+    drop(file);
+
+    let (code, value) = f.rank(&f.session());
+    assert_eq!(code, Some(0), "{value}");
+    assert_eq!(value["decision"], "explicit", "{value}");
+    assert_eq!(value["skills"][0]["invocation_name"], "alpha", "{value}");
+}
