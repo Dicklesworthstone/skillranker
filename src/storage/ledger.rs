@@ -2194,6 +2194,50 @@ impl PrivateLedgerDirectory {
                     AtFlags::AT_SYMLINK_NOFOLLOW,
                 ) {
                     Ok(stat) => {
+                        if name_str == "policy-revisions"
+                            && SFlag::from_bits_truncate(stat.st_mode) == SFlag::S_IFDIR
+                        {
+                            trusted_ancestor(&stat, uid, true)?;
+                            let rev_dir_flags = OFlag::O_RDONLY
+                                | OFlag::O_DIRECTORY
+                                | OFlag::O_NOFOLLOW
+                                | OFlag::O_CLOEXEC;
+                            let rev_fd = openat(
+                                &self.handle,
+                                "policy-revisions",
+                                rev_dir_flags,
+                                Mode::empty(),
+                            )
+                            .map_err(io_error)?;
+                            trusted_ancestor(&fstat(&rev_fd).map_err(io_error)?, uid, true)?;
+                            if let Ok(sub_entries) =
+                                std::fs::read_dir(self.path.join("policy-revisions"))
+                            {
+                                for sub_entry in sub_entries {
+                                    let sub_entry = sub_entry.map_err(|_| StoreError::Io)?;
+                                    let sub_name = sub_entry.file_name();
+                                    let sub_str = sub_name.to_string_lossy();
+                                    match fstatat(
+                                        &rev_fd,
+                                        sub_str.as_ref(),
+                                        AtFlags::AT_SYMLINK_NOFOLLOW,
+                                    ) {
+                                        Ok(sub_stat) => {
+                                            owned_regular(&sub_stat, uid)?;
+                                            bytes = bytes
+                                                .checked_add(
+                                                    u64::try_from(sub_stat.st_size)
+                                                        .map_err(|_| StoreError::Quota)?,
+                                                )
+                                                .ok_or(StoreError::Quota)?;
+                                        }
+                                        Err(Errno::ENOENT) => {}
+                                        Err(error) => return Err(io_error(error)),
+                                    }
+                                }
+                            }
+                            continue;
+                        }
                         owned_regular(&stat, uid)?;
                         bytes = bytes
                             .checked_add(

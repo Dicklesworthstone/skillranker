@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "suite": "experiments",
+  "tier": "rust-product-integration",
+  "targets": [
+    "p9_gate"
+  ],
+  "cases": [
+    {
+      "id": "complete-phase-coverage",
+      "assertions": [
+        "complete_independent_evidence"
+      ],
+      "tests": [
+        "p9_gate::all_p9_contracts_verified"
+      ]
+    }
+  ]
+}

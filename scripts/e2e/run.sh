@@ -29,4 +29,17 @@ if [ "${1-}" = "--suite" ] && [ "${2-}" = "shadow-hook" ]; then
     shift 2
     exec "$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)/shadow-hook.sh" "$@"
 fi
+if [ "${1-}" = "--suite" ] && { [ "${2-}" = "rollout" ] || [ "${2-}" = "advisory-trial" ] || [ "${2-}" = "relevance-promotion" ] || [ "${2-}" = "availability-promotion" ] || [ "${2-}" = "usability-trial" ]; }; then
+    shift 2
+    exec "$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)/rollout.sh" "$@"
+fi
+if [ "${1-}" = "--suite" ] && [ "${2-}" = "learning" ]; then
+    shift 2
+    exec "$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)/learning.sh" "$@"
+fi
+if [ "${1-}" = "--suite" ] && { [ "${2-}" = "passages" ] || [ "${2-}" = "tui" ] || [ "${2-}" = "experiments" ]; }; then
+    suite_name="$2"
+    shift 2
+    exec "$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)/p9_suite.sh" "$suite_name" "$@"
+fi
 exec /usr/bin/python3 -I -B "$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)/runner.py" "$@"

@@ -83,10 +83,10 @@ fn the_binary_prints_the_registry_and_runs_exactly_the_implemented_commands() {
         .filter(|(_, status)| status == "planned")
         .map(|(name, _)| name.as_str())
         .collect();
-    assert!(!planned.contains(&"hook"));
+    assert!(planned.is_empty());
     assert!(implemented.contains(&"hook"));
-    assert!(planned.contains(&"tui"));
-    assert!(!planned.contains(&"replay"));
+    assert!(implemented.contains(&"tui"));
+    assert!(implemented.contains(&"gaps"));
     assert!(implemented.contains(&"replay"));
     for name in &planned {
         let refused = run(&root, &[name, "--json"]);
@@ -117,8 +117,9 @@ fn help_names_implemented_commands_and_no_planned_ones() {
             );
         }
     }
-    // Implemented flag is advertised in help.
+    // Implemented flags are advertised in help.
     assert!(help.contains("--save-case"));
+    assert!(help.contains("--descriptions"));
     for flag in registry()["planned_flags"].as_array().unwrap() {
         let flag_str = flag["flag"].as_str().unwrap();
         let command = flag["command"].as_str().unwrap();
@@ -134,14 +135,7 @@ fn help_names_implemented_commands_and_no_planned_ones() {
 fn planned_flags_contract() {
     let root = home();
     let planned_flags = registry()["planned_flags"].as_array().unwrap().clone();
-    assert_eq!(planned_flags.len(), 1);
-    assert!(
-        planned_flags
-            .iter()
-            .any(|entry| entry["command"] == "doctor"
-                && entry["flag"] == "--descriptions"
-                && entry["earliest_phase"] == "p9")
-    );
+    assert!(planned_flags.is_empty());
     // Conflicts are still reported as conflicts.
     let conflict = run(
         &root,
@@ -193,7 +187,7 @@ fn limits_exit_codes_adapters_and_features_come_from_their_sources() {
             .unwrap()
             .is_empty()
     );
-    assert_eq!(document["features"]["tui"]["implemented"], false);
+    assert_eq!(document["features"]["tui"]["implemented"], true);
     assert_eq!(
         document["features"]["tui"]["compiled"],
         cfg!(feature = "tui")

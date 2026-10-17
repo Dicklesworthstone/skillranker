@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "suite": "tui",
+  "tier": "rust-product-integration",
+  "targets": [
+    "tui_contract"
+  ],
+  "cases": [
+    {
+      "id": "non-tty-fallback",
+      "assertions": [
+        "tui_clean_recovery"
+      ],
+      "tests": [
+        "tui_contract::tui_rendering_and_recovery"
+      ]
+    },
+    {
+      "id": "terminal-state-restored",
+      "assertions": [
+        "tui_clean_recovery"
+      ],
+      "tests": [
+        "tui_contract::tui_rendering_and_recovery"
+      ]
+    }
+  ]
+}

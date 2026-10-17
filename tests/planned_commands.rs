@@ -17,14 +17,12 @@ fn run(args: &[&str]) -> (Option<i32>, Value) {
 
 #[test]
 fn a_planned_command_names_the_phase_it_waits_for() {
-    let (code, value) = run(&["calibrate", "--json"]);
-    assert_eq!(code, Some(2), "{value}");
-    assert_eq!(value["error"]["kind"], "invalid-usage", "{value}");
-    let message = value["error"]["message"].as_str().unwrap_or_default();
-    assert!(
-        message.contains("P8") && message.contains("sr capabilities"),
-        "calibrate must name P8 and the inventory: {message}"
-    );
+    // All foundation commands (including P9 `gaps` and `tui`) are now implemented.
+    assert_eq!(skillranker::capabilities::planned_command_phase("gaps"), None);
+    assert_eq!(skillranker::capabilities::planned_command_phase("tui"), None);
+    let (code, value) = run(&["gaps", "--json"]);
+    assert_eq!(code, Some(0), "{value}");
+    assert_eq!(value["schema"], "sr.gaps.v1", "{value}");
 }
 
 #[test]
@@ -75,25 +73,22 @@ fn an_unknown_command_is_still_an_ordinary_usage_error() {
 
 #[test]
 fn an_implemented_command_is_never_reported_as_planned() {
-    // capabilities lists rank, roster, doctor, demo, replay and ledger with a
-    // phase too; none of them may be refused as unbuilt.
-    for command in ["capabilities", "roster", "doctor"] {
+    // capabilities lists rank, roster, doctor, demo, replay, ledger, gaps and tui
+    // with a phase too; none of them may be refused as unbuilt.
+    for command in ["capabilities", "roster", "doctor", "gaps"] {
         let (code, _) = run(&[command, "--json"]);
         assert_eq!(code, Some(0), "{command} is implemented");
     }
+    let (tui_code, tui_val) = run(&["tui", "--keys", "1q", "--json"]);
+    assert_eq!(tui_code, Some(0), "{tui_val}");
+    assert_eq!(tui_val["schema"], "sr.tui.v1");
 }
 
 #[test]
 fn planned_flags_name_their_phase_before_reading_inputs() {
     let (code, value) = run(&["doctor", "--descriptions", "--json"]);
-    assert_eq!(code, Some(2), "{value}");
-    let message = value["error"]["message"].as_str().unwrap();
-    assert!(
-        message.contains("P9")
-            && message.contains("--descriptions")
-            && message.contains("sr capabilities"),
-        "{message}"
-    );
+    assert_eq!(code, Some(0), "{value}");
+    assert_eq!(value["schema"], "sr.description_diagnostics.v1", "{value}");
 }
 
 #[test]

@@ -18,11 +18,13 @@ pub const CAPABILITIES_SCHEMA: &str = "sr.capabilities.v1";
 
 pub const IMPLEMENTED_COMMANDS: &[&str] = &[
     "budget",
+    "calibrate",
     "capabilities",
     "demo",
     "doctor",
     "eval",
     "feedback",
+    "gaps",
     "hook",
     "install-hook",
     "ledger",
@@ -32,6 +34,7 @@ pub const IMPLEMENTED_COMMANDS: &[&str] = &[
     "roster",
     "snooze",
     "stats",
+    "tui",
     "uninstall-hook",
 ];
 
@@ -44,12 +47,7 @@ pub struct PlannedFlag {
     pub takes_value: bool,
 }
 
-pub const PLANNED_FLAGS: &[PlannedFlag] = &[PlannedFlag {
-    command: "doctor",
-    flag: "descriptions",
-    phase: PhaseGate::P9,
-    takes_value: false,
-}];
+pub const PLANNED_FLAGS: &[PlannedFlag] = &[];
 
 /// The phase a named command is planned for, when this build does not implement
 /// it yet. `None` for an implemented command or an unknown name.
@@ -167,8 +165,7 @@ pub fn registry() -> Value {
             "roster_previews": "separate wide request and complete local inventory bindings",
         },
         "features": {
-            // Reserved boundary: no TUI implementation ships in any build yet.
-            "tui": {"compiled": cfg!(feature = "tui"), "implemented": false},
+            "tui": {"compiled": cfg!(feature = "tui"), "implemented": true},
         },
         "limits": limits,
         "exit_codes": {"success": 0, "errors": errors},

@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "suite": "passages",
+  "tier": "rust-product-integration",
+  "targets": [
+    "passages_contract"
+  ],
+  "cases": [
+    {
+      "id": "equal-budget-comparison",
+      "assertions": [
+        "budget_neutral",
+        "passages_accurate"
+      ],
+      "tests": [
+        "passages_contract::heading_passages_retrieval"
+      ]
+    },
+    {
+      "id": "no-match-lead-fallback",
+      "assertions": [
+        "budget_neutral",
+        "passages_accurate"
+      ],
+      "tests": [
+        "passages_contract::heading_passages_retrieval"
+      ]
+    }
+  ]
+}

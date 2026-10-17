@@ -2621,14 +2621,25 @@ async fn rank_once(
         });
         frozen.roster_complete = !roster.is_partial();
         frozen.visible_roster = frozen_members(&roster, &admitted);
-        // The live scorer's disabled-learning/phase policy actually supplies zeros.
-        // Record them explicitly, including candidates a local threshold change could admit.
+        // Record actual numeric prior adjustments when learning is enabled, or zeros when disabled.
+        let active_priors =
+            load_active_priors_for_pipeline(&gate, args.ledger_dir.as_deref(), effective.w_prior());
         frozen.numeric_inputs = candidate_skills
             .iter()
-            .map(|s| FrozenScoreInput {
-                skill_id: s.binding.id.as_str().into(),
-                prior_delta: 0.0,
-                phase_match: 0.0,
+            .map(|s| {
+                let prior_delta = active_priors.as_ref().map_or(0.0, |priors| {
+                    priors.prior_delta(
+                        s.binding.id.as_str(),
+                        s.record.source_content.as_str(),
+                        "v1",
+                        None,
+                    )
+                });
+                FrozenScoreInput {
+                    skill_id: s.binding.id.as_str().into(),
+                    prior_delta,
+                    phase_match: 0.0,
+                }
             })
             .collect();
         capture.frozen_inputs = Some(frozen);
@@ -3637,10 +3648,23 @@ async fn rank_once(
     }
 
     // 14. Scoring of surviving eligible candidates
+    let active_priors =
+        load_active_priors_for_pipeline(&gate, args.ledger_dir.as_deref(), effective.w_prior());
     let scoring_inputs: Vec<ScoringInput> = evaluation
         .eligible
         .iter()
-        .map(ScoringInput::from_eligible)
+        .map(|el| {
+            let mut inp = ScoringInput::from_eligible(el);
+            if let Some(priors) = &active_priors {
+                inp.prior_delta = priors.prior_delta(
+                    el.skill.binding.id.as_str(),
+                    el.skill.record.source_content.as_str(),
+                    "v1",
+                    None,
+                );
+            }
+            inp
+        })
         .collect();
 
     let weights = Weights::new(effective.w_fit(), effective.w_prior(), effective.w_phase())
@@ -4047,6 +4071,27 @@ fn raw_skill_probabilities(
             _ => None,
         })
         .collect()
+}
+
+fn load_active_priors_for_pipeline(
+    gate: &EffectGate,
+    ledger_dir: Option<&Path>,
+    w_prior: f64,
+) -> Option<crate::learning::PriorSnapshot> {
+    if w_prior <= 0.0 || matches!(gate.ledger(), crate::privacy::StoreAccess::Disabled(_)) {
+        return None;
+    }
+    let dir = match ledger_dir {
+        Some(d) => d.to_path_buf(),
+        None => crate::storage::default_ledger_directory().ok()?,
+    };
+    if let Ok(Some(snap)) = crate::learning::load_active_prior_snapshot(&dir) {
+        return Some(snap);
+    }
+    let nested = dir.join("state");
+    crate::learning::load_active_prior_snapshot(&nested)
+        .ok()
+        .flatten()
 }
 
 /// Claude's exact wrapper for a background task's completion message, as

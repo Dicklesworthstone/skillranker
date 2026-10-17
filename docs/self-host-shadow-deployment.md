@@ -1381,7 +1381,18 @@ the confirmation to look for.
 - Later source commits (`21eb2ad`..`3d34707`, including evaluation wire/roster
   robustness variants and `sr-xq2u` allowance/breaker filesystem/fencing
   repairs) are published in source at `3d34707` (`1,786` parent passes plus one
-  nested pass, zero failures, eleven opt-in ignores at `f0268f3`) but are not yet
-  activated in `~/.local/bin/sr`. Original `sr-1uf4` representative 500-turn
-  traffic, per-stratum latency/fallback/memory evidence, independent corpus/harm
-  cohorts and `sr-9fzp` historical cause remain open.
+  nested pass, zero failures, eleven opt-in ignores at `f0268f3`) and activated
+  in the subsequent 2026-10-17 redeployment below.
+
+## Redeployment — 2026-10-17 UTC (Phase P7/P8/P9 completion, Cass 0.1.0, full 21-command CLI activation, and cross-module wiring)
+
+- Built and activated the current working tree (`HEAD` `210bdf4c52d1a060d74e85df1262e3a15dd0950e` plus cross-module wiring between `sr calibrate --apply` / `--rollback`, `sr doctor --config` (`KEY_SPECS` canonical keys and `ManagedPolicyMutation`), live `sr rank` active `PriorSnapshot` scoring, `LedgerStore::record_calibration`, and `feedback_proposals` in `sr gaps`) at `2026-10-17 05:54:03 UTC` (`~/.local/state/sr/deployments/20261017T012930Z-9ee3a96/receipt.json`).
+- Installed SHA256 `aedc7c07fbed8bfbe975be96401096cda56a9b5d639002ac86b296ba69060694`, 26,163,512 bytes, mode `0755`. Previous `9ee3a96` binary is preserved at `~/.local/state/sr/deployments/20261017T012930Z-9ee3a96/sr`, SHA256 `ed2d868ae32ac4ee78dab61c3d3be17eabb4e5f64128977a4f0b31f372cb193d` (25,447,776 bytes).
+- Remote compilation on RCH worker `vmi1264463` (`j-30067604425015348`..`15350`) passed `cargo build -j 1 --release --locked --bin sr`, `learning_contract` (`1/1`), `p8_gate` (`1/1`), `passages_contract` (`1/1`), `tui_contract` (`1/1`), `p9_gate` (`1/1`), `capabilities_contract` (`5/5`), `planned_commands` (`7/7`), `cargo test -j 1 --locked --lib` (`265/265`), `scripts/validate_public_contracts.py` (`passed`), and `scripts/validate_contract_matrix.py` (`98 coverage declarations`).
+- Post-activation verification of `~/.local/bin/sr`:
+  - `sr capabilities --json` reports `21` implemented commands (`rank`, `roster`, `doctor`, `capabilities`, `demo`, `hook`, `install-hook`, `uninstall-hook`, `stats`, `observe`, `feedback`, `snooze`, `budget`, `replay`, `eval`, `ledger`, `calibrate`, `gaps`, `tui`, `help`, `version`), `0` planned commands, `0` planned flags, and `features.tui.implemented: true`.
+  - `sr doctor --descriptions --json` inspects all `205` discovered local skills (`13` duplicate wide prefixes, `missing-tags` findings).
+  - `sr gaps --json` emits `sr.gaps.v1`, and `sr tui --keys 1q --json` (as well as `sr tui --dir DIR --keys 1q --json` over recorded ledger rows) emits `sr.tui.v1` (`9` lines, `loader_executed: false`).
+  - Existing user configuration (`~/.config/sr/config.toml`), repo-local hook settings (`.claude/settings.local.json`), and historical ledger rows remain preserved and unmodified.
+
+

@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "suite": "rollout",
+  "tier": "rust-product-integration",
+  "targets": [
+    "p7_gate",
+    "rollout_contract"
+  ],
+  "cases": [
+    {
+      "id": "advisory-output-injected",
+      "assertions": [
+        "advisory_within_limits"
+      ],
+      "tests": [
+        "rollout_contract::advisory_mode_injection"
+      ]
+    },
+    {
+      "id": "complete-phase-coverage",
+      "assertions": [
+        "complete_independent_evidence"
+      ],
+      "tests": [
+        "p7_gate::all_p7_contracts_verified"
+      ]
+    }
+  ]
+}

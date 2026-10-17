@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "suite": "learning",
+  "tier": "rust-product-integration",
+  "targets": [
+    "learning_contract",
+    "p8_gate"
+  ],
+  "cases": [
+    {
+      "id": "supermartingale-crossing-bound",
+      "assertions": [
+        "alpha_conserved",
+        "rollback_exact"
+      ],
+      "tests": [
+        "learning_contract::calibration_and_supermartingale"
+      ]
+    },
+    {
+      "id": "policy-rollback-atomic",
+      "assertions": [
+        "alpha_conserved",
+        "rollback_exact"
+      ],
+      "tests": [
+        "learning_contract::calibration_and_supermartingale"
+      ]
+    },
+    {
+      "id": "complete-phase-coverage",
+      "assertions": [
+        "complete_independent_evidence"
+      ],
+      "tests": [
+        "p8_gate::all_p8_contracts_verified"
+      ]
+    }
+  ]
+}

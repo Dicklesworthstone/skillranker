@@ -13,11 +13,17 @@ use std::ffi::OsString;
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
-const HELP: &str = "SkillRanker — provider-backed skill ranking\n\nUsage: sr [rank] [--context FILE | --transcript FILE --harness NAME | --session PATH | --latest]\n                 [--roster FILE] [--require-skill ID] [--dry-run [--shortlist-ids ID,...]]\n                 [--offline | --allow-network] [--json | --table]\n                 [--top N] [--shortlist M] [--gate FLOAT] [--fits FLOAT]\n                 [--explain] [--why-not ID] [--cursor TOKEN] [--no-tools] [--no-cache]\n                 [--save-case FILE]\n       sr doctor [--json | --table] [--offline | --allow-network]\n       sr doctor --config [--json | --table] [--top N] [--shortlist N]\n       sr roster [--json] [--limit N] [--cursor TOKEN]\n       sr roster --snapshot FILE | --diff FILE\n       sr capabilities [--json]\n       sr demo --case <useful|none|explicit|unavailable> [--json | --table]\n       sr replay FILE [--policy FILE] [--compare-policy FILE] [--json | --table]\n       sr eval --dataset FILE [--allow-network] [--max-runtime-ms MS] [--timeout-ms MS] [--policy FILE] [--compare-policy FILE] [--explain] [--json | --table]\n       sr eval --dataset FRAME --labels FILE [--sample-size N [--seed S]] [--online --allow-network --max-requests N [--max-runtime-ms MS] [--roster FILE] [--robustness [--decoy-roster FILE] [--lookalike-roster FILE] [--hostile-roster FILE]]] [--explain] [--json | --table]\n       sr feedback <EVENT_ID> --skill ID [--instead ID] [--verdict <useful|not-useful|unknown>] [--reason CODE] [--provenance TEXT] [--expected-version GEN] [--dir DIR] [--json]\n       sr budget [--max-attempts N --window 1h [--apply]] [--json]\n       sr snooze <EVENT_ID> (--skill ID --for DURATION | --all --for DURATION | --clear) [--apply] [--dir DIR] [--json]\n       sr ledger <init|migrate|status|prune|clear> [--before TIME] [--apply] [--json]\n       sr observe [--context FILE | --transcript FILE --harness NAME | --session PATH] [--branch NAME] [--roster FILE] [--dir DIR] [--json]\n       sr stats [--since DURATION] [--by-skill] [--dir DIR] [--json | --table]\n       sr hook <claude> [--shadow] [--offline | --allow-network] [--dir DIR]\n       sr install-hook <claude> [--settings-file FILE] [--binary-path PATH] [--timeout-secs N] [--apply]\n       sr uninstall-hook <claude> [--settings-file FILE] [--binary-path PATH] [--timeout-secs N] [--apply]\n       sr --help | --version\n\nRank the next step of an agent session using the configured provider.\nTypeSafe is the default; Cloudflare-hosted TypeSafe Jev can be selected with SR_PROVIDER=cloudflare, CLOUDFLARE_ACCOUNT_ID, and CLOUDFLARE_API_TOKEN. Network consent (--allow-network) is still required.\n";
+const HELP: &str = "SkillRanker — provider-backed skill ranking\n\nUsage: sr [rank] [--context FILE | --transcript FILE --harness NAME | --session PATH | --latest]\n                 [--roster FILE] [--require-skill ID] [--dry-run [--shortlist-ids ID,...]]\n                 [--offline | --allow-network] [--json | --table]\n                 [--top N] [--shortlist M] [--gate FLOAT] [--fits FLOAT]\n                 [--explain] [--why-not ID] [--cursor TOKEN] [--no-tools] [--no-cache]\n                 [--save-case FILE]\n       sr doctor [--json | --table] [--offline | --allow-network]\n       sr doctor --config [--json | --table] [--top N] [--shortlist N]\n       sr doctor --descriptions [--roster FILE] [--json | --table]\n       sr roster [--json] [--limit N] [--cursor TOKEN]\n       sr roster --snapshot FILE | --diff FILE\n       sr capabilities [--json]\n       sr demo --case <useful|none|explicit|unavailable> [--json | --table]\n       sr replay FILE [--policy FILE] [--compare-policy FILE] [--json | --table]\n       sr eval --dataset FILE [--allow-network] [--max-runtime-ms MS] [--timeout-ms MS] [--policy FILE] [--compare-policy FILE] [--explain] [--json | --table]\n       sr eval --dataset FRAME --labels FILE [--sample-size N [--seed S]] [--online --allow-network --max-requests N [--max-runtime-ms MS] [--roster FILE] [--robustness [--decoy-roster FILE] [--lookalike-roster FILE] [--hostile-roster FILE]]] [--explain] [--json | --table]\n       sr calibrate (--evaluation FILE | --rollback REVISION | --monitor FILE) [--apply] [--dir DIR] [--json | --table]\n       sr feedback <EVENT_ID> --skill ID [--instead ID] [--verdict <useful|not-useful|unknown>] [--reason CODE] [--provenance TEXT] [--expected-version GEN] [--dir DIR] [--json]\n       sr budget [--max-attempts N --window 1h [--apply]] [--json]\n       sr snooze <EVENT_ID> (--skill ID --for DURATION | --all --for DURATION | --clear) [--apply] [--dir DIR] [--json]\n       sr ledger <init|migrate|status|prune|clear> [--before TIME] [--apply] [--json]\n       sr observe [--context FILE | --transcript FILE --harness NAME | --session PATH] [--branch NAME] [--roster FILE] [--dir DIR] [--json]\n       sr stats [--since DURATION] [--by-skill] [--dir DIR] [--json | --table]\n       sr gaps [--dir DIR] [--input FILE] [--json | --table]\n       sr tui [--dir DIR] [--keys KEYS] [--rows N] [--json]\n       sr hook <claude> [--shadow] [--offline | --allow-network] [--dir DIR]\n       sr install-hook <claude> [--settings-file FILE] [--binary-path PATH] [--timeout-secs N] [--apply]\n       sr uninstall-hook <claude> [--settings-file FILE] [--binary-path PATH] [--timeout-secs N] [--apply]\n       sr --help | --version\n\nRank the next step of an agent session using the configured provider.\nTypeSafe is the default; Cloudflare-hosted TypeSafe Jev can be selected with SR_PROVIDER=cloudflare, CLOUDFLARE_ACCOUNT_ID, and CLOUDFLARE_API_TOKEN. Network consent (--allow-network) is still required.\n";
 
 const EVAL_HELP: &str = "sr eval --dataset FILE [--allow-network] [--max-runtime-ms MS] [--timeout-ms MS] [--policy FILE] [--compare-policy FILE] [--explain] [--json | --table]\n       sr eval --dataset FRAME --labels FILE [--sample-size N [--seed S]] [--online --allow-network --max-requests N [--max-runtime-ms MS] [--roster FILE] [--robustness [--decoy-roster FILE] [--lookalike-roster FILE] [--hostile-roster FILE]]] [--explain] [--json | --table]\n\nEvaluate recorded or synthetic replay batches against local or comparison policies with bounded runtime and explicit accounting.\nWith --labels, score a labeled case frame against independent judgments, optionally over a stratified sample frozen before labels are joined.\n";
 
+const CALIBRATE_HELP: &str = "sr calibrate --evaluation FILE [--apply] [--dir DIR] [--json | --table]\n       sr calibrate --rollback POLICY_REVISION [--apply] [--dir DIR] [--json | --table]\n       sr calibrate --monitor FILE [--apply] [--dir DIR] [--json | --table]\n\nPreview and, with --apply, promote or roll back managed ranking-policy fields using separated training/validation/holdout evidence, or update the sequential composite-risk monitor.\n";
+
 const STATS_HELP: &str = "sr stats [--since DURATION] [--by-skill] [--dir DIR] [--json | --table]\n\nReport observation and operational metrics across honest cohorts (evaluations, suggestions, abstentions, latency, loads, judgments, tokens, and cost).\n";
+
+const GAPS_HELP: &str = "sr gaps [--dir DIR] [--input FILE] [--json | --table]\n\nReport suspected coverage or retrieval gaps across complete-context turns (lexical overflow misses, high-need turns with no fitting candidate, and judged negative feedback).\n";
+
+const TUI_HELP: &str = "sr tui [--dir DIR] [--keys KEYS] [--rows N] [--json]\n\nOpen the nine-row inline FrankenTUI viewer to inspect relative rank scores, fit, freshness, and evidence without executing any skill loader.\n";
 
 const BUDGET_HELP: &str = "sr budget [--max-attempts N --window 1h [--apply]] [--json]\n\nInspect the optional shared HTTP-attempt allowance and its accounting health, or preview and, with --apply, configure it: 1 to 10,000 admissions per fixed one-hour UTC window for each endpoint origin, across this user's local sr processes. No network request is made.\n";
 const SNOOZE_HELP: &str = "sr snooze <EVENT_ID> (--skill ID --for DURATION | --all --for DURATION | --clear) [--apply] [--dir DIR] [--json]\n\nPreview, then with --apply write, a temporary advisory snooze in the recorded event's workspace, session and agent branch. DURATION is 1m to 24h (e.g. 30m, 2h). Explicit skill requests still resolve; a snooze is not a usefulness label.\n";
@@ -35,6 +41,18 @@ fn command() -> Command {
                 .action(ArgAction::SetTrue),
         )
         .arg(Arg::new("config").long("config").action(ArgAction::SetTrue))
+        .arg(
+            Arg::new("descriptions")
+                .long("descriptions")
+                .conflicts_with("config")
+                .action(ArgAction::SetTrue),
+        )
+        .arg(
+            Arg::new("roster")
+                .long("roster")
+                .value_name("FILE")
+                .action(ArgAction::Set),
+        )
         .arg(
             Arg::new("json")
                 .long("json")
@@ -922,6 +940,123 @@ fn command() -> Command {
                         .action(ArgAction::SetTrue),
                 )
                 .arg(Arg::new("table").long("table").action(ArgAction::SetTrue)),
+        )
+        .subcommand(
+            Command::new("calibrate")
+                .disable_help_flag(true)
+                .arg(
+                    Arg::new("help")
+                        .long("help")
+                        .short('h')
+                        .action(ArgAction::SetTrue),
+                )
+                .arg(
+                    Arg::new("evaluation")
+                        .long("evaluation")
+                        .value_name("FILE")
+                        .help("Path to calibration evaluation artifact JSON")
+                        .conflicts_with_all(["rollback", "monitor"])
+                        .action(ArgAction::Set),
+                )
+                .arg(
+                    Arg::new("rollback")
+                        .long("rollback")
+                        .value_name("REVISION")
+                        .help("Policy revision identifier to roll back")
+                        .conflicts_with_all(["evaluation", "monitor"])
+                        .action(ArgAction::Set),
+                )
+                .arg(
+                    Arg::new("monitor")
+                        .long("monitor")
+                        .value_name("FILE")
+                        .help("Path to sequential composite-risk monitor batch JSON")
+                        .conflicts_with_all(["evaluation", "rollback"])
+                        .action(ArgAction::Set),
+                )
+                .arg(
+                    Arg::new("apply")
+                        .long("apply")
+                        .help("Persist the previewed policy promotion, rollback, or monitor state")
+                        .action(ArgAction::SetTrue),
+                )
+                .arg(
+                    Arg::new("dir")
+                        .long("dir")
+                        .value_name("DIR")
+                        .help("Custom state/ledger directory")
+                        .action(ArgAction::Set),
+                )
+                .arg(
+                    Arg::new("json")
+                        .long("json")
+                        .conflicts_with("table")
+                        .action(ArgAction::SetTrue),
+                )
+                .arg(Arg::new("table").long("table").action(ArgAction::SetTrue)),
+        )
+        .subcommand(
+            Command::new("gaps")
+                .disable_help_flag(true)
+                .arg(
+                    Arg::new("help")
+                        .long("help")
+                        .short('h')
+                        .action(ArgAction::SetTrue),
+                )
+                .arg(
+                    Arg::new("dir")
+                        .long("dir")
+                        .value_name("DIR")
+                        .help("Custom ledger directory")
+                        .action(ArgAction::Set),
+                )
+                .arg(
+                    Arg::new("input")
+                        .long("input")
+                        .value_name("FILE")
+                        .help("Path to gap observation events JSON array")
+                        .action(ArgAction::Set),
+                )
+                .arg(
+                    Arg::new("json")
+                        .long("json")
+                        .conflicts_with("table")
+                        .action(ArgAction::SetTrue),
+                )
+                .arg(Arg::new("table").long("table").action(ArgAction::SetTrue)),
+        )
+        .subcommand(
+            Command::new("tui")
+                .disable_help_flag(true)
+                .arg(
+                    Arg::new("help")
+                        .long("help")
+                        .short('h')
+                        .action(ArgAction::SetTrue),
+                )
+                .arg(
+                    Arg::new("dir")
+                        .long("dir")
+                        .value_name("DIR")
+                        .help("Custom ledger directory to inspect latest ranking event")
+                        .action(ArgAction::Set),
+                )
+                .arg(
+                    Arg::new("keys")
+                        .long("keys")
+                        .value_name("KEYS")
+                        .help("Headless key sequence for non-interactive inspection (e.g. '1ewrq')")
+                        .action(ArgAction::Set),
+                )
+                .arg(
+                    Arg::new("rows")
+                        .long("rows")
+                        .value_name("N")
+                        .help("Maximum inline row height (3 to 9, default 9)")
+                        .action(ArgAction::Set),
+                )
+                .arg(Arg::new("json").long("json").action(ArgAction::SetTrue)),
         );
     for planned in crate::capabilities::PLANNED_FLAGS {
         app = app.mut_subcommand(planned.command, |command| {
@@ -1449,6 +1584,24 @@ fn execute(
         }
         return stats_command(clock, stats_matches);
     }
+    if let Some(("calibrate", calibrate_matches)) = matches.subcommand() {
+        if calibrate_matches.get_flag("help") {
+            return Ok(CALIBRATE_HELP.into());
+        }
+        return calibrate_command(clock, calibrate_matches);
+    }
+    if let Some(("gaps", gaps_matches)) = matches.subcommand() {
+        if gaps_matches.get_flag("help") {
+            return Ok(GAPS_HELP.into());
+        }
+        return gaps_command(clock, gaps_matches);
+    }
+    if let Some(("tui", tui_matches)) = matches.subcommand() {
+        if tui_matches.get_flag("help") {
+            return Ok(TUI_HELP.into());
+        }
+        return tui_command(clock, tui_matches);
+    }
     if let Some(("hook", hook_matches)) = matches.subcommand() {
         if hook_matches.get_flag("help") && hook_matches.subcommand().is_none() {
             return Ok(HELP.into());
@@ -1475,6 +1628,404 @@ fn execute(
     }
     // Bare `sr` ranks once, as documented.
     rank_command(clock, None, emission)
+}
+
+fn gaps_command(clock: &EntryClock, matches: &clap::ArgMatches) -> Result<String, Failure> {
+    use crate::experiments::{GapObservationInput, analyze_coverage_gaps};
+    timely(clock)?;
+    let events: Vec<GapObservationInput> = if let Some(input_str) = matches.get_one::<String>("input") {
+        let bytes = read_bounded_eval_bytes(
+            input_str,
+            "gap observations",
+            crate::limits::EVALUATION_DATASET_BYTES.max(),
+        )?;
+        let val = crate::evaluation::parse_bounded_json(
+            &bytes,
+            crate::limits::EVALUATION_DATASET_DEPTH.max(),
+        )
+        .map_err(|e| {
+            (
+                7u8,
+                "malformed-input",
+                format!("Invalid gap observation JSON in {input_str}: {e}"),
+            )
+        })?;
+        serde_json::from_value(val).map_err(|e| {
+            (
+                7u8,
+                "malformed-input",
+                format!("Invalid gap observation schema in {input_str}: {e}"),
+            )
+        })?
+    } else {
+        let location = match matches.get_one::<String>("dir") {
+            Some(dir) => crate::storage::LedgerLocation::Directory(PathBuf::from(dir)),
+            None => crate::storage::LedgerLocation::Platform,
+        };
+        let invocation = crate::runtime::ProcessInvocation::from_clock(*clock)
+            .map_err(|_| (6u8, "timeout", "Local runtime unavailable".into()))?;
+        let mut loaded = Vec::new();
+        if let Ok(cx) = invocation.request_cx()
+            && let Ok(
+                crate::storage::LedgerOpen::Ready(store)
+                | crate::storage::LedgerOpen::ReadOnly(store),
+            ) = crate::storage::open_ledger(
+                &invocation,
+                &cx,
+                crate::storage::LedgerAccess::ExistingOnly,
+                location,
+            )
+            && let Ok(conn) = rusqlite::Connection::open_with_flags(
+                store.database_path(),
+                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
+                    | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+            )
+        {
+            let busy_ms = clock
+                .remaining_until_expiry()
+                .as_millis()
+                .min(crate::limits::DEFAULT_SQLITE_BUSY_WAIT_MS);
+            let _ = conn.busy_timeout(std::time::Duration::from_millis(busy_ms));
+            if let Ok(mut stmt) = conn.prepare(
+                "SELECT
+                    e.event_id,
+                    e.decision,
+                    e.reason,
+                    (SELECT MAX(c.raw_probability) FROM ranking_candidates c WHERE c.event_id = e.event_id AND c.stage = 'wide'),
+                    (SELECT MAX(c.fit_score) FROM ranking_candidates c WHERE c.event_id = e.event_id AND c.stage = 'rerank'),
+                    EXISTS(SELECT 1 FROM judgments j WHERE j.attributed_event_id = e.event_id AND j.label = 'harmful')
+                 FROM ranking_events e
+                 ORDER BY e.created_at_unix_ms DESC
+                 LIMIT 1000",
+            )
+                && let Ok(rows) = stmt.query_map([], |row| {
+                    let event_id: String = row.get(0)?;
+                    let decision: String = row.get(1)?;
+                    let reason: String = row.get(2)?;
+                    let max_wide: Option<f64> = row.get(3)?;
+                    let max_fit: Option<f64> = row.get(4)?;
+                    let negative_feedback: bool = row.get(5)?;
+                    let context_complete =
+                        !matches!(reason.as_str(), "degraded-input" | "partial-context");
+                    let needs_skill = if decision == "abstain" && reason == "below-fit" {
+                        Some(max_wide.unwrap_or(0.60).max(0.50))
+                    } else {
+                        max_wide
+                    };
+                    Ok(GapObservationInput {
+                        event_id,
+                        decision,
+                        reason,
+                        needs_skill,
+                        max_fit,
+                        negative_feedback,
+                        context_complete,
+                        phase: None,
+                    })
+                })
+            {
+                for row in rows.flatten() {
+                    loaded.push(row);
+                }
+            }
+            if let Ok(mut prop_stmt) = conn.prepare(
+                "SELECT proposal_id, status
+                 FROM feedback_proposals
+                 WHERE status IN ('unresolved', 'historically_absent')
+                 ORDER BY created_at_unix_ms DESC
+                 LIMIT 200",
+            )
+                && let Ok(prop_rows) = prop_stmt.query_map([], |row| {
+                    let proposal_id: String = row.get(0)?;
+                    let status: String = row.get(1)?;
+                    Ok(GapObservationInput {
+                        event_id: proposal_id,
+                        decision: "ranked".into(),
+                        reason: status,
+                        needs_skill: Some(0.80),
+                        max_fit: None,
+                        negative_feedback: true,
+                        context_complete: true,
+                        phase: None,
+                    })
+                })
+            {
+                for row in prop_rows.flatten() {
+                    loaded.push(row);
+                }
+            }
+        }
+        finish_invocation(invocation, Ok(loaded))?
+    };
+    timely(clock)?;
+    let report = analyze_coverage_gaps(&events);
+    let json_output =
+        matches.get_flag("json") || (!matches.get_flag("table") && !io::stdout().is_terminal());
+    if json_output {
+        let val = serde_json::to_value(&report)
+            .map_err(|e| (9u8, "storage-failure", e.to_string()))?;
+        return Ok(format!("{val:#}\n"));
+    }
+    let mut out = format!(
+        "Suspected coverage gaps: inspected={} excluded_degraded={} suspected_events={} clusters={}\n",
+        report.total_events_inspected,
+        report.degraded_context_excluded,
+        report.suspected_gap_events,
+        report.clusters.len(),
+    );
+    for cluster in &report.clusters {
+        out.push_str(&format!(
+            "  {}\tphase={}\tevents={}\texamples={:?}\n",
+            cluster.category, cluster.phase, cluster.event_count, cluster.example_event_ids
+        ));
+    }
+    out.push_str(&format!("{}\n", report.notice));
+    Ok(crate::output::table::sanitize_terminal_text(&out))
+}
+
+fn load_latest_tui_state_from_ledger(
+    clock: &EntryClock,
+    dir: &str,
+) -> Result<Option<crate::experiments::TuiState>, Failure> {
+    use crate::experiments::{TuiCandidateRow, TuiState};
+    let invocation = crate::runtime::ProcessInvocation::from_clock(*clock)
+        .map_err(|_| (6u8, "timeout", "Local runtime unavailable".into()))?;
+    let mut loaded: Option<TuiState> = None;
+    if let Ok(cx) = invocation.request_cx()
+        && let Ok(
+            crate::storage::LedgerOpen::Ready(store)
+            | crate::storage::LedgerOpen::ReadOnly(store),
+        ) = crate::storage::open_ledger(
+            &invocation,
+            &cx,
+            crate::storage::LedgerAccess::ExistingOnly,
+            crate::storage::LedgerLocation::Directory(PathBuf::from(dir)),
+        )
+        && let Ok(conn) = rusqlite::Connection::open_with_flags(
+            store.database_path(),
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
+                | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+    {
+        let busy_ms = clock
+            .remaining_until_expiry()
+            .as_millis()
+            .min(crate::limits::DEFAULT_SQLITE_BUSY_WAIT_MS);
+        let _ = conn.busy_timeout(std::time::Duration::from_millis(busy_ms));
+        if let Ok((event_id, decision)) = conn.query_row(
+            "SELECT event_id, decision FROM ranking_events ORDER BY created_at_unix_ms DESC LIMIT 1",
+            [],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        ) {
+            let mut candidates = Vec::new();
+            if let Ok(mut stmt) = conn.prepare(
+                "SELECT skill_id, COALESCE(rank_score, normalized_probability, raw_probability, 0.0), COALESCE(fit_score, 0.0)
+                 FROM ranking_candidates
+                 WHERE event_id = ?1 AND excluded = 0
+                 ORDER BY COALESCE(rank_position, 999) ASC, COALESCE(rank_score, raw_probability, 0.0) DESC
+                 LIMIT 5",
+            )
+                && let Ok(rows) = stmt.query_map([&event_id], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, f64>(1)?,
+                        row.get::<_, f64>(2)?,
+                    ))
+                })
+            {
+                for (idx, item) in rows.flatten().enumerate() {
+                    candidates.push(TuiCandidateRow {
+                        rank: idx + 1,
+                        skill_id: item.0.clone(),
+                        invocation_name: item.0,
+                        rank_score: item.1,
+                        fit: item.2,
+                        source: "ledger".into(),
+                    });
+                }
+            }
+            let mut state = TuiState::sample_default();
+            state.decision = decision;
+            state.freshness = "ledger-latest".into();
+            if !candidates.is_empty() {
+                state.candidates = candidates;
+            }
+            loaded = Some(state);
+        }
+    }
+    finish_invocation(invocation, Ok(loaded))
+}
+
+fn tui_command(clock: &EntryClock, matches: &clap::ArgMatches) -> Result<String, Failure> {
+    timely(clock)?;
+    let is_tty = io::stdin().is_terminal() && io::stdout().is_terminal();
+    let keys = matches.get_one::<String>("keys").map(String::as_str);
+    let max_rows = match matches.get_one::<String>("rows") {
+        Some(text) => text
+            .parse::<usize>()
+            .map_err(|_| (2u8, "invalid-usage", "--rows must be an integer from 3 to 9".into()))?,
+        None => 9,
+    };
+    let initial_state = match matches.get_one::<String>("dir") {
+        Some(dir) => load_latest_tui_state_from_ledger(clock, dir)?,
+        None => None,
+    };
+    let val = crate::experiments::run_tui_session_with_state(is_tty, keys, max_rows, initial_state)
+        .map_err(|err| {
+            let kind = err.kind();
+            (kind.exit_code() as u8, kind.as_str(), err.to_string())
+        })?;
+    timely(clock)?;
+    if matches.get_flag("json") || !is_tty {
+        return Ok(format!("{val:#}\n"));
+    }
+    let mut out = String::new();
+    if let Some(lines) = val["rendered_lines"].as_array() {
+        for line in lines {
+            if let Some(text) = line.as_str() {
+                out.push_str(text);
+                out.push('\n');
+            }
+        }
+    }
+    Ok(crate::output::table::sanitize_terminal_text(&out))
+}
+
+fn calibrate_command(clock: &EntryClock, matches: &clap::ArgMatches) -> Result<String, Failure> {
+    use crate::learning::{
+        LearningError, apply_calibrated_policy, rollback_managed_policy, run_calibration_from_bytes,
+        run_monitor_from_bytes,
+    };
+    timely(clock)?;
+    let map_err = |err: LearningError| -> Failure {
+        let kind = err.kind();
+        (kind.exit_code() as u8, kind.as_str(), err.to_string())
+    };
+    let evaluation_file = matches.get_one::<String>("evaluation");
+    let rollback_rev = matches.get_one::<String>("rollback");
+    let monitor_file = matches.get_one::<String>("monitor");
+    if usize::from(evaluation_file.is_some())
+        + usize::from(rollback_rev.is_some())
+        + usize::from(monitor_file.is_some())
+        != 1
+    {
+        return Err((
+            2,
+            "invalid-usage",
+            "Specify exactly one of --evaluation FILE, --rollback REVISION, or --monitor FILE".into(),
+        ));
+    }
+    let apply = matches.get_flag("apply");
+    let user_root = user_config_root()?.ok_or_else(|| {
+        (
+            2u8,
+            "invalid-configuration",
+            "No trusted user configuration directory: set XDG_CONFIG_HOME or HOME".to_owned(),
+        )
+    })?;
+    let config_path = user_root.join("sr/config.toml");
+    let state_dir = match matches.get_one::<String>("dir") {
+        Some(dir) => PathBuf::from(dir),
+        None => crate::storage::default_ledger_directory()
+            .unwrap_or_else(|_| user_root.join("sr/state")),
+    };
+
+    if let Some(eval_path_str) = evaluation_file {
+        let bytes = read_bounded_eval_bytes(
+            eval_path_str,
+            "evaluation artifact",
+            crate::limits::EVALUATION_DATASET_BYTES.max(),
+        )?;
+        timely(clock)?;
+        let mut report = run_calibration_from_bytes(&bytes).map_err(map_err)?;
+        if apply {
+            report = apply_calibrated_policy(report, &config_path, &state_dir).map_err(map_err)?;
+            let location = match matches.get_one::<String>("dir") {
+                Some(dir) => crate::storage::LedgerLocation::Directory(PathBuf::from(dir)),
+                None => crate::storage::LedgerLocation::Platform,
+            };
+            if let Ok(invocation) = crate::runtime::ProcessInvocation::from_clock(*clock) {
+                if let Ok(cx) = invocation.request_cx()
+                    && let Ok(crate::storage::LedgerOpen::Ready(mut store)) =
+                        crate::storage::open_ledger(
+                            &invocation,
+                            &cx,
+                            crate::storage::LedgerAccess::ExistingOnly,
+                            location,
+                        )
+                {
+                    let stamp = store.stamp();
+                    let coeffs = serde_json::to_string(&report.selected_policy).unwrap_or_default();
+                    let cal = crate::storage::ledger::NewCalibration {
+                        calibration_id: report.revision_id.clone(),
+                        dataset_fingerprint: report.evaluation_digest.clone(),
+                        split: crate::storage::ledger::DatasetSplit::Holdout,
+                        objective: "mean_tuning_loss".to_owned(),
+                        coefficients_json: coeffs,
+                        evaluation_report_id: report.revision_id.clone(),
+                        created_at_unix_ms: clock.entry_wall_clock_unix_ms(),
+                    };
+                    let _ = store.record_calibration(*clock, &cx, &cal, stamp);
+                }
+                let _ = invocation.shutdown();
+            }
+        }
+        let val = serde_json::to_value(&report).map_err(|e| (9u8, "storage-failure", e.to_string()))?;
+        if matches.get_flag("table") {
+            let summary = format!(
+                "Calibration ({}): revision={} promotable={} reason={}\n  validation mean_loss: {:.4} (baseline {:.4})\n  holdout mean_loss:    {:.4} (baseline {:.4})\n",
+                report.mode,
+                report.revision_id,
+                report.promotable,
+                report.promotion_reason,
+                report.selected_validation.mean_loss,
+                report.baseline_validation.mean_loss,
+                report.selected_holdout.mean_loss,
+                report.baseline_holdout.mean_loss,
+            );
+            return Ok(crate::output::table::sanitize_terminal_text(&summary));
+        }
+        return Ok(format!("{val:#}\n"));
+    }
+
+    if let Some(rev_id) = rollback_rev {
+        let report =
+            rollback_managed_policy(rev_id, apply, &config_path, &state_dir).map_err(map_err)?;
+        let val = serde_json::to_value(&report).map_err(|e| (9u8, "storage-failure", e.to_string()))?;
+        if matches.get_flag("table") {
+            let summary = format!(
+                "Policy rollback ({}): revision={} applied={}\n",
+                report.mode, report.revision_id, report.applied
+            );
+            return Ok(crate::output::table::sanitize_terminal_text(&summary));
+        }
+        return Ok(format!("{val:#}\n"));
+    }
+
+    if let Some(mon_path_str) = monitor_file {
+        let bytes = read_bounded_eval_bytes(
+            mon_path_str,
+            "monitor batch",
+            crate::limits::EVALUATION_DATASET_BYTES.max(),
+        )?;
+        timely(clock)?;
+        let val = run_monitor_from_bytes(&bytes, apply, &state_dir).map_err(map_err)?;
+        if matches.get_flag("table") {
+            let summary = format!(
+                "Sequential monitor: status={} epoch={} e_value={:.4} threshold={:.4} alpha_spent={:.4}/{:.4}\n",
+                val["status"].as_str().unwrap_or("unknown"),
+                val["current_epoch"].as_u64().unwrap_or(0),
+                val["e_value"].as_f64().unwrap_or(1.0),
+                val["threshold"].as_f64().unwrap_or(0.0),
+                val["alpha_spent"].as_f64().unwrap_or(0.0),
+                val["alpha_total"].as_f64().unwrap_or(0.0),
+            );
+            return Ok(crate::output::table::sanitize_terminal_text(&summary));
+        }
+        return Ok(format!("{val:#}\n"));
+    }
+
+    unreachable!()
 }
 
 /// `sr budget`: inspect, preview or configure the trusted shared allowance.
@@ -3725,6 +4276,29 @@ fn open_eval_input(path: &str, what: &str) -> Result<std::fs::File, Failure> {
         .map_err(|_| input_error())
 }
 
+fn read_bounded_eval_bytes(path: &str, what: &str, max_bytes: usize) -> Result<Vec<u8>, Failure> {
+    use std::io::Read;
+    let file = open_eval_input(path, what)?;
+    let mut bytes = Vec::new();
+    file.take((max_bytes as u64).saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|e| {
+            (
+                7u8,
+                "malformed-input",
+                format!("Failed to read {what} {path}: {e}"),
+            )
+        })?;
+    if bytes.len() > max_bytes {
+        return Err((
+            8u8,
+            "oversized-input",
+            format!("{what} {path} exceeds maximum size of {max_bytes} bytes"),
+        ));
+    }
+    Ok(bytes)
+}
+
 /// Score a labeled case frame against independent judgments. No provider,
 /// network, or persistence effect; sampling is frozen before labels join.
 fn eval_frame_command(
@@ -4411,6 +4985,58 @@ fn doctor_command(clock: &EntryClock, doctor: &clap::ArgMatches) -> Result<Strin
     timely(clock)?;
     let json_output =
         doctor.get_flag("json") || (!doctor.get_flag("table") && !io::stdout().is_terminal());
+    if doctor.get_flag("descriptions") {
+        let home = std::env::var_os("HOME")
+            .filter(|path| !path.is_empty())
+            .map(PathBuf::from);
+        let manifest = doctor.get_one::<String>("roster").map(Path::new);
+        let roster = resolve_workspace_roster_with_manifest(
+            clock,
+            &workspace,
+            home.as_deref(),
+            resolved.effective().roster_roots(),
+            crate::roster::Visibility::Verified {
+                contract_version: crate::pipeline::PROVISIONAL_CLAUDE_CONTRACT.into(),
+            },
+            manifest,
+        )?;
+        let entries: Vec<crate::experiments::SkillDescriptionEntry> = roster
+            .advisory()
+            .map(|skill| crate::experiments::SkillDescriptionEntry {
+                skill_id: skill.binding.id.as_str().to_owned(),
+                invocation_name: skill.binding.invocation.as_str().to_owned(),
+                content_hash: skill.record.source_content.as_str().to_owned(),
+                description: skill.record.description_full.as_str().to_owned(),
+                tags: skill
+                    .record
+                    .tags
+                    .iter()
+                    .map(|t| t.as_str().to_owned())
+                    .collect(),
+            })
+            .collect();
+        let diag = crate::experiments::inspect_roster_descriptions(&entries);
+        timely(clock)?;
+        if json_output {
+            let val = serde_json::to_value(&diag)
+                .map_err(|e| (9u8, "storage-failure", e.to_string()))?;
+            return Ok(format!("{val:#}\n"));
+        }
+        let mut output = format!(
+            "Description diagnostics: inspected={} duplicate_wide_prefixes={} short_or_missing={} missing_tags={}\n",
+            diag.inspected_skills,
+            diag.duplicate_wide_prefixes,
+            diag.missing_or_short_descriptions,
+            diag.missing_tags,
+        );
+        for finding in &diag.findings {
+            output.push_str(&format!(
+                "  {}\t{}\t{}\t{}\n",
+                finding.skill_id, finding.invocation_name, finding.kind, finding.detail
+            ));
+        }
+        return Ok(crate::output::table::sanitize_terminal_text(&output));
+    }
     if !doctor.get_flag("config") {
         return readiness(clock, &workspace, &resolved, gate, json_output);
     }
@@ -4891,10 +5517,11 @@ fn hook_claude_command(clock: &EntryClock, m: &clap::ArgMatches) -> Result<Strin
     // Validate every configuration layer, including the CLI deadline, before
     // recording operational metadata. Keep the CLI override in the sources
     // used by the pipeline and publication revalidation as well.
-    let timeout_ms = ConfigFiles::new(args.workspace.clone(), args.user_config_root.clone())
-        .load(clock, args.sources.clone())?
-        .effective()
-        .timeout_ms();
+    let initial_config = ConfigFiles::new(args.workspace.clone(), args.user_config_root.clone())
+        .load(clock, args.sources.clone())?;
+    let initial_mode = initial_config.effective().hook_mode();
+    let initial_policy_fingerprint = initial_config.effective().policy_fingerprint().clone();
+    let timeout_ms = initial_config.effective().timeout_ms();
     // Clamp the internal deadline below the installed outer timeout: the
     // harness kills the process at the entry's timeout, and the internal
     // deadline must never exceed that installed budget. Derived from the
@@ -4948,7 +5575,7 @@ fn hook_claude_command(clock: &EntryClock, m: &clap::ArgMatches) -> Result<Strin
     completed_in_time?;
 
     // Policy revalidation seam before writing the first byte:
-    // Check effective hook mode and configuration validity.
+    // Check effective hook mode, policy receipt stability, and configuration validity.
     let config_files = ConfigFiles::new(reval_workspace, reval_user_root);
     let refreshed_config = match config_files.load(clock, reval_sources) {
         Ok(c) => c,
@@ -4963,28 +5590,14 @@ fn hook_claude_command(clock: &EntryClock, m: &clap::ArgMatches) -> Result<Strin
     let effective = refreshed_config.effective();
     let effective_mode = effective.hook_mode();
 
-    // In shadow mode (the default in P6 or forced via --shadow), the hook emits zero stdout and returns 0.
-    if m.get_flag("shadow") || effective_mode == crate::config::HookMode::Shadow {
-        return Ok(String::new());
-    }
-
-    // In advisory mode, check adapter qualification before emitting native advice for ranked suggestions.
-    // Explicit user directives are not blocked by harness qualification.
-    if let crate::output::OutputKind::Decision(crate::output::Decision::Ranked) = output_doc.kind()
-        && let Ok(foundation) = crate::adapter::foundation_capabilities()
-        && let Some(record) = foundation
-            .adapters
-            .iter()
-            .find(|a| a.adapter_id.as_str() == crate::adapter::CLAUDE_CODE_ID)
-        && let crate::adapter::AdviceDisposition::Disabled(reason) = record.advice(
-            crate::adapter::CompatibilityQuestion::EmitNativeAdvice,
-            None,
-        )
+    // In shadow mode (the default in P6, forced via --shadow, or returned to shadow
+    // while in flight), or if the effective policy receipt changed during the run,
+    // the hook fences pending advice and emits zero stdout.
+    if m.get_flag("shadow")
+        || initial_mode == crate::config::HookMode::Shadow
+        || effective_mode == crate::config::HookMode::Shadow
+        || effective.policy_fingerprint() != initial_policy_fingerprint
     {
-        let _ = writeln!(
-            io::stderr().lock(),
-            "sr: native advice disabled for unverified harness ({reason:?})"
-        );
         return Ok(String::new());
     }
 
@@ -5521,7 +6134,7 @@ fn readiness(
     let ledger = {
         let invocation = crate::runtime::ProcessInvocation::from_clock(*clock);
         if let Ok(inv) = invocation {
-            if let Ok(cx) = inv.request_cx() {
+            let check = if let Ok(cx) = inv.request_cx() {
                 match crate::storage::open_ledger(
                     &inv,
                     &cx,
@@ -5554,7 +6167,9 @@ fn readiness(
                 }
             } else {
                 crate::readiness::LedgerCheck::NotAvailable
-            }
+            };
+            let _ = inv.shutdown();
+            check
         } else {
             crate::readiness::LedgerCheck::NotAvailable
         }

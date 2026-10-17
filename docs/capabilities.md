@@ -6,10 +6,10 @@
 | Field | Contents |
 | --- | --- |
 | `commands` | Every command in the roadmap, marked `implemented` or `planned` with its earliest phase |
-| `planned_flags` | Flags the parser knows but refuses until their phase ships; currently `doctor --descriptions` (P9) |
+| `planned_flags` | Flags the parser knows but refuses until their phase ships (currently empty; all documented flags are implemented) |
 | `adapters` | Adapter support, identity and visibility semantics, tested and unverified versions, and conformance evidence |
 | `schemas` | Output, configuration, roster import/listing/snapshot/diff, retrieval and question-policy versions |
-| `features` | Compiled Cargo features and whether each is implemented. `tui` is reserved and not implemented |
+| `features` | Compiled Cargo features and whether each is implemented (`tui` is implemented and feature-gated on `tui`) |
 | `limits` | Every default resource limit, with its name, unit and maximum |
 | `exit_codes` | Success, plus every error kind with its exit code |
 
@@ -21,9 +21,9 @@ declare. Limits come from `limits::ALL_DEFAULT_LIMITS`, and exit codes from
 
 The implemented subcommands are `rank`, `roster`, `doctor`, `capabilities`,
 `demo`, `hook`, `install-hook`, `uninstall-hook`, `stats`, `observe`, `feedback`,
-`snooze`, `budget`, `replay`, `eval`, and `ledger`, plus help and version.
-`calibrate` (P8), `tui` and `gaps` (P9) remain planned. An empty `tui` Cargo
-feature does not implement the command.
+`snooze`, `budget`, `replay`, `eval`, `calibrate`, `ledger`, `gaps`, and `tui`,
+plus help and version. All 19 roadmap commands and `doctor --descriptions` are
+implemented.
 
 The registry states what this binary runs. It claims no phase acceptance,
 provider availability, native harness support or installed-version
