@@ -262,6 +262,61 @@ fn ledger_snapshot_counts_and_event_scope_must_match_evidence() {
     assert!(inv.shutdown());
 }
 
+/// GH #9: one membership seen from two workspaces (or by two adapters) needs two
+/// rows, because each row names the workspace and adapter its events came from.
+#[test]
+fn ledger_snapshot_keys_are_scoped_to_workspace_and_adapter() {
+    let membership = "a".repeat(64);
+    let key = |workspace: &str, adapter: &str, membership: &str| {
+        NewRosterSnapshot::scoped_id(workspace, adapter, membership)
+    };
+    let base = key("/data/workspace", "claude_code", &membership);
+    assert_eq!(base, key("/data/workspace", "claude_code", &membership));
+    assert_eq!(base.len(), 64);
+    for other in [
+        key("/other/workspace", "claude_code", &membership),
+        key("/data/workspace", "codex", &membership),
+        key("/data/workspace", "claude_code", &"b".repeat(64)),
+        // Length framing: moving bytes between parts is a different key.
+        key("/data/workspaceclaude", "_code", &membership),
+    ] {
+        assert_ne!(base, other);
+    }
+
+    let (inv, cx) = test_invocation();
+    let mut store = open_test_store(&inv, &cx, "snapshot-scoped");
+    let stamp = store.stamp();
+    for (n, workspace) in ["/data/workspace", "/other/workspace", "/data/workspace"]
+        .into_iter()
+        .enumerate()
+    {
+        let snapshot = NewRosterSnapshot {
+            snapshot_id: key(workspace, "claude_code", &membership),
+            workspace_root: workspace.into(),
+            created_at_unix_ms: n as u64 + 1,
+            ..snapshot_fixture()
+        };
+        let event = NewRankingEvent {
+            workspace_root: workspace.into(),
+            snapshot_id: Some(snapshot.snapshot_id.clone()),
+            ..event_fixture(&format!("event-{n}"))
+        };
+        store
+            .record_ranking_event(inv.clock(), &cx, &event, &[], Some(&snapshot), stamp)
+            .unwrap();
+    }
+    let conn = Connection::open(store.database_path()).unwrap();
+    let rows: Vec<String> = conn
+        .prepare("SELECT workspace_root FROM roster_snapshots ORDER BY workspace_root")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(rows, ["/data/workspace", "/other/workspace"]);
+    assert!(inv.shutdown());
+}
+
 #[test]
 fn ledger_snapshot_preserves_full_roster_and_rejects_overflow() {
     // Two maximal snapshots (10,000 members each) are written inside this one invocation, so it gets

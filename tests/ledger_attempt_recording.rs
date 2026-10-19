@@ -704,6 +704,121 @@ fn producer_ranking_workspace_scope_comes_from_the_invocation() {
     assert_eq!(f.events().len(), 2);
 }
 
+/// GH #9: one ledger serves every workspace, and two workspaces that see only the
+/// same user-level skills resolve the same membership. The second workspace's
+/// ranking used to collide with the first workspace's snapshot row and fail its
+/// final write, leaving every later ranking from it in flight.
+#[test]
+fn workspaces_with_the_same_visible_roster_each_record_their_rankings() {
+    let f = Fixture::new();
+    f.ledger_init();
+    let skill = f.root.join("home/.claude/skills/alpha/SKILL.md");
+    std::fs::create_dir_all(skill.parent().unwrap()).unwrap();
+    std::fs::write(
+        &skill,
+        "---\nname: alpha\ndescription: Runs and repairs failing rust tests.\n---\nBody.\n",
+    )
+    .unwrap();
+    let (_, mut context) = f.normalized_context(Some("producer-a"));
+    let path = f.root.join("shared-context.json");
+    std::fs::write(&path, context.to_string()).unwrap();
+    // A later turn in the first workspace is a new event over the same roster.
+    context["current_request"]["event_id"] = json!("later-request");
+    let later = f.root.join("later-context.json");
+    std::fs::write(&later, context.to_string()).unwrap();
+    let mut recorded = Vec::new();
+    for (name, path) in [
+        ("workspace-one", &path),
+        ("workspace-two", &path),
+        ("workspace-one", &later),
+    ] {
+        let workspace = f.root.join(name);
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .recursive(true)
+            .create(&workspace)
+            .unwrap();
+        let out = f
+            .command(
+                1,
+                &[
+                    "rank",
+                    "--context",
+                    path.to_str().unwrap(),
+                    "--require-skill",
+                    "alpha",
+                    "--offline",
+                    "--no-cache",
+                    "--json",
+                ],
+            )
+            .current_dir(&workspace)
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let doc: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(doc["decision"], "explicit", "{doc}");
+        assert!(
+            !doc["warnings"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|w| w["kind"] == "ledger-finalization-unconfirmed"),
+            "{name}: the ledger write must succeed: {doc}"
+        );
+        recorded.push((
+            workspace,
+            doc["event_id"].as_str().unwrap().to_owned(),
+            doc["roster"]["provenance"]["snapshot_id"].clone(),
+        ));
+    }
+    let ids: std::collections::BTreeSet<_> = recorded.iter().map(|(_, id, _)| id).collect();
+    assert_eq!(ids.len(), 3, "three distinct events");
+    // The precondition that made this a collision: one membership digest.
+    assert_eq!(recorded[0].2, recorded[1].2);
+    assert_eq!(recorded[0].2, recorded[2].2);
+    assert!(recorded[0].2.is_string());
+    let conn = rusqlite::Connection::open(f.ledger_db()).unwrap();
+    let mut members = std::collections::BTreeSet::new();
+    let mut snapshots = std::collections::BTreeSet::new();
+    for (workspace, id, _) in &recorded {
+        let (event_workspace, decision, snapshot_workspace, snapshot_id, json): (
+            String,
+            String,
+            String,
+            String,
+            String,
+        ) = conn
+            .query_row(
+                "SELECT e.workspace_root, e.decision, s.workspace_root, s.snapshot_id, s.members_json
+                 FROM ranking_events e JOIN roster_snapshots s ON s.snapshot_id = e.snapshot_id
+                 WHERE e.event_id = ?1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )
+            .unwrap();
+        assert_eq!(event_workspace, workspace.to_str().unwrap());
+        assert_eq!(decision, "explicit");
+        // Each snapshot row still belongs to the workspace whose event cites it.
+        assert_eq!(snapshot_workspace, event_workspace);
+        members.insert(json);
+        snapshots.insert(snapshot_id);
+    }
+    assert_eq!(members.len(), 1, "identical membership evidence");
+    // Repeating a workspace reuses its row; the other workspace has its own.
+    assert_eq!(snapshots.len(), 2);
+    let rows: i64 = conn
+        .query_row("SELECT count(*) FROM roster_snapshots", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(rows, 2);
+    assert_eq!(f.events().len(), 3);
+}
+
 #[test]
 fn producer_rankings_own_their_successful_and_failed_provider_attempts() {
     let f = Fixture::new();

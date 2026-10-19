@@ -1070,6 +1070,32 @@ pub struct NewRosterSnapshot {
     pub created_at_unix_ms: u64,
 }
 
+impl NewRosterSnapshot {
+    /// The ledger key for one resolved membership seen by one adapter in one
+    /// workspace.
+    ///
+    /// A membership digest alone is not a ledger key: one ledger serves every
+    /// workspace, two workspaces that see only the same user-level skills resolve the
+    /// same membership, and a snapshot row records the workspace and adapter that
+    /// observed it (GH #9). Scoping the key keeps each row truthful for every event
+    /// that cites it while unchanged snapshots still deduplicate within that scope.
+    pub fn scoped_id(workspace_root: &str, adapter: &str, membership: &str) -> String {
+        let mut bytes = Vec::new();
+        for part in [
+            b"skillranker.ledger-roster-snapshot.v1".as_slice(),
+            workspace_root.as_bytes(),
+            adapter.as_bytes(),
+            membership.as_bytes(),
+        ] {
+            bytes.extend_from_slice(&(part.len() as u64).to_le_bytes());
+            bytes.extend_from_slice(part);
+        }
+        crate::identity::ContentHash::from_bytes(&bytes)
+            .as_str()
+            .to_owned()
+    }
+}
+
 /// Bound before JSON allocation; SQLite additionally bounds the complete row.
 pub const MAX_SNAPSHOT_METADATA_BYTES: usize = 2 * 1024 * 1024;
 pub const MAX_SNAPSHOT_MEMBERS: usize = 10_000;

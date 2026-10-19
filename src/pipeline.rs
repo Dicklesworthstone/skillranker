@@ -5562,16 +5562,19 @@ fn prepare_ledger_record(
         .unwrap_or_default()
         .as_millis() as u64;
 
-    let snapshot_id = crate::roster::evidence::snapshot_id(roster)
-        .as_str()
-        .to_string();
+    let adapter = context.harness.as_str();
+    let snapshot_id = crate::storage::NewRosterSnapshot::scoped_id(
+        &record_identity.workspace_root,
+        adapter,
+        crate::roster::evidence::snapshot_id(roster).as_str(),
+    );
     let total_candidates = snapshot_members.len() as u64;
     let eligible_candidates = snapshot_members.iter().filter(|m| m.eligible).count() as u64;
 
     let snapshot = crate::storage::NewRosterSnapshot {
         snapshot_id: snapshot_id.clone(),
         workspace_root: record_identity.workspace_root.clone(),
-        adapter: context.harness.as_str().to_string(),
+        adapter: adapter.to_string(),
         total_candidates,
         eligible_candidates,
         membership_coverage: if roster.is_partial() {

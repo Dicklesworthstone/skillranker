@@ -599,8 +599,10 @@ Cache hits and returned model identities are recorded separately for each stage.
 When reranking is required, a wide-stage hit alone is not a complete offline
 result. An alias such as
 `jev-latest` does not identify an immutable model revision.
-`persistence: "recorded"` means the ranking metadata was committed before output;
-it does not mean the harness acknowledged or consumed the recommendation.
+`persistence: "recorded"` means at least one qualified store backed the run: the
+response cache, a committed ledger event, or both. It does not mean the harness
+acknowledged or consumed the recommendation. A ledger write that cannot be
+confirmed adds the `ledger-finalization-unconfirmed` warning.
 
 Quality metadata includes `prompt_complete`, `task_anchor_known`,
 `history_windowed`, `attachments_omitted`, and `source_gaps`. These describe the
@@ -1921,8 +1923,10 @@ space, and available disk. If sufficient space is unavailable, they fail before
 mutation with a concrete recovery step instead of exceeding quota or discarding
 the only recoverable copy.
 Full roster membership snapshots share the ledger quota and retention rules;
-retained events reference deduplicated snapshots. Missing snapshot evidence
-disables unsupported historical corrections while ranking remains usable.
+retained events reference snapshots deduplicated per workspace and harness, so
+one ledger serves every workspace that sees the same skills. Missing snapshot
+evidence disables unsupported historical corrections while ranking remains
+usable.
 
 Writes verify the store's incarnation and schema/data generation in their
 transaction. Clearing history advances the generation, preventing older in-flight
