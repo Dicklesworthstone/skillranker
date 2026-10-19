@@ -76,8 +76,8 @@ fn build_eval_artifact() -> CalibrationArtifact {
         training_judgments.push(PriorJudgmentRecord {
             event_id: format!("ev-tr-{idx}"),
             skill_id: "sk-target".into(),
-            content_hash:
-                "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+            content_hash: "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                .into(),
             policy_version: "jev.rerank.v1".into(),
             phase: Some("debugging".into()),
             useful: idx < 22,

@@ -259,8 +259,8 @@ pub async fn select_skill_passage_excerpt(
         max_visibility_lag_ms: u64::MAX,
         ..QuillConfig::default()
     };
-    let index =
-        QuillIndex::in_memory(config).map_err(|_| ExperimentError::EngineFailure("index init".into()))?;
+    let index = QuillIndex::in_memory(config)
+        .map_err(|_| ExperimentError::EngineFailure("index init".into()))?;
 
     let mut docs = Vec::with_capacity(passages.len());
     for p in &passages {

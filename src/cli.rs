@@ -1633,7 +1633,9 @@ fn execute(
 fn gaps_command(clock: &EntryClock, matches: &clap::ArgMatches) -> Result<String, Failure> {
     use crate::experiments::{GapObservationInput, analyze_coverage_gaps};
     timely(clock)?;
-    let events: Vec<GapObservationInput> = if let Some(input_str) = matches.get_one::<String>("input") {
+    let events: Vec<GapObservationInput> = if let Some(input_str) =
+        matches.get_one::<String>("input")
+    {
         let bytes = read_bounded_eval_bytes(
             input_str,
             "gap observations",
@@ -1734,22 +1736,20 @@ fn gaps_command(clock: &EntryClock, matches: &clap::ArgMatches) -> Result<String
                  WHERE status IN ('unresolved', 'historically_absent')
                  ORDER BY created_at_unix_ms DESC
                  LIMIT 200",
-            )
-                && let Ok(prop_rows) = prop_stmt.query_map([], |row| {
-                    let proposal_id: String = row.get(0)?;
-                    let status: String = row.get(1)?;
-                    Ok(GapObservationInput {
-                        event_id: proposal_id,
-                        decision: "ranked".into(),
-                        reason: status,
-                        needs_skill: Some(0.80),
-                        max_fit: None,
-                        negative_feedback: true,
-                        context_complete: true,
-                        phase: None,
-                    })
+            ) && let Ok(prop_rows) = prop_stmt.query_map([], |row| {
+                let proposal_id: String = row.get(0)?;
+                let status: String = row.get(1)?;
+                Ok(GapObservationInput {
+                    event_id: proposal_id,
+                    decision: "ranked".into(),
+                    reason: status,
+                    needs_skill: Some(0.80),
+                    max_fit: None,
+                    negative_feedback: true,
+                    context_complete: true,
+                    phase: None,
                 })
-            {
+            }) {
                 for row in prop_rows.flatten() {
                     loaded.push(row);
                 }
@@ -1762,8 +1762,8 @@ fn gaps_command(clock: &EntryClock, matches: &clap::ArgMatches) -> Result<String
     let json_output =
         matches.get_flag("json") || (!matches.get_flag("table") && !io::stdout().is_terminal());
     if json_output {
-        let val = serde_json::to_value(&report)
-            .map_err(|e| (9u8, "storage-failure", e.to_string()))?;
+        let val =
+            serde_json::to_value(&report).map_err(|e| (9u8, "storage-failure", e.to_string()))?;
         return Ok(format!("{val:#}\n"));
     }
     let mut out = format!(
@@ -1793,8 +1793,7 @@ fn load_latest_tui_state_from_ledger(
     let mut loaded: Option<TuiState> = None;
     if let Ok(cx) = invocation.request_cx()
         && let Ok(
-            crate::storage::LedgerOpen::Ready(store)
-            | crate::storage::LedgerOpen::ReadOnly(store),
+            crate::storage::LedgerOpen::Ready(store) | crate::storage::LedgerOpen::ReadOnly(store),
         ) = crate::storage::open_ledger(
             &invocation,
             &cx,
@@ -1803,8 +1802,7 @@ fn load_latest_tui_state_from_ledger(
         )
         && let Ok(conn) = rusqlite::Connection::open_with_flags(
             store.database_path(),
-            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
-                | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )
     {
         let busy_ms = clock
@@ -1861,9 +1859,13 @@ fn tui_command(clock: &EntryClock, matches: &clap::ArgMatches) -> Result<String,
     let is_tty = io::stdin().is_terminal() && io::stdout().is_terminal();
     let keys = matches.get_one::<String>("keys").map(String::as_str);
     let max_rows = match matches.get_one::<String>("rows") {
-        Some(text) => text
-            .parse::<usize>()
-            .map_err(|_| (2u8, "invalid-usage", "--rows must be an integer from 3 to 9".into()))?,
+        Some(text) => text.parse::<usize>().map_err(|_| {
+            (
+                2u8,
+                "invalid-usage",
+                "--rows must be an integer from 3 to 9".into(),
+            )
+        })?,
         None => 9,
     };
     let initial_state = match matches.get_one::<String>("dir") {
@@ -1893,8 +1895,8 @@ fn tui_command(clock: &EntryClock, matches: &clap::ArgMatches) -> Result<String,
 
 fn calibrate_command(clock: &EntryClock, matches: &clap::ArgMatches) -> Result<String, Failure> {
     use crate::learning::{
-        LearningError, apply_calibrated_policy, rollback_managed_policy, run_calibration_from_bytes,
-        run_monitor_from_bytes,
+        LearningError, apply_calibrated_policy, rollback_managed_policy,
+        run_calibration_from_bytes, run_monitor_from_bytes,
     };
     timely(clock)?;
     let map_err = |err: LearningError| -> Failure {
@@ -1912,7 +1914,8 @@ fn calibrate_command(clock: &EntryClock, matches: &clap::ArgMatches) -> Result<S
         return Err((
             2,
             "invalid-usage",
-            "Specify exactly one of --evaluation FILE, --rollback REVISION, or --monitor FILE".into(),
+            "Specify exactly one of --evaluation FILE, --rollback REVISION, or --monitor FILE"
+                .into(),
         ));
     }
     let apply = matches.get_flag("apply");
@@ -1970,7 +1973,8 @@ fn calibrate_command(clock: &EntryClock, matches: &clap::ArgMatches) -> Result<S
                 let _ = invocation.shutdown();
             }
         }
-        let val = serde_json::to_value(&report).map_err(|e| (9u8, "storage-failure", e.to_string()))?;
+        let val =
+            serde_json::to_value(&report).map_err(|e| (9u8, "storage-failure", e.to_string()))?;
         if matches.get_flag("table") {
             let summary = format!(
                 "Calibration ({}): revision={} promotable={} reason={}\n  validation mean_loss: {:.4} (baseline {:.4})\n  holdout mean_loss:    {:.4} (baseline {:.4})\n",
@@ -1991,7 +1995,8 @@ fn calibrate_command(clock: &EntryClock, matches: &clap::ArgMatches) -> Result<S
     if let Some(rev_id) = rollback_rev {
         let report =
             rollback_managed_policy(rev_id, apply, &config_path, &state_dir).map_err(map_err)?;
-        let val = serde_json::to_value(&report).map_err(|e| (9u8, "storage-failure", e.to_string()))?;
+        let val =
+            serde_json::to_value(&report).map_err(|e| (9u8, "storage-failure", e.to_string()))?;
         if matches.get_flag("table") {
             let summary = format!(
                 "Policy rollback ({}): revision={} applied={}\n",
@@ -5018,8 +5023,8 @@ fn doctor_command(clock: &EntryClock, doctor: &clap::ArgMatches) -> Result<Strin
         let diag = crate::experiments::inspect_roster_descriptions(&entries);
         timely(clock)?;
         if json_output {
-            let val = serde_json::to_value(&diag)
-                .map_err(|e| (9u8, "storage-failure", e.to_string()))?;
+            let val =
+                serde_json::to_value(&diag).map_err(|e| (9u8, "storage-failure", e.to_string()))?;
             return Ok(format!("{val:#}\n"));
         }
         let mut output = format!(

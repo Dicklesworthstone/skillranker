@@ -36,7 +36,10 @@ fn all_p9_contracts_verified() {
         ))
         .unwrap();
     assert_eq!(passage_res.selection_mode, "quill-heading-passage");
-    assert_eq!(passage_res.selected_heading.as_deref(), Some("Section Beta"));
+    assert_eq!(
+        passage_res.selected_heading.as_deref(),
+        Some("Section Beta")
+    );
     assert!(passage_res.budget_neutral);
     assert!(invocation.shutdown());
 
@@ -52,11 +55,7 @@ fn all_p9_contracts_verified() {
             "\"rust\" OR \"panic\"", // duplicate normalized query view -> deduplicated
             vec!["sk-b".into(), "sk-a".into()],
         ),
-        (
-            "error",
-            "\"backtrace\"",
-            vec!["sk-a".into(), "sk-c".into()],
-        ),
+        ("error", "\"backtrace\"", vec!["sk-a".into(), "sk-c".into()]),
     ])
     .unwrap();
     // sk-a has rank 2 in request (1/62) + rank 1 in error (1/61), beating sk-b (rank 1 in request only = 1/61).
@@ -150,10 +149,6 @@ fn all_p9_contracts_verified() {
     assert_eq!(dispositions["phase"], "P9");
     let items = dispositions["experiments"].as_array().unwrap();
     assert_eq!(items.len(), 5);
-    assert!(
-        items
-            .iter()
-            .all(|item| item["budget_neutral"] == true
-                && item["default_production_selector_changed"] == false)
-    );
+    assert!(items.iter().all(|item| item["budget_neutral"] == true
+        && item["default_production_selector_changed"] == false));
 }

@@ -260,7 +260,8 @@ fn calibration_and_supermartingale() {
         ) > 0.45,
         "persisted active prior snapshot must reproduce positive shrunk delta"
     );
-    let (after_apply_table, after_apply_policy) = read_managed_policy_from_toml(&config_path).unwrap();
+    let (after_apply_table, after_apply_policy) =
+        read_managed_policy_from_toml(&config_path).unwrap();
     assert_eq!(after_apply_policy, report.selected_policy);
     assert!(
         after_apply_table["ranking"].get("gate").is_some()
@@ -271,10 +272,7 @@ fn calibration_and_supermartingale() {
         after_apply_table["network"]["enabled"].as_bool(),
         Some(true)
     );
-    assert_eq!(
-        after_apply_table["hook"]["mode"].as_str(),
-        Some("advisory")
-    );
+    assert_eq!(after_apply_table["hook"]["mode"].as_str(), Some("advisory"));
 
     // Preview rollback without mutating config.toml.
     let preview_rb =
@@ -319,18 +317,18 @@ fn calibration_and_supermartingale() {
     let e1 = acc.observe_unit(true, false);
     let e2 = acc.observe_unit(false, true);
     let e3 = acc.observe_unit(true, false);
-    assert!(e1 > 1.0 && e2 > e1 && e3 >= 20.0, "e1={e1}, e2={e2}, e3={e3}");
+    assert!(
+        e1 > 1.0 && e2 > e1 && e3 >= 20.0,
+        "e1={e1}, e2={e2}, e3={e3}"
+    );
     assert!(acc.alarm_triggered);
     assert_eq!(acc.judged_harm_units, 2);
     assert_eq!(acc.unresolved_units, 1);
 
     // Verify MonitorLedgerState prespecified order, post-finalization invalidation, and nonrefundable alpha budget.
-    let mut mon = MonitorLedgerState::initialize(
-        0.05,
-        0.03,
-        vec!["u-1".into(), "u-2".into(), "u-3".into()],
-    )
-    .unwrap();
+    let mut mon =
+        MonitorLedgerState::initialize(0.05, 0.03, vec!["u-1".into(), "u-2".into(), "u-3".into()])
+            .unwrap();
     // Out-of-order unit is rejected.
     assert!(matches!(
         mon.record_unit(FinalizedMonitorUnit {

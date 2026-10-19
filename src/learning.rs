@@ -43,7 +43,10 @@ pub const MONITOR_ALTERNATIVES: [f64; 3] = [0.05, 0.10, 0.20];
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum LearningError {
-    OversizedInput { len: usize, max: usize },
+    OversizedInput {
+        len: usize,
+        max: usize,
+    },
     MalformedInput(String),
     SplitContamination(String),
     InsufficientCohort(String),
@@ -51,7 +54,10 @@ pub enum LearningError {
     PolicyConflict(String),
     IncompatibleRevision(String),
     MonitorInvalid(String),
-    AlphaBudgetExhausted { requested: String, remaining: String },
+    AlphaBudgetExhausted {
+        requested: String,
+        remaining: String,
+    },
     Storage(String),
 }
 
@@ -671,10 +677,7 @@ pub fn evaluate_split(
         .count();
     let negative_cases = total_cases.saturating_sub(positive_cases);
     let near_miss_cases = cases.iter().filter(|c| c.near_miss).count();
-    let operational_failures = cases
-        .iter()
-        .filter(|c| c.operationally_unavailable)
-        .count();
+    let operational_failures = cases.iter().filter(|c| c.operationally_unavailable).count();
 
     let mut total_loss = 0_u64;
     for case in cases {
@@ -822,12 +825,15 @@ pub fn run_calibration_from_bytes(bytes: &[u8]) -> Result<CalibrationReport, Lea
         )));
     }
 
-    let priors =
-        PriorSnapshot::from_judgments(&artifact.training_judgments, prior_as_of_unix_ms)?;
+    let priors = PriorSnapshot::from_judgments(&artifact.training_judgments, prior_as_of_unix_ms)?;
 
     let baseline = ManagedRankingPolicy::BASELINE;
-    let baseline_validation =
-        evaluate_split(&validation_cases, &baseline, &priors, &artifact.policy_version);
+    let baseline_validation = evaluate_split(
+        &validation_cases,
+        &baseline,
+        &priors,
+        &artifact.policy_version,
+    );
     if !baseline_validation.estimable {
         return Err(LearningError::InsufficientCohort(
             "baseline policy is not estimable on validation split".into(),
@@ -874,7 +880,8 @@ pub fn run_calibration_from_bytes(bytes: &[u8]) -> Result<CalibrationReport, Lea
         }
         let better_loss = summary.mean_loss + 1e-12 < selected_validation.mean_loss;
         let tied_loss = (summary.mean_loss - selected_validation.mean_loss).abs() <= 1e-12;
-        let fewer_failures = summary.operational_failures < selected_validation.operational_failures;
+        let fewer_failures =
+            summary.operational_failures < selected_validation.operational_failures;
         if better_loss || (tied_loss && fewer_failures) {
             selected_policy = cand.clone();
             selected_validation = summary;
@@ -883,8 +890,12 @@ pub fn run_calibration_from_bytes(bytes: &[u8]) -> Result<CalibrationReport, Lea
 
     let baseline_holdout =
         evaluate_split(&holdout_cases, &baseline, &priors, &artifact.policy_version);
-    let selected_holdout =
-        evaluate_split(&holdout_cases, &selected_policy, &priors, &artifact.policy_version);
+    let selected_holdout = evaluate_split(
+        &holdout_cases,
+        &selected_policy,
+        &priors,
+        &artifact.policy_version,
+    );
     if !baseline_holdout.estimable || !selected_holdout.estimable {
         return Err(LearningError::InsufficientCohort(
             "selected or baseline policy is not estimable on holdout split".into(),
@@ -906,7 +917,10 @@ pub fn run_calibration_from_bytes(bytes: &[u8]) -> Result<CalibrationReport, Lea
 
     let evaluation_digest = blake3::hash(bytes).to_hex().to_string();
     let revision_seed = format!("{}:{}", evaluation_digest, selected_policy.digest());
-    let revision_id = format!("pol-{}", &blake3::hash(revision_seed.as_bytes()).to_hex()[..16]);
+    let revision_id = format!(
+        "pol-{}",
+        &blake3::hash(revision_seed.as_bytes()).to_hex()[..16]
+    );
     let prior_snapshot = if priors.is_empty() {
         None
     } else {
@@ -979,7 +993,9 @@ fn write_private_atomic(path: &Path, bytes: &[u8]) -> Result<(), LearningError> 
     ensure_private_dir(parent)?;
     let tmp = parent.join(format!(
         ".{}.sr-tmp-{}",
-        path.file_name().and_then(|s| s.to_str()).unwrap_or("policy"),
+        path.file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("policy"),
         std::process::id()
     ));
     #[cfg(unix)]
@@ -1014,17 +1030,20 @@ pub fn save_active_prior_snapshot(
     write_private_atomic(&path, &bytes)
 }
 
-pub fn load_active_prior_snapshot(state_dir: &Path) -> Result<Option<PriorSnapshot>, LearningError> {
+pub fn load_active_prior_snapshot(
+    state_dir: &Path,
+) -> Result<Option<PriorSnapshot>, LearningError> {
     let path = state_dir.join("prior_snapshot.json");
     if !path.exists() {
         return Ok(None);
     }
-    let text =
-        read_bounded_regular_file_string(&path, CONFIG_FILE_BYTES.max(), "prior snapshot")?;
-    let val = strict_json(&text)
-        .map_err(|_| LearningError::MalformedInput("corrupt or duplicate-key prior snapshot".into()))?;
-    let raw: SerializedPriorSnapshot = serde_json::from_value(val)
-        .map_err(|e| LearningError::MalformedInput(format!("invalid prior snapshot schema: {e}")))?;
+    let text = read_bounded_regular_file_string(&path, CONFIG_FILE_BYTES.max(), "prior snapshot")?;
+    let val = strict_json(&text).map_err(|_| {
+        LearningError::MalformedInput("corrupt or duplicate-key prior snapshot".into())
+    })?;
+    let raw: SerializedPriorSnapshot = serde_json::from_value(val).map_err(|e| {
+        LearningError::MalformedInput(format!("invalid prior snapshot schema: {e}"))
+    })?;
     let snap = PriorSnapshot::from_serialized(raw)?;
     if snap.is_empty() {
         Ok(None)
@@ -1095,7 +1114,9 @@ fn toml_as_f64(value: &toml::Value) -> Option<f64> {
 
 /// Extract the currently configured managed `[ranking]` policy from a TOML
 /// table (falling back to `ManagedRankingPolicy::BASELINE` for omitted keys).
-pub fn read_managed_policy_from_toml(config_path: &Path) -> Result<(toml::Table, ManagedRankingPolicy), LearningError> {
+pub fn read_managed_policy_from_toml(
+    config_path: &Path,
+) -> Result<(toml::Table, ManagedRankingPolicy), LearningError> {
     if !config_path.exists() {
         return Ok((toml::Table::new(), ManagedRankingPolicy::BASELINE));
     }
@@ -1258,8 +1279,8 @@ pub fn apply_calibrated_policy(
     };
     let base_digest = crate::identity::ContentHash::from_bytes(&base_bytes);
     let (root_table, current_policy) = read_managed_policy_from_toml(config_path)?;
-    let previous_prior_snapshot = load_active_prior_snapshot(state_dir)?
-        .map(|snap| snap.to_serialized());
+    let previous_prior_snapshot =
+        load_active_prior_snapshot(state_dir)?.map(|snap| snap.to_serialized());
 
     let revisions_dir = state_dir.join("policy-revisions");
     ensure_private_dir(&revisions_dir)?;
@@ -1279,8 +1300,8 @@ pub fn apply_calibrated_policy(
         previous_prior_snapshot,
         applied_prior_snapshot: report.prior_snapshot.clone(),
     };
-    let rev_bytes = serde_json::to_vec_pretty(&record)
-        .map_err(|e| LearningError::Storage(e.to_string()))?;
+    let rev_bytes =
+        serde_json::to_vec_pretty(&record).map_err(|e| LearningError::Storage(e.to_string()))?;
     write_private_atomic(&rev_path, &rev_bytes)?;
     if report.selected_policy.w_prior > 0.0 {
         if let Some(raw_snap) = &report.prior_snapshot {
@@ -1405,8 +1426,7 @@ pub fn rollback_managed_policy(
             "rollback-applied".to_owned()
         } else {
             "rollback-preview".to_owned()
-        }
-        ,
+        },
         applied: apply,
         revision_id: revision_id.to_owned(),
         current_policy,
@@ -1442,7 +1462,9 @@ impl CompositeRiskAccumulator {
                     .into(),
             ));
         }
-        if !(0.0..1.0).contains(&alpha_monitor) || !alpha_monitor.is_finite() || alpha_monitor == 0.0
+        if !(0.0..1.0).contains(&alpha_monitor)
+            || !alpha_monitor.is_finite()
+            || alpha_monitor == 0.0
         {
             return Err(LearningError::MonitorInvalid(
                 "alpha_monitor must be finite in (0, 1)".into(),
@@ -1807,8 +1829,9 @@ pub fn save_monitor_state(path: &Path, state: &MonitorLedgerState) -> Result<(),
 pub fn load_monitor_state(path: &Path) -> Result<MonitorLedgerState, LearningError> {
     let text =
         read_bounded_regular_file_string(path, EVALUATION_DATASET_BYTES.max(), "monitor state")?;
-    let val = strict_json(&text)
-        .map_err(|_| LearningError::MonitorInvalid("corrupt or duplicate-key monitor state".into()))?;
+    let val = strict_json(&text).map_err(|_| {
+        LearningError::MonitorInvalid("corrupt or duplicate-key monitor state".into())
+    })?;
     serde_json::from_value(val)
         .map_err(|e| LearningError::MonitorInvalid(format!("invalid monitor state schema: {e}")))
 }
@@ -1872,11 +1895,8 @@ pub fn run_monitor_from_bytes(
         }
     }
     let ville_verification = if let Some(horizon) = input.ville_horizon {
-        let (prob, holds) = verify_supermartingale_ville_bound(
-            horizon,
-            state.tau,
-            state.current_epoch_alpha,
-        )?;
+        let (prob, holds) =
+            verify_supermartingale_ville_bound(horizon, state.tau, state.current_epoch_alpha)?;
         Some(json!({
             "horizon": horizon,
             "tau": state.tau,
@@ -1891,8 +1911,8 @@ pub fn run_monitor_from_bytes(
         let monitor_path = state_dir.join("monitor_state.json");
         save_monitor_state(&monitor_path, &state)?;
     }
-    let mut out = serde_json::to_value(&state)
-        .map_err(|e| LearningError::Storage(e.to_string()))?;
+    let mut out =
+        serde_json::to_value(&state).map_err(|e| LearningError::Storage(e.to_string()))?;
     if let Some(obj) = out.as_object_mut() {
         obj.insert("applied".into(), json!(apply));
         obj.insert("remaining_alpha".into(), json!(state.remaining_alpha()));
@@ -1900,4 +1920,3 @@ pub fn run_monitor_from_bytes(
     }
     Ok(out)
 }
-

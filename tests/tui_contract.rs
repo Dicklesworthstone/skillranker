@@ -26,8 +26,7 @@ fn tui_rendering_and_recovery() {
     assert_eq!(result["show_evidence"], true);
     assert_eq!(result["active_generation"], 2);
     assert_eq!(
-        result["selected_skill"]["skill_id"],
-        "sk-rust-triage",
+        result["selected_skill"]["skill_id"], "sk-rust-triage",
         "key '1' must select top locally resolved skill without executing a loader"
     );
 

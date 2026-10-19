@@ -18,8 +18,14 @@ fn run(args: &[&str]) -> (Option<i32>, Value) {
 #[test]
 fn a_planned_command_names_the_phase_it_waits_for() {
     // All foundation commands (including P9 `gaps` and `tui`) are now implemented.
-    assert_eq!(skillranker::capabilities::planned_command_phase("gaps"), None);
-    assert_eq!(skillranker::capabilities::planned_command_phase("tui"), None);
+    assert_eq!(
+        skillranker::capabilities::planned_command_phase("gaps"),
+        None
+    );
+    assert_eq!(
+        skillranker::capabilities::planned_command_phase("tui"),
+        None
+    );
     let (code, value) = run(&["gaps", "--json"]);
     assert_eq!(code, Some(0), "{value}");
     assert_eq!(value["schema"], "sr.gaps.v1", "{value}");
