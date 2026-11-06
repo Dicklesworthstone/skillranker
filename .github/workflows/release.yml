@@ -1,0 +1,149 @@
+# Build `sr` release archives for Linux, macOS and Windows and attach them to a
+# GitHub Release.
+#
+# Trigger: push a tag like `v0.1.0` (must match Cargo.toml's version), or run
+# manually from the Actions tab with an existing tag name.
+#
+# Archive layout follows docs/installation.md: `skillranker-vVERSION-TARGET`
+# containing a root-level `sr` (or `sr.exe`), LICENSE and README.md, plus an
+# adjacent `.sha256` sidecar holding one `HASH  ARCHIVE_NAME` record.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build and release (e.g. v0.1.0)"
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  TAG: ${{ github.event.inputs.tag || github.ref_name }}
+
+jobs:
+  build:
+    name: build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: x86_64-unknown-linux-musl,  os: ubuntu-latest,  zigbuild: true }
+          - { target: aarch64-unknown-linux-musl, os: ubuntu-latest,  zigbuild: true }
+          - { target: x86_64-apple-darwin,        os: macos-latest }
+          - { target: aarch64-apple-darwin,       os: macos-latest }
+          - { target: x86_64-pc-windows-msvc,     os: windows-latest }
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      - name: Check tag matches Cargo.toml version
+        shell: bash
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n1)
+          if [[ "$TAG" != "v$version" ]]; then
+            echo "::error::Tag $TAG does not match Cargo.toml version $version"
+            exit 1
+          fi
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
+      # rustup reads rust-toolchain.toml, so this installs the pinned nightly.
+      - name: Install toolchain and target
+        shell: bash
+        run: |
+          rustup show active-toolchain
+          rustup target add ${{ matrix.target }}
+
+      - name: Install cargo-zigbuild
+        if: matrix.zigbuild
+        run: pip install --user cargo-zigbuild ziglang
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ matrix.target }}-cargo-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+
+      - name: Build
+        shell: bash
+        run: |
+          if [[ "${{ matrix.zigbuild }}" == "true" ]]; then
+            cargo zigbuild --release --locked --bin sr --target ${{ matrix.target }}
+          else
+            cargo build --release --locked --bin sr --target ${{ matrix.target }}
+          fi
+
+      - name: Smoke test
+        # Only run binaries the runner can execute natively.
+        if: matrix.target != 'aarch64-unknown-linux-musl' && matrix.target != 'x86_64-apple-darwin'
+        shell: bash
+        run: |
+          bin=target/${{ matrix.target }}/release/sr
+          [[ -f "$bin.exe" ]] && bin="$bin.exe"
+          "$bin" --version
+          "$bin" capabilities --json > /dev/null
+
+      - name: Package
+        shell: bash
+        run: |
+          name="skillranker-v${VERSION}-${{ matrix.target }}"
+          stage="$RUNNER_TEMP/$name"
+          mkdir -p "$stage" dist
+          cp LICENSE README.md "$stage/"
+          if [[ "${{ matrix.target }}" == *windows* ]]; then
+            cp "target/${{ matrix.target }}/release/sr.exe" "$stage/"
+            archive="$name.zip"
+            (cd "$stage" && 7z a -tzip "$GITHUB_WORKSPACE/dist/$archive" sr.exe LICENSE README.md > /dev/null)
+          else
+            cp "target/${{ matrix.target }}/release/sr" "$stage/"
+            chmod 755 "$stage/sr"
+            archive="$name.tar.gz"
+            tar -C "$stage" -czf "dist/$archive" sr LICENSE README.md
+          fi
+          cd dist
+          if command -v sha256sum > /dev/null; then
+            sha256sum "$archive" > "$archive.sha256"
+          else
+            shasum -a 256 "$archive" > "$archive.sha256"
+          fi
+          cat "$archive.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    name: publish release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          ls -l dist
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber
+          else
+            gh release create "$TAG" dist/* --title "$TAG" --generate-notes --verify-tag
+          fi
